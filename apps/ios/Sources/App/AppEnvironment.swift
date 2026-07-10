@@ -81,6 +81,16 @@ final class AppEnvironment {
                                              measurements: measurements, baselines: baselines,
                                              insightEngine: insightEngine, registry: registry,
                                              clock: clock, deviceId: deviceId)
+        applyLaunchOverrides()
+    }
+
+    /// Ephemeral UI-test / demo launch overrides (not persisted). Set via
+    /// SIMCTL_CHILD_BADAN_LANG=ar, SIMCTL_CHILD_BADAN_DEPTH=power, SIMCTL_CHILD_BADAN_SKIP_ONBOARDING=1.
+    private func applyLaunchOverrides() {
+        let env = ProcessInfo.processInfo.environment
+        if let raw = env["BADAN_LANG"], let lang = AppLanguage(rawValue: raw) { profile.language = lang }
+        if let raw = env["BADAN_DEPTH"], let depth = DepthPolicy(rawValue: raw) { profile.depthPolicy = depth }
+        if env["BADAN_SKIP_ONBOARDING"] == "1" { onboardingComplete = true }
     }
 
     static func makeDefault() -> AppEnvironment {
