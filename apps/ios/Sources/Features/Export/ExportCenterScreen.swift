@@ -103,11 +103,15 @@ final class ExportCenterViewModel {
         isRunning = true
         errorText = nil
         lastResult = nil
-        // The runner is fully synchronous and offline; the Task lets the "preparing" state paint
-        // first and keeps the button responsive.
+        // ExportRunner is fully synchronous, offline, and thread-safe (SQLite recursive lock).
+        // Run it OFF the main actor (Task.detached) so a large "all time · raw+derived" export
+        // never freezes the UI or risks the iOS watchdog; then hop back to update state.
+        let exporter = env.exporter
         Task {
             do {
-                let result = try env.exporter.run(scope: scope, format: format)
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try exporter.run(scope: scope, format: format)
+                }.value
                 lastResult = result
                 loadHistory(env)
             } catch {
