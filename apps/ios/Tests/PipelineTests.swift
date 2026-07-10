@@ -149,6 +149,25 @@ final class PipelineTests: XCTestCase {
         XCTAssertNotNil(job.manifest?.checksums)
     }
 
+    // MARK: - Sensitive namespace purge (regression: repo references must survive)
+
+    func testSensitivePurgeKeepsRepositoryUsable() throws {
+        let logging = LoggingRepository(main: db.main, sensitive: db.sensitive)
+        let now = clock.now()
+        try logging.insertSymptom(SymptomEntry(id: ULID.newID(), symptomId: "headache", severity: 4,
+                                               occurredAt: now, tzId: "UTC", updatedAt: now, originDeviceId: deviceId))
+        XCTAssertEqual(try logging.allSymptoms().count, 1)
+
+        // Purge (as Settings' sensitive toggle does) — the file is deleted and recreated.
+        try db.purgeSensitiveNamespace()
+        XCTAssertEqual(try logging.allSymptoms().count, 0, "purge empties the sensitive namespace")
+
+        // The SAME repository must still be able to write afterwards (connection identity preserved).
+        try logging.insertSymptom(SymptomEntry(id: ULID.newID(), symptomId: "fatigue", severity: 3,
+                                               occurredAt: now, tzId: "UTC", updatedAt: now, originDeviceId: deviceId))
+        XCTAssertEqual(try logging.allSymptoms().count, 1, "logging works after purge — no stale connection")
+    }
+
     func testJSONExportHasManifest() throws {
         let pipeline = makeIngestion()
         try pipeline.ingest(from: FakeHealthStore(clock: clock, historyDays: 30), range: range)

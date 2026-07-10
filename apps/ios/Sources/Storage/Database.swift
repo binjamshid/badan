@@ -6,7 +6,7 @@ import Foundation
 /// SQLCipher is a tracked future decision (ADR-0004).
 final class Database {
     let main: SQLiteConnection
-    private(set) var sensitive: SQLiteConnection
+    let sensitive: SQLiteConnection
     let directory: URL
 
     static let mainFilename = "badan.db"
@@ -43,15 +43,17 @@ final class Database {
 
     /// Purge the sensitive-plus namespace by deleting its file and recreating it empty. The
     /// main DB is untouched. This is the mechanical guarantee behind "hide Medications".
+    ///
+    /// The `sensitive` connection **object is preserved** (its handle is closed, the files are
+    /// deleted, then the handle is reopened) so repositories already holding a reference to it
+    /// keep working after the purge — otherwise sensitive logging would silently break.
     func purgeSensitiveNamespace() throws {
-        // Drop our reference so the connection closes, then remove the WAL set.
-        sensitive = try SQLiteConnection(path: directory.appendingPathComponent("__closing__.tmp").path)
+        sensitive.closeHandle()
         for suffix in ["", "-wal", "-shm"] {
             let url = directory.appendingPathComponent(Self.sensitiveFilename + suffix)
             try? FileManager.default.removeItem(at: url)
         }
-        try? FileManager.default.removeItem(at: directory.appendingPathComponent("__closing__.tmp"))
-        sensitive = try SQLiteConnection(path: directory.appendingPathComponent(Self.sensitiveFilename).path)
+        try sensitive.reopen()
         try Self.migrate(sensitive, Schema.sensitiveMigrations)
     }
 

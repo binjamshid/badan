@@ -17,6 +17,10 @@ final class SQLiteConnection {
 
     init(path: String) throws {
         self.path = path
+        try openHandle()
+    }
+
+    private func openHandle() throws {
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(path, &handle, flags, nil) == SQLITE_OK, handle != nil else {
             let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
@@ -26,6 +30,21 @@ final class SQLiteConnection {
         try execute("PRAGMA journal_mode = WAL;")
         try execute("PRAGMA foreign_keys = ON;")
         try execute("PRAGMA busy_timeout = 3000;")
+    }
+
+    /// Close the underlying handle (so the file can be deleted) without destroying this object,
+    /// so repositories holding a reference stay valid across a purge/reset.
+    func closeHandle() {
+        lock.lock(); defer { lock.unlock() }
+        if let handle { sqlite3_close_v2(handle); self.handle = nil }
+    }
+
+    /// Reopen the same path after `closeHandle()` (e.g. the file was deleted). Object identity is
+    /// preserved, so existing repository references keep working.
+    func reopen() throws {
+        lock.lock(); defer { lock.unlock() }
+        if handle != nil { sqlite3_close_v2(handle); handle = nil }
+        try openHandle()
     }
 
     deinit { if let handle { sqlite3_close_v2(handle) } }
