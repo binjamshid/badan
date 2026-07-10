@@ -1,8 +1,17 @@
 # BADAN Android
 
-The native **Kotlin / Jetpack Compose** parallel path. Currently a scaffold; it is the next
-milestone (ADR-0006), not a rewrite — it consumes the **same shared truth** as iOS and mirrors
-the same architecture, so parity is structural.
+The native **Kotlin / Jetpack Compose** app — a **runnable, compiled** parallel to the iOS
+flagship (ADR-0006), not a rewrite. It consumes the **same shared truth** as iOS and mirrors the
+same architecture, so parity is structural. See `docs/android-parity-status.md` for exact status.
+
+## Screenshots (Medium_Phone emulator, seeded data)
+
+The same deterministic data as iOS flows through the same ported ingestion → dedup → baseline
+logic — Readiness 49, sleep 6h 31m, steps 11,012, RHR 53, HRV 58 — rendered in native Compose.
+
+| Home | Home · Arabic (RTL) | Body | Log hub |
+|---|---|---|---|
+| ![Home](../../docs/screenshots/android/01-home.png) | ![Arabic RTL](../../docs/screenshots/android/02-home-arabic-rtl.png) | ![Body](../../docs/screenshots/android/03-body.png) | ![Log](../../docs/screenshots/android/04-log-hub.png) |
 
 ## What Android reuses (no re-authoring)
 
