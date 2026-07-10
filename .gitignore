@@ -1,0 +1,37 @@
+# OS
+.DS_Store
+
+# Local tool caches
+.impeccable/
+
+# Large media (kept local; use external storage/LFS if it must be shared)
+*.MP4
+*.mp4
+*.mov
+
+# Xcode / Swift
+xcuserdata/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+.build/
+*.ipa
+*.dSYM.zip
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+captures/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node (if ever introduced)
+node_modules/
+
+# Misc
+*.log
