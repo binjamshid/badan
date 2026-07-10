@@ -23,21 +23,22 @@
 | Gradle/Compose project | ✅ | builds an APK (`assembleDebug`), Health Connect + Compose + serialization wired |
 | Core primitives | ✅ | Ulid, Clock (Long), Units, AppLanguage/LocalizedString/Numerals ported |
 | SQLite wrapper + two DB files | ✅ | `SqliteConnection`/`Row`, `Database` (purge/reset preserve connection identity) |
-| Canonical domain entities | 🟡 | porting from iOS `Domain/*` (same names, enum codes, invariants) |
-| Migration 001 DDL | 🟡 | same table/column names + indexes as iOS |
-| Ontology loaders | 🟡 | MetricRegistry / SymptomDictionary / InsightTemplateStore from assets |
-| Repositories | 🟡 | mirror of iOS repos (idempotent upsert, suppression, append-only) |
-| Ingestion + dedup | 🟡 | normalize → tz/day attribution → sleep dedup + reversible journal |
-| Baselines + insights | 🟡 | 14-day median/MAD, wellness-safe templates (en+ar) |
-| Export (CSV/JSON/manifest) | 🟡 | 24-column CSV contract, JSON bundle, SHA-256 manifest |
-| FakeHealthStore (deterministic seed) | 🟡 | 90-day two-source generator (dedup demo) |
-| Health Connect adapter boundary | 🟡 | availability + permission set + descriptors; reads TODO (post-MVP) |
-| Design system (Compose) | ⬜ | tokens/theme/components matching iOS |
-| Screens (15) | ⬜ | onboarding, home, body, metric detail, timeline, log hub, symptom/med/workout/nutrition, export, settings, sources, insights |
-| App shell + nav + seed | ⬜ | AppEnvironment DI, nav, seed on launch |
-| en/ar + RTL | ⬜ | structural, same as iOS |
-| Tests | ⬜ | dedup/baseline/units/export/repo parity |
-| Emulator run + screenshots | ⬜ | assembleDebug + boot + capture |
+| Canonical domain entities | ✅ | ported from iOS `Domain/*` (same names, enum codes, invariants) |
+| Migration 001 DDL | ✅ | same table/column names + indexes as iOS |
+| Ontology loaders | ✅ | MetricRegistry / SymptomDictionary / InsightTemplateStore from assets |
+| Repositories | ✅ | mirror of iOS repos (idempotent upsert, suppression, append-only) |
+| Ingestion + dedup | ✅ | normalize → tz/day attribution → sleep dedup + reversible journal (verified at runtime) |
+| Baselines + insights | ✅ | 14-day median/MAD, wellness-safe templates (en+ar) — same numbers as iOS |
+| Export (CSV/JSON/manifest) | ✅ | 24-column CSV contract, JSON bundle, SHA-256 manifest |
+| FakeHealthStore (deterministic seed) | ✅ | 90-day two-source generator (dedup demo) — identical values to iOS |
+| Health Connect adapter boundary | 🟡 | availability + permission set + descriptors done; real record reads TODO (post-MVP) |
+| Design system (Compose) | ✅ | tokens (light/dark), theme, Card/StatusChip/StatBox/MetricChart(Canvas)/State/Provenance/Pills |
+| Screens (15) | ✅ | onboarding, home, body+sources, metric detail+anatomy, timeline, log hub, symptom/med/workout/nutrition, export, settings, insights |
+| App shell + nav + seed | ✅ | AppEnvironment DI (Compose state), hand-rolled nav, seed on first launch (WAL-fast) |
+| en/ar + RTL | ✅ | structural; Arabic RTL Home verified (full mirroring + Arabic duration) |
+| Unit tests (pure logic) | ✅ | 10 JVM parity tests: units, dedup overlap/reconcile, ULID, median/MAD |
+| DB-backed pipeline tests | 🟡 | validated at runtime; automated instrumented/Robolectric suite is a follow-up |
+| Emulator run + screenshots | ✅ | `assembleDebug` + Medium_Phone: Home (EN/AR), Body, Log — `docs/screenshots/android/` |
 
 ## Intentional divergences (product truth preserved)
 
