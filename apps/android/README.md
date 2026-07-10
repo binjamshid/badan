@@ -9,9 +9,9 @@ same architecture, so parity is structural. See `docs/android-parity-status.md` 
 The same deterministic data as iOS flows through the same ported ingestion → dedup → baseline
 logic — Readiness 49, sleep 6h 31m, steps 11,012, RHR 53, HRV 58 — rendered in native Compose.
 
-| Home | Home · Arabic (RTL) | Body | Log hub |
-|---|---|---|---|
-| ![Home](../../docs/screenshots/android/01-home.png) | ![Arabic RTL](../../docs/screenshots/android/02-home-arabic-rtl.png) | ![Body](../../docs/screenshots/android/03-body.png) | ![Log](../../docs/screenshots/android/04-log-hub.png) |
+| Home | Home · Arabic (RTL) | Body | Log hub | Data sources · Health Connect |
+|---|---|---|---|---|
+| ![Home](../../docs/screenshots/android/01-home.png) | ![Arabic RTL](../../docs/screenshots/android/02-home-arabic-rtl.png) | ![Body](../../docs/screenshots/android/03-body.png) | ![Log](../../docs/screenshots/android/04-log-hub.png) | ![Sources](../../docs/screenshots/android/05-sources-health-connect.png) |
 
 ## What Android reuses (no re-authoring)
 
