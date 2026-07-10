@@ -31,7 +31,7 @@
 | Baselines + insights | ✅ | 14-day median/MAD, wellness-safe templates (en+ar) — same numbers as iOS |
 | Export (CSV/JSON/manifest) | ✅ | 24-column CSV contract, JSON bundle, SHA-256 manifest |
 | FakeHealthStore (deterministic seed) | ✅ | 90-day two-source generator (dedup demo) — identical values to iOS |
-| Health Connect adapter boundary | 🟡 | availability + permission set + descriptors done; real record reads TODO (post-MVP) |
+| Health Connect integration | ✅ | real paged `readRecords` → DTOs for 9 record types; availability states; staged permission request + denial retry; sync through the ingestion pipeline; UI card in Sources (`HealthConnectCard`). Manifest: 9 `READ_*` perms + provider `<queries>` + rationale filters |
 | Design system (Compose) | ✅ | tokens (light/dark), theme, Card/StatusChip/StatBox/MetricChart(Canvas)/State/Provenance/Pills |
 | Screens (15) | ✅ | onboarding, home, body+sources, metric detail+anatomy, timeline, log hub, symptom/med/workout/nutrition, export, settings, insights |
 | App shell + nav + seed | ✅ | AppEnvironment DI (Compose state), hand-rolled nav, seed on first launch (WAL-fast) |
@@ -48,8 +48,17 @@
 - **Export byte-identical-with-iOS** is a later conformance goal; Android export is structurally
   correct and follows the same 24-column contract now.
 
+### Health Connect note
+
+Reads are **real** (`HealthConnectAdapter` maps 9 record types via paged `readRecords`) and wired
+end-to-end: availability → staged permission request → sync through the ingestion pipeline, with a
+`HealthConnectCard` in Data Sources. On a stock emulator with no Health Connect provider set up,
+the card honestly shows the "Set up Health Connect" path (verified); on a device with Health
+Connect + data it shows "Connect Health Connect" → the OS permission sheet → imported readings.
+Timezone attribution uses the device's current zone (HC stores offsets, not IANA names).
+
 ## Deferred (non-blocking, smaller than what's done)
 
-Real Health Connect record reads (boundary + availability + permissions exist; FakeHealthStore is
-the dev source) · background delivery · sync · vendor integrations · notifications · widgets/Wear ·
-LLM insights · automated screenshot/AR-snapshot CI lane.
+Health Connect **background delivery / change-token incremental sync** (foreground pull is done) ·
+multi-device sync · vendor integrations · notifications · widgets/Wear · LLM insights · automated
+instrumented/Robolectric DB-pipeline tests (validated at runtime) · screenshot/AR-snapshot CI lane.
