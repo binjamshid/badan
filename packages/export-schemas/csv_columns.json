@@ -1,0 +1,150 @@
+{
+  "version": "0.1.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§20/56 Export subsystem)",
+  "csvColumns": [
+    {
+      "name": "record_id",
+      "type": "string (ULID)",
+      "description": "Stable per-record identifier, unchanged across re-exports; dedup lineage target."
+    },
+    {
+      "name": "record_kind",
+      "type": "enum",
+      "description": "Record shape: sample | interval | session | event | derived | baseline (instant vs aggregate vs typed-event vs computed)."
+    },
+    {
+      "name": "metric_id",
+      "type": "string",
+      "description": "Registry metric id (e.g. vitals.hrv_rmssd); language-stable join key."
+    },
+    {
+      "name": "metric_display",
+      "type": "string",
+      "description": "Localized display name of the metric in the export's display_language."
+    },
+    {
+      "name": "value",
+      "type": "decimal string",
+      "description": "Recorded value in the active unit profile (canonical unless a display/custom unit profile overrides)."
+    },
+    {
+      "name": "unit",
+      "type": "string",
+      "description": "UCUM-style unit token for value, from the metric registry."
+    },
+    {
+      "name": "canonical_value",
+      "type": "decimal string",
+      "description": "Same measurement in the metric's canonical unit, independent of unit profile — raw provenance anchor."
+    },
+    {
+      "name": "canonical_unit",
+      "type": "string",
+      "description": "Canonical UCUM unit token paired with canonical_value."
+    },
+    {
+      "name": "value_type",
+      "type": "enum",
+      "description": "raw | derived | aggregate — separates measured rows from computed/rolled-up rows."
+    },
+    {
+      "name": "is_derived",
+      "type": "boolean",
+      "description": "True when the row is engine-computed (score/baseline); false for measured/raw — explicit raw-vs-derived flag."
+    },
+    {
+      "name": "timestamp_start",
+      "type": "ISO-8601 w/ offset",
+      "description": "Measured-at start instant (offset carried, not normalized)."
+    },
+    {
+      "name": "timestamp_end",
+      "type": "ISO-8601 w/ offset (nullable)",
+      "description": "Interval/session end; null for instant samples."
+    },
+    {
+      "name": "timezone",
+      "type": "IANA tz string",
+      "description": "Timezone at measurement; basis for day-boundary computation (§30.1 provenance)."
+    },
+    {
+      "name": "recorded_at",
+      "type": "ISO-8601 w/ offset",
+      "description": "Ingestion timestamp; retro/backdated logging detectable by divergence from timestamp_start."
+    },
+    {
+      "name": "source_app",
+      "type": "string (nullable)",
+      "description": "Bundle/package id of the app that produced the record."
+    },
+    {
+      "name": "source_device",
+      "type": "string (nullable)",
+      "description": "Capturing device model + name."
+    },
+    {
+      "name": "ingestion_path",
+      "type": "enum",
+      "description": "platform | vendor_direct | broker | import | manual — how the record entered BADAN."
+    },
+    {
+      "name": "source_external_id",
+      "type": "string (nullable)",
+      "description": "Upstream system's own id for the record; source-lineage and dedup correlation key."
+    },
+    {
+      "name": "import_batch_id",
+      "type": "string (nullable)",
+      "description": "One-tap-undo import lineage id (§30.5)."
+    },
+    {
+      "name": "quality_flags",
+      "type": "string (nullable)",
+      "description": "Semicolon-delimited quality flags (e.g. artifact_suspect;low_coverage)."
+    },
+    {
+      "name": "confidence",
+      "type": "decimal 0–1 (nullable)",
+      "description": "Per-record confidence score when the metric defines one."
+    },
+    {
+      "name": "algorithm_id",
+      "type": "string (nullable)",
+      "description": "Algorithm id on derived rows; keys the manifest methodology link."
+    },
+    {
+      "name": "algorithm_version",
+      "type": "string (nullable)",
+      "description": "Version of the algorithm on derived rows; enables reproducibility across schema majors."
+    },
+    {
+      "name": "suppressed_by",
+      "type": "string (nullable)",
+      "description": "record_id of the winning record when this row was dedup-suppressed; present only when scope includes suppressed duplicates."
+    }
+  ],
+  "manifestFields": [
+    "export_id (ULID) — names the artifact and echoes into every file",
+    "generated_at (ISO-8601) — generation timestamp",
+    "app_version — emitting app version",
+    "platform — emitting platform (iOS/Android)",
+    "export_schema_version (semver, per-format) — the schemaVersion; frozen contract with changelog",
+    "scope (serialized ExportScope) — full scope echo; export is reproducible from its manifest",
+    "date_range (closed-open, per timezone_policy) — the exported period",
+    "unit_profile (object) — unit choices applied to value/unit columns (canonical | display | custom)",
+    "display_language (BCP-47) — language of the metric_display / *_display columns",
+    "timezone_policy (string) — 'timestamps carry original offsets; day boundaries computed in tz-at-measurement' + notes",
+    "dedup_policy (object) — policy description + version, and whether suppressed rows are included",
+    "per_metric_row_counts (map metric_id → count) — makes truncation detectable",
+    "methodology_links (map algorithm_id → public methodology URL) — for every derived metric present",
+    "checksums (map file → sha256) — canonical-serialization integrity per file",
+    "data_quality_note (string) — coverage-gap summary for the period"
+  ],
+  "notes": [
+    "Raw and derived are physically separated, never merged into shared columns: ExportScope.payloadKinds {RAW, DERIVED} are 'separated in output, never merged columns' — CSV routes measured rows to per-metric-family files (sleep.csv, vitals.csv) and computed scores/baselines to derived.csv, and every row is tagged with value_type + is_derived. (Column authority: §20.2's full contract governs; §56.2's CsvWriter parenthetical lists only an abbreviated subset — the fuller §20.2/§20.5 set is the frozen contract.)",
+    "Canonical value survives unit-profile changes: canonical_value/canonical_unit always carry the metric's canonical unit regardless of the display/custom unit profile applied to value/unit, so raw provenance is preserved and conversions (mmol/L vs mg/dL) live only in ExportMapping — impossible-by-construction unit errors, tested per-locale.",
+    "Derived rows are self-documenting and auditable: algorithm_id + algorithm_version on each derived row key into manifest.methodology_links (and the JSON bundle's derived_values[] carry input_manifest refs to their contributing inputs), so every computed value traces back to method + version + inputs and is never presented as if it were raw.",
+    "Suppressed duplicates are excluded by default and opt-in only, as lineage not deletion: ExportScope.includeSuppressedDuplicates defaults false; when included, each suppressed row keeps suppressed_by = winning record_id (chain preserved), manifest.dedup_policy records the policy/version and inclusion state, and the on/off row-count delta equals exactly the count of suppressed_by IS NOT NULL rows.",
+    "Provenance is complete and row-level: every row carries source_app, source_device, ingestion_path, source_external_id, import_batch_id, recorded_at and timezone so the source chain → dedup decision is fully reconstructable, while manifest per_metric_row_counts + checksums make truncation and tampering detectable."
+  ]
+}
