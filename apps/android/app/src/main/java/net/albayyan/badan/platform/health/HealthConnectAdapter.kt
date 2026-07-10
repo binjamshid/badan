@@ -4,19 +4,47 @@ import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
+import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.Record
+import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.metadata.Metadata
+import androidx.health.connect.client.request.ReadRecordsRequest
+import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.runBlocking
+import net.albayyan.badan.domain.Aggregation
+import net.albayyan.badan.domain.MetricId
+import net.albayyan.badan.domain.SessionKind
+import net.albayyan.badan.domain.SleepStage
 import net.albayyan.badan.domain.SourceType
+import java.time.Instant
+import java.util.TimeZone
+import kotlin.reflect.KClass
 
 /**
- * Real Health Connect integration boundary. It compiles and stays safe without a Health Connect
- * provider installed: availability is honest, permissions are declared but never assumed, and the
- * read methods are intentionally empty for this MVP (FakeHealthStore is the dev data source).
- * This file exists to nail the real seam down without risky record-mapping code.
+ * Real Health Connect integration. Conforms to the same [HealthStorePort] the FakeHealthStore
+ * does, so the ingestion pipeline is identical regardless of source. Reads map Health Connect
+ * records to BADAN's canonical DTOs (steps, active energy, distance, heart rate, resting HR, HRV,
+ * respiratory rate, SpO2, sleep sessions with stages).
+ *
+ * It is entitlement-safe: the client is created lazily and guarded, so with no provider installed
+ * (or no permissions granted) reads simply return empty rather than crashing. Timezone attribution
+ * uses the device's current zone (Health Connect stores offsets, not IANA names) — a pragmatic
+ * approximation documented in `docs/android-parity-status.md`.
  */
 class HealthConnectAdapter(private val context: Context) : HealthStorePort {
+
+    private val client: HealthConnectClient? by lazy {
+        runCatching { HealthConnectClient.getOrCreate(context) }.getOrNull()
+    }
+
+    private val tz: String get() = TimeZone.getDefault().id
 
     override fun availability(): HealthAvailability =
         when (HealthConnectClient.getSdkStatus(context)) {
@@ -32,36 +60,158 @@ class HealthConnectAdapter(private val context: Context) : HealthStorePort {
         ),
     )
 
-    /**
-     * Whether every MVP read permission has been granted. The UI reflects granted / denied /
-     * partial as first-class state rather than treating a missing grant as an error.
-     */
-    suspend fun hasAllPermissions(client: HealthConnectClient): Boolean {
-        val granted = client.permissionController.getGrantedPermissions()
-        return granted.containsAll(permissions)
+    /** Permissions granted so far (empty if HC unavailable). Denial is first-class state, not error. */
+    suspend fun grantedPermissions(): Set<String> =
+        client?.permissionController?.getGrantedPermissions() ?: emptySet()
+
+    suspend fun hasAllPermissions(): Boolean = grantedPermissions().containsAll(permissions)
+
+    // MARK: - Reads (synchronous port; the suspend HC calls are bridged with runBlocking, which is
+    // safe because ingestion runs off the main thread).
+
+    override fun readSamples(range: HealthDateRange): List<SampleDto> = runBlocking {
+        if (client == null) return@runBlocking emptyList()
+        buildList {
+            addAll(readHeartRate(range))
+            addAll(readSpo2(range))
+        }
     }
 
-    // The Activity/Fragment requests these by registering
-    // PermissionController.createRequestPermissionResultContract() and launching it with `permissions`.
-    @Suppress("unused")
-    private fun requestContract() = PermissionController.createRequestPermissionResultContract()
+    override fun readIntervals(range: HealthDateRange): List<IntervalDto> = runBlocking {
+        if (client == null) return@runBlocking emptyList()
+        buildList {
+            addAll(readSteps(range))
+            addAll(readActiveEnergy(range))
+            addAll(readDistance(range))
+            addAll(readRestingHeartRate(range))
+            addAll(readHrv(range))
+            addAll(readRespiratoryRate(range))
+        }
+    }
 
-    override fun readSamples(range: HealthDateRange): List<SampleDto> =
-        emptyList() // TODO map Health Connect records to DTOs (post-MVP)
+    override fun readSessions(range: HealthDateRange): List<SessionDto> = runBlocking {
+        if (client == null) return@runBlocking emptyList()
+        readSleep(range)
+    }
 
-    override fun readIntervals(range: HealthDateRange): List<IntervalDto> =
-        emptyList() // TODO map Health Connect records to DTOs (post-MVP)
+    // MARK: - Paged record reader
 
-    override fun readSessions(range: HealthDateRange): List<SessionDto> =
-        emptyList() // TODO map Health Connect records to DTOs (post-MVP)
+    private suspend fun <T : Record> readAll(type: KClass<T>, range: HealthDateRange): List<T> {
+        val c = client ?: return emptyList()
+        val out = ArrayList<T>()
+        var token: String? = null
+        do {
+            val response = runCatching {
+                c.readRecords(
+                    ReadRecordsRequest(
+                        recordType = type,
+                        timeRangeFilter = TimeRangeFilter.between(
+                            Instant.ofEpochMilli(range.start), Instant.ofEpochMilli(range.end)
+                        ),
+                        pageToken = token,
+                    )
+                )
+            }.getOrNull() ?: break
+            out.addAll(response.records)
+            token = response.pageToken
+        } while (token != null)
+        return out
+    }
+
+    // MARK: - Mappers
+
+    private fun source(meta: Metadata) = meta.dataOrigin.packageName
+    private fun device(meta: Metadata) = meta.device?.model
+
+    private suspend fun readSteps(range: HealthDateRange) = readAll(StepsRecord::class, range).map {
+        IntervalDto(MetricId.steps, it.count.toDouble(), "count", it.startTime.toEpochMilli(),
+            it.endTime.toEpochMilli(), tz, Aggregation.SUM, source(it.metadata), device(it.metadata), it.metadata.id)
+    }
+
+    private suspend fun readActiveEnergy(range: HealthDateRange) = readAll(ActiveCaloriesBurnedRecord::class, range).map {
+        IntervalDto(MetricId.activeEnergy, it.energy.inKilocalories, "kcal", it.startTime.toEpochMilli(),
+            it.endTime.toEpochMilli(), tz, Aggregation.SUM, source(it.metadata), device(it.metadata), it.metadata.id)
+    }
+
+    private suspend fun readDistance(range: HealthDateRange) = readAll(DistanceRecord::class, range).map {
+        IntervalDto(MetricId.distance, it.distance.inMeters, "m", it.startTime.toEpochMilli(),
+            it.endTime.toEpochMilli(), tz, Aggregation.SUM, source(it.metadata), device(it.metadata), it.metadata.id)
+    }
+
+    private suspend fun readRestingHeartRate(range: HealthDateRange) = readAll(RestingHeartRateRecord::class, range).map {
+        val t = it.time.toEpochMilli()
+        IntervalDto(MetricId.restingHeartRate, it.beatsPerMinute.toDouble(), "bpm", t, t, tz,
+            Aggregation.LATEST, source(it.metadata), device(it.metadata), it.metadata.id)
+    }
+
+    private suspend fun readHrv(range: HealthDateRange) = readAll(HeartRateVariabilityRmssdRecord::class, range).map {
+        val t = it.time.toEpochMilli()
+        IntervalDto(MetricId.hrv, it.heartRateVariabilityMillis, "ms", t, t, tz,
+            Aggregation.LATEST, source(it.metadata), device(it.metadata), it.metadata.id)
+    }
+
+    private suspend fun readRespiratoryRate(range: HealthDateRange) = readAll(RespiratoryRateRecord::class, range).map {
+        val t = it.time.toEpochMilli()
+        IntervalDto(MetricId.respiratoryRate, it.rate, "breaths/min", t, t, tz,
+            Aggregation.LATEST, source(it.metadata), device(it.metadata), it.metadata.id)
+    }
+
+    private suspend fun readHeartRate(range: HealthDateRange): List<SampleDto> =
+        readAll(HeartRateRecord::class, range).flatMap { record ->
+            record.samples.map { sample ->
+                val t = sample.time.toEpochMilli()
+                SampleDto(MetricId.heartRate, sample.beatsPerMinute.toDouble(), "bpm", t, t, tz,
+                    source(record.metadata), device(record.metadata), "${record.metadata.id}#$t")
+            }
+        }
+
+    private suspend fun readSpo2(range: HealthDateRange) = readAll(OxygenSaturationRecord::class, range).map {
+        val t = it.time.toEpochMilli()
+        SampleDto(MetricId.spo2, it.percentage.value, "%", t, t, tz,
+            source(it.metadata), device(it.metadata), it.metadata.id)
+    }
+
+    private suspend fun readSleep(range: HealthDateRange): List<SessionDto> =
+        readAll(SleepSessionRecord::class, range).map { record ->
+            val stages = record.stages.map { StageDto(mapStage(it.stage), it.startTime.toEpochMilli(), it.endTime.toEpochMilli()) }
+            val asleepSeconds = stages.filter { it.stage != SleepStage.AWAKE && it.stage != SleepStage.IN_BED }
+                .sumOf { (it.end - it.start).toDouble() / 1000.0 }
+            val inBedSeconds = (record.endTime.toEpochMilli() - record.startTime.toEpochMilli()).toDouble() / 1000.0
+            SessionDto(
+                kind = SessionKind.SLEEP_PRIMARY, subtype = record.title,
+                start = record.startTime.toEpochMilli(), end = record.endTime.toEpochMilli(), tz = tz,
+                sourceId = source(record.metadata), deviceId = device(record.metadata),
+                externalId = record.metadata.id, stages = stages,
+                timeAsleepSeconds = if (asleepSeconds > 0) asleepSeconds else null,
+                timeInBedSeconds = inBedSeconds,
+            )
+        }
+
+    private fun mapStage(hcStage: Int): SleepStage = when (hcStage) {
+        SleepSessionRecord.STAGE_TYPE_DEEP -> SleepStage.DEEP
+        SleepSessionRecord.STAGE_TYPE_REM -> SleepStage.REM
+        SleepSessionRecord.STAGE_TYPE_LIGHT -> SleepStage.LIGHT
+        SleepSessionRecord.STAGE_TYPE_AWAKE,
+        SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED,
+        SleepSessionRecord.STAGE_TYPE_OUT_OF_BED -> SleepStage.AWAKE
+        else -> SleepStage.ASLEEP_UNSPECIFIED
+    }
 
     companion object {
-        /** READ permissions for the MVP record types (I: raw data is not paywalled). */
+        /** READ permissions for the record types BADAN maps (I: raw data is not paywalled). */
         val permissions: Set<String> = setOf(
             HealthPermission.getReadPermission(StepsRecord::class),
+            HealthPermission.getReadPermission(ActiveCaloriesBurnedRecord::class),
+            HealthPermission.getReadPermission(DistanceRecord::class),
             HealthPermission.getReadPermission(HeartRateRecord::class),
             HealthPermission.getReadPermission(RestingHeartRateRecord::class),
+            HealthPermission.getReadPermission(HeartRateVariabilityRmssdRecord::class),
+            HealthPermission.getReadPermission(RespiratoryRateRecord::class),
+            HealthPermission.getReadPermission(OxygenSaturationRecord::class),
             HealthPermission.getReadPermission(SleepSessionRecord::class),
         )
+
+        /** Contract to register in a Compose launcher for requesting the [permissions] above. */
+        fun requestPermissionsContract() = PermissionController.createRequestPermissionResultContract()
     }
 }
