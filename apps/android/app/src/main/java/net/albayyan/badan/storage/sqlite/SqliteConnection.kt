@@ -18,6 +18,10 @@ class SqliteConnection(val path: String) {
 
     private fun open(): SQLiteDatabase {
         val d = SQLiteDatabase.openOrCreateDatabase(path, null)
+        // WAL + synchronous=NORMAL match the iOS wrapper and make bulk writes (the 90-day seed)
+        // fast — the default rollback journal fsyncs on every insert.
+        d.enableWriteAheadLogging()
+        d.execSQL("PRAGMA synchronous = NORMAL;")
         d.execSQL("PRAGMA foreign_keys = ON;")
         return d
     }
