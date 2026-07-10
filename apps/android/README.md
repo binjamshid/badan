@@ -39,8 +39,31 @@ baseline numerics, and export bytes that the Android suite must reproduce identi
 
 ## Build (once the Gradle project is added)
 
-The current `app/src/main/java/com/badan/app/` tree holds Compose scaffolds (shell + Home /
-Metrics→Body / Log / Settings). Bringing it to parity means: Gradle bootstrap
-(`settings.gradle.kts`, `build.gradle.kts`, version catalog, wrapper), Room storage + the same
-migration 001, the Health Connect adapter, and the mirrored screens — see EXECUTION_PLAN §11
-(AP-06/08/10/12) for the packet breakdown.
+## Build & run
+
+Requires the Android SDK (platform 36) and JDK 21. AGP needs JDK 17–21, so point Gradle at a
+JDK 21 (Android Studio ships one as its JBR):
+
+```bash
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"   # or any JDK 21
+cd apps/android
+./gradlew :app:assembleDebug        # build the debug APK
+./gradlew test                      # unit tests
+
+# Run on an emulator (see scripts/run_android.sh for a one-shot build+boot+install+launch):
+$ANDROID_HOME/emulator/emulator -avd Medium_Phone &
+./gradlew :app:installDebug
+adb shell am start -n net.albayyan.badan/.MainActivity
+```
+
+Or open `apps/android` in Android Studio and Run.
+
+## Stack
+
+Kotlin 2.0.21 · Jetpack Compose (BOM 2024.10.01) · Material 3 · AGP 8.9.1 / Gradle 8.11.1 ·
+framework SQLite (ADR-0007, no Room/KSP) · kotlinx.serialization · Health Connect 1.1.0 ·
+compileSdk 36 / minSdk 26 · `applicationId net.albayyan.badan`. Package layout mirrors iOS:
+`core/ domain/ ontology/ storage/ platform/health/ export/ designsystem/ features/ app/`.
+
+See `docs/android-parity-status.md` for exactly what is done, partial, and deferred, and
+EXECUTION_PLAN §11 (AP-06/08/10/12) for the original packet breakdown.
