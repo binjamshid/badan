@@ -8,6 +8,21 @@ paywalled; provenance is preserved end-to-end; everything works offline.
 > Status: iOS flagship is a **runnable, compiled app** (Xcode 26 / iOS 17+). Android is the
 > next milestone against the same shared contracts. See `docs/adr/ADR-0006`.
 
+## Screenshots (running in the iOS 26 simulator)
+
+Real seeded data flowing through ingestion → sleep dedup → 14-day baselines → derived
+readiness, rendered at two altitudes and in both languages.
+
+| Onboarding | Home · casual | Home · power | Home · Arabic (RTL) |
+|---|---|---|---|
+| ![Onboarding](docs/screenshots/01-onboarding.png) | ![Home casual](docs/screenshots/02-home-casual.png) | ![Home power](docs/screenshots/03-home-power.png) | ![Home Arabic RTL](docs/screenshots/04-home-arabic-rtl.png) |
+
+The casual view is calm cards + status words; the power view is the *same data* with signed
+deviations vs your median, 14-day sparklines, and the algorithm string (`ƒ(x)
+composite.readiness_score · 1.0.0`). The Arabic build fully mirrors the layout (tab bar,
+chevrons, badges) and formats durations in Arabic (`6س 31د`). Status is never red/green — one
+calm amber + an arrow marks "outside your usual range".
+
 ## What works today (iOS)
 
 - Real canonical domain model, SQLite persistence in two DB files (main + sensitive namespace).
