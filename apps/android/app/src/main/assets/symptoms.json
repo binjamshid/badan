@@ -1,0 +1,288 @@
+{
+  "version": "0.1.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§21/57 Logging subsystem)",
+  "symptoms": [
+    {
+      "id": "fatigue",
+      "nameEn": "Fatigue",
+      "nameAr": "تعب",
+      "category": "general"
+    },
+    {
+      "id": "low_energy",
+      "nameEn": "Low energy",
+      "nameAr": "قلة الطاقة",
+      "category": "general"
+    },
+    {
+      "id": "general_malaise",
+      "nameEn": "Feeling unwell",
+      "nameAr": "توعّك",
+      "category": "general"
+    },
+    {
+      "id": "chills",
+      "nameEn": "Chills",
+      "nameAr": "قشعريرة",
+      "category": "general"
+    },
+    {
+      "id": "hot_flush",
+      "nameEn": "Hot flush",
+      "nameAr": "هبّة ساخنة",
+      "category": "general"
+    },
+    {
+      "id": "excessive_sweating",
+      "nameEn": "Excessive sweating",
+      "nameAr": "تعرّق زائد",
+      "category": "general"
+    },
+    {
+      "id": "thirst",
+      "nameEn": "Thirst",
+      "nameAr": "عطش",
+      "category": "general"
+    },
+    {
+      "id": "headache",
+      "nameEn": "Headache",
+      "nameAr": "صداع",
+      "category": "head"
+    },
+    {
+      "id": "dizziness",
+      "nameEn": "Dizziness",
+      "nameAr": "دوخة",
+      "category": "head"
+    },
+    {
+      "id": "lightheadedness",
+      "nameEn": "Lightheadedness",
+      "nameAr": "خفّة الرأس",
+      "category": "head"
+    },
+    {
+      "id": "brain_fog",
+      "nameEn": "Brain fog",
+      "nameAr": "ضبابية ذهنية",
+      "category": "head"
+    },
+    {
+      "id": "nausea",
+      "nameEn": "Nausea",
+      "nameAr": "غثيان",
+      "category": "digestive"
+    },
+    {
+      "id": "bloating",
+      "nameEn": "Bloating",
+      "nameAr": "انتفاخ البطن",
+      "category": "digestive"
+    },
+    {
+      "id": "stomach_ache",
+      "nameEn": "Stomach ache",
+      "nameAr": "ألم في المعدة",
+      "category": "digestive"
+    },
+    {
+      "id": "indigestion",
+      "nameEn": "Indigestion",
+      "nameAr": "عسر الهضم",
+      "category": "digestive"
+    },
+    {
+      "id": "heartburn",
+      "nameEn": "Heartburn",
+      "nameAr": "حرقة المعدة",
+      "category": "digestive"
+    },
+    {
+      "id": "constipation",
+      "nameEn": "Constipation",
+      "nameAr": "إمساك",
+      "category": "digestive"
+    },
+    {
+      "id": "diarrhea",
+      "nameEn": "Diarrhea",
+      "nameAr": "إسهال",
+      "category": "digestive"
+    },
+    {
+      "id": "loss_of_appetite",
+      "nameEn": "Loss of appetite",
+      "nameAr": "فقدان الشهية",
+      "category": "digestive"
+    },
+    {
+      "id": "excessive_gas",
+      "nameEn": "Excessive gas",
+      "nameAr": "غازات",
+      "category": "digestive"
+    },
+    {
+      "id": "nasal_congestion",
+      "nameEn": "Nasal congestion",
+      "nameAr": "احتقان الأنف",
+      "category": "respiratory"
+    },
+    {
+      "id": "runny_nose",
+      "nameEn": "Runny nose",
+      "nameAr": "سيلان الأنف",
+      "category": "respiratory"
+    },
+    {
+      "id": "cough",
+      "nameEn": "Cough",
+      "nameAr": "سعال",
+      "category": "respiratory"
+    },
+    {
+      "id": "sore_throat",
+      "nameEn": "Sore throat",
+      "nameAr": "ألم الحلق",
+      "category": "respiratory"
+    },
+    {
+      "id": "sneezing",
+      "nameEn": "Sneezing",
+      "nameAr": "عطاس",
+      "category": "respiratory"
+    },
+    {
+      "id": "shortness_of_breath",
+      "nameEn": "Shortness of breath",
+      "nameAr": "ضيق التنفّس",
+      "category": "respiratory"
+    },
+    {
+      "id": "muscle_ache",
+      "nameEn": "Muscle ache",
+      "nameAr": "ألم عضلي",
+      "category": "musculoskeletal"
+    },
+    {
+      "id": "joint_pain",
+      "nameEn": "Joint pain",
+      "nameAr": "ألم المفاصل",
+      "category": "musculoskeletal"
+    },
+    {
+      "id": "joint_stiffness",
+      "nameEn": "Joint stiffness",
+      "nameAr": "تيبّس المفاصل",
+      "category": "musculoskeletal"
+    },
+    {
+      "id": "back_pain",
+      "nameEn": "Back pain",
+      "nameAr": "ألم الظهر",
+      "category": "musculoskeletal"
+    },
+    {
+      "id": "neck_pain",
+      "nameEn": "Neck pain",
+      "nameAr": "ألم الرقبة",
+      "category": "musculoskeletal"
+    },
+    {
+      "id": "post_exercise_soreness",
+      "nameEn": "Post-exercise soreness",
+      "nameAr": "ألم العضلات بعد التمرين",
+      "category": "musculoskeletal"
+    },
+    {
+      "id": "muscle_cramp",
+      "nameEn": "Muscle cramp",
+      "nameAr": "شدّ عضلي",
+      "category": "musculoskeletal"
+    },
+    {
+      "id": "low_mood",
+      "nameEn": "Low mood",
+      "nameAr": "انخفاض المزاج",
+      "category": "mental"
+    },
+    {
+      "id": "feeling_anxious",
+      "nameEn": "Feeling anxious",
+      "nameAr": "قلق",
+      "category": "mental"
+    },
+    {
+      "id": "feeling_stressed",
+      "nameEn": "Feeling stressed",
+      "nameAr": "توتّر",
+      "category": "mental"
+    },
+    {
+      "id": "irritability",
+      "nameEn": "Irritability",
+      "nameAr": "سرعة الانفعال",
+      "category": "mental"
+    },
+    {
+      "id": "restlessness",
+      "nameEn": "Restlessness",
+      "nameAr": "تململ",
+      "category": "mental"
+    },
+    {
+      "id": "difficulty_concentrating",
+      "nameEn": "Difficulty concentrating",
+      "nameAr": "صعوبة التركيز",
+      "category": "mental"
+    },
+    {
+      "id": "poor_sleep",
+      "nameEn": "Poor sleep",
+      "nameAr": "سوء النوم",
+      "category": "sleep"
+    },
+    {
+      "id": "difficulty_falling_asleep",
+      "nameEn": "Difficulty falling asleep",
+      "nameAr": "صعوبة الدخول في النوم",
+      "category": "sleep"
+    },
+    {
+      "id": "night_waking",
+      "nameEn": "Waking during the night",
+      "nameAr": "الاستيقاظ أثناء الليل",
+      "category": "sleep"
+    },
+    {
+      "id": "daytime_sleepiness",
+      "nameEn": "Daytime sleepiness",
+      "nameAr": "النعاس النهاري",
+      "category": "sleep"
+    },
+    {
+      "id": "itchy_skin",
+      "nameEn": "Itchy skin",
+      "nameAr": "حكة جلدية",
+      "category": "skin"
+    },
+    {
+      "id": "skin_rash",
+      "nameEn": "Skin rash",
+      "nameAr": "طفح جلدي",
+      "category": "skin"
+    },
+    {
+      "id": "dry_skin",
+      "nameEn": "Dry skin",
+      "nameAr": "جفاف الجلد",
+      "category": "skin"
+    },
+    {
+      "id": "skin_breakout",
+      "nameEn": "Skin breakout",
+      "nameAr": "ظهور حبوب",
+      "category": "skin"
+    }
+  ]
+}
