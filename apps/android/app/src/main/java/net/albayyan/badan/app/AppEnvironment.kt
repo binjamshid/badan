@@ -11,10 +11,15 @@ import net.albayyan.badan.core.AppLanguage
 import net.albayyan.badan.core.Clock
 import net.albayyan.badan.core.LocalizedString
 import net.albayyan.badan.core.Loc
+import net.albayyan.badan.core.MILLIS_PER_DAY
 import net.albayyan.badan.core.SystemClock
 import net.albayyan.badan.core.Ulid
 import net.albayyan.badan.domain.CustomizationProfile
 import net.albayyan.badan.domain.DepthPolicy
+import net.albayyan.badan.domain.PermissionState
+import net.albayyan.badan.domain.PermissionStatus
+import net.albayyan.badan.platform.health.HealthConnectAdapter
+import net.albayyan.badan.platform.health.HealthDateRange
 import net.albayyan.badan.domain.derivation.BaselineEngine
 import net.albayyan.badan.domain.derivation.InsightEngine
 import net.albayyan.badan.domain.ingestion.IngestionPipeline
@@ -42,6 +47,7 @@ import java.util.Calendar
 class AppEnvironment(context: Context) {
 
     // Infrastructure
+    private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     val clock: Clock = SystemClock()
     val appVersion: String = "0.1.0"
@@ -76,6 +82,37 @@ class AppEnvironment(context: Context) {
 
     private val seedController: SeedController =
         SeedController(catalog, ingestion, logging, measurements, baselines, insightEngine, registry, clock, deviceId)
+
+    /** The real Health Connect integration boundary (lazy: safe even when no provider is present). */
+    val healthConnect: HealthConnectAdapter by lazy { HealthConnectAdapter(appContext) }
+
+    /**
+     * Pull the last 90 days from Health Connect through the same ingestion + dedup + derivation path
+     * as the seed. Returns the ingest summary (may be all-zero when the user has no HC data yet).
+     * Runs entirely off the main thread.
+     */
+    suspend fun syncHealthConnect(): IngestionPipeline.IngestSummary? = withContext(Dispatchers.IO) {
+        val now = clock.now()
+        val range = HealthDateRange(now - 90L * MILLIS_PER_DAY, now)
+        val summary = runCatching { ingestion.ingest(healthConnect, range) }.getOrNull()
+        if (summary != null) {
+            runCatching { baselines.recomputeAll(now) }
+            val tz = java.util.TimeZone.getDefault().id
+            for (d in 0..3) runCatching { insightEngine.generate(now - d * MILLIS_PER_DAY, tz) }
+        }
+        summary
+    }
+
+    /** Persist an honest granted / partial / denied Health Connect permission state for the UI. */
+    fun recordHealthConnectPermissions(granted: Set<String>) {
+        val required = HealthConnectAdapter.permissions
+        val status = when {
+            granted.containsAll(required) -> PermissionStatus.GRANTED
+            granted.any { it in required } -> PermissionStatus.PARTIAL
+            else -> PermissionStatus.DENIED
+        }
+        runCatching { catalog.upsertPermission(PermissionState("healthConnect", "health", status, clock.now())) }
+    }
 
     // Live presentation state (Compose-observable).
     var profile by mutableStateOf(profiles.load())

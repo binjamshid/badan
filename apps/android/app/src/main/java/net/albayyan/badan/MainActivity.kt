@@ -5,7 +5,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import net.albayyan.badan.app.Route
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.lifecycle.lifecycleScope
@@ -27,6 +29,15 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val navigator = remember { Navigator() }
+            // Demo/screenshot deep-link: SIMCTL-style extra to open a route directly.
+            LaunchedEffect(Unit) {
+                when (intent.getStringExtra("badan_route")) {
+                    "sources" -> { navigator.selectTab(1); navigator.push(Route.Sources) }
+                    "export" -> navigator.push(Route.Export)
+                    "timeline" -> navigator.push(Route.Timeline)
+                    "insights" -> navigator.selectTab(3)
+                }
+            }
             val dark = when (env.profile.theme) {
                 AppTheme.DARK -> true
                 AppTheme.LIGHT -> false

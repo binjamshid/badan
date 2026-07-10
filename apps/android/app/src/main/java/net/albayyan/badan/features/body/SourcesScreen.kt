@@ -102,6 +102,7 @@ private fun loadSources(env: AppEnvironment): LoadState<SourcesData> =
 
 // MARK: - Screen
 
+private val connectHeader = LocalizedString(en = "Connect a source", ar = "ربط مصدر")
 private val permissionsHeader = LocalizedString(en = "Permissions", ar = "الأذونات")
 private val devicesLabel = LocalizedString(en = "Devices", ar = "الأجهزة")
 private val noPermissions = LocalizedString(en = "No permissions requested yet.", ar = "لم تُطلب أي أذونات بعد.")
@@ -135,8 +136,14 @@ fun SourcesScreen() {
                     .padding(BadanSpace.s4),
                 verticalArrangement = Arrangement.spacedBy(BadanSpace.s4),
             ) {
+                SectionHeader(env.s(connectHeader))
+                HealthConnectCard()
+
                 if (data.sources.isNotEmpty()) {
-                    SectionHeader(env.s(Loc.dataSources))
+                    SectionHeader(
+                        title = env.s(Loc.dataSources),
+                        modifier = Modifier.padding(top = BadanSpace.s2),
+                    )
                     data.sources.forEach { SourcesSourceCard(it) }
                 }
 
