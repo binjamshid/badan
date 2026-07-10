@@ -22,7 +22,9 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: App
+        excludes: ["**/.impeccable/**"]
       - path: Sources
+        excludes: ["**/.impeccable/**"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.albayyan.badan
