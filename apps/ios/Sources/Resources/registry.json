@@ -1,0 +1,775 @@
+{
+  "version": "0.1.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§10 Health metric ontology)",
+  "metrics": [
+    {
+      "metricId": "sleep.time_asleep",
+      "family": "sleep",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "Time asleep",
+      "nameAr": "زمن النوم الفعلي",
+      "casualLabel": "Sleep",
+      "preciseLabel": "Total sleep time",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The total time you spent asleep across the night, once brief awakenings are set aside."
+    },
+    {
+      "metricId": "sleep.time_in_bed",
+      "family": "sleep",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "Time in bed",
+      "nameAr": "الوقت في السرير",
+      "casualLabel": "In bed",
+      "preciseLabel": "Time in bed",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How long you were in bed from settling down to getting up, including any time awake."
+    },
+    {
+      "metricId": "sleep.efficiency",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "percent",
+      "displayUnits": [
+        "percent"
+      ],
+      "nameEn": "Sleep efficiency",
+      "nameAr": "كفاءة النوم",
+      "casualLabel": "Efficiency",
+      "preciseLabel": "Sleep efficiency",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The share of your time in bed that you actually spent asleep."
+    },
+    {
+      "metricId": "sleep.deep",
+      "family": "sleep",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "Deep sleep",
+      "nameAr": "النوم العميق",
+      "casualLabel": "Deep",
+      "preciseLabel": "Deep sleep duration",
+      "chartHint": "stacked",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much of the night you spent in deep sleep, the most physically restorative stage."
+    },
+    {
+      "metricId": "sleep.rem",
+      "family": "sleep",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "REM sleep",
+      "nameAr": "نوم حركة العين السريعة",
+      "casualLabel": "REM",
+      "preciseLabel": "REM sleep duration",
+      "chartHint": "stacked",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much of the night you spent in REM sleep, the stage often linked with dreaming and mental refreshment."
+    },
+    {
+      "metricId": "sleep.light",
+      "family": "sleep",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "Light sleep",
+      "nameAr": "النوم الخفيف",
+      "casualLabel": "Light",
+      "preciseLabel": "Light sleep duration",
+      "chartHint": "stacked",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much of the night you spent in lighter sleep stages, which make up most of a typical night."
+    },
+    {
+      "metricId": "sleep.awake",
+      "family": "sleep",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "min"
+      ],
+      "nameEn": "Awake time",
+      "nameAr": "زمن اليقظة أثناء الليل",
+      "casualLabel": "Awake",
+      "preciseLabel": "Awake time after sleep onset",
+      "chartHint": "stacked",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The total time you were awake after first falling asleep."
+    },
+    {
+      "metricId": "sleep.latency",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "min"
+      ],
+      "nameEn": "Sleep latency",
+      "nameAr": "زمن الخلود إلى النوم",
+      "casualLabel": "Fell asleep in",
+      "preciseLabel": "Sleep onset latency",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How long it took you to fall asleep after settling into bed."
+    },
+    {
+      "metricId": "sleep.midpoint",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "time_of_day",
+      "displayUnits": [
+        "clock_24h",
+        "clock_12h"
+      ],
+      "nameEn": "Sleep midpoint",
+      "nameAr": "منتصف النوم",
+      "casualLabel": "Sleep midpoint",
+      "preciseLabel": "Sleep midpoint time",
+      "chartHint": "scatter",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The clock time at the middle of your sleep, a simple marker of your sleep timing."
+    },
+    {
+      "metricId": "sleep.score",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "score_0_100",
+      "displayUnits": [
+        "points"
+      ],
+      "nameEn": "Sleep score",
+      "nameAr": "مؤشر جودة النوم",
+      "casualLabel": "Sleep score",
+      "preciseLabel": "Sleep quality composite",
+      "chartHint": "range",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "A single at-a-glance summary of your night, combining duration, continuity, and timing."
+    },
+    {
+      "metricId": "heart.hr",
+      "family": "heart",
+      "kind": "rawSample",
+      "canonicalUnit": "bpm",
+      "displayUnits": [
+        "bpm"
+      ],
+      "nameEn": "Heart rate",
+      "nameAr": "معدل ضربات القلب",
+      "casualLabel": "Heart rate",
+      "preciseLabel": "Heart rate",
+      "chartHint": "line",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "Your heart rate captured throughout the day and during activity."
+    },
+    {
+      "metricId": "heart.rhr",
+      "family": "heart",
+      "kind": "derived",
+      "canonicalUnit": "bpm",
+      "displayUnits": [
+        "bpm"
+      ],
+      "nameEn": "Resting heart rate",
+      "nameAr": "معدل ضربات القلب أثناء الراحة",
+      "casualLabel": "Resting HR",
+      "preciseLabel": "Resting heart rate",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "Your heart rate when you are calm and at rest, tracked as a daily value."
+    },
+    {
+      "metricId": "heart.hrv",
+      "family": "heart",
+      "kind": "derived",
+      "canonicalUnit": "ms",
+      "displayUnits": [
+        "ms"
+      ],
+      "nameEn": "Heart rate variability",
+      "nameAr": "تغيّر معدل ضربات القلب",
+      "casualLabel": "HRV",
+      "preciseLabel": "Heart rate variability (rMSSD)",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The natural beat-to-beat variation in your heart rhythm, often reflecting recovery and readiness."
+    },
+    {
+      "metricId": "heart.hrr_1min",
+      "family": "heart",
+      "kind": "derived",
+      "canonicalUnit": "bpm",
+      "displayUnits": [
+        "bpm"
+      ],
+      "nameEn": "Heart rate recovery (1 min)",
+      "nameAr": "تعافي النبض بعد دقيقة",
+      "casualLabel": "HR recovery",
+      "preciseLabel": "1-minute heart rate recovery",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much your heart rate falls in the first minute after you finish exercising."
+    },
+    {
+      "metricId": "heart.vo2max",
+      "family": "heart",
+      "kind": "derived",
+      "canonicalUnit": "mL/kg/min",
+      "displayUnits": [
+        "mL/kg/min"
+      ],
+      "nameEn": "VO2 max",
+      "nameAr": "الحد الأقصى لاستهلاك الأكسجين",
+      "casualLabel": "VO2 max",
+      "preciseLabel": "Estimated VO2 max",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "An estimate of your cardiorespiratory fitness based on how your heart responds to activity."
+    },
+    {
+      "metricId": "heart.bp_systolic",
+      "family": "heart",
+      "kind": "rawSample",
+      "canonicalUnit": "mmHg",
+      "displayUnits": [
+        "mmHg"
+      ],
+      "nameEn": "Blood pressure (systolic)",
+      "nameAr": "ضغط الدم الانقباضي",
+      "casualLabel": "Systolic",
+      "preciseLabel": "Systolic blood pressure",
+      "chartHint": "range",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "The upper number of a blood pressure reading you log or import."
+    },
+    {
+      "metricId": "heart.bp_diastolic",
+      "family": "heart",
+      "kind": "rawSample",
+      "canonicalUnit": "mmHg",
+      "displayUnits": [
+        "mmHg"
+      ],
+      "nameEn": "Blood pressure (diastolic)",
+      "nameAr": "ضغط الدم الانبساطي",
+      "casualLabel": "Diastolic",
+      "preciseLabel": "Diastolic blood pressure",
+      "chartHint": "range",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "The lower number of a blood pressure reading you log or import."
+    },
+    {
+      "metricId": "activity.steps",
+      "family": "activity",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "steps"
+      ],
+      "nameEn": "Steps",
+      "nameAr": "عدد الخطوات",
+      "casualLabel": "Steps",
+      "preciseLabel": "Step count",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The number of steps you took, totaled over the day."
+    },
+    {
+      "metricId": "activity.distance",
+      "family": "activity",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "m",
+      "displayUnits": [
+        "km",
+        "mi"
+      ],
+      "nameEn": "Distance",
+      "nameAr": "المسافة",
+      "casualLabel": "Distance",
+      "preciseLabel": "Distance traveled",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How far you moved on foot or by wheel over the day."
+    },
+    {
+      "metricId": "activity.active_energy",
+      "family": "activity",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "kJ",
+      "displayUnits": [
+        "kcal",
+        "kJ"
+      ],
+      "nameEn": "Active energy",
+      "nameAr": "الطاقة النشطة",
+      "casualLabel": "Active energy",
+      "preciseLabel": "Active energy burned",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The energy your body used through movement and activity, above your resting needs."
+    },
+    {
+      "metricId": "activity.resting_energy",
+      "family": "activity",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "kJ",
+      "displayUnits": [
+        "kcal",
+        "kJ"
+      ],
+      "nameEn": "Resting energy",
+      "nameAr": "طاقة الراحة",
+      "casualLabel": "Resting energy",
+      "preciseLabel": "Resting energy expenditure",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The energy your body uses at rest to keep basic functions running."
+    },
+    {
+      "metricId": "activity.floors",
+      "family": "activity",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "floors"
+      ],
+      "nameEn": "Floors climbed",
+      "nameAr": "عدد الطوابق المصعودة",
+      "casualLabel": "Floors",
+      "preciseLabel": "Flights climbed",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The number of flights of stairs, or equivalent elevation, you climbed."
+    },
+    {
+      "metricId": "activity.exercise_minutes",
+      "family": "activity",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "min"
+      ],
+      "nameEn": "Exercise minutes",
+      "nameAr": "دقائق التمرين",
+      "casualLabel": "Exercise",
+      "preciseLabel": "Exercise minutes",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "Minutes of brisk or more intense movement across the day."
+    },
+    {
+      "metricId": "activity.walking_speed",
+      "family": "activity",
+      "kind": "rawSample",
+      "canonicalUnit": "m/s",
+      "displayUnits": [
+        "km/h",
+        "mph"
+      ],
+      "nameEn": "Walking speed",
+      "nameAr": "سرعة المشي",
+      "casualLabel": "Walking pace",
+      "preciseLabel": "Average walking speed",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "Your typical walking pace, a simple marker of everyday mobility."
+    },
+    {
+      "metricId": "body.weight",
+      "family": "body",
+      "kind": "rawSample",
+      "canonicalUnit": "kg",
+      "displayUnits": [
+        "kg",
+        "lb",
+        "st"
+      ],
+      "nameEn": "Weight",
+      "nameAr": "الوزن",
+      "casualLabel": "Weight",
+      "preciseLabel": "Body weight",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "Your body weight, shown as a smoothed trend over time."
+    },
+    {
+      "metricId": "body.bmi",
+      "family": "body",
+      "kind": "derived",
+      "canonicalUnit": "kg/m^2",
+      "displayUnits": [
+        "kg/m^2"
+      ],
+      "nameEn": "Body mass index",
+      "nameAr": "مؤشر كتلة الجسم",
+      "casualLabel": "BMI",
+      "preciseLabel": "Body mass index",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "A simple ratio of your weight to your height, shown for context alongside other measures."
+    },
+    {
+      "metricId": "body.fat_pct",
+      "family": "body",
+      "kind": "rawSample",
+      "canonicalUnit": "percent",
+      "displayUnits": [
+        "percent"
+      ],
+      "nameEn": "Body fat percentage",
+      "nameAr": "نسبة دهون الجسم",
+      "casualLabel": "Body fat",
+      "preciseLabel": "Body fat percentage",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The share of your body made up of fat tissue, as estimated by your scale or device."
+    },
+    {
+      "metricId": "body.lean_mass",
+      "family": "body",
+      "kind": "rawSample",
+      "canonicalUnit": "kg",
+      "displayUnits": [
+        "kg",
+        "lb"
+      ],
+      "nameEn": "Lean body mass",
+      "nameAr": "الكتلة الخالية من الدهون",
+      "casualLabel": "Lean mass",
+      "preciseLabel": "Lean body mass",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The weight of your body excluding fat, such as muscle, bone, and water."
+    },
+    {
+      "metricId": "body.waist",
+      "family": "body",
+      "kind": "rawSample",
+      "canonicalUnit": "m",
+      "displayUnits": [
+        "cm",
+        "in"
+      ],
+      "nameEn": "Waist circumference",
+      "nameAr": "محيط الخصر",
+      "casualLabel": "Waist",
+      "preciseLabel": "Waist circumference",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "Your waist measurement, tracked over time from your own entries."
+    },
+    {
+      "metricId": "respiratory.rate",
+      "family": "respiratory",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "breaths/min",
+      "displayUnits": [
+        "breaths/min"
+      ],
+      "nameEn": "Respiratory rate",
+      "nameAr": "معدل التنفس",
+      "casualLabel": "Breathing rate",
+      "preciseLabel": "Respiratory rate",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How many breaths you take per minute, usually measured while you sleep."
+    },
+    {
+      "metricId": "respiratory.spo2",
+      "family": "respiratory",
+      "kind": "rawSample",
+      "canonicalUnit": "percent",
+      "displayUnits": [
+        "percent"
+      ],
+      "nameEn": "Blood oxygen (SpO2)",
+      "nameAr": "تشبّع الأكسجين في الدم",
+      "casualLabel": "Blood oxygen",
+      "preciseLabel": "Oxygen saturation (SpO2)",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The estimated oxygen level in your blood, sampled at rest or overnight."
+    },
+    {
+      "metricId": "nutrition.energy_in",
+      "family": "nutrition",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "kJ",
+      "displayUnits": [
+        "kcal",
+        "kJ"
+      ],
+      "nameEn": "Energy intake",
+      "nameAr": "الطاقة المتناولة",
+      "casualLabel": "Calories in",
+      "preciseLabel": "Energy intake",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The total food energy you logged for the day."
+    },
+    {
+      "metricId": "nutrition.protein",
+      "family": "nutrition",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "g",
+      "displayUnits": [
+        "g",
+        "oz"
+      ],
+      "nameEn": "Protein",
+      "nameAr": "البروتين",
+      "casualLabel": "Protein",
+      "preciseLabel": "Protein intake",
+      "chartHint": "stacked",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The grams of protein in the foods you logged."
+    },
+    {
+      "metricId": "nutrition.carbs",
+      "family": "nutrition",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "g",
+      "displayUnits": [
+        "g",
+        "oz"
+      ],
+      "nameEn": "Carbohydrates",
+      "nameAr": "الكربوهيدرات",
+      "casualLabel": "Carbs",
+      "preciseLabel": "Carbohydrate intake",
+      "chartHint": "stacked",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The grams of carbohydrate in the foods you logged."
+    },
+    {
+      "metricId": "nutrition.fat",
+      "family": "nutrition",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "g",
+      "displayUnits": [
+        "g",
+        "oz"
+      ],
+      "nameEn": "Fat",
+      "nameAr": "الدهون",
+      "casualLabel": "Fat",
+      "preciseLabel": "Fat intake",
+      "chartHint": "stacked",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The grams of fat in the foods you logged."
+    },
+    {
+      "metricId": "nutrition.fiber",
+      "family": "nutrition",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "g",
+      "displayUnits": [
+        "g",
+        "oz"
+      ],
+      "nameEn": "Fiber",
+      "nameAr": "الألياف",
+      "casualLabel": "Fiber",
+      "preciseLabel": "Dietary fiber intake",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The grams of dietary fiber in the foods you logged."
+    },
+    {
+      "metricId": "nutrition.water",
+      "family": "nutrition",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "L",
+      "displayUnits": [
+        "mL",
+        "L",
+        "fl_oz"
+      ],
+      "nameEn": "Water intake",
+      "nameAr": "كمية الماء",
+      "casualLabel": "Water",
+      "preciseLabel": "Water intake",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much water and other fluids you logged drinking."
+    },
+    {
+      "metricId": "nutrition.caffeine",
+      "family": "nutrition",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "mg",
+      "displayUnits": [
+        "mg"
+      ],
+      "nameEn": "Caffeine",
+      "nameAr": "الكافيين",
+      "casualLabel": "Caffeine",
+      "preciseLabel": "Caffeine intake",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "The amount of caffeine in the drinks and foods you logged."
+    },
+    {
+      "metricId": "subjective.mood",
+      "family": "subjective",
+      "kind": "event",
+      "canonicalUnit": "scale_1_5",
+      "displayUnits": [
+        "level"
+      ],
+      "nameEn": "Mood",
+      "nameAr": "الحالة المزاجية",
+      "casualLabel": "Mood",
+      "preciseLabel": "Self-reported mood",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "How you rated your mood when you checked in."
+    },
+    {
+      "metricId": "subjective.energy",
+      "family": "subjective",
+      "kind": "event",
+      "canonicalUnit": "scale_1_5",
+      "displayUnits": [
+        "level"
+      ],
+      "nameEn": "Energy level",
+      "nameAr": "مستوى الطاقة",
+      "casualLabel": "Energy",
+      "preciseLabel": "Self-reported energy",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How energetic you felt when you checked in."
+    },
+    {
+      "metricId": "subjective.soreness",
+      "family": "subjective",
+      "kind": "event",
+      "canonicalUnit": "scale_0_10",
+      "displayUnits": [
+        "level"
+      ],
+      "nameEn": "Muscle soreness",
+      "nameAr": "وجع العضلات",
+      "casualLabel": "Soreness",
+      "preciseLabel": "Self-reported muscle soreness",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How sore your muscles felt when you checked in."
+    },
+    {
+      "metricId": "subjective.perceived_stress",
+      "family": "subjective",
+      "kind": "event",
+      "canonicalUnit": "scale_1_5",
+      "displayUnits": [
+        "level"
+      ],
+      "nameEn": "Perceived stress",
+      "nameAr": "مستوى التوتر",
+      "casualLabel": "Stress",
+      "preciseLabel": "Perceived stress",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "How stressed you felt when you checked in."
+    },
+    {
+      "metricId": "symptoms.severity_avg",
+      "family": "symptoms",
+      "kind": "derived",
+      "canonicalUnit": "scale_0_10",
+      "displayUnits": [
+        "level"
+      ],
+      "nameEn": "Symptom severity",
+      "nameAr": "شدة الأعراض",
+      "casualLabel": "Symptom severity",
+      "preciseLabel": "Average symptom severity",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "The average intensity of the symptoms you logged over a period."
+    },
+    {
+      "metricId": "symptoms.count",
+      "family": "symptoms",
+      "kind": "derived",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Symptom count",
+      "nameAr": "عدد الأعراض",
+      "casualLabel": "Symptoms",
+      "preciseLabel": "Symptom count",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "How many symptoms you logged over a period."
+    }
+  ]
+}

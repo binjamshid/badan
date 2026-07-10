@@ -1,0 +1,171 @@
+{
+  "version": "0.1.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§25/26 Visual + interaction design)",
+  "palette": {
+    "background": {
+      "light": "#FAFAF8",
+      "dark": "#0C0E11",
+      "token": "color.surface.base",
+      "usage": "screen background"
+    },
+    "surface": {
+      "light": "#FFFFFF",
+      "dark": "#16191E",
+      "token": "color.surface.raised",
+      "usage": "cards (BadanCard)"
+    },
+    "surfaceElevated": {
+      "light": "#F1F1EE",
+      "dark": "#1E2228",
+      "token": "color.surface.overlay",
+      "usage": "sheets, chips, inputs"
+    },
+    "primary": {
+      "light": "#157A6E",
+      "dark": "#5BC5BA",
+      "token": "color.accent.primary",
+      "usage": "global interactive accent: buttons, links, selected states (chosen calm teal; blueprint left global primary unspecified, uses per-pillar accents)",
+      "note": "derived — not literally in blueprint; verified WCAG AA (light 5.2:1 on white, dark high-contrast on base)"
+    },
+    "textPrimary": {
+      "light": "#17191C",
+      "dark": "#F2F3F5",
+      "token": "color.text.primary",
+      "usage": "body, numerals"
+    },
+    "textSecondary": {
+      "light": "#5C636D",
+      "dark": "#9AA1AB",
+      "token": "color.text.secondary",
+      "usage": "captions, axis labels, provenance"
+    },
+    "separator": {
+      "light": "#E5E5E0",
+      "dark": "#252A31",
+      "token": "color.border.subtle",
+      "usage": "elevation borders / dividers",
+      "note": "blueprint specifies black@8% (light) / white@8% (dark); these are solid opaque equivalents"
+    }
+  },
+  "statusColors": {
+    "withinRange": {
+      "light": "#2E9E63",
+      "dark": "#57C785",
+      "token": "color.state.inBand",
+      "usage": "in-personal-band"
+    },
+    "above": {
+      "light": "#B97A14",
+      "dark": "#E8A13A",
+      "token": "color.state.outOfBand",
+      "usage": "out-of-band high — same amber as 'below'; direction shown by up-arrow + text, never red/green"
+    },
+    "below": {
+      "light": "#B97A14",
+      "dark": "#E8A13A",
+      "token": "color.state.outOfBand",
+      "usage": "out-of-band low — same amber as 'above'; direction shown by down-arrow + text, never red/green"
+    },
+    "neutral": {
+      "light": "#2678C4",
+      "dark": "#4C9FE8",
+      "token": "color.state.info",
+      "usage": "informational / no-judgment baseline"
+    },
+    "critical": {
+      "light": "#C9353B",
+      "dark": "#E5484D",
+      "token": "color.state.critical",
+      "usage": "reserved; near-never used to preserve its power"
+    }
+  },
+  "typography": [
+    {
+      "role": "heroNumeral",
+      "size": 44,
+      "weight": "semibold",
+      "token": "type.heroNumeral",
+      "face": "SF Pro Rounded / Roboto Flex",
+      "features": "tabular lining",
+      "usage": "ring centers, metric heroes"
+    },
+    {
+      "role": "numeralM",
+      "size": 28,
+      "weight": "medium",
+      "token": "type.numeralM",
+      "face": "SF Pro / platform sans",
+      "features": "tabular lining",
+      "usage": "stat cards"
+    },
+    {
+      "role": "sectionTitle",
+      "size": 20,
+      "weight": "bold",
+      "token": "type.sectionTitle",
+      "face": "SF Pro / platform sans",
+      "usage": "card headers"
+    },
+    {
+      "role": "body",
+      "size": 16,
+      "weight": "regular",
+      "token": "type.body",
+      "face": "SF Pro / platform sans",
+      "usage": "narrative, prose"
+    },
+    {
+      "role": "bodyCompact",
+      "size": 15,
+      "weight": "regular",
+      "token": "type.bodyCompact",
+      "face": "SF Pro / platform sans",
+      "usage": "dense power-user tables"
+    },
+    {
+      "role": "chip",
+      "size": 13,
+      "weight": "medium",
+      "token": "type.chip",
+      "face": "SF Pro / platform sans",
+      "usage": "StatusChip, filter chips"
+    },
+    {
+      "role": "caption",
+      "size": 13,
+      "weight": "regular",
+      "token": "type.caption",
+      "face": "SF Pro / platform sans",
+      "usage": "axis labels, provenance lines (12-13pt range)"
+    }
+  ],
+  "spacing": {
+    "space1": 4,
+    "space2": 8,
+    "space3": 12,
+    "space4": 16,
+    "space5": 20,
+    "space6": 24,
+    "space7": 32,
+    "space8": 40,
+    "grid": 4,
+    "cardPadding": 16,
+    "touchMin": 44
+  },
+  "radii": {
+    "chip": 10,
+    "control": 12,
+    "card": 20,
+    "sheet": 24
+  },
+  "principles": [
+    "Warm Instrument: pair precise, data-forward information with human warmth; dark-first but fully dual-theme from day one.",
+    "Never moralize state: no good/bad red-green — out-of-band uses one calm amber and direction is shown by an arrow plus text label.",
+    "Hue is never the only signal: every status pairs color with an icon and text, and all token pairs meet WCAG AA (4.5:1 text, 3:1 graphics) in both themes.",
+    "Data-forward typography: tabular lining numerals everywhere values live, with Arabic/Eastern-Arabic digit parity per locale.",
+    "Calm by default: quiet, purposeful motion, no idle loops, and Reduce Motion honored globally.",
+    "Tactile and generous: soft 20pt card radii, layered surfaces, and a strict 44pt minimum touch target.",
+    "One model, two altitudes: casual and power are presentation policies over a single component library, not separate designs.",
+    "RTL and Arabic are first-order: chrome mirrors while time-axis plots stay LTR, tested across theme x direction x type-size."
+  ]
+}
