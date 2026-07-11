@@ -31,21 +31,28 @@ struct MainTabView: View {
     @Environment(AppEnvironment.self) private var env
 
     var body: some View {
+        // Stable accessibilityIdentifiers on the five tabs anchor future UI tests to the
+        // primary navigation without depending on (localized) visible labels. FEAT-300.
         TabView {
             NavigationStack { HomeScreen() }
                 .tabItem { Label(env.s(Loc.tabToday), systemImage: "sun.max.fill") }
+                .accessibilityIdentifier("tab.today")
 
             NavigationStack { BodyScreen() }
                 .tabItem { Label(env.s(Loc.tabBody), systemImage: "figure.stand") }
+                .accessibilityIdentifier("tab.body")
 
             NavigationStack { LogHubScreen() }
                 .tabItem { Label(env.s(Loc.tabLog), systemImage: "plus.circle.fill") }
+                .accessibilityIdentifier("tab.log")
 
             NavigationStack { InsightsScreen() }
                 .tabItem { Label(env.s(Loc.tabInsights), systemImage: "sparkles") }
+                .accessibilityIdentifier("tab.insights")
 
             NavigationStack { SettingsScreen() }
                 .tabItem { Label(env.s(Loc.tabSettings), systemImage: "gearshape.fill") }
+                .accessibilityIdentifier("tab.settings")
         }
     }
 }
