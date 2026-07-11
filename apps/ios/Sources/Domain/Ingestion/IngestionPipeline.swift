@@ -4,7 +4,10 @@ import Foundation
 /// samples/intervals/sessions from a `HealthStorePort`, canonicalize units, stamp embedded
 /// provenance, then run dedup-lite over each affected night. Every write is idempotent by
 /// upstream identity (metric/external/source), so re-ingesting the same range is a no-op —
-/// no duplicate rows and no duplicate reconciliation decisions.
+/// no duplicate rows and no duplicate reconciliation decisions. Any future importer (Apple
+/// Health export, vendor file, etc.) must route its rows through this same `ingest` entry
+/// point rather than writing directly, so overlapping live-sync and import data are
+/// reconciled by the identical dedup-lite pass instead of silently double-counting.
 final class IngestionPipeline {
     private let measurements: MeasurementRepository
     private let catalog: CatalogRepository
@@ -49,14 +52,14 @@ final class IngestionPipeline {
         // (c) Instant readings -> raw_samples (canonicalized, provenance stamped).
         for dto in samples {
             guard let def = registry.definition(dto.metricId) else { continue }
-            let value = Units.toCanonical(dto.value, from: dto.unit, canonical: def.canonicalUnit)
+            let (value, flags) = canonicalValue(dto.value, from: dto.unit, canonical: def.canonicalUnit)
             let sample = RawSample(
                 id: ULID.newID(), metricId: dto.metricId, value: value, unit: def.canonicalUnit,
                 originalValue: dto.value, originalUnit: dto.unit, startAt: dto.start, endAt: dto.end,
                 tzId: dto.tz,
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                 externalId: dto.externalId, measuredAt: dto.start,
-                                                tz: dto.tz, now: now),
+                                                tz: dto.tz, now: now, qualityFlags: flags),
                 updatedAt: now, originDeviceId: deviceId)
             if try measurements.upsertRawSample(sample) { summary.samples += 1 }
         }
@@ -64,18 +67,22 @@ final class IngestionPipeline {
         // (c) Normalized aggregates -> interval_records.
         for dto in intervals {
             guard let def = registry.definition(dto.metricId) else { continue }
-            let value = Units.toCanonical(dto.value, from: dto.unit, canonical: def.canonicalUnit)
+            let (value, flags) = canonicalValue(dto.value, from: dto.unit, canonical: def.canonicalUnit)
             let record = IntervalRecord(
                 id: ULID.newID(), metricId: dto.metricId, value: value, unit: def.canonicalUnit,
                 startAt: dto.start, endAt: dto.end, tzId: dto.tz, aggregation: dto.aggregation,
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                 externalId: dto.externalId, measuredAt: dto.start,
-                                                tz: dto.tz, now: now),
+                                                tz: dto.tz, now: now, qualityFlags: flags),
                 updatedAt: now, originDeviceId: deviceId)
             if try measurements.upsertIntervalRecord(record) { summary.intervals += 1 }
         }
 
         // (d) Episodes -> sessions (+ stages). Record which nights this run touched.
+        // Invariant this scoping relies on: `range` must be a superset of any night whose
+        // dedup state could need re-evaluation. True today (a fixed 90-day re-ingest always
+        // re-covers every prior night), but re-verify before incremental/delta sync ships,
+        // since a partial-range sync could otherwise skip re-dedup for an untouched night.
         var affectedNights = Set<String>()
         for dto in sessionDTOs {
             let night = DayAttribution.localNight(sessionEnd: dto.end, tz: dto.tz)
@@ -109,33 +116,54 @@ final class IngestionPipeline {
     // MARK: - Dedup + derived rollups
 
     /// Reconcile one night and return how many *new* suppressions were journaled.
+    ///
+    /// Primary sleep and naps are reconciled as two independent same-kind competitions
+    /// (never mixed into one winner pool): the downstream daily-sleep rollup
+    /// (`measurements.primarySleep`) only ever reads `sleepPrimary`, so a long/high-priority
+    /// nap must never be able to out-rank the night's actual primary sleep session.
     private func dedup(night: String, priorityBySource: [String: Int],
                        batchId: String, now: Date) throws -> Int {
         let sessions = try measurements.allSleepSessions(localNight: night, includeSuppressed: true)
         let byId = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let outcome = DedupLite.reconcile(sessions: sessions) { priorityBySource[$0] ?? 0 }
-        guard let winnerId = outcome.winnerId else { return 0 }
+        let priority: (String) -> Int = { priorityBySource[$0] ?? 0 }
+        let primaryOutcome = DedupLite.reconcile(sessions: sessions.filter { $0.kind == .sleepPrimary },
+                                                 priorityForSource: priority)
+        let napOutcome = DedupLite.reconcile(sessions: sessions.filter { $0.kind == .sleepNap },
+                                             priorityForSource: priority)
 
         var newSuppressions = 0
-        for sup in outcome.suppressed {
-            // Idempotent: already suppressed by this winner -> don't re-suppress or re-journal.
-            if byId[sup.loserId]?.provenance.suppressedBy == sup.winnerId { continue }
-            try measurements.setSuppressed(table: "sessions", recordId: sup.loserId,
-                                           by: sup.winnerId, updatedAt: now)
-            try reconciliation.insert(ReconciliationDecision(
-                id: ULID.newID(), batchId: batchId, rule: DedupLite.ruleId, ruleVersion: "v1",
-                keptRecordId: sup.winnerId, suppressedRecordId: sup.loserId, score: sup.score,
-                decidedAt: now, detail: sup.detail))
-            newSuppressions += 1
+        for outcome in [primaryOutcome, napOutcome] {
+            for sup in outcome.suppressed {
+                // Idempotent: already suppressed by this winner -> don't re-suppress or re-journal.
+                if byId[sup.loserId]?.provenance.suppressedBy == sup.winnerId { continue }
+                try measurements.setSuppressed(table: "sessions", recordId: sup.loserId,
+                                               by: sup.winnerId, updatedAt: now)
+                try reconciliation.insert(ReconciliationDecision(
+                    id: ULID.newID(), batchId: batchId, rule: DedupLite.ruleId, ruleVersion: "v1",
+                    keptRecordId: sup.winnerId, suppressedRecordId: sup.loserId, score: sup.score,
+                    decidedAt: now, detail: sup.detail))
+                newSuppressions += 1
+            }
         }
 
-        // Record lineage on the winner (which raw sessions were merged into it).
-        let loserIds = outcome.suppressed.map { $0.loserId }.sorted()
-        if !loserIds.isEmpty, var winner = byId[winnerId],
-           Set(winner.detail.mergedFrom) != Set(loserIds) {
-            winner.detail.mergedFrom = loserIds
-            winner.updatedAt = now
-            try measurements.upsertSession(winner)
+        // Compensate: un-suppress any session whose recorded suppressor is stale under this
+        // run's fresh outcome (e.g. a device-name/priority change flipped which source wins).
+        // Without this, an old winner's suppression could outlive the winner that caused it,
+        // leaving two simultaneously-visible "surviving" sessions for the same night.
+        let currentLoserIds = Set(primaryOutcome.suppressed.map { $0.loserId } + napOutcome.suppressed.map { $0.loserId })
+        for s in sessions where s.provenance.suppressedBy != nil && !currentLoserIds.contains(s.id) {
+            try measurements.setSuppressed(table: "sessions", recordId: s.id, by: nil, updatedAt: now)
+        }
+
+        // Record lineage on the primary-sleep winner (which raw sessions were merged into it).
+        if let winnerId = primaryOutcome.winnerId {
+            let loserIds = primaryOutcome.suppressed.map { $0.loserId }.sorted()
+            if !loserIds.isEmpty, var winner = byId[winnerId],
+               Set(winner.detail.mergedFrom) != Set(loserIds) {
+                winner.detail.mergedFrom = loserIds
+                winner.updatedAt = now
+                try measurements.upsertSession(winner)
+            }
         }
 
         // (e) Rebuild the night's daily sleep rollups from the surviving primary sleep so
@@ -175,6 +203,9 @@ final class IngestionPipeline {
     /// outranks a phone (watch > phone), falling back to 0.
     private func upsertSourcesAndDevices(_ descriptors: [SourceDescriptor], now: Date) throws -> [String: Int] {
         var priorityBySource: [String: Int] = [:]
+        // Fetch the known device set once instead of re-querying per descriptor — devices
+        // rarely change between ingest calls, and this runs on every sync, not just the first.
+        let allDevices = try catalog.devices()
         for d in descriptors {
             let existing = try catalog.source(id: d.id)
             try catalog.upsertSource(Source(
@@ -183,7 +214,7 @@ final class IngestionPipeline {
                 updatedAt: now, originDeviceId: deviceId))
 
             if let deviceKey = d.deviceId {
-                let priorDevice = try catalog.devices(sourceId: d.id).first { $0.id == deviceKey }
+                let priorDevice = allDevices.first { $0.sourceId == d.id && $0.id == deviceKey }
                 try catalog.upsertDevice(Device(
                     id: deviceKey, sourceId: d.id, name: d.deviceName ?? d.displayName, model: d.deviceModel,
                     firstSeen: priorDevice?.firstSeen ?? now, lastSeen: now, updatedAt: now, originDeviceId: deviceId))
@@ -194,10 +225,15 @@ final class IngestionPipeline {
         return priorityBySource
     }
 
+    /// Non-Apple wearable keywords recognized as a wrist/ring-class device (same tier as
+    /// "watch"): without this, any two of these default to priority 0 and are reconciled by
+    /// arbitrary id tie-breaking instead of a meaningful source-quality signal.
+    private static let wearableKeywords = ["watch", "ring", "band", "oura", "whoop", "fenix", "garmin", "fitbit", "polar"]
+
     private func inferredPriority(_ d: SourceDescriptor) -> Int {
         if d.priority != 0 { return d.priority }
         let hay = ((d.deviceName ?? "") + " " + (d.deviceModel ?? "") + " " + d.displayName).lowercased()
-        if hay.contains("watch") { return 2 }
+        if Self.wearableKeywords.contains(where: hay.contains) { return 2 }
         if hay.contains("phone") { return 1 }
         return 0
     }
@@ -205,10 +241,21 @@ final class IngestionPipeline {
     // MARK: - Helpers
 
     private func platformProvenance(sourceId: String, deviceId: String?, externalId: String,
-                                    measuredAt: Date, tz: String, now: Date) -> Provenance {
+                                    measuredAt: Date, tz: String, now: Date,
+                                    qualityFlags: [QualityFlag] = []) -> Provenance {
         Provenance(sourceId: sourceId, deviceId: deviceId, ingestionPath: .platformStore,
                    externalId: externalId, measuredAt: measuredAt, measuredTimezone: tz,
-                   recordedAt: now, ingestedAt: now)
+                   recordedAt: now, ingestedAt: now, qualityFlags: qualityFlags)
+    }
+
+    /// Convert an as-received value into `canonical`, explicitly (not silently) marking the
+    /// value `.estimate` when the conversion fails (unknown/incompatible unit) so a malformed
+    /// source unit never masquerades as a valid canonical value with zero trace.
+    private func canonicalValue(_ value: Double, from unit: String, canonical: String) -> (Double, [QualityFlag]) {
+        if let converted = try? Units.convert(value, from: unit, to: canonical) {
+            return (converted, [])
+        }
+        return (value, [.estimate])
     }
 
     private func stageSummary(_ stages: [StageDTO]) -> [String: Double] {

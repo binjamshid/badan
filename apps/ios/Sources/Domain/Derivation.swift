@@ -103,6 +103,9 @@ public struct Baseline: Codable, Hashable, Sendable, Identifiable {
     /// Where a value sits relative to the personal band — never "good/bad", only position.
     public enum Position: String, Sendable { case below, within, above }
 
+    /// A value exactly on a band edge is deliberately `.within` (both comparisons are strict);
+    /// this boundary is inclusive by design and template selection depends on it staying that
+    /// way, so treat a `<=`/`>=` edit here as a behavior change, not a cleanup.
     public func position(of value: Double) -> Position {
         if value < bandLow { return .below }
         if value > bandHigh { return .above }

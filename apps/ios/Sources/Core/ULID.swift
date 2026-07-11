@@ -35,10 +35,15 @@ public enum ULID {
         return String(chars)
     }
 
-    /// Convenience generator using the system clock + CSPRNG.
-    public static func newID() -> String {
+    /// Convenience generator using an injected clock (defaults to the system clock) + CSPRNG.
+    /// Domain code that already has a `Clock` in scope (e.g. `IngestionPipeline`,
+    /// `SeedController`) should pass it explicitly so id-embedded timestamps stay
+    /// consistent with the domain's actual time model (e.g. backdated seed data), rather
+    /// than always embedding the real wall-clock instant regardless of what the injected
+    /// clock says "now" is.
+    public static func newID(clock: Clock = SystemClock()) -> String {
         var rng = SystemRandomNumberGenerator()
-        return generate(date: Date(), rng: &rng)
+        return generate(date: clock.now(), rng: &rng)
     }
 
     /// Extract the embedded timestamp (millisecond precision) from a ULID, if valid.

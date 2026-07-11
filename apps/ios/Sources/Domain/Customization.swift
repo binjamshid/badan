@@ -79,6 +79,26 @@ public struct Goal: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+/// Remembered-but-not-precious navigation/session state (last tab, last-viewed metric
+/// windows, last export choices). Deliberately separate from the rest of
+/// `CustomizationProfile`: nothing here is a user-authored preference, so a future "reset
+/// customization" flow can clear it without touching depth/units/theme/etc, and every
+/// "remember the last X" fix has one seam to write into instead of inventing its own.
+public struct SessionPreferences: Codable, Hashable, Sendable {
+    /// Index into the root tab shell (Today/Body/Log/Insights/Settings); nil = no memory yet.
+    public var lastActiveTab: Int?
+    /// metricId -> last-viewed chart window, in days (e.g. MetricDetail's 7/30/90 picker).
+    public var lastMetricPeriodDays: [String: Int]
+    public var lastExportFormat: String?
+    public var lastExportRange: String?
+
+    public init(lastActiveTab: Int? = nil, lastMetricPeriodDays: [String: Int] = [:],
+                lastExportFormat: String? = nil, lastExportRange: String? = nil) {
+        self.lastActiveTab = lastActiveTab; self.lastMetricPeriodDays = lastMetricPeriodDays
+        self.lastExportFormat = lastExportFormat; self.lastExportRange = lastExportRange
+    }
+}
+
 /// The single presentation/preferences record. This IS the "one model, two altitudes"
 /// switch plus units, language, theme and dashboard layout — a UserPreference aggregate.
 public struct CustomizationProfile: Codable, Hashable, Sendable {
@@ -92,17 +112,44 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     public var notifications: NotificationPreference
     public var sensitiveModulesEnabled: Bool
     public var nutritionEnabled: Bool
+    /// Explicit user choice of which tab the app opens on; nil = today's default (Home/Today).
+    public var defaultLandingTab: Int?
+    /// Remembered-but-not-precious session/navigation state — see `SessionPreferences`.
+    public var sessionPreferences: SessionPreferences
 
     public init(depthPolicy: DepthPolicy = .balanced, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
                 unitOverrides: [String: String] = [:], unitProfile: UnitProfileMode = .display,
                 language: AppLanguage = .en, arabicDigits: Bool = false, theme: AppTheme = .system,
                 notifications: NotificationPreference = NotificationPreference(),
-                sensitiveModulesEnabled: Bool = true, nutritionEnabled: Bool = true) {
+                sensitiveModulesEnabled: Bool = true, nutritionEnabled: Bool = true,
+                defaultLandingTab: Int? = nil,
+                sessionPreferences: SessionPreferences = SessionPreferences()) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
         self.notifications = notifications; self.sensitiveModulesEnabled = sensitiveModulesEnabled
         self.nutritionEnabled = nutritionEnabled
+        self.defaultLandingTab = defaultLandingTab; self.sessionPreferences = sessionPreferences
+    }
+
+    // Custom decode so a profile JSON persisted before these two fields existed still loads
+    // (ProfileRepository.load() treats any decode failure as "no saved profile" and silently
+    // resets the user to defaults — a missing-key decode error must never do that here).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        depthPolicy = try c.decode(DepthPolicy.self, forKey: .depthPolicy)
+        homeModules = try c.decode([HomeModule].self, forKey: .homeModules)
+        unitOverrides = try c.decode([String: String].self, forKey: .unitOverrides)
+        unitProfile = try c.decode(UnitProfileMode.self, forKey: .unitProfile)
+        language = try c.decode(AppLanguage.self, forKey: .language)
+        arabicDigits = try c.decode(Bool.self, forKey: .arabicDigits)
+        theme = try c.decode(AppTheme.self, forKey: .theme)
+        notifications = try c.decode(NotificationPreference.self, forKey: .notifications)
+        sensitiveModulesEnabled = try c.decode(Bool.self, forKey: .sensitiveModulesEnabled)
+        nutritionEnabled = try c.decode(Bool.self, forKey: .nutritionEnabled)
+        defaultLandingTab = try c.decodeIfPresent(Int.self, forKey: .defaultLandingTab)
+        sessionPreferences = try c.decodeIfPresent(SessionPreferences.self, forKey: .sessionPreferences)
+            ?? SessionPreferences()
     }
 
     public static let defaultModules: [HomeModule] = [

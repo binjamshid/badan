@@ -168,6 +168,53 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(try logging.allSymptoms().count, 1, "logging works after purge — no stale connection")
     }
 
+    // MARK: - Export scope filtering
+
+    func testExportExcludesSensitiveWhenScopeOptsOut() throws {
+        let pipeline = makeIngestion()
+        try pipeline.ingest(from: FakeHealthStore(clock: clock, historyDays: 30), range: range)
+        let logging = LoggingRepository(main: db.main, sensitive: db.sensitive)
+        let now = clock.now()
+        try logging.insertSymptom(SymptomEntry(id: ULID.newID(), symptomId: "headache", severity: 4,
+                                               occurredAt: now, tzId: "UTC", updatedAt: now, originDeviceId: deviceId))
+        let runner = ExportRunner(measurements: MeasurementRepository(db.main),
+                                  derivation: DerivationRepository(db.main),
+                                  logging: logging,
+                                  exportJobs: ExportJobRepository(db.main), registry: .shared,
+                                  clock: clock, appVersion: "test", deviceId: deviceId)
+
+        let withoutSensitive = try runner.run(scope: ExportScope(includeSensitive: false), format: .json)
+        let excludedURL = try XCTUnwrap(withoutSensitive.fileURLs.first { $0.pathExtension == "json" })
+        let excludedText = try String(contentsOf: excludedURL, encoding: .utf8)
+        XCTAssertFalse(excludedText.contains("headache"), "symptoms must not appear when includeSensitive is false")
+
+        let withSensitive = try runner.run(scope: ExportScope(includeSensitive: true), format: .json)
+        let includedURL = try XCTUnwrap(withSensitive.fileURLs.first { $0.pathExtension == "json" })
+        let includedText = try String(contentsOf: includedURL, encoding: .utf8)
+        XCTAssertTrue(includedText.contains("headache"), "symptoms must appear when includeSensitive is true")
+    }
+
+    func testExportFamilyFilterNarrowsRows() throws {
+        let pipeline = makeIngestion()
+        try pipeline.ingest(from: FakeHealthStore(clock: clock, historyDays: 30), range: range)
+        let runner = ExportRunner(measurements: MeasurementRepository(db.main),
+                                  derivation: DerivationRepository(db.main),
+                                  logging: LoggingRepository(main: db.main, sensitive: db.sensitive),
+                                  exportJobs: ExportJobRepository(db.main), registry: .shared,
+                                  clock: clock, appVersion: "test", deviceId: deviceId)
+
+        let unfiltered = try runner.run(scope: .everything, format: .csv)
+        let unfilteredRawURL = try XCTUnwrap(unfiltered.fileURLs.first { $0.lastPathComponent == "raw.csv" })
+        let unfilteredText = try String(contentsOf: unfilteredRawURL, encoding: .utf8)
+        XCTAssertTrue(unfilteredText.contains("heart."), "sanity: heart-family rows exist without a filter")
+
+        let sleepOnly = try runner.run(scope: ExportScope(families: ["sleep"]), format: .csv)
+        let sleepRawURL = try XCTUnwrap(sleepOnly.fileURLs.first { $0.lastPathComponent == "raw.csv" })
+        let sleepText = try String(contentsOf: sleepRawURL, encoding: .utf8)
+        XCTAssertFalse(sleepText.contains("heart."), "a family filter must exclude other families' rows")
+        XCTAssertTrue(sleepText.contains("sleep."), "the selected family's rows must still be present")
+    }
+
     func testJSONExportHasManifest() throws {
         let pipeline = makeIngestion()
         try pipeline.ingest(from: FakeHealthStore(clock: clock, historyDays: 30), range: range)

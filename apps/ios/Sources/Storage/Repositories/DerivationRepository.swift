@@ -55,9 +55,18 @@ final class DerivationRepository {
         return rows.map(Self.readDerived)
     }
 
-    func allDerived(metricId: String) throws -> [DerivedValue] {
-        try db.query("SELECT * FROM derived_values WHERE metric_id = ? ORDER BY computed_at ASC;", [.text(metricId)])
-            .map(Self.readDerived)
+    /// All appended rows for a metric, oldest first. `limit` is optional (defaults to
+    /// unbounded, preserving existing callers' behavior) so future history/power-mode UI isn't
+    /// forced into an all-or-nothing read of this append-only table (PERF-130).
+    func allDerived(metricId: String, limit: Int? = nil) throws -> [DerivedValue] {
+        var sql = "SELECT * FROM derived_values WHERE metric_id = ? ORDER BY computed_at ASC"
+        var params: [SQLValue] = [.text(metricId)]
+        if let limit {
+            sql += " LIMIT ?"
+            params.append(.int(limit))
+        }
+        sql += ";"
+        return try db.query(sql, params).map(Self.readDerived)
     }
 
     // MARK: - Baseline

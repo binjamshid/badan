@@ -25,22 +25,36 @@ struct ProvenanceRow: View {
             Text(sourceName)
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Text(ingestionPath.displayLabel.resolved(language))
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: BadanSpace.space2)
             Text(timestampText)
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textSecondary)
+                .lineLimit(1)
+                // A record timestamp is a technical identifier, not prose — keep it
+                // left-to-right in both languages, matching InsightsWhyDisclosure.
+                .environment(\.layoutDirection, .leftToRight)
         }
     }
 
-    private var timestampText: String {
+    // Cached once per type instead of allocating a fresh `DateFormatter` on every render;
+    // only the locale (a cheap property set) changes between calls.
+    private static let cachedFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: language.localeIdentifier)
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        return formatter.string(from: timestamp)
+        return formatter
+    }()
+
+    private var timestampText: String {
+        Self.cachedFormatter.locale = Locale(identifier: language.localeIdentifier)
+        return Self.cachedFormatter.string(from: timestamp)
     }
 
     private var iconName: String {
@@ -52,4 +66,14 @@ struct ProvenanceRow: View {
         case .vendor: return "link"
         }
     }
+}
+
+#Preview("ProvenanceRow") {
+    VStack(alignment: .leading, spacing: BadanSpace.space2) {
+        ProvenanceRow(sourceName: "Apple Watch", ingestionPath: .platformStore, timestamp: .now, language: .en)
+        ProvenanceRow(sourceName: "An unusually long vendor-provided source name", ingestionPath: .fileImport,
+                      timestamp: .now, language: .en)
+        ProvenanceRow(sourceName: "أدخلتها بنفسك", ingestionPath: .manual, timestamp: .now, language: .ar)
+    }
+    .padding()
 }

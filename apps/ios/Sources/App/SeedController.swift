@@ -30,7 +30,21 @@ final class SeedController {
         try seed(asOf: now)
     }
 
+    /// Re-seeds sensitive-namespace manual logs (medications/symptoms) independently of the
+    /// main-DB seed gate. The sensitive DB is separately purgeable (`Settings` → purge
+    /// sensitive data), and `seedIfNeeded`'s `catalog.sources()` check never notices that
+    /// purge — without this, re-enabling the sensitive module after a purge leaves medications
+    /// and symptoms permanently empty (OPT-200).
+    func seedSensitiveIfNeeded(asOf now: Date) throws {
+        if try logging.allSymptoms().isEmpty == false { return }
+        try seedMedications(now: now)
+        try seedSymptoms(now: now)
+    }
+
     func seed(asOf now: Date) throws {
+        let signpostState = PerformanceLog.signposter.beginInterval("SeedController.seed")
+        defer { PerformanceLog.signposter.endInterval("SeedController.seed", signpostState) }
+
         // 1. Ingest 90 days of device data (sources/devices, samples, intervals, sessions, dedup).
         let store = FakeHealthStore(clock: clock, historyDays: 90, tz: tz)
         let range = HealthDateRange(start: now.addingTimeInterval(-90 * 86_400), end: now)
@@ -50,9 +64,12 @@ final class SeedController {
                                          occurredAt: now.addingTimeInterval(-2 * 86_400), tzId: tz,
                                          updatedAt: now, originDeviceId: deviceId))
 
-        // 4. Derivations + insights.
+        // 4. Derivations + insights. `generate` is a handful of narrow, indexed lookups per key
+        // metric (see InsightEngine), so widening this from the prior 4 days to 14 stays cheap
+        // while making the Insights feed actually reflect a meaningful slice of the 90-day
+        // seeded history instead of looking sparse next to it (EASE-134).
         try baselines.recomputeAll(asOf: now)
-        for dayOffset in 0..<4 {
+        for dayOffset in 0..<14 {
             try? insightEngine.generate(forDay: now.addingTimeInterval(Double(-dayOffset) * 86_400), tz: tz)
         }
     }

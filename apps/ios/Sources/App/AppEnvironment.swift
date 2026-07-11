@@ -39,10 +39,30 @@ final class AppEnvironment {
     var profile: CustomizationProfile
     var isReady: Bool = false
     var onboardingComplete: Bool
+    /// Set if bootstrap's first-run seed hasn't reported `isReady` after a reasonable wait,
+    /// so `SplashView` can offer a way forward instead of spinning indefinitely (OPT-071).
+    var bootstrapStalled: Bool = false
+    /// Non-nil if first-run seeding threw; surfaced instead of being silently discarded so a
+    /// genuine setup failure is distinguishable from "no data yet" (OPT-075).
+    var bootstrapError: Error?
+    /// Non-nil if the most recent user-triggered "Reset demo data" partially or fully failed
+    /// (OPT-076). Cleared on the next successful reset attempt.
+    var resetError: Error?
+
+    /// DEBUG-only staged-feature flags, separate from the persisted `CustomizationProfile`
+    /// (FEAT-297).
+    let featureFlags = FeatureFlags()
 
     private let seedController: SeedController
 
     init(database: Database, clock: Clock = SystemClock()) {
+        // Measures the synchronous DB-open + repository-wiring cost on the pre-first-frame
+        // critical path (PERF-001) — visible in Instruments' os_signpost track without any
+        // functional change; a full async two-phase restructuring is a larger, riskier change
+        // than this pass covers.
+        let signpostState = PerformanceLog.signposter.beginInterval("AppEnvironment.init")
+        defer { PerformanceLog.signposter.endInterval("AppEnvironment.init", signpostState) }
+
         self.database = database
         self.clock = clock
         self.appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
@@ -107,20 +127,68 @@ final class AppEnvironment {
 
     /// Seed on first run, recompute derivations, then flip `isReady`. Runs off the main actor's
     /// critical path; the UI shows a calm loading state until ready.
+    ///
+    /// Guards against two first-launch failure modes: a stalled seed leaves the user staring at
+    /// a non-interactive splash forever (OPT-071), and a thrown seed error used to be discarded
+    /// via `try?`, making a genuine setup failure indistinguishable from "no data yet" (OPT-075).
     func bootstrap() async {
-        await Task.detached(priority: .userInitiated) { [seedController, clock] in
-            try? seedController.seedIfNeeded(asOf: clock.now())
-        }.value
+        bootstrapStalled = false
+        bootstrapError = nil
+
+        // OPT-071: if the seed hasn't finished after a generous wait, let SplashView offer a
+        // way forward instead of spinning indefinitely.
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self, !self.isReady else { return }
+            self.bootstrapStalled = true
+        }
+
+        let signpostState = PerformanceLog.signposter.beginInterval("AppEnvironment.bootstrap")
+        let seedTask = Task.detached(priority: .userInitiated) { [seedController, clock] () -> Error? in
+            do {
+                try seedController.seedIfNeeded(asOf: clock.now())
+                return nil
+            } catch {
+                return error
+            }
+        }
+        let thrown = await seedTask.value
+        PerformanceLog.signposter.endInterval("AppEnvironment.bootstrap", signpostState)
+        timeoutTask.cancel()
+
+        // OPT-080: if the hosting `.task` was cancelled (e.g. the app was suspended mid-seed),
+        // don't let this now-stale continuation flip UI-relevant state.
+        guard !Task.isCancelled else { return }
+
+        bootstrapError = thrown
+        bootstrapStalled = false
+        isReady = true
+    }
+
+    /// Skip past a stalled first-run seed (OPT-071). The seed itself keeps running in the
+    /// background — this only unblocks the UI so the user isn't stuck with no recourse.
+    func dismissBootstrapStall() {
+        bootstrapStalled = false
         isReady = true
     }
 
     func resetDemoData() async {
         isReady = false
+        resetError = nil
         let db = database
-        await Task.detached(priority: .userInitiated) { [seedController, clock] in
-            try? db.resetAll()
-            try? seedController.seed(asOf: clock.now())
+        let thrown: Error? = await Task.detached(priority: .userInitiated) { [seedController, clock] () -> Error? in
+            do {
+                try db.resetAll()
+                try seedController.seed(asOf: clock.now())
+                return nil
+            } catch {
+                return error
+            }
         }.value
+        // OPT-076: surface (rather than silently swallow) a reset/reseed failure. The method
+        // signature stays `async` (not `throws`) so existing callers keep working; this exposes
+        // the outcome via `@Observable` state for a future UI to display.
+        resetError = thrown
         profile = (try? profiles.load()) ?? CustomizationProfile()
         isReady = true
     }
@@ -132,11 +200,31 @@ final class AppEnvironment {
 
     // MARK: - Presentation mutations (persisted)
 
+    /// Apply a settings change. Updates the in-memory profile immediately for instant UI
+    /// feedback, then persists off the main actor (PERF-087) instead of blocking every settings
+    /// tap on a synchronous disk write. If the save fails, the in-memory value is rolled back
+    /// right away rather than silently reverting on the next launch (OPT-079).
     func update(_ mutate: (inout CustomizationProfile) -> Void) {
+        let previous = profile
         var p = profile
         mutate(&p)
         profile = p
-        try? profiles.save(p)
+
+        // OPT-200: the sensitive DB is independently purgeable; re-enabling it after a purge
+        // never reseeds it unless something explicitly checks for that on this transition.
+        let sensitiveJustEnabled = !previous.sensitiveModulesEnabled && p.sensitiveModulesEnabled
+
+        Task.detached(priority: .utility) { [weak self, profiles, seedController, clock] in
+            do {
+                try profiles.save(p)
+            } catch {
+                await MainActor.run { self?.profile = previous }
+                return
+            }
+            if sensitiveJustEnabled {
+                try? seedController.seedSensitiveIfNeeded(asOf: clock.now())
+            }
+        }
     }
 
     var language: AppLanguage { profile.language }

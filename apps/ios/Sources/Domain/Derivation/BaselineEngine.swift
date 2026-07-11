@@ -60,31 +60,54 @@ final class BaselineEngine {
             nPoints: n, provisional: n < Self.minPointsForConfident,
             algorithmVersion: Self.baselineAlgorithm.id, validFrom: asOf,
             computedAt: clock.now(), unit: unit)
+
+        // Append-only should still mean "append only when something actually changed": skip
+        // the write when the latest existing baseline is numerically identical, so a future
+        // periodic recompute doesn't grow baselines/derived_values unboundedly by re-confirming
+        // unchanged days on every run.
+        if let existing = try derivation.latestBaseline(metricId: metricId), existing.nPoints == n,
+           Self.approximatelyEqual(existing.center, center), Self.approximatelyEqual(existing.bandLow, baseline.bandLow),
+           Self.approximatelyEqual(existing.bandHigh, baseline.bandHigh) {
+            return
+        }
         try derivation.upsertBaseline(baseline)
     }
 
     // MARK: - Full recompute + composites
 
     /// Rebuild every baseline-eligible metric that has interval data, then append the two
-    /// per-day composites (sleep efficiency and readiness score) as derived values.
-    func recomputeAll(asOf: Date) throws {
-        for def in registry.baselineEligible {
+    /// per-day composites (sleep efficiency and readiness score) as derived values. When
+    /// `metricIds` is given, only those baseline-eligible metrics are recomputed (the
+    /// composites still consider the full window, since they read across metrics); `nil`
+    /// (the default) recomputes everything, preserving today's full-recompute behavior.
+    func recomputeAll(asOf: Date, metricIds: [String]? = nil) throws {
+        let eligible = metricIds.map { ids in registry.baselineEligible.filter { ids.contains($0.metricId) } }
+            ?? registry.baselineEligible
+        for def in eligible {
             try recompute(metricId: def.metricId, asOf: asOf)
         }
-        try appendSleepEfficiency(asOf: asOf)
-        try appendReadinessScore(asOf: asOf)
+        // Fetched once and shared: both composites below independently need time_asleep for
+        // the same window, so this avoids querying it twice per recompute cycle.
+        let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
+        let asleepByDay = try latestPerDay(metricId: MetricID.timeAsleep, from: from, to: asOf)
+        try appendSleepEfficiency(asleepByDay: asleepByDay, asOf: asOf)
+        try appendReadinessScore(asleepByDay: asleepByDay, asOf: asOf)
     }
 
     /// sleep.efficiency = time_asleep / time_in_bed * 100, per local day, for every day that
     /// has both inputs. Each row carries an InputManifest referencing the two interval ids.
-    private func appendSleepEfficiency(asOf: Date) throws {
+    private func appendSleepEfficiency(asleepByDay: [String: IntervalRecord], asOf: Date) throws {
         let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
-        let asleepByDay = try latestPerDay(metricId: MetricID.timeAsleep, from: from, to: asOf)
         let inBedByDay = try latestPerDay(metricId: MetricID.timeInBed, from: from, to: asOf)
 
         for day in asleepByDay.keys.sorted() {
             guard let asleep = asleepByDay[day], let inBed = inBedByDay[day], inBed.value > 0 else { continue }
             let efficiency = min(100, max(0, asleep.value / inBed.value * 100))
+            let periodKey = "day:" + day
+            if let existing = try derivation.latestDerived(metricId: MetricID.sleepEfficiency, periodKey: periodKey),
+               Self.approximatelyEqual(existing.value, efficiency) {
+                continue
+            }
             let manifest = InputManifest(id: ULID.newID(), inputs: [
                 InputManifest.Input(recordId: asleep.id, metricId: MetricID.timeAsleep, value: asleep.value),
                 InputManifest.Input(recordId: inBed.id, metricId: MetricID.timeInBed, value: inBed.value),
@@ -99,16 +122,15 @@ final class BaselineEngine {
 
     /// readiness.score (0–100), per local day, from how time_asleep and rhr sit against their
     /// baselines: more sleep within/above band lifts it, higher rhr above band lowers it.
-    private func appendReadinessScore(asOf: Date) throws {
+    private func appendReadinessScore(asleepByDay: [String: IntervalRecord], asOf: Date) throws {
         let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
-        let sleepByDay = try latestPerDay(metricId: MetricID.timeAsleep, from: from, to: asOf)
         let rhrByDay = try latestPerDay(metricId: MetricID.restingHeartRate, from: from, to: asOf)
 
         let sleepBaseline = try derivation.latestBaseline(metricId: MetricID.timeAsleep)
         let rhrBaseline = try derivation.latestBaseline(metricId: MetricID.restingHeartRate)
 
-        for day in sleepByDay.keys.sorted() {
-            guard let sleep = sleepByDay[day], let rhr = rhrByDay[day] else { continue }
+        for day in asleepByDay.keys.sorted() {
+            guard let sleep = asleepByDay[day], let rhr = rhrByDay[day] else { continue }
 
             var score = 50.0
             if let sb = sleepBaseline { score += Self.clamp(sb.z(of: sleep.value), -2, 2) * 12.5 }
@@ -116,6 +138,11 @@ final class BaselineEngine {
             score = min(100, max(0, score))
             let provisional = (sleepBaseline?.provisional ?? true) || (rhrBaseline?.provisional ?? true)
 
+            let periodKey = "day:" + day
+            if let existing = try derivation.latestDerived(metricId: "readiness.score", periodKey: periodKey),
+               Self.approximatelyEqual(existing.value, score), existing.provisional == provisional {
+                continue
+            }
             let manifest = InputManifest(id: ULID.newID(), inputs: [
                 InputManifest.Input(recordId: sleep.id, metricId: MetricID.timeAsleep, value: sleep.value),
                 InputManifest.Input(recordId: rhr.id, metricId: MetricID.restingHeartRate, value: rhr.value),
@@ -141,16 +168,24 @@ final class BaselineEngine {
     // MARK: - Helpers
 
     /// Latest interval record per local day (attributed in the record's own timezone) for a
-    /// metric over a window. Records arrive ascending by start, so the last one per day wins.
+    /// metric over a window. "Latest" means most recently written (`updatedAt`), not latest
+    /// start time — a corrected aggregate that supersedes an earlier-starting one must win
+    /// even if its own `startAt` is earlier than the value it corrects.
     private func latestPerDay(metricId: String, from: Date, to: Date) throws -> [String: IntervalRecord] {
         let records = try measurements.intervalRecords(metricId: metricId, from: from, to: to)
         var byDay: [String: IntervalRecord] = [:]
         for r in records {
             let day = DayAttribution.localDayKey(r.startAt, tz: r.tzId)
-            if let existing = byDay[day], existing.startAt >= r.startAt { continue }
+            if let existing = byDay[day], existing.updatedAt >= r.updatedAt { continue }
             byDay[day] = r
         }
         return byDay
+    }
+
+    /// Floating-point equality with tolerance, used to decide whether a freshly-recomputed
+    /// baseline/derived value actually changed from what's already stored.
+    private static func approximatelyEqual(_ a: Double, _ b: Double, tolerance: Double = 1e-9) -> Bool {
+        abs(a - b) < tolerance
     }
 
     static func median(_ xs: [Double]) -> Double {

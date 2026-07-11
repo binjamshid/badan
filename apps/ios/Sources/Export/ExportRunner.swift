@@ -46,51 +46,75 @@ final class ExportRunner {
             .appendingPathComponent("badan-export-\(exportId)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
-        // Measurement + derived chain (shared by both formats).
-        let ids = metricIdsInScope(scope)
+        // Record the attempt immediately (status .running) so a crash or memory-pressure
+        // termination mid-export is diagnosable via `export_jobs` rather than the attempt
+        // vanishing entirely; `insert` is an upsert keyed by `exportId`, so the same row is
+        // updated to .completed/.failed below rather than duplicated (PERF-176).
+        let runningJob = ExportJob(id: exportId, scope: scope, format: format, status: .running,
+                                   outputPath: folder.path, startedAt: startedAt, createdAt: startedAt)
+        try exportJobs.insert(runningJob)
 
-        var rawSamples: [RawSample] = []
-        var intervalRecords: [IntervalRecord] = []
-        if scope.includeRaw {
-            for id in ids where metricAllowed(id, scope) {
-                rawSamples += try measurements
-                    .rawSamples(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                    .filter { sourceAllowed($0.provenance, scope) }
-                intervalRecords += try measurements
-                    .intervalRecords(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                    .filter { sourceAllowed($0.provenance, scope) }
-            }
-        }
+        do {
+            // Measurement + derived chain (shared by both formats).
+            let ids = metricIdsInScope(scope)
 
-        var sessions: [Session] = []
-        if scope.includeRaw {
-            sessions = try measurements
-                .sessions(kind: nil, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                .filter { sessionInScope($0, scope) && sourceAllowed($0.provenance, scope) }
-        }
-
-        var derivedValues: [DerivedValue] = []
-        var baselines: [Baseline] = []
-        if scope.includeDerived {
-            for id in ids where metricAllowed(id, scope) {
-                derivedValues += try derivation.latestDerivedSeries(metricId: id)
-                    .filter { derivedInRange($0, scope) }
-                if registry.definition(id)?.baselineEligible == true,
-                   let baseline = try derivation.latestBaseline(metricId: id) {
-                    baselines.append(baseline)
+            var rawSamples: [RawSample] = []
+            var intervalRecords: [IntervalRecord] = []
+            if scope.includeRaw {
+                for id in ids where metricAllowed(id, scope) {
+                    rawSamples += try measurements
+                        .rawSamples(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
+                        .filter { sourceAllowed($0.provenance, scope) }
+                    intervalRecords += try measurements
+                        .intervalRecords(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
+                        .filter { sourceAllowed($0.provenance, scope) }
                 }
             }
-        }
 
-        switch format {
-        case .csv:
-            return try runCSV(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
-                              rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
-                              derivedValues: derivedValues, baselines: baselines)
-        case .json:
-            return try runJSON(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
-                               rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
-                               derivedValues: derivedValues, baselines: baselines)
+            var sessions: [Session] = []
+            if scope.includeRaw {
+                sessions = try measurements
+                    .sessions(kind: nil, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
+                    .filter { sessionInScope($0, scope) && sourceAllowed($0.provenance, scope) }
+            }
+
+            // Rows whose period key couldn't be parsed as a `day:` key are still included
+            // (best-effort) when a date range was requested, but counted so the manifest can
+            // disclose that they weren't actually range-verified (OPT-143).
+            var derivedValues: [DerivedValue] = []
+            var baselines: [Baseline] = []
+            var derivedRangeFallbackCount = 0
+            if scope.includeDerived {
+                for id in ids where metricAllowed(id, scope) {
+                    for v in try derivation.latestDerivedSeries(metricId: id) where derivedInRange(v, scope) {
+                        derivedValues.append(v)
+                        if derivedIncludedByRangeFallback(v, scope) { derivedRangeFallbackCount += 1 }
+                    }
+                    if registry.definition(id)?.baselineEligible == true,
+                       let baseline = try derivation.latestBaseline(metricId: id) {
+                        baselines.append(baseline)
+                    }
+                }
+            }
+
+            switch format {
+            case .csv:
+                return try runCSV(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
+                                  rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
+                                  derivedValues: derivedValues, baselines: baselines,
+                                  derivedRangeFallbackCount: derivedRangeFallbackCount)
+            case .json:
+                return try runJSON(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
+                                   rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
+                                   derivedValues: derivedValues, baselines: baselines,
+                                   derivedRangeFallbackCount: derivedRangeFallbackCount)
+            }
+        } catch {
+            let failedJob = ExportJob(id: exportId, scope: scope, format: format, status: .failed,
+                                      outputPath: folder.path, startedAt: startedAt,
+                                      finishedAt: clock.now(), createdAt: startedAt)
+            try? exportJobs.insert(failedJob)
+            throw error
         }
     }
 
@@ -98,7 +122,8 @@ final class ExportRunner {
 
     private func runCSV(scope: ExportScope, exportId: String, folder: URL, startedAt: Date,
                         rawSamples: [RawSample], intervalRecords: [IntervalRecord], sessions: [Session],
-                        derivedValues: [DerivedValue], baselines: [Baseline]) throws -> ExportResult {
+                        derivedValues: [DerivedValue], baselines: [Baseline],
+                        derivedRangeFallbackCount: Int) throws -> ExportResult {
         let generatedAt = clock.now()
         let writer = CSVWriter()
 
@@ -109,16 +134,17 @@ final class ExportRunner {
         let derivedRows = derivedValues.map { rowFor(derived: $0, scope) }
             + baselines.map { rowFor(baseline: $0, scope) }
 
-        let rawData = Data(writer.render(rawRows).utf8)
-        let derivedData = Data(writer.render(derivedRows).utf8)
+        // Written and hashed directly, chunk by chunk, so the full CSV is never simultaneously
+        // resident as a `String` and a second `Data` copy, and doesn't need a separate
+        // whole-buffer hashing pass afterward (PERF-168/170).
         let rawURL = folder.appendingPathComponent("raw.csv")
         let derivedURL = folder.appendingPathComponent("derived.csv")
-        try rawData.write(to: rawURL)
-        try derivedData.write(to: derivedURL)
+        let rawChecksum = try Self.streamWrite(rawRows, using: writer, to: rawURL)
+        let derivedChecksum = try Self.streamWrite(derivedRows, using: writer, to: derivedURL)
 
         let checksums = [
-            "raw.csv": Self.sha256Hex(rawData),
-            "derived.csv": Self.sha256Hex(derivedData)
+            "raw.csv": rawChecksum,
+            "derived.csv": derivedChecksum
         ]
         var counts: [String: Int] = [:]
         addCounts(rawRows.map { $0.metricId }, into: &counts)
@@ -126,7 +152,8 @@ final class ExportRunner {
         let rowCount = rawRows.count + derivedRows.count
 
         let manifest = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
-                                    checksums: checksums, perMetricRowCounts: counts)
+                                    checksums: checksums, perMetricRowCounts: counts,
+                                    derivedRangeFallbackCount: derivedRangeFallbackCount)
         let manifestURL = folder.appendingPathComponent("manifest.json")
         try JSONCoding.encoder.encode(manifest).write(to: manifestURL)
 
@@ -141,7 +168,8 @@ final class ExportRunner {
 
     private func runJSON(scope: ExportScope, exportId: String, folder: URL, startedAt: Date,
                          rawSamples: [RawSample], intervalRecords: [IntervalRecord], sessions: [Session],
-                         derivedValues: [DerivedValue], baselines: [Baseline]) throws -> ExportResult {
+                         derivedValues: [DerivedValue], baselines: [Baseline],
+                         derivedRangeFallbackCount: Int) throws -> ExportResult {
         let generatedAt = clock.now()
 
         // Structured logs travel only in the JSON bundle's dedicated logs section. Symptoms and
@@ -175,7 +203,8 @@ final class ExportRunner {
         // A single self-contained file cannot checksum itself, so the embedded manifest carries
         // no checksums; the file-level SHA is recorded on the persisted job below.
         let embedded = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
-                                    checksums: [:], perMetricRowCounts: counts)
+                                    checksums: [:], perMetricRowCounts: counts,
+                                    derivedRangeFallbackCount: derivedRangeFallbackCount)
         let bundleData = try JSONBundleWriter().data(
             manifest: embedded, rawSamples: rawSamples, intervalRecords: intervalRecords,
             sessions: sessions, derivedValues: derivedValues, baselines: baselines,
@@ -185,7 +214,8 @@ final class ExportRunner {
 
         let checksums = ["bundle.json": Self.sha256Hex(bundleData)]
         let persisted = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
-                                     checksums: checksums, perMetricRowCounts: counts)
+                                     checksums: checksums, perMetricRowCounts: counts,
+                                     derivedRangeFallbackCount: derivedRangeFallbackCount)
         let job = ExportJob(id: exportId, scope: scope, format: .json, status: .completed,
                             manifest: persisted, outputPath: folder.path, rowCount: rowCount,
                             startedAt: startedAt, finishedAt: generatedAt, createdAt: startedAt)
@@ -196,7 +226,8 @@ final class ExportRunner {
     // MARK: - Manifest
 
     private func makeManifest(exportId: String, scope: ExportScope, generatedAt: Date,
-                              checksums: [String: String], perMetricRowCounts: [String: Int]) -> ExportManifest {
+                              checksums: [String: String], perMetricRowCounts: [String: Int],
+                              derivedRangeFallbackCount: Int = 0) -> ExportManifest {
         ExportManifest(
             exportId: exportId,
             schemaVersion: "0.1.0",
@@ -211,7 +242,7 @@ final class ExportRunner {
             dedupPolicy: dedupPolicyNote(scope),
             perMetricRowCounts: perMetricRowCounts,
             checksums: checksums,
-            dataQualityNote: Self.dataQualityNote
+            dataQualityNote: dataQualityNote(derivedRangeFallbackCount: derivedRangeFallbackCount)
         )
     }
 
@@ -219,6 +250,17 @@ final class ExportRunner {
         "Rows reflect stored records only; coverage gaps are not backfilled. Interval aggregates "
         + "carry a 0–1 coverage fraction in the JSON bundle. Derived values and baselines are "
         + "engine-computed, physically separated from raw, and each carries its algorithm id and version."
+
+    /// The base data-quality note, plus a disclosure of how many derived rows in a date-bounded
+    /// export were included via best-effort period-key matching rather than a confirmed in-range
+    /// check (OPT-143) — today only reachable if a non-`day:`-keyed derived value is ever
+    /// produced, since every derived value currently uses `day:` period keys.
+    private func dataQualityNote(derivedRangeFallbackCount: Int) -> String {
+        guard derivedRangeFallbackCount > 0 else { return Self.dataQualityNote }
+        return Self.dataQualityNote
+            + " \(derivedRangeFallbackCount) derived row(s) were included without date-range "
+            + "verification because their period key could not be parsed as a calendar day."
+    }
 
     private func dedupPolicyNote(_ scope: ExportScope) -> String {
         let inclusion = scope.includeSuppressed
@@ -263,7 +305,7 @@ final class ExportRunner {
             ingestionPath: s.provenance.ingestionPath.rawValue,
             sourceExternalId: s.provenance.externalId,
             importBatchId: s.provenance.importBatchId,
-            qualityFlags: qualityFlagsString(s.provenance.qualityFlags),
+            qualityFlags: qualityFlagsString(s.provenance.qualityFlags, tzId: s.tzId),
             suppressedBy: s.provenance.suppressedBy
         )
     }
@@ -290,7 +332,7 @@ final class ExportRunner {
             ingestionPath: r.provenance.ingestionPath.rawValue,
             sourceExternalId: r.provenance.externalId,
             importBatchId: r.provenance.importBatchId,
-            qualityFlags: qualityFlagsString(r.provenance.qualityFlags),
+            qualityFlags: qualityFlagsString(r.provenance.qualityFlags, tzId: r.tzId),
             suppressedBy: r.provenance.suppressedBy
         )
     }
@@ -317,7 +359,7 @@ final class ExportRunner {
             ingestionPath: s.provenance.ingestionPath.rawValue,
             sourceExternalId: s.provenance.externalId,
             importBatchId: s.provenance.importBatchId,
-            qualityFlags: qualityFlagsString(s.provenance.qualityFlags),
+            qualityFlags: qualityFlagsString(s.provenance.qualityFlags, tzId: s.tzId),
             suppressedBy: s.provenance.suppressedBy
         )
     }
@@ -391,8 +433,16 @@ final class ExportRunner {
         registry.definitionOrFallback(metricId).displayName.resolved(scope.language)
     }
 
-    private func qualityFlagsString(_ flags: [QualityFlag]) -> String? {
-        flags.isEmpty ? nil : flags.map { $0.rawValue }.joined(separator: ";")
+    /// Renders a row's quality flags, also appending `.tzAssumed` when `tzId` doesn't
+    /// resolve to a real time zone — `CSVWriter.iso8601`/`TimestampFormatting` silently render
+    /// such rows in UTC, and this makes that substitution visible on the row itself rather than
+    /// a silent, undisclosed correction (OPT-151).
+    private func qualityFlagsString(_ flags: [QualityFlag], tzId: String) -> String? {
+        var all = flags
+        if TimeZone(identifier: tzId) == nil, !all.contains(.tzAssumed) {
+            all.append(.tzAssumed)
+        }
+        return all.isEmpty ? nil : all.map { $0.rawValue }.joined(separator: ";")
     }
 
     // MARK: - Scope helpers
@@ -427,10 +477,19 @@ final class ExportRunner {
         let metricId = sessionMetricId(session.kind)
         if let picked = scope.metricIds, !picked.isEmpty, !picked.contains(metricId) { return false }
         if let families = scope.families, !families.isEmpty {
-            let family = metricId.split(separator: ".").first.map(String.init) ?? "other"
-            if !families.contains(family) { return false }
+            if !families.contains(sessionFamily(metricId)) { return false }
         }
         return true
+    }
+
+    /// The family for a (possibly synthetic) session metric id, routed through the registry —
+    /// the single authoritative source also used by `metricIdsInScope` — rather than re-deriving
+    /// it from a hand-rolled string split. Synthetic session ids (`sleep.session`,
+    /// `activity.workout_session`) aren't registered as real metrics, so they fall back to the
+    /// dot-prefix convention (OPT-145).
+    private func sessionFamily(_ metricId: String) -> String {
+        if let family = registry.definition(metricId)?.family { return family }
+        return metricId.split(separator: ".").first.map(String.init) ?? "other"
     }
 
     /// A narrowed metric picklist excludes logs entirely; a family filter includes a log
@@ -451,6 +510,15 @@ final class ExportRunner {
         return true
     }
 
+    /// True when `v` passed `derivedInRange` only via its best-effort fallback — a date range
+    /// was requested but `v.periodKey` couldn't be parsed as a `day:` key, so it was included
+    /// without actually being range-checked. Counted so the manifest can disclose how many rows
+    /// in a date-bounded export weren't confirmed to be in range (OPT-143).
+    private func derivedIncludedByRangeFallback(_ v: DerivedValue, _ scope: ExportScope) -> Bool {
+        guard scope.startDate != nil || scope.endDate != nil else { return false }
+        return periodStartDate(v.periodKey) == nil
+    }
+
     // MARK: - Synthetic ids & period parsing
 
     private func sessionMetricId(_ kind: SessionKind) -> String {
@@ -469,15 +537,14 @@ final class ExportRunner {
     }
 
     /// Parses the calendar day from a `day:YYYY-MM-DD` period key (UTC midnight). Other period
-    /// shapes (session:, week:) return nil and are treated as always-in-range.
+    /// shapes (session:, week:) return nil and are treated as always-in-range. Delegates to
+    /// `DayAttribution`'s existing `DateComponents`-based parser instead of constructing a fresh
+    /// `DateFormatter` per call, which otherwise dominates large derived-value-heavy exports
+    /// (PERF-161/171/197).
     private func periodStartDate(_ periodKey: String) -> Date? {
         guard periodKey.hasPrefix("day:") else { return nil }
         let day = String(periodKey.dropFirst("day:".count))
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: day)
+        return DayAttribution.date(fromDayKey: day, tz: "UTC")
     }
 
     // MARK: - Counting & checksums
@@ -488,5 +555,14 @@ final class ExportRunner {
 
     private static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Creates `url`, streams `rows` to it via `writer.write(_:to:)`, and returns the
+    /// incrementally-computed SHA-256 hex digest (PERF-168/170).
+    private static func streamWrite(_ rows: [ExportRow], using writer: CSVWriter, to url: URL) throws -> String {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        return try writer.write(rows, to: handle)
     }
 }

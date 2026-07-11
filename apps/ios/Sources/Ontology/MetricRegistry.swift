@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The compiled metric ontology (registry.json → MetricDefinition). Single source of every
 /// metric's identity, units, names (en+ar), labels, chart hint, baseline eligibility, and
@@ -8,8 +9,19 @@ import Foundation
 final class MetricRegistry {
     static let shared = MetricRegistry()
 
+    /// Below this many loaded metrics the registry is treated as corrupted/missing rather than
+    /// legitimately small. `assertionFailure` alone is a no-op in Release, so a broken
+    /// `scripts/sync_ios_resources.sh` mirror step could otherwise ship an empty registry with
+    /// no runtime signal — this logs the failure via `Logger` so it's visible in Release too.
+    private static let minimumHealthyMetricCount = 40
+    private static let logger = Logger(subsystem: "net.albayyan.badan", category: "Ontology")
+
     let all: [MetricDefinition]
+    let baselineEligible: [MetricDefinition]
     private let byId: [String: MetricDefinition]
+    private let byFamily: [MetricFamily: [MetricDefinition]]
+    private let foldedNameEn: [String: String]
+    private let foldedPreciseLabel: [String: String]
 
     private struct File: Decodable { let version: String; let metrics: [MetricDefinition] }
 
@@ -17,6 +29,18 @@ final class MetricRegistry {
         let loaded = metrics ?? BundleJSON.load(File.self, "registry")?.metrics ?? []
         self.all = loaded.sorted { $0.metricId < $1.metricId }
         self.byId = Dictionary(loaded.map { ($0.metricId, $0) }, uniquingKeysWith: { a, _ in a })
+        self.baselineEligible = loaded.filter { $0.baselineEligible }
+        self.byFamily = Dictionary(grouping: loaded, by: { $0.familyGroup })
+        self.foldedNameEn = Dictionary(
+            loaded.map { ($0.metricId, $0.nameEn.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)) },
+            uniquingKeysWith: { a, _ in a })
+        self.foldedPreciseLabel = Dictionary(
+            loaded.map { ($0.metricId, $0.preciseLabel.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)) },
+            uniquingKeysWith: { a, _ in a })
+
+        if loaded.count < Self.minimumHealthyMetricCount {
+            Self.logger.fault("MetricRegistry loaded only \(loaded.count) metrics (expected >= \(Self.minimumHealthyMetricCount)) — bundled registry.json may be missing or corrupted")
+        }
     }
 
     func definition(_ metricId: String) -> MetricDefinition? { byId[metricId] }
@@ -32,7 +56,7 @@ final class MetricRegistry {
     }
 
     func metrics(in family: MetricFamily) -> [MetricDefinition] {
-        all.filter { $0.familyGroup == family }
+        byFamily[family] ?? []
     }
 
     func metrics(family: String) -> [MetricDefinition] {
@@ -45,17 +69,16 @@ final class MetricRegistry {
         return MetricFamily.allCases.filter { present.contains($0) }
     }
 
-    var baselineEligible: [MetricDefinition] { all.filter { $0.baselineEligible } }
-
-    /// Case/diacritic-insensitive search over English + Arabic names and the id.
+    /// Case/diacritic-insensitive search over English + Arabic names and the id. Only the
+    /// (short) query is folded per call; candidate names are folded once at load time.
     func search(_ query: String) -> [MetricDefinition] {
         let q = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         guard !q.isEmpty else { return all }
         return all.filter {
-            $0.nameEn.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q)
+            (foldedNameEn[$0.metricId] ?? "").contains(q)
                 || $0.nameAr.contains(query)
                 || $0.metricId.contains(q)
-                || $0.preciseLabel.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).contains(q)
+                || (foldedPreciseLabel[$0.metricId] ?? "").contains(q)
         }
     }
 }

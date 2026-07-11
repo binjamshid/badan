@@ -21,7 +21,16 @@ struct BadanCard<Content: View>: View {
                 RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
                     .strokeBorder(BadanColor.separator, lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.05), radius: 12, x: 0, y: 6)
+            .badanElevation()
+    }
+}
+
+extension View {
+    /// BADAN's single elevation cue: a soft, low-opacity shadow. Exposed as a modifier (rather
+    /// than inlined only in `BadanCard`) so any card-adjacent custom surface can opt into the
+    /// same elevation language instead of silently staying flat next to a real card.
+    func badanElevation() -> some View {
+        shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 6)
     }
 }
 
@@ -49,6 +58,21 @@ struct SectionHeader<Trailing: View>: View {
 extension SectionHeader where Trailing == EmptyView {
     init(_ title: String) {
         self.init(title) { EmptyView() }
+    }
+}
+
+extension SectionHeader {
+    /// Resolves a `LocalizedString` directly, so call sites get the same compile-time
+    /// bilingual guarantee `LText` already offers instead of having to remember to call
+    /// `env.s(...)` themselves before reaching the plain-`String` initializer.
+    init(_ title: LocalizedString, language: AppLanguage, @ViewBuilder trailing: @escaping () -> Trailing) {
+        self.init(title.resolved(language), trailing: trailing)
+    }
+}
+
+extension SectionHeader where Trailing == EmptyView {
+    init(_ title: LocalizedString, language: AppLanguage) {
+        self.init(title.resolved(language)) { EmptyView() }
     }
 }
 

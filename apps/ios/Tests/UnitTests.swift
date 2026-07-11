@@ -90,6 +90,61 @@ final class UnitTests: XCTestCase {
 
     nonisolated(unsafe) static var rng = SystemRandomNumberGenerator()
 
+    // MARK: - DayAttribution / DST
+
+    func testDSTSpringForwardDayBoundary() throws {
+        // 2024 US spring-forward: clocks jump 2:00 AM -> 3:00 AM on March 10, so the day
+        // start-of-day to start-of-next-day span is only 23 hours.
+        let tz = "America/New_York"
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = try XCTUnwrap(TimeZone(identifier: tz))
+        var comps = DateComponents()
+        comps.year = 2024; comps.month = 3; comps.day = 10; comps.hour = 12
+        let noon = try XCTUnwrap(cal.date(from: comps))
+
+        XCTAssertEqual(DayAttribution.localDayKey(noon, tz: tz), "2024-03-10")
+        let start = DayAttribution.startOfDay(noon, tz: tz)
+        let next = DayAttribution.addingDays(1, to: start, tz: tz)
+        XCTAssertEqual(next.timeIntervalSince(start), 23 * 3600, accuracy: 1,
+                       "spring-forward day is 23 hours via Calendar, not a naive 24h add")
+        XCTAssertEqual(DayAttribution.localDayKey(next, tz: tz), "2024-03-11")
+    }
+
+    func testDSTFallBackDayBoundary() throws {
+        // 2024 US fall-back: clocks fall back 2:00 AM -> 1:00 AM on November 3, so the day
+        // start-of-day to start-of-next-day span is 25 hours.
+        let tz = "America/New_York"
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = try XCTUnwrap(TimeZone(identifier: tz))
+        var comps = DateComponents()
+        comps.year = 2024; comps.month = 11; comps.day = 3; comps.hour = 12
+        let noon = try XCTUnwrap(cal.date(from: comps))
+
+        let start = DayAttribution.startOfDay(noon, tz: tz)
+        let next = DayAttribution.addingDays(1, to: start, tz: tz)
+        XCTAssertEqual(next.timeIntervalSince(start), 25 * 3600, accuracy: 1,
+                       "fall-back day is 25 hours via Calendar, not a naive 24h add")
+    }
+
+    func testSessionTimezoneNotDeviceTimezone() throws {
+        // A night recorded in Riyadh stays a Riyadh night regardless of the device/UI timezone.
+        let riyadh = "Asia/Riyadh"
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = try XCTUnwrap(TimeZone(identifier: riyadh))
+        var comps = DateComponents()
+        comps.year = 2024; comps.month = 6; comps.day = 15; comps.hour = 1 // 1am Riyadh
+        let sessionEnd = try XCTUnwrap(cal.date(from: comps))
+
+        let night = DayAttribution.localNight(sessionEnd: sessionEnd, tz: riyadh)
+        XCTAssertEqual(night, "2024-06-15")
+
+        // The same instant attributed via a different (e.g. device-current) timezone lands on a
+        // different calendar day — proving the session's own tzId, not the device's, must be used.
+        let londonKey = DayAttribution.localDayKey(sessionEnd, tz: "Europe/London")
+        XCTAssertNotEqual(night, londonKey,
+                          "day attribution must use the session's own tzId, not a device/UI timezone")
+    }
+
     // MARK: - Baseline math
 
     func testMedianAndMAD() {
