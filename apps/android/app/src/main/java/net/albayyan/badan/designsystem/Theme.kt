@@ -14,6 +14,13 @@ import androidx.compose.ui.graphics.Color
  *
  * RTL/language direction is provided app-wide from `env.language` at a higher level — this
  * modifier is purely the colour altitude.
+ *
+ * Deliberately does **not** offer a Material You / `dynamicColorScheme` opt-in on Android 12+.
+ * The mined [badanLightColors]/[badanDarkColors] hex pairs (from `docs/design/design-tokens.json`)
+ * are core to BADAN's calm visual identity and its judgment-free status colours (one amber for
+ * out-of-band, never wallpaper-derived); wallpaper-driven theming would make those semantics
+ * unpredictable per device. This is an intentional brand decision, not an oversight — please
+ * don't "fix" it by wiring up dynamic color without a deliberate design discussion first.
  */
 @Composable
 fun BadanTheme(dark: Boolean, content: @Composable () -> Unit) {

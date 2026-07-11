@@ -1,22 +1,29 @@
 package net.albayyan.badan.features.body
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GridView
@@ -25,7 +32,7 @@ import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -35,6 +42,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -46,6 +55,7 @@ import net.albayyan.badan.app.LocalNavigator
 import net.albayyan.badan.app.Route
 import net.albayyan.badan.core.Loc
 import net.albayyan.badan.core.LocalizedString
+import net.albayyan.badan.designsystem.BadanRadius
 import net.albayyan.badan.designsystem.BadanSpace
 import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.BadanType
@@ -193,36 +203,57 @@ fun BodyScreen() {
         state = LoadState.Loaded(data)
     }
 
+    // Search state lives here (rather than inside the browser) because both the query field and
+    // the LazyColumn items it filters are now emitted as sibling items of one list (UIUX-257).
+    var query by remember { mutableStateOf("") }
+
     Box(modifier = Modifier.fillMaxSize().background(colors.background)) {
         StatefulContainer(state) { data ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(BadanSpace.s4),
+            // Only re-filters/regroups when the search text actually changes, not on every
+            // unrelated recomposition of the screen (PERF-222).
+            val groups = remember(query) {
+                val results = if (query.isBlank()) env.registry.all else env.registry.search(query)
+                results
+                    .groupBy { it.familyGroup }
+                    .toList()
+                    .sortedBy { MetricFamily.entries.indexOf(it.first) }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(BadanSpace.s4),
                 verticalArrangement = Arrangement.spacedBy(BadanSpace.s4),
             ) {
                 if (data.pillars.isNotEmpty()) {
-                    SectionHeader(env.s(pillarsHeader))
-                    data.pillars.forEach { pillar ->
+                    item { SectionHeader(env.s(pillarsHeader)) }
+                    items(data.pillars, key = { it.metricId }) { pillar ->
                         BodyPillarCard(pillar) { nav.push(Route.MetricDetail(pillar.metricId)) }
                     }
                 }
 
-                SectionHeader(
-                    title = env.s(browseHeader),
-                    modifier = Modifier.padding(top = if (data.pillars.isNotEmpty()) BadanSpace.s2 else 0.dp),
-                )
-                BodyToolsCard(
-                    showAllMetrics = showAllMetrics,
-                    onToggleAllMetrics = { showAllMetrics = !showAllMetrics },
-                    onSources = { nav.push(Route.Sources) },
-                    onExport = { nav.push(Route.Export) },
-                    onTimeline = { nav.push(Route.Timeline) },
-                )
+                item {
+                    SectionHeader(
+                        title = env.s(browseHeader),
+                        modifier = Modifier.padding(top = if (data.pillars.isNotEmpty()) BadanSpace.s2 else 0.dp),
+                    )
+                }
+                item {
+                    BodyToolsCard(
+                        showAllMetrics = showAllMetrics,
+                        onToggleAllMetrics = { showAllMetrics = !showAllMetrics },
+                        onSources = { nav.push(Route.Sources) },
+                        onExport = { nav.push(Route.Export) },
+                        onTimeline = { nav.push(Route.Timeline) },
+                    )
+                }
 
                 if (showAllMetrics) {
-                    BodyAllMetricsBrowser()
+                    bodyAllMetricsBrowserItems(
+                        query = query,
+                        onQueryChange = { query = it },
+                        groups = groups,
+                        onMetricClick = { metricId -> nav.push(Route.MetricDetail(metricId)) },
+                    )
                 }
             }
         }
@@ -415,55 +446,109 @@ private val noMatches = LocalizedString(en = "No matching metrics", ar = "لا �
 
 /**
  * The full ontology, searchable and grouped by family — raw catalog is never paywalled. Every
- * row leads to the same universal metric detail. Rendered inline under the tools card (the
- * Android navigation has no dedicated browser route); mirrors the iOS `BodyAllMetricsBrowser`.
+ * row leads to the same universal metric detail. Rendered inline under the tools card as
+ * [LazyListScope] items of the screen's own `LazyColumn` (not a separately-scrolled sub-list), so
+ * off-screen metric groups aren't composed until scrolled into view (UIUX-257) and, combined with
+ * bounding each family's row count, eager composition stays cheap even as the registry grows
+ * (PERF-225). Mirrors the iOS `BodyAllMetricsBrowser`.
  */
-@Composable
-private fun BodyAllMetricsBrowser() {
-    val env = LocalAppEnvironment.current
-    val nav = LocalNavigator.current
-    val colors = BadanTheme.colors
+private fun LazyListScope.bodyAllMetricsBrowserItems(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    groups: List<Pair<MetricFamily, List<MetricDefinition>>>,
+    onMetricClick: (String) -> Unit,
+) {
+    item {
+        BodyMetricSearchField(query = query, onQueryChange = onQueryChange)
+    }
 
-    var query by remember { mutableStateOf("") }
-    val results = if (query.isBlank()) env.registry.all else env.registry.search(query)
-    val groups = results
-        .groupBy { it.familyGroup }
-        .toList()
-        .sortedBy { MetricFamily.entries.indexOf(it.first) }
-
-    Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
-        BadanCard {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                placeholder = { Text(env.s(Loc.search)) },
-            )
-        }
-
-        if (groups.isEmpty()) {
+    if (groups.isEmpty()) {
+        item {
+            val colors = BadanTheme.colors
             Text(
-                text = env.s(noMatches),
+                text = LocalAppEnvironment.current.s(noMatches),
                 style = BadanType.body,
                 color = colors.textSecondary,
             )
-        } else {
-            groups.forEach { (family, metrics) ->
-                Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
-                    Text(
-                        text = env.s(family.displayName),
-                        style = BadanType.caption.copy(fontWeight = FontWeight.SemiBold),
-                        color = colors.textSecondary,
-                    )
-                    BadanCard(padding = 0.dp) {
-                        metrics.sortedBy { it.metricId }.forEachIndexed { index, def ->
-                            if (index > 0) BodyToolDivider()
-                            BodyMetricRow(def) { nav.push(Route.MetricDetail(def.metricId)) }
-                        }
-                    }
-                }
+        }
+    } else {
+        groups.forEach { (family, metrics) ->
+            item(key = "family:${family.name}") {
+                BodyMetricFamilyGroup(family = family, metrics = metrics, onMetricClick = onMetricClick)
+            }
+        }
+    }
+}
+
+/**
+ * The app's other screens all use a hand-built field matching `BadanRadius.control` rather than
+ * Material3's stock `OutlinedTextField` (UIUX-232); this mirrors that same pattern.
+ */
+@Composable
+private fun BodyMetricSearchField(query: String, onQueryChange: (String) -> Unit) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val shape = RoundedCornerShape(BadanRadius.control)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(colors.surface, shape)
+            .border(1.dp, colors.separator, shape)
+            .heightIn(min = BadanSpace.touchMin)
+            .padding(start = BadanSpace.s3),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Search,
+            contentDescription = null,
+            tint = colors.textSecondary,
+            modifier = Modifier.size(20.dp),
+        )
+        Box(modifier = Modifier.weight(1f)) {
+            if (query.isEmpty()) {
+                Text(text = env.s(Loc.search), style = BadanType.body, color = colors.textSecondary)
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                textStyle = BadanType.body.copy(color = colors.textPrimary),
+                singleLine = true,
+                cursorBrush = SolidColor(colors.primary),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (query.isNotEmpty()) {
+            IconButton(onClick = { onQueryChange("") }) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = env.s(Loc.close),
+                    tint = colors.textSecondary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BodyMetricFamilyGroup(
+    family: MetricFamily,
+    metrics: List<MetricDefinition>,
+    onMetricClick: (String) -> Unit,
+) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+        Text(
+            text = env.s(family.displayName),
+            style = BadanType.caption.copy(fontWeight = FontWeight.SemiBold),
+            color = colors.textSecondary,
+        )
+        BadanCard(padding = 0.dp) {
+            metrics.sortedBy { it.metricId }.forEachIndexed { index, def ->
+                if (index > 0) BodyToolDivider()
+                BodyMetricRow(def) { onMetricClick(def.metricId) }
             }
         }
     }

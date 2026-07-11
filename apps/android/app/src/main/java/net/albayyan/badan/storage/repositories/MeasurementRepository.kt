@@ -127,11 +127,17 @@ class MeasurementRepository(private val db: SqliteConnection) {
         if (externalId != null) {
             val existing = firstSessionId(s.kind, externalId, s.provenance.sourceId)
             if (existing != null) {
+                // Mirrors updateRawSample's field coverage: refresh subtype/tz_id/quality_flags
+                // too, so a corrected upstream session (e.g. Health Connect revising a sleep
+                // classification) actually converges to the latest truth on re-ingest instead of
+                // silently keeping stale values from the first write forever.
                 db.run(
-                    "UPDATE sessions SET start_at=?, end_at=?, local_night=?, detail=?, ingested_at=?, updated_at=? WHERE id=?;",
+                    "UPDATE sessions SET subtype=?, start_at=?, end_at=?, tz_id=?, local_night=?, detail=?, ingested_at=?, quality_flags=?, updated_at=? WHERE id=?;",
                     listOf(
-                        s.startAt, s.endAt, s.localNight, JsonCoding.encode(s.detail),
-                        s.provenance.ingestedAt, s.updatedAt, existing,
+                        s.subtype, s.startAt, s.endAt, s.tzId, s.localNight, JsonCoding.encode(s.detail),
+                        s.provenance.ingestedAt,
+                        if (s.provenance.qualityFlags.isEmpty()) null else s.provenance.qualityFlags.joinToString(";") { it.code },
+                        s.updatedAt, existing,
                     ),
                 )
                 return false

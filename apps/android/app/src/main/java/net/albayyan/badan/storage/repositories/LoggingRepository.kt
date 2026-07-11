@@ -44,6 +44,8 @@ class LoggingRepository(
         )
     }
 
+    // Intentionally unbounded: a user's medication regimen list stays small (dozens at most,
+    // not a per-datum log) — see LoggingRepository.conditions() for the same reasoning.
     fun regimens(activeOnly: Boolean = false): List<MedicationRegimen> {
         var sql = "SELECT * FROM medication_regimens WHERE deleted_at IS NULL"
         if (activeOnly) sql += " AND ended_at IS NULL"
@@ -131,6 +133,7 @@ class LoggingRepository(
         )
     }
 
+    // Intentionally unbounded: a user's tracked-conditions list stays small, not a per-datum log.
     fun conditions(): List<Condition> =
         sensitive.query("SELECT * FROM conditions WHERE deleted_at IS NULL ORDER BY label ASC;").map { r ->
             Condition(

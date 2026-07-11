@@ -35,11 +35,14 @@ object Rows {
         )
     }
 
+    /** Precomputed once instead of a linear `QualityFlag.entries` scan per flag per row. */
+    private val qualityFlagsByCode: Map<String, QualityFlag> = QualityFlag.entries.associateBy { it.code }
+
     fun readProvenance(row: Row): Provenance {
         val flags = (row.getString("quality_flags") ?: "")
             .split(";")
             .filter { it.isNotEmpty() }
-            .mapNotNull { code -> QualityFlag.entries.firstOrNull { it.code == code } }
+            .mapNotNull { code -> qualityFlagsByCode[code] }
         return Provenance(
             sourceId = row.requireString("source_id"),
             deviceId = row.getString("device_id"),

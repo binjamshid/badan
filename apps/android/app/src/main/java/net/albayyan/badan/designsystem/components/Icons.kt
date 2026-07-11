@@ -7,7 +7,6 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bloodtype
 import androidx.compose.material.icons.filled.BreakfastDining
-import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Cookie
 import androidx.compose.material.icons.filled.DinnerDining
 import androidx.compose.material.icons.filled.DirectionsRun
@@ -16,6 +15,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Healing
+import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material.icons.filled.LocalDrink
 import androidx.compose.material.icons.filled.LunchDining
@@ -34,7 +34,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
  * Maps the domain `symbolName` keys (Material-style icon names carried by `MetricFamily`,
  * `MealType`, `TimelineEventType`, log item types, …) to concrete [ImageVector]s from
  * material-icons-extended. Kept in the design system so every screen resolves the same key to
- * the same glyph. Unknown keys fall back to a neutral dot so nothing ever renders blank.
+ * the same glyph. Unknown keys fall back to a visibly-neutral "help" glyph — distinct from any
+ * mapped icon (e.g. the ring-device glyph in `SourcesScreen.kt`) — so a mapping gap is
+ * diagnosable rather than silently masquerading as valid content (UIUX-261).
  */
 fun iconForKey(key: String): ImageVector = when (key) {
     // MetricFamily
@@ -71,5 +73,5 @@ fun iconForKey(key: String): ImageVector = when (key) {
     "nightlight" -> Icons.Filled.Nightlight
     "bloodtype" -> Icons.Filled.Bloodtype
 
-    else -> Icons.Filled.Circle
+    else -> Icons.Filled.HelpOutline
 }

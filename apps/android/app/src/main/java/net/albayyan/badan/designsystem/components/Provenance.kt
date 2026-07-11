@@ -12,9 +12,11 @@ import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.albayyan.badan.core.AppLanguage
 import net.albayyan.badan.designsystem.BadanSpace
@@ -54,15 +56,21 @@ fun ProvenanceRow(
             text = sourceName,
             style = BadanType.caption,
             color = colors.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = ingestionPath.displayLabel.resolved(language),
             style = BadanType.caption,
             color = colors.textSecondary,
             modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Text(
-            text = formatTimestamp(timestampMillis, language),
+            // Memoized so the DateFormat isn't rebuilt on every unrelated recomposition of this
+            // row's parent (PERF-221).
+            text = remember(timestampMillis, language) { formatTimestamp(timestampMillis, language) },
             style = BadanType.caption,
             color = colors.textSecondary,
         )

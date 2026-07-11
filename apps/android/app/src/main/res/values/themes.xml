@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Compose draws the whole UI; this base theme just gives a background + no action bar. -->
-    <style name="Theme.BADAN" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.BADAN" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- BADAN's light background needs dark system-bar icons for contrast; the dark theme
+             (values-night) already gets the correct light icons from the platform default. -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
 </resources>

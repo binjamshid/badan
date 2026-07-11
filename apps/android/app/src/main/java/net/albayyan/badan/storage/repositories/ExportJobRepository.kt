@@ -15,6 +15,15 @@ import net.albayyan.badan.storage.sqlite.SqliteConnection
  */
 class ExportJobRepository(private val db: SqliteConnection) {
 
+    /** List-view projection of [ExportJob] — see [recentSummaries]. */
+    data class ExportJobSummary(
+        val id: String,
+        val format: ExportFormat,
+        val status: ExportJobStatus,
+        val rowCount: Int?,
+        val createdAt: Long,
+    )
+
     fun insert(job: ExportJob) {
         db.run(
             """
@@ -30,8 +39,35 @@ class ExportJobRepository(private val db: SqliteConnection) {
         )
     }
 
-    fun recent(limit: Int = 30): List<ExportJob> =
-        db.query("SELECT * FROM export_jobs ORDER BY created_at DESC LIMIT ?;", listOf(limit.toLong())).map { read(it) }
+    /**
+     * [offset] supports a future "load more" affordance in the export history list (which today
+     * always shows only the most recent [limit] jobs) without changing the default call shape —
+     * existing positional callers (`recent(20)`) are unaffected.
+     */
+    fun recent(limit: Int = 30, offset: Int = 0): List<ExportJob> =
+        db.query(
+            "SELECT * FROM export_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?;",
+            listOf(limit.toLong(), offset.toLong()),
+        ).map { read(it) }
+
+    /**
+     * A narrow projection for the history *list* view — skips decoding the `manifest` column
+     * (per-metric row counts, file checksums) that only matters when inspecting one specific job,
+     * not when rendering N rows of status/format/date.
+     */
+    fun recentSummaries(limit: Int = 30, offset: Int = 0): List<ExportJobSummary> =
+        db.query(
+            "SELECT id, format, status, row_count, created_at FROM export_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?;",
+            listOf(limit.toLong(), offset.toLong()),
+        ).map { r ->
+            ExportJobSummary(
+                id = r.requireString("id"),
+                format = ExportFormat.fromCode(r.requireString("format")),
+                status = ExportJobStatus.fromCode(r.requireString("status")),
+                rowCount = r.getInt("row_count"),
+                createdAt = r.requireDate("created_at"),
+            )
+        }
 
     companion object {
         fun read(r: Row): ExportJob =

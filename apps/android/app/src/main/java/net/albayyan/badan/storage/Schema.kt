@@ -186,7 +186,23 @@ object Schema {
                     "CREATE TABLE import_batches (id TEXT PRIMARY KEY, source_kind TEXT NOT NULL, file_name TEXT, state TEXT NOT NULL, chunk_cursor TEXT, counts TEXT, created_at INTEGER NOT NULL);",
                     "CREATE TABLE sync_cursors (scope_key TEXT NOT NULL, device_id TEXT NOT NULL, lamport INTEGER NOT NULL, last_synced_at INTEGER, PRIMARY KEY (scope_key, device_id));",
                 )
-            )
+            ),
+            // Additive indexes for query shapes identified after the initial schema shipped —
+            // no table changes, so this is a cheap, low-risk forward-only migration.
+            Migration(
+                version = 2,
+                statements = listOf(
+                    // devices(sourceId) is filtered every Sources-screen load and on every
+                    // ingest's upsertSourcesAndDevices call; previously an unindexed scan.
+                    "CREATE INDEX idx_source_devices_source ON source_devices(source_id);",
+                    // Matches latestBaseline()'s actual query shape (metric_id, covariate_context,
+                    // ORDER BY valid_from DESC) rather than the 4-column identity index, which
+                    // also groups by window_days and isn't an ideal covering order for this read.
+                    "CREATE INDEX idx_baseline_lookup ON baselines(metric_id, covariate_context, valid_from DESC);",
+                    // ExportJobRepository.recent() sorts by created_at on every Export screen load.
+                    "CREATE INDEX idx_export_jobs_created ON export_jobs(created_at DESC);",
+                )
+            ),
         )
 
     // MARK: - Sensitive DB (badan_sensitive.db)

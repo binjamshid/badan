@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import net.albayyan.badan.designsystem.BadanSpace
@@ -67,6 +68,10 @@ fun <T> StatefulContainer(
             title = state.message,
             message = "",
             modifier = modifier,
+            // Deliberately quieter than the bold Empty-state title (UIUX-250): an error carries
+            // more emotional weight than a friendly "nothing here yet," so it shouldn't be the
+            // loudest text on screen.
+            titleStyle = BadanType.body,
         )
 
         is LoadState.Loaded -> content(state.value)
@@ -84,6 +89,7 @@ fun EmptyState(
     title: String,
     message: String,
     modifier: Modifier = Modifier,
+    titleStyle: TextStyle = BadanType.sectionTitle,
     action: (@Composable () -> Unit)? = null,
 ) {
     val colors = BadanTheme.colors
@@ -102,7 +108,7 @@ fun EmptyState(
         )
         Text(
             text = title,
-            style = BadanType.sectionTitle,
+            style = titleStyle,
             color = colors.textPrimary,
             textAlign = TextAlign.Center,
         )

@@ -34,6 +34,9 @@ class CatalogRepository(private val db: SqliteConnection) {
         )
     }
 
+    // Intentionally unbounded: a user's connected-source count is small by construction (one row
+    // per health app/platform integration, not per data point), so no LIMIT is needed at any
+    // realistic scale.
     fun sources(includeHidden: Boolean = true): List<Source> {
         var sql = "SELECT * FROM sources WHERE deleted_at IS NULL"
         if (!includeHidden) sql += " AND status != 'hidden'"
@@ -96,6 +99,7 @@ class CatalogRepository(private val db: SqliteConnection) {
         )
     }
 
+    // Intentionally unbounded: one row per (store, platform_type) pair, a small fixed set.
     fun permissions(store: String? = null): List<PermissionState> {
         val sql = if (store == null) {
             "SELECT * FROM permission_states ORDER BY platform_type;"

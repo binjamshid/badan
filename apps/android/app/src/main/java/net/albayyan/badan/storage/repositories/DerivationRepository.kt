@@ -58,26 +58,35 @@ class DerivationRepository(private val db: SqliteConnection) {
 
     /**
      * Latest derived value per period for a metric, over a set of period keys — used by the
-     * detail chart's derived series (e.g. daily RHR).
+     * detail chart's derived series (e.g. daily RHR). Optional [computedFrom]/[computedTo] bound
+     * the append-only scan by `computed_at` so a caller displaying a fixed window doesn't pay for
+     * re-aggregating the metric's entire recompute history (PERF-234); omitted, behavior is
+     * unchanged (all-time).
      */
-    fun latestDerivedSeries(metricId: String): List<DerivedValue> {
+    fun latestDerivedSeries(metricId: String, computedFrom: Long? = null, computedTo: Long? = null): List<DerivedValue> {
         // Group by period_key, take max computed_at.
+        var subquerySql = "SELECT period_key, MAX(computed_at) AS mc FROM derived_values WHERE metric_id = ? AND deleted_at IS NULL"
+        var outerSql = "WHERE d.metric_id = ? AND d.deleted_at IS NULL"
+        val params = mutableListOf<Any?>(metricId)
+        val outerParams = mutableListOf<Any?>(metricId)
+        if (computedFrom != null) { subquerySql += " AND computed_at >= ?"; outerSql += " AND d.computed_at >= ?"; params.add(computedFrom); outerParams.add(computedFrom) }
+        if (computedTo != null) { subquerySql += " AND computed_at <= ?"; outerSql += " AND d.computed_at <= ?"; params.add(computedTo); outerParams.add(computedTo) }
+        subquerySql += " GROUP BY period_key"
         val rows = db.query(
             """
             SELECT d.* FROM derived_values d
-            JOIN (SELECT period_key, MAX(computed_at) AS mc FROM derived_values
-                  WHERE metric_id = ? AND deleted_at IS NULL GROUP BY period_key) latest
+            JOIN ($subquerySql) latest
             ON d.period_key = latest.period_key AND d.computed_at = latest.mc
-            WHERE d.metric_id = ? AND d.deleted_at IS NULL
+            $outerSql
             ORDER BY d.period_key ASC;
             """,
-            listOf(metricId, metricId),
+            params + outerParams,
         )
         return rows.map { readDerived(it) }
     }
 
     fun allDerived(metricId: String): List<DerivedValue> =
-        db.query("SELECT * FROM derived_values WHERE metric_id = ? ORDER BY computed_at ASC;", listOf(metricId))
+        db.query("SELECT * FROM derived_values WHERE metric_id = ? AND deleted_at IS NULL ORDER BY computed_at ASC;", listOf(metricId))
             .map { readDerived(it) }
 
     // MARK: - Baseline

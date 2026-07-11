@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -95,6 +96,12 @@ private object MetricDetailStrings {
     val method = LocalizedString(en = "Method & units", ar = "الطريقة والوحدات")
     val unit = LocalizedString(en = "Unit", ar = "الوحدة")
     val howWorkedOut = LocalizedString(en = "How this was worked out", ar = "كيف تم حساب هذا")
+    val showMore = LocalizedString(en = "Show more", ar = "عرض المزيد")
+    val bandLegend = LocalizedString(
+        en = "Shaded area = your usual range",
+        ar = "المنطقة المظللة = نطاقك المعتاد",
+    )
+    val last30DaysSuffix = LocalizedString(en = "· Last 30 days", ar = "· آخر 30 يومًا")
 }
 
 // MARK: - Loaded data
@@ -274,17 +281,19 @@ private fun MetricDetailContent(
     val env = LocalAppEnvironment.current
     val tz = remember { TimeZone.getDefault().id }
     val power = env.depth.showsPowerDetail
-    val fullSeries = data.fullSeries(tz)
+    // Computed once per (data, tz) and shared by ChartCard/ValuesTableCard instead of each
+    // independently re-deriving it from `data` on every composition pass (PERF-217).
+    val fullSeries = remember(data, tz) { data.fullSeries(tz) }
     val latest = fullSeries.lastOrNull()
     val chartDays = if (power) periodDays else 30
 
     Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s5)) {
         HeaderCard(data, latest)
-        ChartCard(data, days = chartDays, tz = tz)
+        ChartCard(data, days = chartDays, fullSeries = fullSeries, power = power)
 
         if (power) {
             PeriodSelector(periodDays, onPeriodChange)
-            ValuesTableCard(seriesWithin(chartDays, fullSeries, env.now()), data)
+            ValuesTableCard(seriesWithin(chartDays, fullSeries, env.now()), data, periodDays)
             LineageCard(data)
             MethodCard(data)
             AnatomyButton(onShowAnatomy)
@@ -300,6 +309,7 @@ private fun MetricDetailContent(
 private fun HeaderCard(data: MetricDetailData, latest: Pair<Long, Double>?) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
+    val dateFormatter = rememberDateFormatter(env.language)
     BadanCard {
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
             if (latest != null) {
@@ -310,7 +320,7 @@ private fun HeaderCard(data: MetricDetailData, latest: Pair<Long, Double>?) {
                     chip = { StatusChipFor(latest.second, data.baseline) },
                 )
                 Text(
-                    text = dateText(latest.first, env.language),
+                    text = dateText(latest.first, dateFormatter),
                     style = BadanType.caption,
                     color = colors.textSecondary,
                 )
@@ -344,14 +354,23 @@ private fun StatusChipFor(value: Double, baseline: Baseline?) {
 // MARK: - Chart
 
 @Composable
-private fun ChartCard(data: MetricDetailData, days: Int, tz: String) {
+private fun ChartCard(data: MetricDetailData, days: Int, fullSeries: List<Pair<Long, Double>>, power: Boolean) {
     val env = LocalAppEnvironment.current
-    val points = seriesWithin(days, data.fullSeries(tz), env.now())
+    val colors = BadanTheme.colors
+    // Filters the already-shared `fullSeries` instead of re-deriving it from `data` (PERF-217).
+    val points = seriesWithin(days, fullSeries, env.now())
     val provisional = data.baseline?.provisional ?: true
+    // Casual mode has no PeriodSelector to disclose the chart's time window, so the window is
+    // stated in the title itself instead of being silently assumed (UIUX-219).
+    val title = if (power) {
+        env.s(MetricDetailStrings.trend)
+    } else {
+        env.s(MetricDetailStrings.trend) + " " + env.s(MetricDetailStrings.last30DaysSuffix)
+    }
     BadanCard {
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
             SectionHeader(
-                title = env.s(MetricDetailStrings.trend),
+                title = title,
                 trailing = if (provisional) {
                     { ProvisionalBadge(env.language) }
                 } else {
@@ -364,6 +383,15 @@ private fun ChartCard(data: MetricDetailData, days: Int, tz: String) {
                 band = data.baseline?.let { it.bandLow to it.bandHigh },
                 modifier = Modifier.height(200.dp),
             )
+            // The personal band is otherwise unlabeled decoration to a first-time viewer — this
+            // names it once the baseline is trustworthy enough to actually be shown (UIUX-215).
+            if (data.baseline != null && data.baseline.provisional == false) {
+                Text(
+                    text = env.s(MetricDetailStrings.bandLegend),
+                    style = BadanType.caption,
+                    color = colors.textSecondary,
+                )
+            }
         }
     }
 }
@@ -429,13 +457,19 @@ private fun PeriodSelector(selected: Int, onChange: (Int) -> Unit) {
 // MARK: - Power: values table
 
 @Composable
-private fun ValuesTableCard(points: List<Pair<Long, Double>>, data: MetricDetailData) {
+private fun ValuesTableCard(points: List<Pair<Long, Double>>, data: MetricDetailData, periodDays: Int) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
+    val dateFormatter = rememberDateFormatter(env.language)
+    // Reveals more of the already period-filtered `points` on tap instead of a silent,
+    // period-blind hard cap (EASE-272, UIUX-220); resets back to one page when the selected
+    // period changes so a new period always starts fully collapsed.
+    var visibleCount by remember(periodDays) { mutableIntStateOf(valuesPageSize) }
     BadanCard {
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
             SectionHeader(env.s(MetricDetailStrings.recentValues))
-            val rows = points.reversed().take(14)
+            val ordered = points.reversed()
+            val rows = ordered.take(visibleCount)
             rows.forEach { point ->
                 Row(
                     modifier = Modifier
@@ -445,7 +479,7 @@ private fun ValuesTableCard(points: List<Pair<Long, Double>>, data: MetricDetail
                     horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
                 ) {
                     Text(
-                        text = dateText(point.first, env.language),
+                        text = dateText(point.first, dateFormatter),
                         style = BadanType.bodyCompact,
                         color = colors.textSecondary,
                     )
@@ -462,6 +496,21 @@ private fun ValuesTableCard(points: List<Pair<Long, Double>>, data: MetricDetail
                         .height(1.dp)
                         .background(colors.separator),
                 )
+            }
+            if (rows.size < ordered.size) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = BadanSpace.touchMin)
+                        .clickable(role = Role.Button) { visibleCount += valuesPageSize },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = env.s(MetricDetailStrings.showMore),
+                        style = BadanType.bodyCompact,
+                        color = colors.primary,
+                    )
+                }
             }
         }
     }
@@ -542,7 +591,9 @@ private fun AnatomyButton(onClick: () -> Unit) {
             .clip(shape)
             .background(colors.surface)
             .border(1.dp, colors.separator, shape)
-            .clickable { onClick() }
+            // Announces as "How this was worked out, button" to TalkBack instead of a generic
+            // tappable element (UIUX-211).
+            .clickable(role = Role.Button) { onClick() }
             .padding(horizontal = BadanSpace.cardPadding),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
@@ -571,6 +622,7 @@ private fun AnatomyButton(onClick: () -> Unit) {
 // MARK: - Helpers
 
 private val periodOptions = listOf(7, 30, 90)
+private const val valuesPageSize = 14
 
 private fun seriesWithin(days: Int, full: List<Pair<Long, Double>>, nowMillis: Long): List<Pair<Long, Double>> {
     val cutoff = nowMillis - days.toLong() * 86_400_000L
@@ -611,7 +663,15 @@ private fun methodString(data: MetricDetailData): String? {
     return data.baseline?.algorithmVersion
 }
 
-private fun dateText(millis: Long, language: AppLanguage): String {
-    val locale = Locale.forLanguageTag(language.localeTag)
-    return DateFormat.getDateInstance(DateFormat.MEDIUM, locale).format(Date(millis))
+/**
+ * A single formatter reused across every [dateText] call in the composition instead of a fresh
+ * `DateFormat` allocated per invocation — up to 14 rows in [ValuesTableCard] alone (PERF-218).
+ */
+@Composable
+private fun rememberDateFormatter(language: AppLanguage): DateFormat {
+    return remember(language) {
+        DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.forLanguageTag(language.localeTag))
+    }
 }
+
+private fun dateText(millis: Long, formatter: DateFormat): String = formatter.format(Date(millis))
