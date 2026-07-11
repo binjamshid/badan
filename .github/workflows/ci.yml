@@ -9,26 +9,41 @@ jobs:
   data-contracts:
     name: Validate shared data contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: JSON is valid and iOS resources are in sync
+      - name: JSON is valid and iOS/Android resource mirrors are in sync
         run: |
           python3 - <<'PY'
           import json, sys, pathlib
           root = pathlib.Path('.')
           canonical = {
-            'packages/metric-ontology/registry.json': 'apps/ios/Sources/Resources/registry.json',
-            'packages/contracts/insights/templates.json': 'apps/ios/Sources/Resources/insight_templates.json',
-            'packages/contracts/dictionaries/symptoms.json': 'apps/ios/Sources/Resources/symptoms.json',
-            'packages/export-schemas/csv_columns.json': 'apps/ios/Sources/Resources/csv_columns.json',
+            'packages/metric-ontology/registry.json': [
+              'apps/ios/Sources/Resources/registry.json',
+              'apps/android/app/src/main/assets/registry.json',
+            ],
+            'packages/contracts/insights/templates.json': [
+              'apps/ios/Sources/Resources/insight_templates.json',
+              'apps/android/app/src/main/assets/insight_templates.json',
+            ],
+            'packages/contracts/dictionaries/symptoms.json': [
+              'apps/ios/Sources/Resources/symptoms.json',
+              'apps/android/app/src/main/assets/symptoms.json',
+            ],
+            'packages/export-schemas/csv_columns.json': [
+              'apps/ios/Sources/Resources/csv_columns.json',
+              'apps/android/app/src/main/assets/csv_columns.json',
+            ],
           }
           fail = False
-          for src, mirror in canonical.items():
+          for src, mirrors in canonical.items():
             a = json.loads((root/src).read_text())
-            b = json.loads((root/mirror).read_text())
-            if a != b:
-              print(f"::error::{mirror} is out of sync with {src} — run scripts/sync_ios_resources.sh")
-              fail = True
+            for mirror in mirrors:
+              b = json.loads((root/mirror).read_text())
+              if a != b:
+                sync_script = 'scripts/sync_android_assets.sh' if 'android' in mirror else 'scripts/sync_ios_resources.sh'
+                print(f"::error::{mirror} is out of sync with {src} — run {sync_script}")
+                fail = True
           print("metrics:", len(json.loads((root/'packages/metric-ontology/registry.json').read_text())['metrics']))
           sys.exit(1 if fail else 0)
           PY
@@ -36,19 +51,73 @@ jobs:
   ios-build-test:
     name: iOS build + test
     runs-on: macos-15
+    needs: data-contracts
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Select Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          # README requires Xcode 26+; SemVer prefix picks the latest installed 26.x.
+          xcode-version: '26'
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-deriveddata-${{ hashFiles('apps/ios/**/*.swift', 'apps/ios/project.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-deriveddata-
+      - name: Install XcodeGen (pinned)
+        run: |
+          set -euo pipefail
+          curl -sL -o xcodegen.zip "https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip"
+          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  xcodegen.zip" | shasum -a 256 -c -
+          unzip -q xcodegen.zip
+          sudo ./xcodegen/install.sh
+          xcodegen --version
       - name: Generate project
         working-directory: apps/ios
         run: xcodegen generate
       - name: Build & test
         working-directory: apps/ios
         run: |
+          set -o pipefail
           xcodebuild -project BADAN.xcodeproj -scheme BADAN \
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 16' \
-            test | xcpretty || xcodebuild -project BADAN.xcodeproj -scheme BADAN \
-            -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 16' test
+            -resultBundlePath TestResults.xcresult \
+            test | xcpretty
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: apps/ios/TestResults.xcresult
+          retention-days: 5
+
+  android-build-test:
+    name: Android build + test
+    runs-on: ubuntu-latest
+    needs: data-contracts
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests
+        working-directory: apps/android
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+      - name: Assemble debug
+        working-directory: apps/android
+        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Lint (non-blocking)
+        # Pre-existing lint errors in app resources are outside this job's scope to fix;
+        # this step surfaces new issues without failing the build until they're cleaned up.
+        working-directory: apps/android
+        continue-on-error: true
+        run: ./gradlew :app:lint --no-daemon

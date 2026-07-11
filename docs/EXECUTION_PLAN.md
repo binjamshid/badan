@@ -7,10 +7,10 @@
 **Reconciliation notes (ambiguities resolved, not hidden):**
 
 1. **Blueprint file naming.** The root `BADAN_MASTER_BLUEPRINT.md` *is* v2.0 (the execution reference). The old v1 product blueprint is `docs/BADAN_MASTER_BLUEPRINT_OLD_DONT_USE.md`. Blueprint §-references below are to the root v2 file.
-2. **KMP vs native-first.** Blueprint v2 §33/§47/§52 assume a KMP shared core (SQLDelight, `core-db`, commonMain paths). `CLAUDE.md` + `docs/architecture-decision.md` + repo reality say native-first with contracts-level sharing. **Native-first governs.** Blueprint v2's subsystem *specs* (DDL shapes, dedup rules, port interfaces, pipeline stages) remain authoritative as specifications; its KMP module paths are translated here to `packages/` (specs) + per-platform native implementations (GRDB / Room). A KMP re-evaluation gate runs at M4 (§2, D-4).
+2. **KMP vs native-first.** Blueprint v2 §33/§47/§52 assume a KMP shared core (SQLDelight, `core-db`, commonMain paths). `CLAUDE.md` + `docs/architecture-decision.md` + repo reality say native-first with contracts-level sharing. **Native-first governs.** Blueprint v2's subsystem *specs* (DDL shapes, dedup rules, port interfaces, pipeline stages) remain authoritative as specifications; its KMP module paths are translated here to `packages/` (specs) + per-platform native implementations (raw SQLite on iOS, framework SQLite on Android — ADR-0005/ADR-0007). A KMP re-evaluation gate runs at M4 (§2, D-4).
 3. **Entity naming.** Canonical names follow the blueprint (`RawSample`, `IntervalRecord`, `Session`, `EventRecord`, `DerivedValue`, `Baseline`, `ExportJob`); the seed names in `packages/contracts/src/health_contracts.md` (`NormalizedMeasurement`, `DerivedMetric`, `UserLogEntry`, `ExportBundle`) are superseded (rename map in §3).
 4. **`apps/flutter`** is referenced in `docs/scaffold-notes.md` but does not exist. The Flutter path is closed (§12 amends the note).
-5. **Tab IA.** Shells have 4 tabs (Home/Metrics/Log/Settings); blueprint specifies 5 destinations. The 4-tab shell is a deliberate MVP deferral; rename `Metrics` → `Body` now while free (§12), revisit IA at M4.
+5. **Tab IA.** Both apps now ship the full 5-tab IA (Today, Body, Log, Insights, Settings) — the blueprint's 5 destinations — superseding the earlier 4-tab MVP-deferral plan; the `Metrics` → `Body` rename (§12) has also landed.
 
 **Scope rule for everything below:** nothing gets built that vertical slices VS-1…VS-5 (§7) do not exercise. Schema-level reservations for sync, imports, and derived-value versioning are the only forward payments allowed. Explicitly deferred: sync service, AI/insight engine, vendor/broker integrations, watch/widgets, notifications, Coach surface, labs/biology, cycle engine.
 
@@ -99,7 +99,7 @@ I1 every stored health datum carries full Provenance · I2 derived values append
 
 ## 4. Storage and schema starting set
 
-One **logical schema**, specified in `docs/data-model.md` + per-platform DDL: GRDB (iOS) and Room (Android), same table/column names, snake_case. Adapted from blueprint §52.2 to MVP scope (no FTS, no aggregates tier, no oplog yet). Column types: `TEXT` ULIDs, `INTEGER` epoch-millis UTC, `TEXT` IANA tz ids, `TEXT` JSON for closed payloads. Sync-ready columns on **every** row table: `updated_at`, `origin_device_id`, `deleted_at` (tombstone).
+One **logical schema**, specified in `docs/data-model.md` + per-platform DDL: raw SQLite (iOS) and framework SQLite (Android) — ADR-0005/ADR-0007 — same table/column names, snake_case. Adapted from blueprint §52.2 to MVP scope (no FTS, no aggregates tier, no oplog yet). Column types: `TEXT` ULIDs, `INTEGER` epoch-millis UTC, `TEXT` IANA tz ids, `TEXT` JSON for closed payloads. Sync-ready columns on **every** row table: `updated_at`, `origin_device_id`, `deleted_at` (tombstone).
 
 ### 4.1 Main DB `badan.db` — tables v1
 
@@ -132,7 +132,7 @@ One **logical schema**, specified in `docs/data-model.md` + per-platform DDL: GR
 ### 4.3 Policies
 
 - **IDs:** ULID everywhere, minted on-device (offline-generatable, time-sortable — index-friendly and sync-safe later). One shared ULID implementation per platform, fixture-tested for canonical encoding.
-- **Migrations:** forward-only, numbered (`001_init.sql` …); no down-migrations ever. From the first schema change onward: frozen fixture DB per released version, K→N migration matrix in CI. Long data migrations run as resumable post-migration jobs, never inside DDL. Room exports schema JSON to `schemas/` for migration testing; GRDB migrations snapshot-tested.
+- **Migrations:** forward-only, numbered (`001_init.sql` …); no down-migrations ever. From the first schema change onward: frozen fixture DB per released version, K→N migration matrix in CI. Long data migrations run as resumable post-migration jobs, never inside DDL. Both platforms run the same numbered migration SQL verbatim through their thin `SqliteConnection`/`SQLiteConnection` wrappers; migrations are snapshot-tested against a frozen fixture DB per released version.
 - **Query discipline:** every repository query names its index; `EXPLAIN QUERY PLAN` snapshot tests fail CI on full-table scans over `raw_samples`, `event_records`, `sessions`.
 - **Dedup hooks:** the partial unique identity index (upsert-on-re-sync), `suppressed_by` on every record table (suppress, never delete), `dedup_decisions` journal with reversal semantics.
 - **Audit/history:** derived values append-only (I2); `event_records.edit_audit` JSON trail for user edits; tombstones instead of hard deletes except user-initiated purge flows.
@@ -185,11 +185,11 @@ Ordered to minimize rework and prove architecture earliest. (Wave 0 first — no
 18. `packages/fixtures/ingestion/{sleep_two_sources.json,hr_day.json,steps_phone_watch_overlap.json,dst_night.json}` + `expected/` canonical rows + `expected_export/` CSV/JSON goldens + authoring README
 
 **Wave 2 — apps become buildable (AP-05 ∥ AP-06)**
-19. iOS: `apps/ios/project.yml` (XcodeGen; app + unit-test + conformance-test targets) + GRDB dependency
+19. iOS: `apps/ios/project.yml` (XcodeGen; app + unit-test + conformance-test targets); no external DB dependency (raw SQLite, ADR-0005)
 20. iOS: `Sources/Generated/` (codegen output), `Sources/Domain/` (thin extensions over generated types)
-21. iOS: `Sources/Storage/Database.swift` (GRDB, migration 001 = §4 DDL, both DB files), `Storage/Repositories/{SampleRepository,SessionRepository,EventRepository,BaselineRepository,ExportJobRepository,ProfileRepository}.swift`
+21. iOS: `Sources/Storage/Database.swift` (raw SQLite via `SQLiteConnection`, migration 001 = §4 DDL, both DB files), `Storage/Repositories/{SampleRepository,SessionRepository,EventRepository,BaselineRepository,ExportJobRepository,ProfileRepository}.swift`
 22. Android: `settings.gradle.kts`, `build.gradle.kts` (root+app), `gradle/libs.versions.toml`, wrapper, `AndroidManifest.xml`
-23. Android: `…/generated/`, `…/domain/`, `storage/{BadanDatabase.kt,SensitiveDatabase.kt}` (Room, same logical DDL, schema JSON exported), `storage/repositories/*.kt`
+23. Android: `…/generated/`, `…/domain/`, `storage/{BadanDatabase.kt,SensitiveDatabase.kt}` (framework SQLite via `SqliteConnection`, ADR-0007, same logical DDL as iOS), `storage/repositories/*.kt`
 24. Both: `Platform/Health/` adapters (sleep + HR + steps read paths) + `FakeHealthStore` + fixtures wiring
 25. Both: conformance test targets (`apps/ios/Tests/ConformanceTests/`, `apps/android/app/src/test/…/conformance/`) reading `packages/fixtures/`
 
@@ -240,8 +240,8 @@ Each slice is end-to-end, ships on **both** platforms, and proves a named archit
 | WS | Mission | Owns (exclusive write) | Blocked by | Parallel with |
 |---|---|---|---|---|
 | WS-A Contracts & codegen | schemas, ontology, export schema, fixtures, `gen_types` | `packages/*`, `scripts/gen_types*` | AP-01 | everything after M1 freeze |
-| WS-B iOS platform | project bootstrap, GRDB, HK adapter, repositories | `apps/ios/{project.yml,Sources/{Storage,Platform,Generated}}` | WS-A freeze | WS-C |
-| WS-C Android platform | gradle bootstrap, Room, HC adapter, repositories | `apps/android/{*.gradle.kts,…/{storage,platform,generated}}` | WS-A freeze | WS-B |
+| WS-B iOS platform | project bootstrap, raw SQLite (ADR-0005), HK adapter, repositories | `apps/ios/{project.yml,Sources/{Storage,Platform,Generated}}` | WS-A freeze | WS-C |
+| WS-C Android platform | gradle bootstrap, framework SQLite (ADR-0007), HC adapter, repositories | `apps/android/{*.gradle.kts,…/{storage,platform,generated}}` | WS-A freeze | WS-B |
 | WS-D iOS features | Home/Detail/Export/Logging screens + state models | `apps/ios/Sources/Features/**` | WS-B repos | WS-E |
 | WS-E Android features | same, mirrored | `apps/android/…/features/**` | WS-C repos | WS-D |
 | WS-F Export | export engine both platforms + schema tests | `Features/Export/**` both + `packages/export-schemas` (with WS-A review) | WS-A, storage | WS-D/E others |
@@ -302,9 +302,9 @@ Format: **AP-nn · name — prereqs · owns (exclusive write) · tasks · accept
 
 **AP-04 · Conformance fixtures** ∥ — prereqs: AP-02/03 · owns: `packages/fixtures/**` · tasks: `sleep_two_sources` (overlap dedup), `hr_day`, `steps_phone_watch_overlap`, `dst_night`; expected canonical rows; expected CSV/JSON export bytes; authoring README · acceptance: fixtures validate against schemas; expected exports conform to export-schemas · avoid: platform-specific encodings.
 
-**AP-05 · iOS project bootstrap** ∥ (AP-02) — owns: `apps/ios/{project.yml,Package.swift,Sources/{Generated,Domain,Storage},Tests/}` · tasks: XcodeGen project (app + unit + conformance targets); GRDB; migration 001 = §4 DDL incl. both DB files and sync-ready columns; repositories (Sample/Session/Event/Baseline/ExportJob/Profile); wire existing placeholder views into a buildable app · acceptance: `xcodebuild test` green in CI; DB round-trip unit test; existing RootView renders · avoid: rewriting Feature view content; networking; hand-edits in `Generated/`.
+**AP-05 · iOS project bootstrap** ∥ (AP-02) — owns: `apps/ios/{project.yml,Package.swift,Sources/{Generated,Domain,Storage},Tests/}` · tasks: XcodeGen project (app + unit + conformance targets); raw SQLite via `SQLiteConnection` (ADR-0005); migration 001 = §4 DDL incl. both DB files and sync-ready columns; repositories (Sample/Session/Event/Baseline/ExportJob/Profile); wire existing placeholder views into a buildable app · acceptance: `xcodebuild test` green in CI; DB round-trip unit test; existing RootView renders · avoid: rewriting Feature view content; networking; hand-edits in `Generated/`.
 
-**AP-06 · Android project bootstrap** ∥ — mirror of AP-05 · owns: `apps/android/**` build files, `storage/`, `generated/`, test targets · tasks: gradle bootstrap; Room main + sensitive DBs, schema JSON export; repositories; manifest/theme; manual DI (no Hilt bikeshed — small graph, mirrors iOS environment approach, revisit M4) · acceptance: `./gradlew test assembleDebug` green in CI; Room schemas exported · avoid: same as AP-05.
+**AP-06 · Android project bootstrap** ∥ — mirror of AP-05 · owns: `apps/android/**` build files, `storage/`, `generated/`, test targets · tasks: gradle bootstrap; framework SQLite (ADR-0007) main + sensitive DBs via `SqliteConnection`; repositories; manifest/theme; manual DI (no Hilt bikeshed — small graph, mirrors iOS environment approach, revisit M4) · acceptance: `./gradlew test assembleDebug` green in CI; migrations verified · avoid: same as AP-05.
 
 **AP-07 · iOS HealthKit adapter** ∥ (AP-05) — owns: `apps/ios/Sources/Platform/Health/**` · tasks: implement port for sleepAnalysis/heartRate/restingHeartRate/stepCount: authorization bundles, anchored reads with `read_anchors` persistence, DTO mapping per typemap, PermissionState persistence; FakeHealthStore · acceptance: adapter conformance-kit subset passes on fake + recorded fixtures; permission matrix renders correct states · avoid: background delivery; write paths.
 

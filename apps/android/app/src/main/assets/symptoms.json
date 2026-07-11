@@ -284,5 +284,63 @@
       "nameAr": "ظهور حبوب",
       "category": "skin"
     }
+  ],
+  "categories": [
+    {
+      "id": "general",
+      "nameEn": "General",
+      "nameAr": "عام",
+      "descriptionEn": "Whole-body sensations, like fatigue or thirst, that aren't tied to one specific area.",
+      "descriptionAr": "أحاسيس عامة في الجسم، مثل التعب أو العطش، لا ترتبط بمنطقة محددة."
+    },
+    {
+      "id": "head",
+      "nameEn": "Head",
+      "nameAr": "الرأس",
+      "descriptionEn": "Sensations felt in or around the head, such as headache or lightheadedness.",
+      "descriptionAr": "أحاسيس تشعر بها في الرأس أو حوله، مثل الصداع أو خفة الرأس."
+    },
+    {
+      "id": "digestive",
+      "nameEn": "Digestive",
+      "nameAr": "الجهاز الهضمي",
+      "descriptionEn": "Sensations related to eating and digestion, from bloating to appetite changes.",
+      "descriptionAr": "أحاسيس مرتبطة بالأكل والهضم، من الانتفاخ إلى تغيّر الشهية."
+    },
+    {
+      "id": "respiratory",
+      "nameEn": "Respiratory",
+      "nameAr": "الجهاز التنفسي",
+      "descriptionEn": "Sensations related to breathing and the nose or throat.",
+      "descriptionAr": "أحاسيس مرتبطة بالتنفس والأنف أو الحلق."
+    },
+    {
+      "id": "musculoskeletal",
+      "nameEn": "Muscles & joints",
+      "nameAr": "العضلات والمفاصل",
+      "descriptionEn": "Sensations in the muscles, joints, back, or neck.",
+      "descriptionAr": "أحاسيس في العضلات والمفاصل أو الظهر والرقبة."
+    },
+    {
+      "id": "mental",
+      "nameEn": "Mood & mind",
+      "nameAr": "المزاج والذهن",
+      "descriptionEn": "How your mood, focus, or stress level feels day to day.",
+      "descriptionAr": "كيف تشعر بمزاجك أو تركيزك أو مستوى توترك يومياً."
+    },
+    {
+      "id": "sleep",
+      "nameEn": "Sleep",
+      "nameAr": "النوم",
+      "descriptionEn": "Sensations tied to falling asleep, staying asleep, or feeling rested.",
+      "descriptionAr": "أحاسيس مرتبطة بالدخول في النوم أو الاستمرار فيه أو الشعور بالراحة."
+    },
+    {
+      "id": "skin",
+      "nameEn": "Skin",
+      "nameAr": "الجلد",
+      "descriptionEn": "Sensations or changes noticed on your skin.",
+      "descriptionAr": "أحاسيس أو تغيّرات تلاحظها على جلدك."
+    }
   ]
 }

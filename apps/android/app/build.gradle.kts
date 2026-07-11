@@ -22,8 +22,12 @@ android {
 
     buildTypes {
         release {
+            // isMinifyEnabled stays false for now, so no proguard-rules.pro is referenced here —
+            // referencing a keep-rules file that doesn't exist yet would be a landmine for the
+            // day minification is turned on. Add the file (kotlinx.serialization + Health
+            // Connect keep rules) in the same change that flips isMinifyEnabled to true.
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 
@@ -45,6 +49,14 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+}
+
+composeCompiler {
+    // Build-verified visibility into which composables/state holders the Compose compiler
+    // considers unstable or non-skippable, so recomposition claims can be checked against real
+    // data instead of static analysis alone.
+    reportsDestination = layout.buildDirectory.dir("compose_reports")
+    metricsDestination = layout.buildDirectory.dir("compose_metrics")
 }
 
 dependencies {
