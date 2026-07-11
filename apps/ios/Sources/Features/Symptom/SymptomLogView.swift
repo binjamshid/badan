@@ -17,6 +17,17 @@ private enum SymptomLogStrings {
     static let selfReport = LocalizedString(en: "Saved as a manual self-report.", ar: "محفوظ كإدخال ذاتي يدوي.")
     static let deviceOnly = LocalizedString(en: "Stays on this device only.", ar: "يبقى على هذا الجهاز فقط.")
     static let timeZone = LocalizedString(en: "Time zone", ar: "المنطقة الزمنية")
+    static let yesterday = LocalizedString(en: "Yesterday", ar: "أمس")
+    static let saveErrorTitle = LocalizedString(en: "Couldn’t save — try again.", ar: "تعذّر الحفظ — حاول مرة أخرى.")
+    static let loadErrorTitle = LocalizedString(en: "Couldn’t load your symptoms right now.", ar: "تعذّر تحميل أعراضك الآن.")
+    static let savedConfirmation = LocalizedString(en: "Saved", ar: "تم الحفظ")
+    static let oldDateNotice = LocalizedString(
+        en: "That’s a while back — double check the date.",
+        ar: "هذا تاريخ بعيد نسبياً — تحقق منه.")
+    static let ofScale = LocalizedString(en: "of 10", ar: "من 10")
+    static let trendTitle = LocalizedString(en: "Your symptom trend", ar: "اتجاه أعراضك")
+    static let trendCountLabel = LocalizedString(en: "Logged", ar: "المسجّل")
+    static let trendSeverityLabel = LocalizedString(en: "Average severity", ar: "متوسط الشدة")
 
     static func logCustom(_ query: String) -> LocalizedString {
         LocalizedString(en: "Log “\(query)”", ar: "تسجيل «\(query)»")
@@ -75,6 +86,13 @@ private enum SymptomChoice: Equatable {
 struct SymptomLogData {
     var recents: [SymptomDefinition]
     var categories: [(key: String, items: [SymptomDefinition])]
+    /// Distinct free-text triggers used in the last 30 days, for lightweight autocomplete
+    /// alongside the fixed suggestion chips (FEAT-199).
+    var recentTriggers: [String] = []
+    /// Small "your symptom trend" summary, sourced from the derived metrics registry
+    /// (`symptoms.count` / `symptoms.severity_avg`) when available (FEAT-161).
+    var trendCount: Int?
+    var trendSeverityAvg: Double?
 }
 
 // MARK: - View model
@@ -104,13 +122,39 @@ final class SymptomLogViewModel {
                 (key: key, items: env.symptoms.inCategory(key))
             }
 
-            let data = SymptomLogData(recents: recents, categories: categories)
+            // Distinct past free-text triggers, for lightweight autocomplete (FEAT-199).
+            let recentTriggers = Array(Set(recentEntries.flatMap(\.triggers))).sorted()
+
+            // Purpose-built derived metrics for symptom reporting, surfaced as a small trend
+            // summary (FEAT-161). Best-effort: absence just hides the card.
+            let countSeries = try? env.derivation.latestDerivedSeries(metricId: "symptoms.count")
+            let severitySeries = try? env.derivation.latestDerivedSeries(metricId: "symptoms.severity_avg")
+            let trendCount = countSeries?.max(by: { $0.computedAt < $1.computedAt }).map { Int($0.value.rounded()) }
+            let trendSeverityAvg = severitySeries?.max(by: { $0.computedAt < $1.computedAt })?.value
+
+            let data = SymptomLogData(
+                recents: recents,
+                categories: categories,
+                recentTriggers: recentTriggers,
+                trendCount: trendCount,
+                trendSeverityAvg: trendSeverityAvg)
             state = (recents.isEmpty && categories.isEmpty)
                 ? .empty(env.s(Loc.chooseSymptom))
                 : .loaded(data)
         } catch {
-            state = .error(String(describing: error))
+            state = .error(env.s(SymptomLogStrings.loadErrorTitle))
         }
+    }
+
+    /// After a successful save, fold the just-logged symptom into `recents` in place instead
+    /// of re-fetching and re-deduping the full 30-day window — keeps the "Save & add another"
+    /// loop fast (PERF-066). No-op for custom (non-dictionary) labels, which never populate
+    /// `recents`.
+    fileprivate func prependRecent(_ choice: SymptomChoice) {
+        guard case .loaded(var data) = state, case .known(let def) = choice else { return }
+        data.recents.removeAll { $0.id == def.id }
+        data.recents.insert(def, at: 0)
+        state = .loaded(data)
     }
 }
 
@@ -122,6 +166,7 @@ final class SymptomLogViewModel {
 struct SymptomLogView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var vm = SymptomLogViewModel()
 
     // Capture state
@@ -133,15 +178,21 @@ struct SymptomLogView: View {
     @State private var note: String = ""
     @State private var occurredAt: Date = Date()
     @State private var maxDate: Date = Date()
+    /// Snapshotted once at screen entry, not read live at save time (OPT-110).
+    @State private var tz: String = TimeZone.current.identifier
 
-    private var tz: String { TimeZone.current.identifier }
+    // Save-flow state
+    @State private var isSaving: Bool = false
+    @State private var saveError: String?
+    @State private var savedTick: Int = 0
+    @State private var showSavedToast: Bool = false
 
     var body: some View {
         ScrollView {
             StatefulContainer(vm.state) { data in
                 Group {
                     if let selection {
-                        captureForm(selection)
+                        captureForm(selection, recentTriggers: data.recentTriggers)
                     } else {
                         picker(data)
                     }
@@ -152,11 +203,52 @@ struct SymptomLogView: View {
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.logSymptom))
         .navigationBarTitleDisplayMode(.inline)
+        .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom) {
+            if let selection {
+                saveButtons(selection)
+                    .padding(.horizontal, BadanSpace.space4)
+                    .padding(.top, BadanSpace.space3)
+                    .padding(.bottom, BadanSpace.space2)
+                    .background(.bar)
+            }
+        }
+        .overlay(alignment: .top) {
+            if showSavedToast {
+                savedToast
+                    .padding(.top, BadanSpace.space2)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: showSavedToast)
+        .sensoryFeedback(.success, trigger: savedTick)
         .task {
+            tz = TimeZone.current.identifier
             maxDate = env.now()
             if selection == nil { occurredAt = env.now() }
             vm.load(env)
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Keep the "cannot log the future" upper bound live across backgrounding, not
+            // frozen at first appearance (OPT-109 / UIUX-122).
+            if newPhase == .active { maxDate = env.now() }
+        }
+    }
+
+    private var savedToast: some View {
+        HStack(spacing: BadanSpace.space2) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(BadanColor.primary)
+                .accessibilityHidden(true)
+            Text(env.s(SymptomLogStrings.savedConfirmation))
+                .font(BadanFont.bodyCompact.weight(.medium))
+                .foregroundStyle(BadanColor.textPrimary)
+        }
+        .padding(.horizontal, BadanSpace.space3)
+        .frame(minHeight: BadanSpace.touchMin)
+        .background(BadanColor.surfaceElevated, in: Capsule())
+        .overlay(Capsule().strokeBorder(BadanColor.separator, lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Picker (choose a symptom)
@@ -167,6 +259,10 @@ struct SymptomLogView: View {
             Text(env.s(SymptomLogStrings.privateNote))
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textSecondary)
+
+            if data.trendCount != nil || data.trendSeverityAvg != nil {
+                trendCard(data)
+            }
 
             searchField
 
@@ -212,6 +308,12 @@ struct SymptomLogView: View {
     @ViewBuilder
     private func searchResults(query: String) -> some View {
         let results = env.symptoms.search(query)
+        // Suppress the free-text "Log '<query>'" option when it's a near-exact match of a
+        // dictionary symptom already listed above, so typing "migraine" doesn't create a
+        // second, fragmented identity next to the canonical "Migraine" row (OPT-112).
+        let hasExactDictionaryMatch = results.contains {
+            env.s($0.displayName).localizedCaseInsensitiveCompare(query) == .orderedSame
+        }
         VStack(alignment: .leading, spacing: BadanSpace.space2) {
             ForEach(results) { def in
                 resultRow(def)
@@ -223,7 +325,9 @@ struct SymptomLogView: View {
                     .padding(.vertical, BadanSpace.space1)
             }
             // Free-text custom label — anything not in the dictionary is still loggable.
-            customResultRow(query)
+            if !hasExactDictionaryMatch {
+                customResultRow(query)
+            }
         }
     }
 
@@ -311,20 +415,53 @@ struct SymptomLogView: View {
         }
     }
 
+    /// A calm, at-a-glance readout of `symptoms.count` / `symptoms.severity_avg` — derived
+    /// metrics that exist in the registry but had no presentation surface until now (FEAT-161).
+    private func trendCard(_ data: SymptomLogData) -> some View {
+        BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                SectionHeader(env.s(SymptomLogStrings.trendTitle))
+                HStack(spacing: BadanSpace.space5) {
+                    if let count = data.trendCount {
+                        VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                            Text(env.format.integer(count))
+                                .font(BadanFont.sectionTitle.monospacedDigit())
+                                .foregroundStyle(BadanColor.textPrimary)
+                            Text(env.s(SymptomLogStrings.trendCountLabel))
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                        }
+                    }
+                    if let avg = data.trendSeverityAvg {
+                        VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                            Text("\(env.format.number(avg, fraction: 1))/\(env.format.integer(10))")
+                                .font(BadanFont.sectionTitle.monospacedDigit())
+                                .foregroundStyle(BadanColor.textPrimary)
+                            Text(env.s(SymptomLogStrings.trendSeverityLabel))
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Capture form
 
     @ViewBuilder
-    private func captureForm(_ choice: SymptomChoice) -> some View {
+    private func captureForm(_ choice: SymptomChoice, recentTriggers: [String]) -> some View {
         let power = env.depth.showsPowerDetail
-        let sev = Int(severity.rounded())
         VStack(alignment: .leading, spacing: BadanSpace.space4) {
             selectedHeader(choice)
-            severityCard(sev: sev, power: power)
-            triggersCard()
+            severityCard(sev: roundedSeverity, power: power)
+            triggersCard(recentTriggers: recentTriggers)
             noteCard()
             whenCard()
             if power { metadataCard() }
-            saveButtons(choice)
+            if let saveError {
+                errorRow(saveError)
+            }
         }
     }
 
@@ -346,7 +483,12 @@ struct SymptomLogView: View {
                     Text(env.s(SymptomLogStrings.change))
                         .font(BadanFont.body.weight(.medium))
                         .foregroundStyle(BadanColor.primary)
+                        // Widen the tappable area beyond the text's own width — a short label
+                        // with only vertical padding is an easy miss on a row used every time
+                        // (UIUX-125).
+                        .padding(.horizontal, BadanSpace.space2)
                         .frame(minHeight: BadanSpace.touchMin)
+                        .contentShape(Rectangle())
                 }
             }
         }
@@ -354,6 +496,14 @@ struct SymptomLogView: View {
 
     private func severityCard(sev: Int, power: Bool) -> some View {
         let tint = severityTint(sev)
+        // Computed once and reused for both the visible label and the accessibility value,
+        // instead of calling severityDescriptor(sev) twice per render (PERF-068).
+        let descriptor = env.s(severityDescriptor(sev))
+        // Power-mode sighted users see the raw 0–10 number next to the header; VoiceOver users
+        // should hear the same information, not just the qualitative word (UIUX-117).
+        let accessibilityValue = power
+            ? "\(descriptor), \(env.format.integer(sev)) \(env.s(SymptomLogStrings.ofScale))"
+            : descriptor
         return BadanCard {
             VStack(alignment: .leading, spacing: BadanSpace.space3) {
                 SectionHeader(env.s(Loc.severity)) {
@@ -364,12 +514,31 @@ struct SymptomLogView: View {
                             .foregroundStyle(BadanColor.textSecondary)
                     }
                 }
-                Text(env.s(severityDescriptor(sev)))
+                Text(descriptor)
                     .font(BadanFont.sectionTitle)
                     .foregroundStyle(tint)
-                Slider(value: $severity, in: 0...10, step: 1)
-                    .tint(tint)
-                    .accessibilityValue(env.s(severityDescriptor(sev)))
+                    // A hard color snap at the 7/10 threshold can read as a sudden alarm;
+                    // ease into it instead, consistent with "calm amber, never alarming" (UIUX-118).
+                    .animation(.easeInOut(duration: 0.2), value: tint)
+                VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                    // Subtle mild/moderate/severe landmarks under the track so the descriptor
+                    // change isn't a surprise while dragging (UIUX-114).
+                    GeometryReader { geo in
+                        HStack(spacing: 2) {
+                            Capsule().fill(BadanColor.primary.opacity(0.25))
+                                .frame(width: geo.size.width * 0.35)
+                            Capsule().fill(BadanColor.primary.opacity(0.45))
+                                .frame(width: geo.size.width * 0.30)
+                            Capsule().fill(BadanColor.outOfBand.opacity(0.45))
+                                .frame(width: geo.size.width * 0.35 - 4)
+                        }
+                    }
+                    .frame(height: 4)
+                    Slider(value: $severity, in: 0...10, step: 1)
+                        .tint(tint)
+                        .animation(.easeInOut(duration: 0.2), value: tint)
+                        .accessibilityValue(accessibilityValue)
+                }
                 HStack {
                     Text(env.s(Loc.mild))
                     Spacer()
@@ -383,7 +552,7 @@ struct SymptomLogView: View {
         }
     }
 
-    private func triggersCard() -> some View {
+    private func triggersCard(recentTriggers: [String]) -> some View {
         BadanCard {
             VStack(alignment: .leading, spacing: BadanSpace.space3) {
                 SectionHeader(env.s(Loc.triggers))
@@ -399,9 +568,11 @@ struct SymptomLogView: View {
                     }
                 }
 
-                let suggestions = SymptomLogStrings.triggerSuggestions
-                    .map { env.s($0) }
-                    .filter { !triggers.contains($0) }
+                // Fixed suggestions plus the user's own recently-used free-text triggers
+                // (FEAT-199), deduplicated case-insensitively (OPT-108) against each other and
+                // against triggers already added to this entry.
+                let suggestions = dedupedSuggestions(
+                    SymptomLogStrings.triggerSuggestions.map { env.s($0) } + recentTriggers)
                 if !suggestions.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: BadanSpace.space2) {
@@ -438,27 +609,45 @@ struct SymptomLogView: View {
 
     private func noteCard() -> some View {
         BadanCard {
+            // A taller minimum line count than the single-line fields above hints this is the
+            // one open-ended free-text field on the screen (UIUX-124).
             TextField(env.s(Loc.notePlaceholder), text: $note, axis: .vertical)
                 .font(BadanFont.body)
                 .foregroundStyle(BadanColor.textPrimary)
-                .lineLimit(1...4)
+                .lineLimit(2...5)
         }
     }
 
     private func whenCard() -> some View {
         BadanCard {
-            HStack(spacing: BadanSpace.space3) {
-                Image(systemName: "clock")
-                    .foregroundStyle(BadanColor.textSecondary)
-                    .accessibilityHidden(true)
-                Text(env.s(SymptomLogStrings.whenLabel))
-                    .font(BadanFont.body)
-                    .foregroundStyle(BadanColor.textPrimary)
-                Spacer(minLength: BadanSpace.space2)
-                DatePicker("", selection: $occurredAt, in: ...maxDate, displayedComponents: [.date, .hourAndMinute])
-                    .labelsHidden()
+            VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                HStack(spacing: BadanSpace.space3) {
+                    Image(systemName: "clock")
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .accessibilityHidden(true)
+                    Text(env.s(SymptomLogStrings.whenLabel))
+                        .font(BadanFont.body)
+                        .foregroundStyle(BadanColor.textPrimary)
+                    Spacer(minLength: BadanSpace.space2)
+                    DatePicker("", selection: $occurredAt, in: ...maxDate, displayedComponents: [.date, .hourAndMinute])
+                        .labelsHidden()
+                }
+                .frame(minHeight: BadanSpace.touchMin)
+                // One-tap backdate shortcuts for the most common correction (FEAT-285).
+                HStack(spacing: BadanSpace.space2) {
+                    chip(title: env.s(Loc.today), selected: isSameDay(occurredAt, as: 0)) {
+                        setOccurred(daysAgo: 0)
+                    }
+                    chip(title: env.s(SymptomLogStrings.yesterday), selected: isSameDay(occurredAt, as: 1)) {
+                        setOccurred(daysAgo: 1)
+                    }
+                }
+                if isImplausiblyOld(occurredAt) {
+                    Text(env.s(SymptomLogStrings.oldDateNotice))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.outOfBand)
+                }
             }
-            .frame(minHeight: BadanSpace.touchMin)
         }
     }
 
@@ -466,13 +655,29 @@ struct SymptomLogView: View {
         BadanCard {
             VStack(alignment: .leading, spacing: BadanSpace.space2) {
                 SectionHeader(env.s(SymptomLogStrings.details))
-                metaRow(env.s(SymptomLogStrings.timeZone), value: tz)
+                metaRow(env.s(SymptomLogStrings.timeZone), value: localizedTimeZoneLabel)
                 Text(env.s(SymptomLogStrings.selfReport))
                     .font(BadanFont.caption)
                     .foregroundStyle(BadanColor.textSecondary)
                 Text(env.s(SymptomLogStrings.deviceOnly))
                     .font(BadanFont.caption)
                     .foregroundStyle(BadanColor.textSecondary)
+            }
+        }
+    }
+
+    /// Wellness-safe, non-blocking notice — matches `ExportCenterScreen.errorCard`'s calm
+    /// tone. Entered data is left untouched so the user can just tap Save again (OPT-106 /
+    /// UIUX-113).
+    private func errorRow(_ message: String) -> some View {
+        BadanCard {
+            HStack(spacing: BadanSpace.space2) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(BadanColor.outOfBand)
+                    .accessibilityHidden(true)
+                Text(message)
+                    .font(BadanFont.body)
+                    .foregroundStyle(BadanColor.textPrimary)
             }
         }
     }
@@ -488,7 +693,9 @@ struct SymptomLogView: View {
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: BadanSpace.touchMin)
                     .background(BadanColor.primary, in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+                    .opacity(isSaving ? 0.6 : 1)
             }
+            .disabled(isSaving)
             Button {
                 save(choice, addAnother: true)
             } label: {
@@ -501,7 +708,9 @@ struct SymptomLogView: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
                             .strokeBorder(BadanColor.separator, lineWidth: 1))
+                    .opacity(isSaving ? 0.6 : 1)
             }
+            .disabled(isSaving)
         }
     }
 
@@ -575,7 +784,11 @@ struct SymptomLogView: View {
 
     private func addTrigger(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !triggers.contains(trimmed) else { return }
+        // Case-insensitive containment check, so "Stress" and "stress" don't both get added as
+        // separate triggers (OPT-108).
+        guard !trimmed.isEmpty,
+              !triggers.contains(where: { $0.localizedCaseInsensitiveCompare(trimmed) == .orderedSame })
+        else { return }
         triggers.append(trimmed)
     }
 
@@ -588,30 +801,94 @@ struct SymptomLogView: View {
         newTrigger = ""
     }
 
+    /// Fixed suggestions plus recent free-text triggers, deduplicated case-insensitively
+    /// against each other and against triggers already on this entry (OPT-108 / FEAT-199).
+    private func dedupedSuggestions(_ candidates: [String]) -> [String] {
+        var seenFolded = Set<String>()
+        var result: [String] = []
+        for candidate in candidates {
+            let folded = candidate.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            guard !seenFolded.contains(folded),
+                  !triggers.contains(where: { $0.localizedCaseInsensitiveCompare(candidate) == .orderedSame })
+            else { continue }
+            seenFolded.insert(folded)
+            result.append(candidate)
+        }
+        return result
+    }
+
+    private func isSameDay(_ date: Date, as daysAgo: Int) -> Bool {
+        guard let target = Calendar.current.date(byAdding: .day, value: -daysAgo, to: env.now()) else { return false }
+        return Calendar.current.isDate(date, inSameDayAs: target)
+    }
+
+    /// One-tap "Today"/"Yesterday" backdate shortcut, keeping the current time-of-day
+    /// (FEAT-285). Never past the live upper bound.
+    private func setOccurred(daysAgo: Int) {
+        let now = env.now()
+        let candidate = Calendar.current.date(byAdding: .day, value: -daysAgo, to: now) ?? now
+        occurredAt = min(candidate, maxDate)
+    }
+
+    /// A soft, non-blocking plausibility notice for far-backdated entries — an accidental
+    /// multi-year-old timestamp from a stray wheel-picker scroll is otherwise easy to miss
+    /// (OPT-113).
+    private func isImplausiblyOld(_ date: Date) -> Bool {
+        date < env.now().addingTimeInterval(-90 * 86_400)
+    }
+
+    private var localizedTimeZoneLabel: String {
+        let locale = Locale(identifier: env.language == .ar ? "ar" : "en_US")
+        return TimeZone(identifier: tz)?.localizedName(for: .generic, locale: locale) ?? tz
+    }
+
     private func save(_ choice: SymptomChoice, addAnother: Bool) {
+        // Guard against a fast double-tap inserting two near-identical entries (EASE-016 /
+        // EASE-097).
+        guard !isSaving else { return }
+        isSaving = true
+        saveError = nil
+
+        // Refresh the "cannot log the future" bound and clamp to it, so a screen left open
+        // across a real-time boundary can't silently save a now-past-max timestamp (OPT-109).
+        let now = env.now()
+        if maxDate < now { maxDate = now }
+        let clampedOccurredAt = min(occurredAt, maxDate)
+
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let entry = SymptomEntry(
             id: ULID.newID(),
             symptomId: choice.symptomId,
             customLabel: choice.customLabel,
-            severity: Int(severity.rounded()),
-            occurredAt: occurredAt,
+            severity: roundedSeverity,
+            occurredAt: clampedOccurredAt,
             tzId: tz,
             triggers: triggers,
             note: trimmedNote.isEmpty ? nil : trimmedNote,
-            updatedAt: env.now(),
+            updatedAt: now,
             originDeviceId: env.deviceId)
 
         do {
             try env.logging.insertSymptom(entry)
         } catch {
-            // Stay calm and non-destructive; keep the form so nothing is lost.
+            // Stay calm and non-destructive; keep the form intact so nothing entered is lost,
+            // and tell the user so they know to retry (OPT-106 / UIUX-113).
+            isSaving = false
+            saveError = env.s(SymptomLogStrings.saveErrorTitle)
             return
         }
 
+        isSaving = false
+        savedTick += 1 // light haptic confirmation (UIUX-119)
+
         if addAnother {
+            vm.prependRecent(choice) // PERF-066: no full 30-day re-fetch between entries
             resetForm()
-            vm.load(env) // refresh recents so the just-logged symptom is a 2-tap re-log
+            showSavedToast = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.6))
+                showSavedToast = false
+            }
         } else {
             dismiss()
         }
@@ -626,9 +903,14 @@ struct SymptomLogView: View {
         note = ""
         occurredAt = env.now()
         maxDate = env.now()
+        saveError = nil
     }
 
     // MARK: - Severity helpers
+
+    /// Computed once from `severity` and reused everywhere a rounded value is needed, so the
+    /// displayed value and the saved value can never drift apart (OPT-111).
+    private var roundedSeverity: Int { Int(severity.rounded()) }
 
     private func severityDescriptor(_ value: Int) -> LocalizedString {
         switch value {

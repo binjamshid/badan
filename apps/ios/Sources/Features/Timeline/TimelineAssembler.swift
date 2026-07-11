@@ -2,8 +2,8 @@ import Foundation
 
 /// Gathers the recent past from every store into a single, chronological `[TimelineEvent]` —
 /// BADAN's anti-fragmentation spine. Sleep and workouts come from measurement sessions;
-/// symptoms, medications, meals and notes from the logging repository; body weight from raw
-/// samples. Every row carries its own provenance (ingestion path) so the Timeline can show
+/// symptoms, medications, meals and notes from the logging repository; body measurements from
+/// raw samples. Every row carries its own provenance (ingestion path) so the Timeline can show
 /// "where this came from" without a join. Sensitive rows (meds/symptoms) are gated behind the
 /// same module switches that govern the sensitive database.
 @MainActor
@@ -15,6 +15,9 @@ struct TimelineAssembler {
 
     /// Assemble every event in the window, sorted newest-first.
     func assemble() throws -> [TimelineEvent] {
+        let signpostState = PerformanceLog.signposter.beginInterval("TimelineAssembler.assemble")
+        defer { PerformanceLog.signposter.endInterval("TimelineAssembler.assemble", signpostState) }
+
         let now = env.now()
         let from = now.addingTimeInterval(-Double(Self.windowDays) * 86_400)
         let to = now
@@ -52,9 +55,13 @@ struct TimelineAssembler {
             events.append(noteEvent(note))
         }
 
-        // Body weight measurements.
-        for sample in try env.measurements.rawSamples(metricId: MetricID.weight, from: from, to: to) {
-            events.append(weightEvent(sample))
+        // Body measurements — any raw-sample metric in the body family (weight, body fat %,
+        // lean mass, waist, …), not just weight, so any manually-logged body measurement
+        // appears in the unified spine.
+        for def in env.registry.metrics(in: .body) where def.kind == .rawSample {
+            for sample in try env.measurements.rawSamples(metricId: def.metricId, from: from, to: to) {
+                events.append(measurementEvent(sample, def: def))
+            }
         }
 
         return events.sorted { $0.occurredAt > $1.occurredAt }
@@ -87,29 +94,55 @@ struct TimelineAssembler {
         TimelineEvent(
             id: "symptom:\(s.id)", type: .symptom, occurredAt: s.occurredAt, tzId: s.tzId,
             title: env.symptoms.displayName(forId: s.symptomId, customLabel: s.customLabel),
+            subtitle: symptomSubtitle(s),
             valueText: severityLabel(s.severity).map(env.s),
             sourceRecordId: s.id, ingestionPath: .manual,
             sensitive: true, deletable: false)
     }
 
+    /// Surfaces the user's own free-text note alongside the coarse severity band, so at least
+    /// the richest deliberately-logged context isn't silently dropped from the unified record.
+    private func symptomSubtitle(_ s: SymptomEntry) -> LocalizedString? {
+        guard let note = s.note, !note.isEmpty else { return nil }
+        return LocalizedString(en: note, ar: note)
+    }
+
     private func medicationEvent(_ a: AdherenceEvent, regimen: MedicationRegimen?) -> TimelineEvent {
         let title = regimen.map { LocalizedString(en: $0.name, ar: $0.name) } ?? Loc.logMedication
         let strength = regimen?.strength.map { LocalizedString(en: $0, ar: $0) }
+        let subtitle = a.kind == .skipped ? (skipSubtitle(a) ?? strength) : strength
         return TimelineEvent(
             id: "medication:\(a.id)", type: .medication, occurredAt: a.occurredAt, tzId: a.tzId,
-            title: title, subtitle: strength, valueText: env.s(kindLabel(a.kind)),
+            title: title, subtitle: subtitle, valueText: env.s(kindLabel(a.kind)),
             sourceRecordId: a.id, ingestionPath: .manual,
             sensitive: true, deletable: true)
+    }
+
+    /// Explains a skipped dose using whatever the user captured at log time (reason and/or a
+    /// free-text note) instead of leaving the generic "Skipped" label to stand alone.
+    private func skipSubtitle(_ a: AdherenceEvent) -> LocalizedString? {
+        let reason = a.skipReason?.displayLabel
+        guard let note = a.skipNote, !note.isEmpty else { return reason }
+        guard let reason else { return LocalizedString(en: note, ar: note) }
+        return LocalizedString(en: "\(reason.en) — \(note)", ar: "\(reason.ar) — \(note)")
     }
 
     private func mealEvent(_ m: NutritionEntry) -> TimelineEvent {
         TimelineEvent(
             id: "meal:\(m.id)", type: .meal, occurredAt: m.occurredAt, tzId: m.tzId,
             title: LocalizedString(en: m.description, ar: m.description),
-            subtitle: m.mealType.displayName,
+            subtitle: mealSubtitle(m),
             valueText: m.energyKcal.map(caloriesText),
             sourceRecordId: m.id, ingestionPath: .manual,
             sensitive: false, deletable: true)
+    }
+
+    /// Honestly flags a quick/low-detail estimate alongside the meal type — the distinction
+    /// `NutritionEntry.lowDetail` exists specifically to preserve.
+    private func mealSubtitle(_ m: NutritionEntry) -> LocalizedString {
+        guard m.lowDetail else { return m.mealType.displayName }
+        let base = m.mealType.displayName
+        return LocalizedString(en: "\(base.en) · Quick log", ar: "\(base.ar) · تقدير سريع")
     }
 
     private func noteEvent(_ n: NoteEntry) -> TimelineEvent {
@@ -120,12 +153,12 @@ struct TimelineAssembler {
             sensitive: false, deletable: true)
     }
 
-    private func weightEvent(_ sample: RawSample) -> TimelineEvent {
-        let def = env.registry.definitionOrFallback(MetricID.weight)
-        return TimelineEvent(
-            id: "weight:\(sample.id)", type: .measurement, occurredAt: sample.startAt, tzId: sample.tzId,
+    private func measurementEvent(_ sample: RawSample, def: MetricDefinition) -> TimelineEvent {
+        TimelineEvent(
+            id: "measurement:\(def.metricId):\(sample.id)", type: .measurement,
+            occurredAt: sample.startAt, tzId: sample.tzId,
             title: def.displayName,
-            valueText: env.format.full(metricId: MetricID.weight, canonicalValue: sample.value),
+            valueText: env.format.full(metricId: def.metricId, canonicalValue: sample.value),
             sourceRecordId: sample.id, ingestionPath: sample.provenance.ingestionPath,
             sensitive: false, deletable: false)
     }
@@ -149,8 +182,21 @@ struct TimelineAssembler {
         }
     }
 
+    /// Arabic count nouns take a different grammatical number depending on magnitude: 1 is
+    /// singular, 2 is dual, 3–10 is plural, 11+ reverts to the indeclinable singular count
+    /// form. This covers the ranges a logged meal's calorie count will actually fall into; a
+    /// fully general Arabic-pluralization system is a larger, shared effort beyond this call
+    /// site.
     private func caloriesText(_ kcal: Double) -> String {
-        let unit = env.language == .ar ? "سعرة" : "kcal"
-        return "\(env.format.integer(Int(kcal.rounded()))) \(unit)"
+        let count = Int(kcal.rounded())
+        guard env.language == .ar else {
+            return "\(env.format.integer(count)) kcal"
+        }
+        switch count {
+        case 1: return "سعرة واحدة"
+        case 2: return "سعرتان"
+        case 3...10: return "\(env.format.integer(count)) سعرات"
+        default: return "\(env.format.integer(count)) سعرة"
+        }
     }
 }
