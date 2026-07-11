@@ -1,0 +1,107 @@
+{
+  "version": "0.1.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§22/23/55 Insight generation)",
+  "templates": [
+    {
+      "id": "vitals_within_band",
+      "metricFamily": "vitals",
+      "conditionEn": "Latest value sits inside the personal baseline band (|z| < 1) against the default context baseline.",
+      "textEn": "Your {metric} is {value} today, right in your usual range (around {baseline}).",
+      "textAr": "قيمة {metric} لديك اليوم هي {value}، ضمن نطاقك المعتاد (حوالي {baseline})."
+    },
+    {
+      "id": "hrv_below_band",
+      "metricFamily": "vitals",
+      "conditionEn": "Value below the personal baseline band (z <= -1) for a recovery-signal metric such as HRV.",
+      "textEn": "Your {metric} is reading {value}, a little below your usual {baseline} so far this week.",
+      "textAr": "قيمة {metric} لديك هي {value}، أقل قليلاً من معتادك {baseline} حتى الآن هذا الأسبوع."
+    },
+    {
+      "id": "rhr_above_band",
+      "metricFamily": "vitals",
+      "conditionEn": "Value above the personal baseline band (z >= +1), single-day, not yet a persisted composite.",
+      "textEn": "Your {metric} is {value}, slightly above your typical {baseline}. This can show up after a busier or warmer day.",
+      "textAr": "معدل {metric} لديك هو {value}، أعلى قليلاً من معتادك {baseline}. قد يظهر ذلك بعد يوم أكثر انشغالاً أو دفئاً."
+    },
+    {
+      "id": "composite_vitals_drift",
+      "metricFamily": "recovery",
+      "conditionEn": "Composite deviation: three or more vitals outside their bands in the same direction, persisted for {value} consecutive days.",
+      "textEn": "A few of your vitals, {metric} among them, have sat a little outside their usual bands together over the last {value} days.",
+      "textAr": "عدد من مؤشراتك الحيوية، ومنها {metric}، بقيت خارج نطاقاتها المعتادة معاً خلال آخر {value} أيام."
+    },
+    {
+      "id": "trend_improving",
+      "metricFamily": "recovery",
+      "conditionEn": "Rolling delta over the window is a meaningful favorable change (|delta| >= 0.8 x pooled MAD, direction good).",
+      "textEn": "Your {metric} has been moving in a good direction lately, {value} now versus your recent baseline of {baseline}.",
+      "textAr": "يتحسّن {metric} لديك مؤخراً، إذ بلغ {value} الآن مقارنةً بخط أساسك الأخير البالغ {baseline}."
+    },
+    {
+      "id": "sleep_debt_rising",
+      "metricFamily": "sleep",
+      "conditionEn": "Sleep-bank-type metric declined meaningfully versus the prior window and now sits below the personal baseline band.",
+      "textEn": "Your {metric} has slipped to {value} this week, a bit under your usual {baseline}. A few earlier nights could help it settle back.",
+      "textAr": "انخفض {metric} لديك إلى {value} هذا الأسبوع، أقل قليلاً من معتادك {baseline}. قد تساعده بعض الليالي المبكرة على العودة إلى وضعه الطبيعي."
+    },
+    {
+      "id": "baseline_provisional",
+      "metricFamily": "calibration",
+      "conditionEn": "Baseline is still provisional (coverage below the registry minimum); calibration-honesty template with allow_provisional.",
+      "textEn": "We're still learning your typical {metric}. So far it's around {baseline}, and a few more days of data will make this steadier.",
+      "textAr": "ما زلنا نتعرّف على مستواك المعتاد من {metric}. حتى الآن يقارب {baseline}، وبضعة أيام إضافية من البيانات ستجعله أكثر ثباتاً."
+    },
+    {
+      "id": "window_insufficient_coverage",
+      "metricFamily": "calibration",
+      "conditionEn": "Window coverage is below 60%, so a trend cannot be computed and must render as insufficient data.",
+      "textEn": "There isn't enough {metric} data in this window to show a reliable trend yet. Keep logging and it will fill in.",
+      "textAr": "لا توجد بيانات كافية عن {metric} في هذه الفترة لعرض اتجاه موثوق بعد. واصل التسجيل وسيكتمل تدريجياً."
+    },
+    {
+      "id": "status_sick_context",
+      "metricFamily": "vitals",
+      "conditionEn": "Active status is Sick; value is compared to the status-specific (sick) baseline, and performance-critique phrasing is suppressed (Karim safeguard).",
+      "textEn": "While you're marked as feeling under the weather, your {metric} of {value} is in line with your typical rest-day range ({baseline}).",
+      "textAr": "بينما سجّلت أنك تشعر بالتوعّك، جاء {metric} لديك عند {value} متوافقاً مع نطاقك المعتاد في أيام الراحة ({baseline})."
+    },
+    {
+      "id": "cycle_phase_typical",
+      "metricFamily": "vitals",
+      "conditionEn": "Cycle-phase-conditioned baseline (evaluated on-device only); value is typical for the current phase band.",
+      "textEn": "For this phase of your cycle, a {metric} of {value} is typical for you (your phase baseline is about {baseline}).",
+      "textAr": "في هذه المرحلة من دورتك، يُعدّ {metric} البالغ {value} أمراً معتاداً بالنسبة لك (خط أساس هذه المرحلة يقارب {baseline})."
+    },
+    {
+      "id": "correlation_association",
+      "metricFamily": "recovery",
+      "conditionEn": "Correlation Lab result passing all gates (n >= 20, FDR-corrected); |rho| in a defined strength band. Uses {metric2} for the paired metric and {strength} for the mandated strength word.",
+      "textEn": "In your data so far, {metric} and {metric2} tend to move together, a {strength} association. This is a pattern in your numbers, not a cause.",
+      "textAr": "في بياناتك حتى الآن، يميل {metric} و{metric2} إلى التغيّر معاً، وهو ارتباط {strength}. هذا نمط في أرقامك وليس سبباً."
+    },
+    {
+      "id": "recovery_back_to_baseline",
+      "metricFamily": "recovery",
+      "conditionEn": "Metric has returned inside the personal baseline band after at least one prior day outside it.",
+      "textEn": "Your {metric} is back within your usual range today at {value} (baseline {baseline}) after a couple of days outside it.",
+      "textAr": "عاد {metric} لديك إلى نطاقك المعتاد اليوم عند {value} (خط الأساس {baseline}) بعد يومين خارجه."
+    },
+    {
+      "id": "within_band_streak",
+      "metricFamily": "sleep",
+      "conditionEn": "Metric has stayed within its target band for {value} consecutive days (streak_ge predicate); positive, non-moralizing reinforcement.",
+      "textEn": "That's {value} nights in a row your {metric} has landed in a healthy range for you (around {baseline}). Nice consistency.",
+      "textAr": "هذه {value} ليالٍ متتالية يبقى فيها {metric} لديك ضمن نطاق جيد بالنسبة لك (حوالي {baseline}). استمرارية رائعة."
+    }
+  ],
+  "wellnessRules": [
+    "Avoid diagnosis frames ('you may have', 'signs of', named conditions, 'normal/abnormal'). Prefer neutral self-referenced observation: 'your {metric} is reading below your usual range'.",
+    "Avoid treatment or dosing directives ('increase your dose', 'take X', 'you should medicate'). Prefer optional lifestyle nudges framed as a free choice: 'an earlier night could help'.",
+    "Avoid fear or alarm words (dangerous, alarming, at risk, worrying, critical, abnormal, scary). Prefer calm, measured wording: 'a little outside your usual band'.",
+    "Avoid moral judgment (you failed, bad day, lazy, cheat day, guilty). Prefer non-judgmental framing that praises consistency, not virtue.",
+    "Avoid causal claims (causes, caused by, because of your, proves, leads to). Prefer association language: 'tends to follow', 'often associated with', 'in your data'.",
+    "Scale confidence to data quality: when a baseline is provisional or coverage is low, always include a hedge ('may', 'tends to', 'so far', 'in your data').",
+    "Be status-aware: when Sick or Injured is active, suppress performance-critique phrasing and compare vitals to the status-specific baseline, never the default one.",
+    "Reserve any mention of a professional for the single reviewed persistence template ('worth discussing with a professional if it persists'); never volunteer clinical referral elsewhere, and keep the Arabic authored and equally guardrail-safe (no diagnosis, fear, or causal terms), not machine-translated."
+  ]
+}
