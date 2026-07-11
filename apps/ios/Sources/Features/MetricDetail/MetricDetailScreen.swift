@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Localized strings local to this screen
 
@@ -15,7 +16,47 @@ private enum MetricDetailStrings {
     static let straightFromRecords = LocalizedString(
         en: "This reads straight from your records — no extra calculation.",
         ar: "تُقرأ هذه القيمة مباشرة من سجلاتك — دون أي حساب إضافي.")
+    /// Fallback for metrics missing `explainerEn` so casual users never see a silent gap
+    /// (EASE-159).
+    static let genericExplainer = LocalizedString(
+        en: "A measurement from your connected sources over time.",
+        ar: "قياس من مصادرك المتصلة عبر الزمن.")
+    /// Casual's chart window has no period selector to state it, so it's spelled out (EASE-164).
+    static let last30Days = LocalizedString(en: "Last 30 days", ar: "آخر 30 يومًا")
+    static let showMore = LocalizedString(en: "Show more", ar: "عرض المزيد")
+    /// Distinguishes a computed/composite line from a directly-measured one (UIUX-042).
+    static let computedFromData = LocalizedString(en: "Computed from your data", ar: "محسوبة من بياناتك")
+    /// Names the shaded band so it isn't left unexplained on the chart itself (UIUX-043).
+    static let usualRangeLegend = LocalizedString(en: "Shaded area: your usual range", ar: "المنطقة المظللة: نطاقك المعتاد")
+    static let asOf = LocalizedString(en: "As of", ar: "اعتبارًا من")
+    static let computedForDate = LocalizedString(en: "Computed for", ar: "محسوبة لـ")
+    static let moreInFamily = LocalizedString(en: "More in this family", ar: "المزيد في هذه الفئة")
+    static let shareMetric = LocalizedString(en: "Share this metric", ar: "مشاركة هذا المقياس")
+    /// Deviation-from-center caption at power depth (EASE-157).
+    static let vsYourMedian = LocalizedString(en: "vs your median", ar: "مقارنة بمتوسطك")
+    /// Single-letter day-count suffix for the period picker segments (UIUX-035).
+    static let daySuffix = LocalizedString(en: "d", ar: "ي")
+
+    /// Plain-language gloss for each algorithm id, shown alongside (not instead of) the raw
+    /// `algorithmId@version` token so power users get comprehension, not just a traceable
+    /// code (EASE-155/EASE-251).
+    static let algorithmGloss: [String: LocalizedString] = [
+        "baseline.rolling_median_mad": LocalizedString(
+            en: "Rolling median of your last 14 days",
+            ar: "الوسيط المتحرك لآخر 14 يومًا"),
+        "composite.sleep_efficiency": LocalizedString(
+            en: "Time asleep divided by time in bed",
+            ar: "وقت النوم مقسومًا على الوقت في الفراش"),
+        "composite.readiness_score": LocalizedString(
+            en: "Combines sleep and resting heart rate against your usual range",
+            ar: "يجمع بين النوم ومعدل ضربات القلب أثناء الراحة مقارنة بنطاقك المعتاد"),
+    ]
 }
+
+/// Period options shared between the power-mode picker and the ViewModel's fetch window, so
+/// the two can't silently drift apart (OPT-033).
+private let metricDetailPeriodOptions = [7, 30, 90]
+private let metricDetailMaxPeriodDays = metricDetailPeriodOptions.max() ?? 90
 
 // MARK: - Loaded data
 
@@ -30,17 +71,12 @@ struct MetricDetailData {
     var manifest: InputManifest?
     var sourceNames: [String: String]         // sourceId -> display name
     var recentDedup: [ReconciliationDecision] // populated only for sleep.time_asleep
+    /// The full canonical series (ascending), tagged with the date it belongs to — computed
+    /// once at load time rather than re-derived on every render (PERF-036/037/042).
+    var fullSeries: [(date: Date, value: Double)]
 
     /// The chart reads derived values when there is no raw interval series (composites).
     var usesDerivedSeries: Bool { intervals.isEmpty && !derived.isEmpty }
-
-    /// The full canonical series (ascending), tagged with the date it belongs to.
-    func fullSeries(tz: String) -> [(date: Date, value: Double)] {
-        if !intervals.isEmpty {
-            return intervals.map { (date: $0.startAt, value: $0.value) }
-        }
-        return derived.map { (date: Self.periodDate($0.periodKey, tz: tz) ?? $0.computedAt, value: $0.value) }
-    }
 
     /// Parse the date out of a `"day:YYYY-MM-DD"` period key; other shapes fall back to nil.
     static func periodDate(_ key: String, tz: String) -> Date? {
@@ -61,7 +97,10 @@ final class MetricDetailViewModel {
         let tz = TimeZone.current.identifier
         do {
             let def = env.registry.definitionOrFallback(metricId)
-            let from = env.now().addingTimeInterval(-90 * 86_400)
+            // Casual mode never shows more than a fixed 30-day window, so only power mode
+            // needs to fetch the full period-selector range up front (PERF-038).
+            let fetchDays = env.depth.showsPowerDetail ? metricDetailMaxPeriodDays : 30
+            let from = env.now().addingTimeInterval(-Double(fetchDays) * 86_400)
 
             let intervals = try env.measurements.intervalRecords(metricId: metricId, from: from, to: env.now())
             let derivedSeries = try env.derivation.latestDerivedSeries(metricId: metricId)
@@ -76,19 +115,36 @@ final class MetricDetailViewModel {
                 manifest = nil
             }
 
-            let sourceNames = Dictionary(
-                try env.catalog.sources().map { ($0.id, $0.displayName) },
-                uniquingKeysWith: { a, _ in a })
+            // Composite/derived metrics never surface raw-record source names (their lineage
+            // reads from `derived`, not `intervals`), so skip the query + dictionary build
+            // entirely when there are no raw records to name (PERF-041).
+            let sourceNames: [String: String]
+            if !intervals.isEmpty {
+                sourceNames = Dictionary(
+                    try env.catalog.sources().map { ($0.id, $0.displayName) },
+                    uniquingKeysWith: { a, _ in a })
+            } else {
+                sourceNames = [:]
+            }
 
             // Only sleep time-asleep surfaces the dedup decision (one kept, one suppressed).
             let dedup = metricId == MetricID.timeAsleep ? (try env.reconciliation.recent(limit: 6)) : []
 
+            let fullSeries: [(date: Date, value: Double)]
+            if !intervals.isEmpty {
+                fullSeries = intervals.map { (date: $0.startAt, value: $0.value) }
+            } else {
+                fullSeries = derivedSeries.map {
+                    (date: MetricDetailData.periodDate($0.periodKey, tz: tz) ?? $0.computedAt, value: $0.value)
+                }
+            }
+
             let data = MetricDetailData(
                 def: def, baseline: baseline, intervals: intervals, derived: derivedSeries,
                 latestDerivedValue: latestDerived, manifest: manifest, sourceNames: sourceNames,
-                recentDedup: dedup)
+                recentDedup: dedup, fullSeries: fullSeries)
 
-            if data.fullSeries(tz: tz).isEmpty {
+            if data.fullSeries.isEmpty {
                 state = .empty(env.s(Loc.noDataMetric))
             } else {
                 state = .loaded(data)
@@ -108,11 +164,21 @@ struct MetricDetailScreen: View {
     let metricId: String
 
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.displayScale) private var displayScale
     @State private var vm = MetricDetailViewModel()
     @State private var periodDays: Int = 30
     @State private var showAnatomy = false
+    /// How many values-table rows are currently revealed; grows via "Show more" instead of a
+    /// silent hard cap (EASE-243/244, UIUX-034).
+    @State private var visibleValuesCount = MetricDetailScreen.valuesPageSize
+    /// Same "show more" pattern for the provenance lineage list (EASE-246).
+    @State private var visibleLineageCount = MetricDetailScreen.lineagePageSize
+    @State private var shareImage: UIImage?
+    @State private var showShare = false
 
-    private static let periodOptions = [7, 30, 90]
+    private static let periodOptions = metricDetailPeriodOptions
+    private static let valuesPageSize = 14
+    private static let lineagePageSize = 8
 
     var body: some View {
         ScrollView {
@@ -124,39 +190,62 @@ struct MetricDetailScreen: View {
         .background(BadanColor.background)
         .navigationTitle(env.s(env.registry.definitionOrFallback(metricId).displayName))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if case .loaded(let data) = vm.state {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        shareImage = renderShareImage(data)
+                        showShare = shareImage != nil
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel(env.s(MetricDetailStrings.shareMetric))
+                }
+            }
+        }
         .sheet(isPresented: $showAnatomy) {
             if case .loaded(let data) = vm.state {
                 MetricAnatomySheet(data: data)
             }
         }
-        .task { vm.load(env, metricId: metricId) }
+        .sheet(isPresented: $showShare) {
+            if let shareImage {
+                ShareSheet(activityItems: [shareImage])
+            }
+        }
+        // Reload on any profile change (language/units/depth), not just first appearance, so
+        // the most data-dense screen in the app never shows stale-language content (OPT-040).
+        .task(id: env.profile) { vm.load(env, metricId: metricId) }
     }
 
     // MARK: Body composition
 
     @ViewBuilder
     private func content(_ data: MetricDetailData) -> some View {
-        let tz = TimeZone.current.identifier
-        let fullSeries = data.fullSeries(tz: tz)
-        let latest = fullSeries.last
+        let latest = data.fullSeries.last
         let power = env.depth.showsPowerDetail
         let chartDays = power ? periodDays : 30
+        // Filtered once per render and shared by the chart and the values table instead of
+        // each independently re-deriving it from `data` (PERF-036/037).
+        let points = series(within: chartDays, from: data.fullSeries)
 
         VStack(alignment: .leading, spacing: BadanSpace.space5) {
             headerCard(data, latest: latest)
 
-            chartCard(data, days: chartDays, tz: tz)
+            chartCard(data, points: points)
 
             if power {
+                anatomyButton
                 periodSelector
-                valuesTableCard(series(within: chartDays, from: fullSeries), data: data)
+                valuesTableCard(points, data: data)
                 lineageCard(data)
                 methodCard(data)
-                anatomyButton
+                siblingMetricsRow(data)
             } else {
                 explainerCard(data)
             }
         }
+        .onChange(of: periodDays) { _, _ in visibleValuesCount = MetricDetailScreen.valuesPageSize }
     }
 
     // MARK: Header
@@ -170,10 +259,19 @@ struct MetricDetailScreen: View {
                         value: env.format.heroValue(metricId: data.def.metricId, canonicalValue: latest.value),
                         label: data.def.label(depth: env.depth, language: env.language),
                         unit: env.format.unitLabel(metricId: data.def.metricId),
-                        chip: statusChip(value: latest.value, baseline: data.baseline))
-                    Text(dateText(latest.date))
+                        chip: statusChip(data, value: latest.value))
+                    // "As of"/"Computed for" removes the ambiguity of whether the date is a
+                    // real capture time or a computed period date (UIUX-045).
+                    Text("\(env.s(data.usesDerivedSeries ? MetricDetailStrings.computedForDate : MetricDetailStrings.asOf)) \(dateText(latest.date))")
                         .font(BadanFont.caption)
                         .foregroundStyle(BadanColor.textSecondary)
+                    // Power depth gets the numeric distance from center, not just the
+                    // three-state chip — the magnitude z-score/deviation view promises (EASE-157).
+                    if env.depth.showsPowerDetail, let baseline = data.baseline {
+                        Text(signedDelta(metricId: data.def.metricId, value: latest.value, baseline: baseline))
+                            .font(BadanFont.caption.monospacedDigit())
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
                 } else {
                     Text(data.def.label(depth: env.depth, language: env.language))
                         .font(BadanFont.sectionTitle)
@@ -186,30 +284,78 @@ struct MetricDetailScreen: View {
     // MARK: Chart
 
     @ViewBuilder
-    private func chartCard(_ data: MetricDetailData, days: Int, tz: String) -> some View {
-        let points = series(within: days, from: data.fullSeries(tz: tz))
-        let provisional = data.baseline?.provisional ?? true
+    private func chartCard(_ data: MetricDetailData, points: [(date: Date, value: Double)]) -> some View {
+        // A metric that structurally can't have a baseline (not baseline-eligible) is not
+        // "still learning" — that badge should only ever imply a baseline is genuinely on its
+        // way (OPT-034/035).
+        let provisional = data.def.baselineEligible && (data.baseline?.provisional ?? true)
+        // A provisional baseline hasn't earned the visual authority of a shaded "trustworthy
+        // range" yet — suppress the band until it's confirmed, matching the badge/chip's own
+        // honesty (OPT-042).
+        let band = (data.baseline?.provisional == false)
+            ? data.baseline.map { (low: $0.bandLow, high: $0.bandHigh) }
+            : nil
         BadanCard {
             VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                SectionHeader(env.s(MetricDetailStrings.trend)) {
+                SectionHeader(env.s(MetricDetailStrings.trend) + (env.depth.showsPowerDetail ? "" : " · " + env.s(MetricDetailStrings.last30Days))) {
                     if provisional { ProvisionalBadge(language: env.language) }
                 }
                 MetricChart(
                     series: points,
                     style: data.def.chartHint == .bar ? .bar : .line,
-                    band: data.baseline.map { (low: $0.bandLow, high: $0.bandHigh) })
+                    band: band)
                     .frame(height: 200)
+                if data.usesDerivedSeries || band != nil {
+                    VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                        // Computed vs. measured is otherwise invisible until the anatomy sheet
+                        // is opened (UIUX-042).
+                        if data.usesDerivedSeries {
+                            captionRow(icon: "function", text: env.s(MetricDetailStrings.computedFromData))
+                        }
+                        // The shaded band has no meaning without this legend anywhere on the
+                        // screen that actually shows it (UIUX-043).
+                        if band != nil {
+                            HStack(spacing: BadanSpace.space1) {
+                                Rectangle()
+                                    .fill(BadanColor.inBand.opacity(0.35))
+                                    .frame(width: 12, height: 12)
+                                Text(env.s(MetricDetailStrings.usualRangeLegend))
+                                    .font(BadanFont.caption)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    private func captionRow(icon: String, text: String) -> some View {
+        HStack(spacing: BadanSpace.space1) {
+            Image(systemName: icon)
+                .imageScale(.small)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(BadanFont.caption)
+        }
+        .foregroundStyle(BadanColor.textSecondary)
     }
 
     // MARK: Casual explainer
 
     @ViewBuilder
     private func explainerCard(_ data: MetricDetailData) -> some View {
-        if let explainer = data.def.explainerEn, !explainer.isEmpty {
-            BadanCard {
+        BadanCard {
+            // Casual depth has no fallback elsewhere on the screen, so a missing/empty
+            // `explainerEn` must never leave casual users with zero explanatory text
+            // (EASE-159).
+            if let explainer = data.def.explainerEn, !explainer.isEmpty {
                 Text(LocalizedString(en: explainer, ar: data.def.nameAr), language: env.language)
+                    .font(BadanFont.body)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(env.s(MetricDetailStrings.genericExplainer))
                     .font(BadanFont.body)
                     .foregroundStyle(BadanColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -226,7 +372,9 @@ struct MetricDetailScreen: View {
                 .foregroundStyle(BadanColor.textSecondary)
             Picker(env.s(MetricDetailStrings.period), selection: $periodDays) {
                 ForEach(Self.periodOptions, id: \.self) { d in
-                    Text(env.format.integer(d)).tag(d)
+                    // A bare "7 | 30 | 90" has no on-control unit; the "d" suffix confirms
+                    // these are day counts without inference (UIUX-035).
+                    Text("\(env.format.integer(d))\(env.s(MetricDetailStrings.daySuffix))").tag(d)
                 }
             }
             .pickerStyle(.segmented)
@@ -237,11 +385,16 @@ struct MetricDetailScreen: View {
 
     @ViewBuilder
     private func valuesTableCard(_ points: [(date: Date, value: Double)], data: MetricDetailData) -> some View {
+        // Reveals more of the already period-filtered `points` on tap instead of a silent,
+        // period-blind 14-row hard cap (EASE-243/244, UIUX-034).
+        let ordered = Array(points.reversed())
+        let rows = Array(ordered.prefix(visibleValuesCount))
         BadanCard {
             VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                SectionHeader(env.s(MetricDetailStrings.recentValues))
-                let rows = Array(points.reversed().prefix(14))
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, point in
+                // Names the active unit right where the numbers are, instead of only in the
+                // separate Method card further down (EASE-161).
+                SectionHeader(env.s(MetricDetailStrings.recentValues) + " (\(env.format.unitLabel(metricId: data.def.metricId) ?? data.def.canonicalUnit))")
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, point in
                     HStack(spacing: BadanSpace.space2) {
                         Text(dateText(point.date))
                             .font(BadanFont.bodyCompact)
@@ -252,9 +405,23 @@ struct MetricDetailScreen: View {
                             .foregroundStyle(BadanColor.textPrimary)
                     }
                     .frame(minHeight: BadanSpace.touchMin)
-                    Rectangle()
-                        .fill(BadanColor.separator)
-                        .frame(height: 1)
+                    // No divider trails the final row (UIUX-033).
+                    if index < rows.count - 1 {
+                        Rectangle()
+                            .fill(BadanColor.separator)
+                            .frame(height: 1)
+                    }
+                }
+                if rows.count < ordered.count {
+                    Button {
+                        visibleValuesCount += Self.valuesPageSize
+                    } label: {
+                        Text(env.s(MetricDetailStrings.showMore))
+                            .font(BadanFont.bodyCompact.weight(.medium))
+                            .foregroundStyle(BadanColor.primary)
+                            .frame(minHeight: BadanSpace.touchMin)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
                 }
             }
         }
@@ -264,7 +431,8 @@ struct MetricDetailScreen: View {
 
     @ViewBuilder
     private func lineageCard(_ data: MetricDetailData) -> some View {
-        let entries = lineage(data)
+        let total = data.usesDerivedSeries ? data.derived.count : data.intervals.count
+        let entries = lineage(data, limit: visibleLineageCount)
         if !entries.isEmpty {
             BadanCard {
                 VStack(alignment: .leading, spacing: BadanSpace.space3) {
@@ -272,6 +440,18 @@ struct MetricDetailScreen: View {
                     ForEach(entries) { entry in
                         ProvenanceRow(sourceName: entry.sourceName, ingestionPath: entry.ingestionPath,
                                       timestamp: entry.timestamp, language: env.language)
+                    }
+                    // Provenance auditing had nowhere to go past the most recent 8 (EASE-246).
+                    if entries.count < total {
+                        Button {
+                            visibleLineageCount += Self.lineagePageSize
+                        } label: {
+                            Text(env.s(MetricDetailStrings.showMore))
+                                .font(BadanFont.bodyCompact.weight(.medium))
+                                .foregroundStyle(BadanColor.primary)
+                                .frame(minHeight: BadanSpace.touchMin)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
                     }
                 }
             }
@@ -289,6 +469,13 @@ struct MetricDetailScreen: View {
                         value: env.format.unitLabel(metricId: data.def.metricId) ?? data.def.canonicalUnit)
                 if let method = methodString(data) {
                     noteRow(label: env.s(Loc.algorithm), value: method)
+                    // A raw "algorithmId@version" token satisfies transparency in letter but
+                    // not in spirit; add the plain-language gloss alongside it (EASE-155/251).
+                    if let gloss = methodGloss(data) {
+                        Text(env.s(gloss))
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
                 }
             }
         }
@@ -300,8 +487,11 @@ struct MetricDetailScreen: View {
                 .font(BadanFont.bodyCompact)
                 .foregroundStyle(BadanColor.textSecondary)
             Spacer(minLength: BadanSpace.space2)
+            // `.monospaced()`, not `.monospacedDigit()` — these values (unit labels, algorithm
+            // ids) are mostly alphabetic, so only the whole-string variant actually aligns them
+            // (UIUX-037).
             Text(value)
-                .font(BadanFont.bodyCompact.monospacedDigit())
+                .font(BadanFont.bodyCompact.monospaced())
                 .foregroundStyle(BadanColor.textPrimary)
                 .multilineTextAlignment(.trailing)
         }
@@ -332,6 +522,40 @@ struct MetricDetailScreen: View {
             .overlay(
                 RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
                     .strokeBorder(BadanColor.separator, lineWidth: 1))
+            // Sits beside real `BadanCard`s in the same stack; without this it's the one flat
+            // surface among several elevated ones (UIUX-036).
+            .badanElevation()
+        }
+    }
+
+    // MARK: Power — sibling metrics
+
+    @ViewBuilder
+    private func siblingMetricsRow(_ data: MetricDetailData) -> some View {
+        let siblings = env.registry.metrics(in: data.def.familyGroup).filter { $0.metricId != data.def.metricId }
+        if !siblings.isEmpty {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                Text(env.s(MetricDetailStrings.moreInFamily))
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: BadanSpace.space2) {
+                        ForEach(siblings) { sibling in
+                            NavigationLink {
+                                MetricDetailScreen(metricId: sibling.metricId)
+                            } label: {
+                                Text(sibling.label(depth: env.depth, language: env.language))
+                                    .font(BadanFont.bodyCompact.weight(.medium))
+                                    .foregroundStyle(BadanColor.primary)
+                                    .padding(.horizontal, BadanSpace.space3)
+                                    .frame(minHeight: BadanSpace.touchMin)
+                                    .background(BadanColor.surface, in: Capsule())
+                                    .overlay(Capsule().strokeBorder(BadanColor.separator, lineWidth: 1))
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -342,8 +566,11 @@ struct MetricDetailScreen: View {
         return full.filter { $0.date >= cutoff }
     }
 
-    private func statusChip(value: Double, baseline: Baseline?) -> StatusChip {
-        guard let baseline, !baseline.provisional else {
+    private func statusChip(_ data: MetricDetailData, value: Double) -> StatusChip? {
+        // A metric with no personal-range concept at all shouldn't perpetually claim to be
+        // "still learning" a baseline that's never coming (OPT-034/035).
+        guard data.def.baselineEligible else { return nil }
+        guard let baseline = data.baseline, !baseline.provisional else {
             return StatusChip(.info, label: env.s(Loc.stillLearning), language: env.language)
         }
         let position = baseline.position(of: value)
@@ -356,34 +583,101 @@ struct MetricDetailScreen: View {
         return StatusChip(position: position, label: env.s(label), language: env.language)
     }
 
+    /// Signed distance from the personal band's center — the magnitude figure power depth
+    /// promises but previously never showed (EASE-157). Mirrors `HomeViewModel.signedDelta`;
+    /// kept file-local since `HomeScreen.swift` isn't owned by this change.
+    private func signedDelta(metricId: String, value: Double, baseline: Baseline) -> String {
+        let delta = value - baseline.center
+        let sign = delta >= 0 ? "+" : "\u{2212}"
+        let magnitude = env.format.heroValue(metricId: metricId, canonicalValue: abs(delta))
+        let vs = env.s(MetricDetailStrings.vsYourMedian)
+        if let unit = env.format.unitLabel(metricId: metricId) {
+            return "\(sign)\(magnitude) \(unit) \u{00B7} \(vs)"
+        }
+        return "\(sign)\(magnitude) \u{00B7} \(vs)"
+    }
+
     private func methodString(_ data: MetricDetailData) -> String? {
         if let d = data.latestDerivedValue { return "\(d.algorithmId)@\(d.algorithmVersion)" }
         return data.baseline?.algorithmVersion
     }
 
-    private func lineage(_ data: MetricDetailData) -> [LineageEntry] {
-        if !data.intervals.isEmpty {
-            return data.intervals.suffix(8).reversed().map { r in
+    /// The algorithm id alone (without version), used to look up its plain-language gloss.
+    private func algorithmId(_ data: MetricDetailData) -> String? {
+        if let d = data.latestDerivedValue { return d.algorithmId }
+        guard let version = data.baseline?.algorithmVersion else { return nil }
+        return version.split(separator: "@").first.map(String.init)
+    }
+
+    private func methodGloss(_ data: MetricDetailData) -> LocalizedString? {
+        guard let id = algorithmId(data) else { return nil }
+        return MetricDetailStrings.algorithmGloss[id]
+    }
+
+    private func lineage(_ data: MetricDetailData, limit: Int) -> [LineageEntry] {
+        // Wires up the previously-dead `usesDerivedSeries` flag instead of re-deriving the
+        // same branch condition separately (OPT-043).
+        if !data.usesDerivedSeries {
+            return data.intervals.suffix(limit).reversed().map { r in
                 LineageEntry(id: r.id,
                              sourceName: data.sourceNames[r.provenance.sourceId] ?? r.provenance.sourceId,
                              ingestionPath: r.provenance.ingestionPath,
                              timestamp: r.provenance.measuredAt)
             }
         }
-        return data.derived.suffix(8).reversed().map { d in
+        // A composite's own display name repeated per row said nothing real about
+        // provenance; the algorithm identity that actually produced each row does (OPT-038).
+        return data.derived.suffix(limit).reversed().map { d in
             LineageEntry(id: d.id,
-                         sourceName: env.s(data.def.displayName),
+                         sourceName: "\(d.algorithmId)@\(d.algorithmVersion)",
                          ingestionPath: .derived,
                          timestamp: d.computedAt)
         }
     }
 
-    private func dateText(_ date: Date) -> String {
+    // Cached once per type instead of allocating a fresh `DateFormatter` on every render; only
+    // the locale changes between calls (PERF-039/040).
+    private static let cachedDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: env.language.localeIdentifier)
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private func dateText(_ date: Date) -> String {
+        Self.cachedDateFormatter.locale = Locale(identifier: env.language.localeIdentifier)
+        return Self.cachedDateFormatter.string(from: date)
+    }
+
+    /// Renders a small shareable summary (headline value + chart) for the toolbar share
+    /// action, reusing the existing generic `ShareSheet` (FEAT-158).
+    @MainActor
+    private func renderShareImage(_ data: MetricDetailData) -> UIImage? {
+        let points = series(within: 30, from: data.fullSeries)
+        let latest = points.last
+        let summary = VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            Text(data.def.label(depth: env.depth, language: env.language))
+                .font(BadanFont.sectionTitle)
+                .foregroundStyle(BadanColor.textPrimary)
+            if let latest {
+                Text(env.format.heroValue(metricId: data.def.metricId, canonicalValue: latest.value))
+                    .font(BadanFont.heroNumeral)
+                    .foregroundStyle(BadanColor.textPrimary)
+            }
+            MetricChart(
+                series: points,
+                style: data.def.chartHint == .bar ? .bar : .line,
+                band: data.baseline.map { (low: $0.bandLow, high: $0.bandHigh) })
+                .frame(height: 160)
+        }
+        .padding(BadanSpace.space4)
+        .frame(width: 360)
+        .background(BadanColor.background)
+        .environment(\.layoutDirection, env.language == .ar ? .rightToLeft : .leftToRight)
+
+        let renderer = ImageRenderer(content: summary)
+        renderer.scale = displayScale
+        return renderer.uiImage
     }
 }
 

@@ -24,6 +24,24 @@ private enum MedStrings {
     static let strengthPlaceholder = LocalizedString(en: "e.g. 1000 IU", ar: "مثال: ١٠٠٠ وحدة")
     static let noneScheduled = LocalizedString(en: "Nothing scheduled for today", ar: "لا شيء مجدول لليوم")
     static let addedManually = LocalizedString(en: "Recorded by you", ar: "مسجَّل بواسطتك")
+
+    // Added while executing the medication audit bundle:
+    static let upcoming = LocalizedString(en: "Upcoming", ar: "قادم")
+    static let saveFailed = LocalizedString(en: "Couldn't save — try again", ar: "تعذّر الحفظ — حاول مرة أخرى")
+    static let someNotSaved = LocalizedString(en: "Some updates couldn't be saved — try again",
+                                              ar: "تعذّر حفظ بعض التحديثات — حاول مرة أخرى")
+    static let addTimeHint = LocalizedString(en: "Add at least one time to save", ar: "أضِف وقتاً واحداً على الأقل للحفظ")
+    static let timeAlreadyAdded = LocalizedString(en: "Already added", ar: "أُضيف بالفعل")
+    static let searchMedications = LocalizedString(en: "Search medications", ar: "البحث في الأدوية")
+    static let viewHistory = LocalizedString(en: "View history", ar: "عرض السجلّ")
+    static let logNow = LocalizedString(en: "Log now", ar: "تسجيل الآن")
+    static let last30Days = LocalizedString(en: "Last 30 days", ar: "آخر ٣٠ يوماً")
+    static let last90Days = LocalizedString(en: "Last 90 days", ar: "آخر ٩٠ يوماً")
+    static let takenPercentLabel = LocalizedString(en: "Taken", ar: "نسبة التناول")
+    static let longestStreakLabel = LocalizedString(en: "Longest streak", ar: "أطول تتابع")
+    static let streakDaysUnit = LocalizedString(en: "days", ar: "أيام")
+    static let totalRecordedLabel = LocalizedString(en: "Total recorded", ar: "إجمالي المسجَّل")
+    static let noHistoryYet = LocalizedString(en: "No history in this range yet", ar: "لا سجلّ بعد ضمن هذا النطاق")
 }
 
 // MARK: - View model
@@ -48,7 +66,7 @@ final class MedicationLogViewModel {
     }
 
     /// A single dot in a regimen's 7-day adherence strip.
-    enum DotKind { case taken, skipped, pending, none }
+    enum DotKind { case taken, skipped, pending, none, notStarted }
 
     struct MedData {
         var regimens: [MedicationRegimen]
@@ -62,7 +80,31 @@ final class MedicationLogViewModel {
 
     var state: LoadState<MedData> = .loading
 
+    /// Slot ids ("regimenId|HH:mm") whose most recent write to storage failed. Cleared on the
+    /// next successful write for that slot. Not reset by `load()` so a failure stays visible
+    /// even though the slot's status silently reverts to whatever's actually in the DB.
+    private(set) var errorSlotIds: Set<String> = []
+
     private var tz: String { TimeZone.current.identifier }
+
+    // Cached once per view-model lifetime instead of allocated on every `load()` call (every
+    // load runs after every single take/skip tap).
+    private let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
+        return f
+    }()
+    private let letterFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("EEEEE")
+        return f
+    }()
+
+    /// Beyond this many minutes, a same-day adherence event is treated as unmatched to its
+    /// nearest scheduled slot rather than force-assigned (avoids misattributing a late dose to
+    /// the wrong closely-spaced slot).
+    private static let maxAssignDistanceMinutes = 360
 
     // MARK: Load
 
@@ -77,10 +119,12 @@ final class MedicationLogViewModel {
             let todaysAdherence = try env.logging.adherence(from: startOfToday, to: now)
             let weekAdherence = try env.logging.adherence(from: weekStart, to: now)
 
-            let timeFormatter = DateFormatter()
             timeFormatter.locale = Locale(identifier: env.language.localeIdentifier)
-            timeFormatter.timeStyle = .short
-            timeFormatter.dateStyle = .none
+
+            // Pre-grouped once so both today's slot assignment and any future consumer share
+            // one source of truth for "this regimen's events today" instead of each re-scanning
+            // the full list with an ad-hoc filter.
+            let todaysByRegimen = Dictionary(grouping: todaysAdherence, by: \.regimenId)
 
             // --- Today's due slots (expanded per active regimen) ---
             var slots: [DueSlot] = []
@@ -93,11 +137,11 @@ final class MedicationLogViewModel {
                 let descs = times.map { t -> (time: String, date: Date, mins: Int) in
                     (t, Self.slotDate(time: t, on: startOfToday, cal: cal), Self.minutesOfDay(t))
                 }
-                let events = todaysAdherence
-                    .filter { $0.regimenId == regimen.id }
+                let events = (todaysByRegimen[regimen.id] ?? [])
                     .sorted { $0.occurredAt > $1.occurredAt }
 
-                // Assign each event to its nearest still-unclaimed slot (latest events claim first).
+                // Assign each event to its nearest still-unclaimed slot (latest events claim
+                // first), but never across a gap wider than `maxAssignDistanceMinutes`.
                 var assigned: [Int: AdherenceEvent] = [:]
                 for e in events {
                     let emin = Self.minutesOfDay(of: e.scheduledFor ?? e.occurredAt, cal: cal)
@@ -107,7 +151,10 @@ final class MedicationLogViewModel {
                         let dist = abs(s.mins - emin)
                         if dist < bestDist { bestDist = dist; best = i }
                     }
-                    if let b = best { assigned[b] = e }
+                    if let b = best, bestDist <= Self.maxAssignDistanceMinutes {
+                        assigned[b] = e
+                    }
+                    if assigned.count == descs.count { break }
                 }
 
                 for (i, s) in descs.enumerated() {
@@ -150,14 +197,16 @@ final class MedicationLogViewModel {
             let days: [Date] = (0..<7).map {
                 cal.date(byAdding: .day, value: -(6 - $0), to: startOfToday) ?? startOfToday
             }
-            let letterFormatter = DateFormatter()
             letterFormatter.locale = Locale(identifier: env.language.localeIdentifier)
-            letterFormatter.setLocalizedDateFormatFromTemplate("EEEEE")
             let weekdayLetters = days.map { letterFormatter.string(from: $0) }
 
             var strips: [String: [DotKind]] = [:]
             for regimen in regimens {
+                let regimenStartDay = DayAttribution.startOfDay(regimen.startedAt, tz: tz)
                 strips[regimen.id] = days.map { day in
+                    // Before the regimen existed, a blank dot reads as "not started" rather than
+                    // a false "missed/no dose" signal.
+                    guard day >= regimenStartDay else { return .notStarted }
                     let key = DayAttribution.localDayKey(day, tz: tz)
                     let scheduled = regimen.schedule.dueTimes(onWeekday: Self.isoWeekday(day, cal: cal)).count
                     let cell = counts[regimen.id]?[key] ?? (0, 0)
@@ -205,11 +254,20 @@ final class MedicationLogViewModel {
         load(env)
     }
 
+    /// Records a dose right now for a regimen with no fixed schedule slot (as-needed
+    /// medications never appear in `dueSlots`, so this is their only quick-log path).
+    func logNow(_ regimen: MedicationRegimen, env: AppEnvironment) {
+        let now = env.now()
+        record(regimenId: regimen.id, scheduledFor: now, time: Self.canonicalTime(now, tz: tz),
+               kind: .taken, reason: nil, env: env)
+    }
+
     private func record(regimenId: String, scheduledFor: Date, time: String,
                         kind: AdherenceKind, reason: SkipReason?, env: AppEnvironment, reload: Bool = true) {
         let now = env.now()
         // Deterministic id per (regimen, day, slot) so changing your mind replaces the row cleanly.
         let dayKey = DayAttribution.localDayKey(scheduledFor, tz: tz)
+        let slotId = "\(regimenId)|\(time)"
         let event = AdherenceEvent(
             id: "adh-\(regimenId)-\(dayKey)-\(time)",
             regimenId: regimenId,
@@ -221,11 +279,20 @@ final class MedicationLogViewModel {
             updatedAt: now,
             originDeviceId: env.deviceId
         )
-        try? env.logging.insertAdherence(event)
+        do {
+            try env.logging.insertAdherence(event)
+            errorSlotIds.remove(slotId)
+        } catch {
+            // Surfaced via `errorSlotIds` instead of swallowed: `load(env)` below will re-derive
+            // this slot's status from the DB (i.e. it reverts to pending), so without this the
+            // tap would look like it silently did nothing.
+            errorSlotIds.insert(slotId)
+        }
         if reload { load(env) }
     }
 
-    func addRegimen(name: String, strength: String?, schedule: MedicationSchedule, env: AppEnvironment) {
+    @discardableResult
+    func addRegimen(name: String, strength: String?, schedule: MedicationSchedule, env: AppEnvironment) -> Bool {
         let now = env.now()
         let regimen = MedicationRegimen(
             id: ULID.newID(),
@@ -236,8 +303,13 @@ final class MedicationLogViewModel {
             updatedAt: now,
             originDeviceId: env.deviceId
         )
-        try? env.logging.upsertRegimen(regimen)
-        load(env)
+        do {
+            try env.logging.upsertRegimen(regimen)
+            load(env)
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: Calendar helpers
@@ -265,6 +337,14 @@ final class MedicationLogViewModel {
         let m = parts.count > 1 ? parts[1] : 0
         return cal.date(bySettingHour: h, minute: m, second: 0, of: day) ?? day
     }
+
+    /// A stable "HH:mm" for `date` in `tz`, used to key an unscheduled (as-needed) dose.
+    private static func canonicalTime(_ date: Date, tz: String) -> String {
+        let cal = DayAttribution.calendar(tz: tz)
+        let h = cal.component(.hour, from: date)
+        let m = cal.component(.minute, from: date)
+        return String(format: "%02d:%02d", h, m)
+    }
 }
 
 // MARK: - Screen
@@ -275,12 +355,16 @@ final class MedicationLogViewModel {
 /// strip. A pushed screen (a parent NavigationStack is provided by the app shell).
 struct MedicationLogView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.scenePhase) private var scenePhase
     @State private var vm = MedicationLogViewModel()
     @State private var showingAdd = false
+    @State private var searchQuery = ""
     /// Slot currently showing its skip-reason chips.
     @State private var skippingSlotId: String?
     /// Resolved slot the user re-opened to change their choice.
     @State private var editingSlotId: String?
+    /// Regimen whose full adherence history is being viewed.
+    @State private var historyRegimen: MedicationRegimen?
 
     var body: some View {
         StatefulContainer(vm.state) { data in
@@ -291,15 +375,17 @@ struct MedicationLogView: View {
                     } else {
                         if !data.dueSlots.isEmpty { dueSection(data) }
                         regimensSection(data)
+                        boundaryFooter
                     }
-                    boundaryFooter
                 }
                 .padding(BadanSpace.space4)
             }
+            .refreshable { vm.load(env) }
         }
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.logMedication))
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchQuery, prompt: env.s(MedStrings.searchMedications))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -314,7 +400,13 @@ struct MedicationLogView: View {
                 vm.addRegimen(name: name, strength: strength, schedule: schedule, env: env)
             }
         }
+        .sheet(item: $historyRegimen) { regimen in
+            MedicationHistorySheet(regimen: regimen)
+        }
         .task { vm.load(env) }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active { vm.load(env) }
+        }
     }
 
     // MARK: Due section
@@ -337,6 +429,17 @@ struct MedicationLogView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+
+            if !vm.errorSlotIds.isEmpty {
+                HStack(spacing: BadanSpace.space1) {
+                    Image(systemName: "arrow.clockwise")
+                        .imageScale(.small)
+                        .accessibilityHidden(true)
+                    Text(env.s(MedStrings.someNotSaved))
+                        .font(BadanFont.caption)
+                }
+                .foregroundStyle(BadanColor.outOfBand)
             }
 
             if data.allResolved {
@@ -399,25 +502,48 @@ struct MedicationLogView: View {
                         actionRow(for: slot)
                     }
                 }
+
+                if vm.errorSlotIds.contains(slot.id) {
+                    HStack(spacing: BadanSpace.space1) {
+                        Image(systemName: "arrow.clockwise")
+                            .imageScale(.small)
+                            .accessibilityHidden(true)
+                        Text(env.s(MedStrings.saveFailed))
+                            .font(BadanFont.caption)
+                    }
+                    .foregroundStyle(BadanColor.outOfBand)
+                }
             }
         }
     }
 
     /// The right-side status marker: a completion chip, a calm skip outline, or a neutral
-    /// "still due" — never red, never alarming.
+    /// "still due"/"upcoming" — never red, never alarming. Taken/skipped chips are tappable so
+    /// a mis-tap can always be corrected (reopens `actionRow`/`skipReasonPicker`).
     @ViewBuilder
     private func statusTrailing(for slot: MedicationLogViewModel.DueSlot) -> some View {
         switch slot.status {
         case .taken:
-            StatusChip(.inBand, label: env.s(Loc.taken), language: env.language)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { editingSlotId = slot.id }
+            } label: {
+                StatusChip(.inBand, label: env.s(Loc.taken), language: env.language)
+            }
+            .buttonStyle(.plain)
         case .skipped:
-            skippedPill(reason: slot.skipReason)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { editingSlotId = slot.id }
+            } label: {
+                skippedPill(reason: slot.skipReason)
+            }
+            .buttonStyle(.plain)
         case .pending:
             if slot.isOverdue {
                 PillLabel(env.s(Loc.stillDue), systemImage: "clock",
                           tint: BadanColor.textSecondary)
             } else {
-                EmptyView()
+                PillLabel("\(env.s(MedStrings.upcoming)) · \(slot.displayTime)", systemImage: "clock",
+                          tint: BadanColor.textSecondary, filled: false)
             }
         }
     }
@@ -496,6 +622,8 @@ struct MedicationLogView: View {
                         Text(env.s(reason.displayLabel))
                             .font(BadanFont.chip)
                             .foregroundStyle(BadanColor.textPrimary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
                             .padding(.horizontal, BadanSpace.space2)
                             .background(BadanColor.surfaceElevated,
@@ -526,11 +654,20 @@ struct MedicationLogView: View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(MedStrings.yourMedications))
             VStack(spacing: BadanSpace.space3) {
-                ForEach(data.regimens) { regimen in
+                ForEach(filteredRegimens(data)) { regimen in
                     regimenCard(regimen, data: data)
                 }
             }
         }
+    }
+
+    /// Client-side filter over the already-loaded regimen list; a search field only meaningfully
+    /// matters once someone has several medications, but filtering an empty/short query is a
+    /// no-op so it's harmless to keep the search field always available.
+    private func filteredRegimens(_ data: MedicationLogViewModel.MedData) -> [MedicationRegimen] {
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return data.regimens }
+        return data.regimens.filter { $0.name.localizedCaseInsensitiveContains(q) }
     }
 
     private func regimenCard(_ regimen: MedicationRegimen,
@@ -565,11 +702,40 @@ struct MedicationLogView: View {
 
                 adherenceStrip(regimenId: regimen.id, data: data)
 
+                HStack(spacing: BadanSpace.space4) {
+                    Button {
+                        historyRegimen = regimen
+                    } label: {
+                        Text(env.s(MedStrings.viewHistory))
+                            .font(BadanFont.bodyCompact.weight(.medium))
+                            .foregroundStyle(BadanColor.primary)
+                            .frame(minHeight: BadanSpace.touchMin)
+                    }
+                    .buttonStyle(.plain)
+
+                    if case .asNeeded = regimen.schedule {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { vm.logNow(regimen, env: env) }
+                        } label: {
+                            Text(env.s(MedStrings.logNow))
+                                .font(BadanFont.bodyCompact.weight(.medium))
+                                .foregroundStyle(BadanColor.primary)
+                                .frame(minHeight: BadanSpace.touchMin)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Spacer(minLength: 0)
+                }
+
                 // Power altitude: name the technical schedule and where the record lives.
                 if env.depth.showsPowerDetail {
-                    Text("\(scheduleDetail(regimen.schedule)) · \(env.s(MedStrings.addedManually))")
-                        .font(BadanFont.caption)
-                        .foregroundStyle(BadanColor.textSecondary)
+                    HStack(spacing: BadanSpace.space1) {
+                        Text(scheduleDetail(regimen.schedule))
+                            .environment(\.layoutDirection, .leftToRight)
+                        Text("· \(env.s(MedStrings.addedManually))")
+                    }
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
                 }
             }
         }
@@ -637,8 +803,21 @@ struct MedicationLogView: View {
         case .asNeeded: return "asNeeded"
         case .daily(let times): return "daily(\(times.sorted().joined(separator: ",")))"
         case .weekly(let days, let times):
-            return "weekly(\(days.map(String.init).joined(separator: ",")); \(times.sorted().joined(separator: ",")))"
+            let dayLabels = days.sorted().map(shortWeekdayLabel(iso:))
+            return "weekly(\(dayLabels.joined(separator: ",")); \(times.sorted().joined(separator: ",")))"
         }
+    }
+
+    /// Localized abbreviated weekday name for an ISO weekday (1=Mon...7=Sun) — used only in the
+    /// power-mode technical detail line so it names actual weekdays instead of raw integers.
+    private func shortWeekdayLabel(iso: Int) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.locale = Locale(identifier: env.language.localeIdentifier)
+        let symbols = cal.shortWeekdaySymbols // index 0 = Sunday ... 6 = Saturday
+        let calWeekday = iso == 7 ? 1 : iso + 1
+        let idx = calWeekday - 1
+        guard symbols.indices.contains(idx) else { return String(iso) }
+        return symbols[idx]
     }
 
     /// Foreground for filled primary buttons: legible white/near-black in both themes.
@@ -659,13 +838,154 @@ private struct AdherenceDot: View {
             case .skipped:
                 Circle().strokeBorder(BadanColor.textSecondary, lineWidth: 1.5)
             case .pending:
-                Circle().fill(BadanColor.textSecondary.opacity(0.22))
+                Circle().fill(BadanColor.textSecondary.opacity(0.3))
             case .none:
-                Circle().fill(BadanColor.separator.opacity(0.5))
+                // Dashed, unfilled: visually distinct from the solid-fill `.pending` dot so
+                // "nothing was ever scheduled" doesn't read the same as "scheduled, unresolved."
+                Circle().strokeBorder(BadanColor.separator, style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+            case .notStarted:
+                // Blank: the regimen didn't exist yet on this day, so there's nothing to show —
+                // deliberately distinct from both `.pending` and `.none`.
+                Circle().fill(Color.clear)
             }
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Medication history sheet
+
+/// Full-range adherence report for one regimen (30/90 days), beyond the fixed 7-day strip.
+/// Read-only, non-punitive framing — same "taken/skipped" vocabulary as the rest of the screen.
+private struct MedicationHistorySheet: View {
+    @Environment(AppEnvironment.self) private var env
+    @Environment(\.dismiss) private var dismiss
+    let regimen: MedicationRegimen
+
+    private enum RangeOption: Int, CaseIterable {
+        case d30 = 30
+        case d90 = 90
+    }
+
+    @State private var range: RangeOption = .d30
+    @State private var takenCount = 0
+    @State private var skippedCount = 0
+    @State private var longestStreak = 0
+    @State private var isLoading = true
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: BadanSpace.space4) {
+                Picker("", selection: $range) {
+                    Text(env.s(MedStrings.last30Days)).tag(RangeOption.d30)
+                    Text(env.s(MedStrings.last90Days)).tag(RangeOption.d90)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, BadanSpace.space6)
+                } else if takenCount + skippedCount == 0 {
+                    Text(env.s(MedStrings.noHistoryYet))
+                        .font(BadanFont.body)
+                        .foregroundStyle(BadanColor.textSecondary)
+                } else {
+                    VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                        historyRow(label: MedStrings.takenPercentLabel, value: percentText)
+                        historyRow(label: MedStrings.longestStreakLabel,
+                                   value: "\(env.format.integer(longestStreak)) \(env.s(MedStrings.streakDaysUnit))")
+                        historyRow(label: MedStrings.totalRecordedLabel,
+                                   value: env.format.integer(takenCount + skippedCount))
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(BadanSpace.space4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(BadanColor.background)
+            .navigationTitle(regimen.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(env.s(Loc.done)) { dismiss() }
+                }
+            }
+            .task(id: range) { await load() }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func historyRow(label: LocalizedString, value: String) -> some View {
+        HStack {
+            Text(env.s(label))
+                .font(BadanFont.body)
+                .foregroundStyle(BadanColor.textSecondary)
+            Spacer(minLength: BadanSpace.space2)
+            Text(value)
+                .font(BadanFont.body.weight(.semibold))
+                .foregroundStyle(BadanColor.textPrimary)
+        }
+    }
+
+    private var percentText: String {
+        let total = takenCount + skippedCount
+        guard total > 0 else { return "—" }
+        let pct = Int((Double(takenCount) / Double(total) * 100).rounded())
+        return "\(env.format.integer(pct))%"
+    }
+
+    private func load() async {
+        isLoading = true
+        defer { isLoading = false }
+        let tz = TimeZone.current.identifier
+        let cal = DayAttribution.calendar(tz: tz)
+        let now = env.now()
+        let startOfToday = cal.startOfDay(for: now)
+        let from = cal.date(byAdding: .day, value: -(range.rawValue - 1), to: startOfToday) ?? startOfToday
+
+        guard let events = try? env.logging.adherence(regimenId: regimen.id, from: from, to: now) else {
+            takenCount = 0
+            skippedCount = 0
+            longestStreak = 0
+            return
+        }
+
+        var taken = 0
+        var skipped = 0
+        var takenDayKeys: Set<String> = []
+        for e in events {
+            switch e.kind {
+            case .taken, .late:
+                taken += 1
+                takenDayKeys.insert(DayAttribution.localDayKey(e.scheduledFor ?? e.occurredAt, tz: tz))
+            case .skipped:
+                skipped += 1
+            }
+        }
+        takenCount = taken
+        skippedCount = skipped
+        longestStreak = Self.longestConsecutiveStreak(dayKeys: takenDayKeys, tz: tz)
+    }
+
+    /// Longest run of consecutive calendar days present in `dayKeys`.
+    private static func longestConsecutiveStreak(dayKeys: Set<String>, tz: String) -> Int {
+        let days = dayKeys.compactMap { DayAttribution.date(fromDayKey: $0, tz: tz) }.sorted()
+        guard !days.isEmpty else { return 0 }
+        var longest = 1
+        var current = 1
+        for i in 1..<days.count {
+            let expected = DayAttribution.addingDays(1, to: days[i - 1], tz: tz)
+            if DayAttribution.localDayKey(expected, tz: tz) == DayAttribution.localDayKey(days[i], tz: tz) {
+                current += 1
+            } else {
+                current = 1
+            }
+            longest = max(longest, current)
+        }
+        return longest
     }
 }
 
@@ -677,8 +997,8 @@ private struct AddMedicationSheet: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
 
-    /// (name, strength?, schedule)
-    let onSave: (String, String?, MedicationSchedule) -> Void
+    /// (name, strength?, schedule) -> whether the save actually succeeded.
+    let onSave: (String, String?, MedicationSchedule) -> Bool
 
     private enum Mode: Hashable { case asNeeded, daily }
 
@@ -687,18 +1007,42 @@ private struct AddMedicationSheet: View {
     @State private var mode: Mode = .daily
     @State private var times: [String] = ["09:00"]
     @State private var pickedTime = AddMedicationSheet.defaultPickerDate
+    @State private var duplicateTimeNotice = false
+    @State private var saveFailed = false
+    @State private var timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
+        return f
+    }()
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: BadanSpace.space5) {
+                    if saveFailed {
+                        HStack(spacing: BadanSpace.space1) {
+                            Image(systemName: "arrow.clockwise")
+                                .imageScale(.small)
+                                .accessibilityHidden(true)
+                            Text(env.s(MedStrings.saveFailed))
+                                .font(BadanFont.caption)
+                        }
+                        .foregroundStyle(BadanColor.outOfBand)
+                    }
+
                     field(label: Loc.medicationName) {
                         TextField(env.s(MedStrings.namePlaceholder), text: $name)
                             .textInputAutocapitalization(.words)
                             .font(BadanFont.body)
                             .foregroundStyle(BadanColor.textPrimary)
                     }
+                    .onChange(of: name) { _, newValue in
+                        prefillStrengthIfNeeded(for: newValue)
+                    }
 
+                    // Strength is intentionally free text (e.g. "1000 IU", "50mg") — dose and
+                    // unit vary too much across medications to force a single numeric+unit split.
                     field(label: Loc.strength) {
                         TextField(env.s(MedStrings.strengthPlaceholder), text: $strength)
                             .font(BadanFont.body)
@@ -749,11 +1093,16 @@ private struct AddMedicationSheet: View {
                             timeChip(t)
                         }
                     }
+                } else {
+                    Text(env.s(MedStrings.addTimeHint))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
                 }
 
                 HStack(spacing: BadanSpace.space3) {
                     DatePicker("", selection: $pickedTime, displayedComponents: .hourAndMinute)
                         .labelsHidden()
+                        .onChange(of: pickedTime) { _, _ in duplicateTimeNotice = false }
                     Button {
                         addPickedTime()
                     } label: {
@@ -765,6 +1114,12 @@ private struct AddMedicationSheet: View {
                     .buttonStyle(.plain)
                     Spacer(minLength: 0)
                 }
+
+                if duplicateTimeNotice {
+                    Text(env.s(MedStrings.timeAlreadyAdded))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
             }
         }
     }
@@ -774,17 +1129,24 @@ private struct AddMedicationSheet: View {
         return Button {
             withAnimation(.easeInOut(duration: 0.2)) { mode = target }
         } label: {
-            Text(env.s(label))
-                .font(BadanFont.body.weight(.medium))
-                .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
-                .foregroundStyle(isSelected ? BadanColor.primary : BadanColor.textSecondary)
-                .background((isSelected ? BadanColor.primary.opacity(0.14) : BadanColor.surface),
-                           in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
-                        .strokeBorder(isSelected ? BadanColor.primary : BadanColor.separator,
-                                      lineWidth: isSelected ? 1.5 : 1)
-                )
+            HStack(spacing: BadanSpace.space1) {
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                Text(env.s(label))
+                    .font(BadanFont.body.weight(.medium))
+            }
+            .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+            .foregroundStyle(isSelected ? BadanColor.primary : BadanColor.textSecondary)
+            .background((isSelected ? BadanColor.primary.opacity(0.14) : BadanColor.surface),
+                       in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
+                    .strokeBorder(isSelected ? BadanColor.primary : BadanColor.separator,
+                                  lineWidth: isSelected ? 1.5 : 1)
+            )
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -795,6 +1157,7 @@ private struct AddMedicationSheet: View {
             Text(displayTime(time))
                 .font(BadanFont.chip)
                 .foregroundStyle(BadanColor.textPrimary)
+                .lineLimit(1)
             Button {
                 times.removeAll { $0 == time }
             } label: {
@@ -819,7 +1182,7 @@ private struct AddMedicationSheet: View {
                 .foregroundStyle(BadanColor.textSecondary)
             content()
                 .padding(.horizontal, BadanSpace.space4)
-                .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: Self.fieldMinHeight, alignment: .leading)
                 .background(BadanColor.surface,
                            in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
                 .overlay(
@@ -829,17 +1192,24 @@ private struct AddMedicationSheet: View {
         }
     }
 
+    /// Input-field height for this sheet's `field(...)` wrapper. Named so it's not a bare
+    /// magic number, kept file-local since it's specific to this sheet's layout.
+    private static let fieldMinHeight: CGFloat = 52
+
     // MARK: Actions
 
     private var canSave: Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty, trimmed.contains(where: \.isLetter) else { return false }
         return mode == .asNeeded || !times.isEmpty
     }
 
     private func addPickedTime() {
-        let key = Self.canonicalTime(from: pickedTime)
-        if !times.contains(key) {
+        let key = Self.canonicalTime(from: Self.roundedToNearestFiveMinutes(pickedTime))
+        if times.contains(key) {
+            duplicateTimeNotice = true
+        } else {
+            duplicateTimeNotice = false
             times.append(key)
             times.sort()
         }
@@ -852,8 +1222,28 @@ private struct AddMedicationSheet: View {
         let schedule: MedicationSchedule = (mode == .daily && !times.isEmpty)
             ? .daily(times: times.sorted())
             : .asNeeded
-        onSave(trimmedName, trimmedStrength.isEmpty ? nil : trimmedStrength, schedule)
-        dismiss()
+        if onSave(trimmedName, trimmedStrength.isEmpty ? nil : trimmedStrength, schedule) {
+            dismiss()
+        } else {
+            saveFailed = true
+        }
+    }
+
+    /// If the typed name exactly matches a previously-added regimen (active or ended) and
+    /// strength hasn't been touched yet, quietly pre-fill it from that regimen's last known
+    /// strength. Still fully editable — never forced.
+    private func prefillStrengthIfNeeded(for typedName: String) {
+        guard strength.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let trimmed = typedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { return }
+        guard let regimens = try? env.logging.regimens(activeOnly: false) else { return }
+        guard let match = regimens
+            .filter({ $0.name.localizedCaseInsensitiveCompare(trimmed) == .orderedSame })
+            .sorted(by: { $0.updatedAt > $1.updatedAt })
+            .first,
+            let matchedStrength = match.strength, !matchedStrength.isEmpty
+        else { return }
+        strength = matchedStrength
     }
 
     // MARK: Time formatting
@@ -861,19 +1251,36 @@ private struct AddMedicationSheet: View {
     private func displayTime(_ canonical: String) -> String {
         let cal = Calendar.current
         let date = MedicationLogViewModel.slotDate(time: canonical, on: cal.startOfDay(for: env.now()), cal: cal)
-        let f = DateFormatter()
-        f.locale = Locale(identifier: env.language.localeIdentifier)
-        f.timeStyle = .short
-        f.dateStyle = .none
-        return f.string(from: date)
+        timeFormatter.locale = Locale(identifier: env.language.localeIdentifier)
+        return timeFormatter.string(from: date)
     }
 
     /// A stable "HH:mm" in 24h form regardless of display locale.
-    private static func canonicalTime(from date: Date) -> String {
+    private static let canonicalTimeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm"
-        return f.string(from: date)
+        return f
+    }()
+
+    private static func canonicalTime(from date: Date) -> String {
+        canonicalTimeFormatter.string(from: date)
+    }
+
+    /// Snaps a picked time to the nearest 5 minutes so imprecise drags don't create
+    /// near-duplicate entries (e.g. "9:00 AM" vs "9:01 AM").
+    private static func roundedToNearestFiveMinutes(_ date: Date) -> Date {
+        let cal = Calendar.current
+        var comps = cal.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        guard let minute = comps.minute, let hour = comps.hour else { return date }
+        let rounded = Int((Double(minute) / 5.0).rounded()) * 5
+        if rounded >= 60 {
+            comps.minute = 0
+            comps.hour = (hour + 1) % 24
+        } else {
+            comps.minute = rounded
+        }
+        return cal.date(from: comps) ?? date
     }
 
     private static var defaultPickerDate: Date {
