@@ -1,11 +1,39 @@
 package net.albayyan.badan.export
 
+import java.io.OutputStream
+import java.security.DigestOutputStream
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.round
+
+/**
+ * Record shape: sample | interval | session | event | derived | baseline (instant vs aggregate
+ * vs typed-event vs computed). Backs the `record_kind` CSV column with a real enum — mirroring
+ * `IngestionPath`'s enum-not-raw-string discipline — so a typo'd kind string is a compile error
+ * rather than a silent export-content bug (OPT-269).
+ */
+enum class RecordKind(val code: String) {
+    SAMPLE("sample"),
+    INTERVAL("interval"),
+    SESSION("session"),
+    EVENT("event"),
+    DERIVED("derived"),
+    BASELINE("baseline"),
+}
+
+/**
+ * raw | derived | aggregate — separates measured rows from computed/rolled-up rows. Backs the
+ * `value_type` CSV column with a real enum, same rationale as [RecordKind] (OPT-269).
+ */
+enum class ValueType(val code: String) {
+    RAW("raw"),
+    DERIVED("derived"),
+    AGGREGATE("aggregate"),
+}
 
 /**
  * One export row rendered as the 24-column, language-stable CSV contract
@@ -15,14 +43,14 @@ import kotlin.math.round
  */
 data class ExportRow(
     val recordId: String,
-    val recordKind: String,            // sample | interval | session | event | derived | baseline
+    val recordKind: RecordKind,
     val metricId: String,
     val metricDisplay: String,
     val value: String,                 // in the active unit profile
     val unit: String,
     val canonicalValue: String,        // always canonical, independent of unit profile
     val canonicalUnit: String,
-    val valueType: String,             // raw | derived | aggregate
+    val valueType: ValueType,
     val isDerived: Boolean,
     val timestampStart: String,        // ISO-8601 w/ offset
     val timestampEnd: String? = null,  // ISO-8601 w/ offset, null for instants
@@ -54,14 +82,14 @@ class CsvWriter {
     fun line(row: ExportRow): String {
         val cells: List<String> = listOf(
             row.recordId,
-            row.recordKind,
+            row.recordKind.code,
             row.metricId,
             row.metricDisplay,
             row.value,
             row.unit,
             row.canonicalValue,
             row.canonicalUnit,
-            row.valueType,
+            row.valueType.code,
             if (row.isDerived) "true" else "false",
             row.timestampStart,
             row.timestampEnd ?: "",
@@ -93,6 +121,25 @@ class CsvWriter {
         }
         out.append(NEWLINE)
         return out.toString()
+    }
+
+    /**
+     * Streams header + rows directly to [outputStream] (wrapped so [digest] is updated
+     * incrementally in the same pass, rather than as a second pass over an already
+     * fully-materialized byte array) instead of building the whole file as one in-memory string
+     * first. Takes ownership of [outputStream] and closes it; call `digest.digest()` afterward to
+     * read the finished checksum (PERF-252/PERF-254 — memory pressure and double-pass checksum on
+     * large exports).
+     */
+    fun writeTo(rows: List<ExportRow>, outputStream: OutputStream, digest: MessageDigest) {
+        DigestOutputStream(outputStream, digest).bufferedWriter(Charsets.UTF_8).use { w ->
+            w.write(header())
+            for (row in rows) {
+                w.write(NEWLINE)
+                w.write(line(row))
+            }
+            w.write(NEWLINE)
+        }
     }
 
     companion object {

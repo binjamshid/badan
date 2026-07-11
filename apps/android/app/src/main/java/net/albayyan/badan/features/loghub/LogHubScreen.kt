@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,8 +37,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,6 +78,10 @@ private val quickAddTitle = LocalizedString(en = "Quick add", ar = "إضافة �
 private val mlUnit = LocalizedString(en = "ml", ar = "مل")
 private val storedManually = LocalizedString(en = "Saved as your own entry", ar = "يُحفَظ كإدخال منك")
 private val justNow = LocalizedString(en = "just now", ar = "الآن")
+private val customAmount = LocalizedString(en = "Custom amount", ar = "كمية مخصصة")
+private val thisWeek = LocalizedString(en = "this week", ar = "هذا الأسبوع")
+private val earlier = LocalizedString(en = "earlier", ar = "سابقًا")
+private val quickTag = LocalizedString(en = "Quick", ar = "سريع")
 
 // MARK: - Recents model
 
@@ -85,6 +93,8 @@ private data class RecentItem(
     val iconKey: String,
     val date: Long,
     val kind: RecentKind,
+    /** How many times this label recurred within the recents window (30 days). */
+    val count: Int,
 )
 
 private enum class LogSheet { WATER, WEIGHT }
@@ -127,8 +137,8 @@ fun LogHubScreen() {
     }
 
     val quickAddCells = listOf<@Composable () -> Unit>(
-        { LogTile(title = env.s(Loc.logWater), iconKey = "water_drop") { activeSheet = LogSheet.WATER } },
-        { LogTile(title = env.s(Loc.logWeight), iconKey = "monitor_weight") { activeSheet = LogSheet.WEIGHT } },
+        { LogTile(title = env.s(Loc.logWater), iconKey = "water_drop", isQuickAdd = true) { activeSheet = LogSheet.WATER } },
+        { LogTile(title = env.s(Loc.logWeight), iconKey = "monitor_weight", isQuickAdd = true) { activeSheet = LogSheet.WEIGHT } },
     )
 
     Column(
@@ -166,10 +176,19 @@ fun LogHubScreen() {
                     horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
                 ) {
                     for (item in recents) {
+                        // Time cue is always shown (coarse for casual/balanced, precise "N min
+                        // ago" for power); a frequency cue is layered on at every depth so a
+                        // recurring pattern reads differently from a one-off entry at a glance.
+                        val timeLabel = if (env.depth.showsPowerDetail) {
+                            relativeTime(env, item.date)
+                        } else {
+                            coarseRelativeTime(env, item.date)
+                        }
+                        val freqLabel = frequencyLabel(env, item.count)
                         RecentChip(
                             label = item.label,
                             iconKey = item.iconKey,
-                            detail = if (env.depth.showsPowerDetail) relativeTime(env, item.date) else null,
+                            detail = listOfNotNull(timeLabel, freqLabel).joinToString(" · "),
                             onClick = {
                                 when (item.kind) {
                                     RecentKind.SYMPTOM -> nav.push(Route.SymptomLog)
@@ -236,7 +255,8 @@ private fun TileGrid(cells: List<@Composable () -> Unit>, modifier: Modifier = M
 // MARK: - Tiles & chips
 
 @Composable
-private fun LogTile(title: String, iconKey: String, onClick: () -> Unit) {
+private fun LogTile(title: String, iconKey: String, isQuickAdd: Boolean = false, onClick: () -> Unit) {
+    val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     BadanCard(
         modifier = Modifier
@@ -270,6 +290,15 @@ private fun LogTile(title: String, iconKey: String, onClick: () -> Unit) {
                 style = BadanType.body.copy(fontWeight = FontWeight.Medium),
                 color = colors.textPrimary,
             )
+            // Quick-add tiles open a compact sheet rather than a full-screen editor; a small
+            // caption sets that expectation before the tap (screen-push tiles have none).
+            if (isQuickAdd) {
+                Text(
+                    text = env.s(quickTag),
+                    style = BadanType.caption,
+                    color = colors.textSecondary,
+                )
+            }
         }
     }
 }
@@ -316,6 +345,22 @@ private fun WaterQuickSheet(onLog: (Double) -> Unit, onCancel: () -> Unit) {
     val colors = BadanTheme.colors
     val amounts = listOf(250.0, 500.0)
 
+    // Custom amount, mirroring WeightQuickSheet's free-text pattern: presets cover the common
+    // cases (a glass, a bottle) but a can (330ml) or a large bottle (750ml) has no preset.
+    var customText by remember { mutableStateOf("") }
+    val customParsed = remember(customText) {
+        customText.replace(",", ".").trim().toDoubleOrNull()?.takeIf { it > 0.0 }
+    }
+
+    // Pre-fill with the most recently logged amount so a repeat entry starts from something
+    // useful instead of blank, without clobbering anything the user has already typed.
+    LaunchedEffect(Unit) {
+        val last = withContext(Dispatchers.IO) { lastWaterMl(env) }
+        if (last != null && customText.isEmpty()) {
+            customText = trimmedNumber(last)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -353,6 +398,50 @@ private fun WaterQuickSheet(onLog: (Double) -> Unit, onCancel: () -> Unit) {
                 )
             }
         }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(BadanRadius.card))
+                .background(color = colors.surface, shape = RoundedCornerShape(BadanRadius.card))
+                .border(
+                    width = 1.dp,
+                    color = colors.separator,
+                    shape = RoundedCornerShape(BadanRadius.card),
+                )
+                .heightIn(min = 60.dp)
+                .padding(horizontal = BadanSpace.s4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                if (customText.isEmpty()) {
+                    Text(
+                        text = env.s(customAmount),
+                        style = BadanType.numeralM,
+                        color = colors.textSecondary.copy(alpha = 0.6f),
+                    )
+                }
+                BasicTextField(
+                    value = customText,
+                    onValueChange = { customText = it },
+                    textStyle = BadanType.numeralM.copy(color = colors.textPrimary),
+                    singleLine = true,
+                    cursorBrush = SolidColor(colors.primary),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { customParsed?.let(onLog) }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Text(text = env.s(mlUnit), style = BadanType.body, color = colors.textSecondary)
+            TextButton(onClick = { customParsed?.let(onLog) }, enabled = customParsed != null) {
+                Text(
+                    text = env.s(Loc.add),
+                    style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (customParsed != null) colors.primary else colors.textSecondary,
+                )
+            }
+        }
     }
 }
 
@@ -365,9 +454,20 @@ private fun WeightQuickSheet(onLog: (Double) -> Unit, onCancel: () -> Unit) {
     val parsed = remember(text) {
         text.replace(",", ".").trim().toDoubleOrNull()?.takeIf { it > 0.0 }
     }
+    val focusRequester = remember { FocusRequester() }
 
     val canonicalUnit = env.registry.definitionOrFallback(MetricId.weight).canonicalUnit
     val unitLabel = env.format.unitLabel(MetricId.weight) ?: canonicalUnit
+
+    // Auto-focus on open (one less tap on this "under-10-second" quick-log path) and pre-fill
+    // with the last logged weight, without clobbering anything the user has already typed.
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+        val last = withContext(Dispatchers.IO) { lastWeightDisplayValue(env) }
+        if (last != null && text.isEmpty()) {
+            text = trimmedNumber(last)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -412,8 +512,11 @@ private fun WeightQuickSheet(onLog: (Double) -> Unit, onCancel: () -> Unit) {
                     textStyle = BadanType.numeralM.copy(color = colors.textPrimary),
                     singleLine = true,
                     cursorBrush = SolidColor(colors.primary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { parsed?.let(onLog) }),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
                 )
             }
             Text(text = unitLabel, style = BadanType.body, color = colors.textSecondary)
@@ -468,23 +571,103 @@ private fun SheetHeader(
 
 // MARK: - Data loading & mutations (non-composable)
 
-/** Recent symptom / workout entries from the last 30 days, surfaced as quick "log again" chips. */
+/** A single raw symptom/workout occurrence, before grouping into a recents chip. */
+private data class RecentOccurrence(
+    val id: String,
+    val label: String,
+    val iconKey: String,
+    val date: Long,
+    val kind: RecentKind,
+)
+
+/**
+ * Recent symptom / workout entries from the last 30 days, surfaced as quick "log again" chips.
+ * Selection blends recency with frequency (a recency-weighted count) rather than pure
+ * most-recent-first, so a consistently repeated symptom/workout isn't crowded out of the row by
+ * a single one-off logged slightly more recently.
+ */
 private fun loadRecents(env: AppEnvironment): List<RecentItem> {
-    val items = mutableListOf<RecentItem>()
     val now = env.now()
-    val from = now - 30L * 86_400_000L
+    val windowMillis = 30L * 86_400_000L
+    val from = now - windowMillis
+
+    val items = mutableListOf<RecentItem>()
 
     // Symptoms are sensitive — only touch that store when the module is enabled.
     if (env.profile.sensitiveModulesEnabled) {
-        runCatching { env.logging.symptoms(from, now) }.getOrNull()?.take(3)?.forEach { s ->
+        val occurrences = runCatching { env.logging.symptoms(from, now) }.getOrNull().orEmpty().map { s ->
             val label = env.symptoms.displayName(s.symptomId, s.customLabel).resolved(env.language)
-            items.add(RecentItem(id = s.id, label = label, iconKey = "healing", date = s.occurredAt, kind = RecentKind.SYMPTOM))
+            RecentOccurrence(id = s.id, label = label, iconKey = "healing", date = s.occurredAt, kind = RecentKind.SYMPTOM)
         }
+        items += rankRecents(occurrences, now = now, windowMillis = windowMillis)
     }
-    runCatching { env.logging.workouts(from, now) }.getOrNull()?.take(3)?.forEach { w ->
-        items.add(RecentItem(id = w.id, label = w.activityType, iconKey = "directions_run", date = w.startAt, kind = RecentKind.WORKOUT))
+
+    val workoutOccurrences = runCatching { env.logging.workouts(from, now) }.getOrNull().orEmpty().map { w ->
+        RecentOccurrence(id = w.id, label = w.activityType, iconKey = "directions_run", date = w.startAt, kind = RecentKind.WORKOUT)
     }
+    items += rankRecents(workoutOccurrences, now = now, windowMillis = windowMillis)
+
     return items.sortedByDescending { it.date }
+}
+
+/**
+ * Groups occurrences by label, scores each group by recency-weighted count (recent + frequent
+ * beats merely most-recent), and returns the top 3 as display-ready [RecentItem]s.
+ */
+private fun rankRecents(occurrences: List<RecentOccurrence>, now: Long, windowMillis: Long): List<RecentItem> {
+    return occurrences
+        .groupBy { it.label }
+        .map { (label, group) ->
+            val mostRecent = group.maxBy { it.date }
+            val count = group.size
+            val recency = (1.0 - (now - mostRecent.date).toDouble() / windowMillis).coerceIn(0.0, 1.0)
+            val score = count + recency
+            score to RecentItem(
+                id = mostRecent.id,
+                label = label,
+                iconKey = mostRecent.iconKey,
+                date = mostRecent.date,
+                kind = mostRecent.kind,
+                count = count,
+            )
+        }
+        .sortedByDescending { it.first }
+        .take(3)
+        .map { it.second }
+}
+
+/** The most recently logged water amount (any meal-type entry with a water value), if any. */
+private fun lastWaterMl(env: AppEnvironment): Double? {
+    val now = env.now()
+    val from = now - 90L * 86_400_000L
+    return runCatching { env.logging.nutrition(from, now) }.getOrNull()
+        ?.firstOrNull { (it.waterMl ?: 0.0) > 0.0 }
+        ?.waterMl
+}
+
+/** The most recently logged weight, converted into the user's current display unit. */
+private fun lastWeightDisplayValue(env: AppEnvironment): Double? {
+    val def = env.registry.definitionOrFallback(MetricId.weight)
+    val displayUnit = env.format.displayUnit(def)
+    val now = env.now()
+    val from = now - 365L * 86_400_000L
+    val sample = runCatching { env.measurements.rawSamples(def.metricId, from, now) }.getOrNull()?.lastOrNull()
+        ?: return null
+    return if (sample.originalUnit == displayUnit) {
+        sample.originalValue
+    } else {
+        Units.convert(sample.value, from = def.canonicalUnit, to = displayUnit)
+    }
+}
+
+/** Formats a pre-fill value as plain text matching the quick-add fields' own parse rules. */
+private fun trimmedNumber(value: Double): String {
+    val rounded = kotlin.math.round(value * 10.0) / 10.0
+    return if (rounded == rounded.toLong().toDouble()) {
+        rounded.toLong().toString()
+    } else {
+        rounded.toString()
+    }
 }
 
 private fun logWater(env: AppEnvironment, milliliters: Double) {
@@ -533,9 +716,17 @@ private fun logWeight(env: AppEnvironment, displayValue: Double) {
     runCatching { env.measurements.upsertRawSample(sample) }
 }
 
-// MARK: - Relative time (power detail)
+// MARK: - Relative time (recents chips)
+//
+// Convention: recents chips use relative phrasing ("5 min ago") rather than absolute timestamps
+// because their entire purpose is answering "how recent is this suggestion" for fast re-logging —
+// a "just happened" framing, not a historical record. Screens that show a durable log of past
+// entries (Metric Detail, Workout/Nutrition rows, Provenance) use absolute timestamps instead,
+// since those are records to be read precisely, not recency cues to act on. Power depth gets the
+// precise granularity ("5 min ago" / "2 h ago"); casual/balanced depth gets a coarser bucket
+// (today / this week / earlier) so the same "how recent" signal is legible without power-user detail.
 
-/** A compact, bilingual "how long ago" label; only shown in power depth on recent chips. */
+/** A compact, bilingual "how long ago" label; precise granularity, shown at power depth. */
 private fun relativeTime(env: AppEnvironment, millis: Long): String {
     val delta = (env.now() - millis).coerceAtLeast(0L)
     val minutes = delta / 60_000L
@@ -557,4 +748,21 @@ private fun relativeTime(env: AppEnvironment, millis: Long): String {
             if (ar) "قبل $n ي" else "$n d ago"
         }
     }
+}
+
+/** A coarse, bilingual "how long ago" bucket for casual/balanced depth: today / this week / earlier. */
+private fun coarseRelativeTime(env: AppEnvironment, millis: Long): String {
+    val delta = (env.now() - millis).coerceAtLeast(0L)
+    val days = delta / 86_400_000L
+    return when {
+        days < 1L -> env.s(Loc.today)
+        days < 7L -> env.s(thisWeek)
+        else -> env.s(earlier)
+    }
+}
+
+/** A lightweight "3×" recurrence cue; omitted for one-off items where it would add no signal. */
+private fun frequencyLabel(env: AppEnvironment, count: Int): String? {
+    if (count <= 1) return null
+    return "${env.format.integer(count)}×"
 }

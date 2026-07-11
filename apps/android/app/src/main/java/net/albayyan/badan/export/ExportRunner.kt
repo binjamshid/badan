@@ -36,6 +36,8 @@ import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * Runs a fully offline export: gathers scoped records from the repositories, renders them (CSV
@@ -66,7 +68,7 @@ class ExportRunner(
 
     // MARK: - Entry point
 
-    fun run(scope: ExportScope, format: ExportFormat, outputDir: File): ExportResult {
+    suspend fun run(scope: ExportScope, format: ExportFormat, outputDir: File): ExportResult {
         val startedAt = clock.now()
         val exportId = Ulid.newId()
         outputDir.mkdirs()
@@ -78,6 +80,9 @@ class ExportRunner(
         val intervalRecords = mutableListOf<IntervalRecord>()
         if (scope.includeRaw) {
             for (id in ids) {
+                // A user backing out of the export screen mid-run should actually stop the work
+                // (PERF-275) rather than silently finishing in the background.
+                coroutineContext.ensureActive()
                 if (!metricAllowed(id, scope)) continue
                 rawSamples += measurements
                     .rawSamples(id, scope.startDate, scope.endDate, scope.includeSuppressed)
@@ -100,6 +105,7 @@ class ExportRunner(
         val baselines = mutableListOf<Baseline>()
         if (scope.includeDerived) {
             for (id in ids) {
+                coroutineContext.ensureActive()
                 if (!metricAllowed(id, scope)) continue
                 derivedValues += derivation.latestDerivedSeries(id).filter { derivedInRange(it, scope) }
                 if (registry.definition(id)?.baselineEligible == true) {
@@ -136,27 +142,32 @@ class ExportRunner(
         val generatedAt = clock.now()
         val writer = CsvWriter()
 
-        // Route measured rows to raw.csv, engine-computed rows to derived.csv.
-        val rawRows = rawSamples.map { rowForSample(it, scope) } +
-            intervalRecords.map { rowForInterval(it, scope) } +
-            sessions.map { rowForSession(it, scope) }
-        val derivedRows = derivedValues.map { rowForDerived(it, scope) } +
-            baselines.map { rowForBaseline(it, scope) }
+        // Route measured rows to raw.csv, engine-computed rows to derived.csv. Per-metric row
+        // counts are accumulated in the same pass that builds each row rather than as separate
+        // full-list passes afterward (PERF-278).
+        val counts = HashMap<String, Int>()
+        val rawRows = ArrayList<ExportRow>(rawSamples.size + intervalRecords.size + sessions.size)
+        for (s in rawSamples) rawRows += rowForSample(s, scope).also { counts.bump(it.metricId) }
+        for (r in intervalRecords) rawRows += rowForInterval(r, scope).also { counts.bump(it.metricId) }
+        for (s in sessions) rawRows += rowForSession(s, scope).also { counts.bump(it.metricId) }
+        val derivedRows = ArrayList<ExportRow>(derivedValues.size + baselines.size)
+        for (v in derivedValues) derivedRows += rowForDerived(v, scope).also { counts.bump(it.metricId) }
+        for (b in baselines) derivedRows += rowForBaseline(b, scope).also { counts.bump(it.metricId) }
 
-        val rawData = writer.render(rawRows).toByteArray(Charsets.UTF_8)
-        val derivedData = writer.render(derivedRows).toByteArray(Charsets.UTF_8)
+        // Rows stream directly to each file (rather than being fully rendered into one in-memory
+        // string first) with the SHA-256 checksum computed incrementally in the same pass
+        // (PERF-252/PERF-254).
+        val rawDigest = MessageDigest.getInstance("SHA-256")
+        val derivedDigest = MessageDigest.getInstance("SHA-256")
         val rawFile = File(folder, "raw.csv")
         val derivedFile = File(folder, "derived.csv")
-        rawFile.writeBytes(rawData)
-        derivedFile.writeBytes(derivedData)
+        writer.writeTo(rawRows, rawFile.outputStream(), rawDigest)
+        writer.writeTo(derivedRows, derivedFile.outputStream(), derivedDigest)
 
         val checksums = mapOf(
-            "raw.csv" to sha256Hex(rawData),
-            "derived.csv" to sha256Hex(derivedData),
+            "raw.csv" to hex(rawDigest.digest()),
+            "derived.csv" to hex(derivedDigest.digest()),
         )
-        val counts = HashMap<String, Int>()
-        addCounts(rawRows.map { it.metricId }, counts)
-        addCounts(derivedRows.map { it.metricId }, counts)
         val rowCount = rawRows.size + derivedRows.size
 
         val manifest = makeManifest(exportId, scope, generatedAt, checksums, counts)
@@ -213,16 +224,19 @@ class ExportRunner(
             emptyList()
         }
 
+        // Per-metric row counts accumulate in a single pass per collection (a plain `.bump` per
+        // element) instead of a `.map { it.metricId }` pass followed by a separate `addCounts`
+        // pass over the mapped list (PERF-278).
         val counts = HashMap<String, Int>()
-        addCounts(rawSamples.map { it.metricId }, counts)
-        addCounts(intervalRecords.map { it.metricId }, counts)
-        addCounts(sessions.map { sessionMetricId(it.kind) }, counts)
-        addCounts(derivedValues.map { it.metricId }, counts)
-        addCounts(baselines.map { it.metricId }, counts)
-        addCounts(symptoms.map { "symptoms.entry" }, counts)
-        addCounts(adherence.map { "medications.adherence" }, counts)
-        addCounts(workouts.map { "activity.workout" }, counts)
-        addCounts(nutrition.map { "nutrition.entry" }, counts)
+        for (s in rawSamples) counts.bump(s.metricId)
+        for (r in intervalRecords) counts.bump(r.metricId)
+        for (s in sessions) counts.bump(sessionMetricId(s.kind))
+        for (v in derivedValues) counts.bump(v.metricId)
+        for (b in baselines) counts.bump(b.metricId)
+        for (unused in symptoms) counts.bump("symptoms.entry")
+        for (unused in adherence) counts.bump("medications.adherence")
+        for (unused in workouts) counts.bump("activity.workout")
+        for (unused in nutrition) counts.bump("nutrition.entry")
         val rowCount = rawSamples.size + intervalRecords.size + sessions.size +
             derivedValues.size + baselines.size +
             symptoms.size + adherence.size + workouts.size + nutrition.size
@@ -230,15 +244,19 @@ class ExportRunner(
         // A single self-contained file cannot checksum itself, so the embedded manifest carries no
         // checksums; the file-level SHA is recorded on the persisted job below.
         val embedded = makeManifest(exportId, scope, generatedAt, emptyMap(), counts)
-        val bundleData = JsonBundleWriter().data(
+        // Streams the bundle's JSON encoding directly to the file (rather than fully materializing
+        // the JSON string and its byte array first) with the SHA-256 checksum computed
+        // incrementally in the same pass (PERF-253/PERF-254).
+        val bundleDigest = MessageDigest.getInstance("SHA-256")
+        val bundleFile = File(folder, "bundle.json")
+        JsonBundleWriter().writeTo(
             manifest = embedded, rawSamples = rawSamples, intervalRecords = intervalRecords,
             sessions = sessions, derivedValues = derivedValues, baselines = baselines,
             symptoms = symptoms, adherence = adherence, workouts = workouts, nutrition = nutrition,
+            outputStream = bundleFile.outputStream(), digest = bundleDigest,
         )
-        val bundleFile = File(folder, "bundle.json")
-        bundleFile.writeBytes(bundleData)
 
-        val checksums = mapOf("bundle.json" to sha256Hex(bundleData))
+        val checksums = mapOf("bundle.json" to hex(bundleDigest.digest()))
         val persisted = makeManifest(exportId, scope, generatedAt, checksums, counts)
         val job = ExportJob(
             id = exportId, scope = scope, format = ExportFormat.JSON, status = ExportJobStatus.COMPLETED,
@@ -299,14 +317,14 @@ class ExportRunner(
         val (value, unit) = displayValueUnit(s.metricId, s.value, s.unit, scope)
         return ExportRow(
             recordId = s.id,
-            recordKind = "sample",
+            recordKind = RecordKind.SAMPLE,
             metricId = s.metricId,
             metricDisplay = metricDisplay(s.metricId, scope),
             value = CsvWriter.decimal(value),
             unit = unit,
             canonicalValue = CsvWriter.decimal(s.value),
             canonicalUnit = s.unit,
-            valueType = "raw",
+            valueType = ValueType.RAW,
             isDerived = false,
             timestampStart = CsvWriter.iso8601(s.startAt, s.tzId),
             timestampEnd = s.endAt?.let { CsvWriter.iso8601(it, s.tzId) },
@@ -326,14 +344,14 @@ class ExportRunner(
         val (value, unit) = displayValueUnit(r.metricId, r.value, r.unit, scope)
         return ExportRow(
             recordId = r.id,
-            recordKind = "interval",
+            recordKind = RecordKind.INTERVAL,
             metricId = r.metricId,
             metricDisplay = metricDisplay(r.metricId, scope),
             value = CsvWriter.decimal(value),
             unit = unit,
             canonicalValue = CsvWriter.decimal(r.value),
             canonicalUnit = r.unit,
-            valueType = "aggregate",
+            valueType = ValueType.AGGREGATE,
             isDerived = false,
             timestampStart = CsvWriter.iso8601(r.startAt, r.tzId),
             timestampEnd = CsvWriter.iso8601(r.endAt, r.tzId),
@@ -353,14 +371,14 @@ class ExportRunner(
         val metricId = sessionMetricId(s.kind)
         return ExportRow(
             recordId = s.id,
-            recordKind = "session",
+            recordKind = RecordKind.SESSION,
             metricId = metricId,
             metricDisplay = sessionDisplay(s.kind, scope.language),
             value = CsvWriter.decimal(s.durationSeconds),
             unit = "s",
             canonicalValue = CsvWriter.decimal(s.durationSeconds),
             canonicalUnit = "s",
-            valueType = "raw",
+            valueType = ValueType.RAW,
             isDerived = false,
             timestampStart = CsvWriter.iso8601(s.startAt, s.tzId),
             timestampEnd = CsvWriter.iso8601(s.endAt, s.tzId),
@@ -381,14 +399,14 @@ class ExportRunner(
         val start = periodStartDate(v.periodKey) ?: v.computedAt
         return ExportRow(
             recordId = v.id,
-            recordKind = "derived",
+            recordKind = RecordKind.DERIVED,
             metricId = v.metricId,
             metricDisplay = metricDisplay(v.metricId, scope),
             value = CsvWriter.decimal(value),
             unit = unit,
             canonicalValue = CsvWriter.decimal(v.value),
             canonicalUnit = v.unit,
-            valueType = "derived",
+            valueType = ValueType.DERIVED,
             isDerived = true,
             timestampStart = CsvWriter.iso8601(start, "UTC"),
             timezone = "UTC",
@@ -406,14 +424,14 @@ class ExportRunner(
         val (value, unit) = displayValueUnit(b.metricId, b.center, b.unit, scope)
         return ExportRow(
             recordId = b.id,
-            recordKind = "baseline",
+            recordKind = RecordKind.BASELINE,
             metricId = b.metricId,
             metricDisplay = metricDisplay(b.metricId, scope),
             value = CsvWriter.decimal(value),
             unit = unit,
             canonicalValue = CsvWriter.decimal(b.center),
             canonicalUnit = b.unit,
-            valueType = "derived",
+            valueType = ValueType.DERIVED,
             isDerived = true,
             timestampStart = CsvWriter.iso8601(b.validFrom, "UTC"),
             timezone = "UTC",
@@ -551,14 +569,14 @@ class ExportRunner(
 
     // MARK: - Counting & checksums
 
-    private fun addCounts(metricIds: List<String>, counts: MutableMap<String, Int>) {
-        for (id in metricIds) counts[id] = (counts[id] ?: 0) + 1
+    /** Increments this metric id's row count by one (PERF-278: one pass, no intermediate list). */
+    private fun MutableMap<String, Int>.bump(metricId: String) {
+        this[metricId] = (this[metricId] ?: 0) + 1
     }
 
-    private fun sha256Hex(data: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(data)
-        return buildString { for (b in digest) append("%02x".format(b.toInt() and 0xFF)) }
-    }
+    /** Hex-encodes an already-finalized digest (streamed writers compute it incrementally). */
+    private fun hex(digestBytes: ByteArray): String =
+        buildString { for (b in digestBytes) append("%02x".format(b.toInt() and 0xFF)) }
 
     companion object {
         private const val DATA_QUALITY_NOTE =

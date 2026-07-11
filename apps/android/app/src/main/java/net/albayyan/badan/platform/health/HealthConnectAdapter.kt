@@ -16,7 +16,11 @@ import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.ReadRecordsRequest
+import androidx.health.connect.client.response.ReadRecordsResponse
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import net.albayyan.badan.domain.Aggregation
 import net.albayyan.badan.domain.MetricId
@@ -71,21 +75,24 @@ class HealthConnectAdapter(private val context: Context) : HealthStorePort {
 
     override fun readSamples(range: HealthDateRange): List<SampleDto> = runBlocking {
         if (client == null) return@runBlocking emptyList()
-        buildList {
-            addAll(readHeartRate(range))
-            addAll(readSpo2(range))
+        coroutineScope {
+            val heartRate = async { readHeartRate(range) }
+            val spo2 = async { readSpo2(range) }
+            heartRate.await() + spo2.await()
         }
     }
 
     override fun readIntervals(range: HealthDateRange): List<IntervalDto> = runBlocking {
         if (client == null) return@runBlocking emptyList()
-        buildList {
-            addAll(readSteps(range))
-            addAll(readActiveEnergy(range))
-            addAll(readDistance(range))
-            addAll(readRestingHeartRate(range))
-            addAll(readHrv(range))
-            addAll(readRespiratoryRate(range))
+        coroutineScope {
+            val steps = async { readSteps(range) }
+            val activeEnergy = async { readActiveEnergy(range) }
+            val distance = async { readDistance(range) }
+            val restingHeartRate = async { readRestingHeartRate(range) }
+            val hrv = async { readHrv(range) }
+            val respiratoryRate = async { readRespiratoryRate(range) }
+            steps.await() + activeEnergy.await() + distance.await() + restingHeartRate.await() +
+                hrv.await() + respiratoryRate.await()
         }
     }
 
@@ -101,7 +108,27 @@ class HealthConnectAdapter(private val context: Context) : HealthStorePort {
         val out = ArrayList<T>()
         var token: String? = null
         do {
-            val response = runCatching {
+            val response = readPageWithRetry(c, type, range, token) ?: break
+            out.addAll(response.records)
+            token = response.pageToken
+        } while (token != null)
+        return out
+    }
+
+    /**
+     * Reads one page, retrying transient failures (provider hiccups/IO) with a short backoff
+     * before giving up. A [SecurityException] means the permission was denied/revoked — that's
+     * not transient, so it's not retried and the page loop is terminated immediately.
+     */
+    private suspend fun <T : Record> readPageWithRetry(
+        c: HealthConnectClient,
+        type: KClass<T>,
+        range: HealthDateRange,
+        token: String?,
+    ): ReadRecordsResponse<T>? {
+        var attempt = 0
+        while (true) {
+            val result = runCatching {
                 c.readRecords(
                     ReadRecordsRequest(
                         recordType = type,
@@ -111,11 +138,13 @@ class HealthConnectAdapter(private val context: Context) : HealthStorePort {
                         pageToken = token,
                     )
                 )
-            }.getOrNull() ?: break
-            out.addAll(response.records)
-            token = response.pageToken
-        } while (token != null)
-        return out
+            }
+            result.getOrNull()?.let { return it }
+            val error = result.exceptionOrNull() ?: return null
+            if (error is SecurityException || attempt >= maxPageReadRetries) return null
+            attempt += 1
+            delay(pageReadRetryBaseDelayMs * (1L shl (attempt - 1)))
+        }
     }
 
     // MARK: - Mappers
@@ -198,6 +227,10 @@ class HealthConnectAdapter(private val context: Context) : HealthStorePort {
     }
 
     companion object {
+        /** Bounded retry budget for a single page read before treating the failure as terminal. */
+        private const val maxPageReadRetries = 2
+        private const val pageReadRetryBaseDelayMs = 200L
+
         /** READ permissions for the record types BADAN maps (I: raw data is not paywalled). */
         val permissions: Set<String> = setOf(
             HealthPermission.getReadPermission(StepsRecord::class),

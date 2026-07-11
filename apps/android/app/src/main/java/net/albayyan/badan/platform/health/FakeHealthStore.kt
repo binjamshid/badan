@@ -28,12 +28,22 @@ class FakeHealthStore(
 
     private val dayCount: Int = maxOf(1, historyDays)
 
-    // Full history generated once at init; reads just filter by the requested range.
-    private val allSessions: List<SessionDto>
-    private val allIntervals: List<IntervalDto>
-    private val allSamples: List<SampleDto>
+    /** Bundles the three generated lists so they can share one `by lazy` delegate. */
+    private class GeneratedHistory(
+        val sessions: List<SessionDto>,
+        val intervals: List<IntervalDto>,
+        val samples: List<SampleDto>,
+    )
 
-    init {
+    // Full history is generated lazily on first read (not at construction time), so building a
+    // FakeHealthStore is cheap even off the IO dispatcher; reads just filter by the requested
+    // range once the (memoized) generation has run.
+    private val generated: GeneratedHistory by lazy { generateHistory() }
+    private val allSessions: List<SessionDto> get() = generated.sessions
+    private val allIntervals: List<IntervalDto> get() = generated.intervals
+    private val allSamples: List<SampleDto> get() = generated.samples
+
+    private fun generateHistory(): GeneratedHistory {
         val sessions = mutableListOf<SessionDto>()
         val intervals = mutableListOf<IntervalDto>()
         val samples = mutableListOf<SampleDto>()
@@ -177,9 +187,7 @@ class FakeHealthStore(
             }
         }
 
-        allSessions = sessions
-        allIntervals = intervals
-        allSamples = samples
+        return GeneratedHistory(sessions, intervals, samples)
     }
 
     // MARK: HealthStorePort

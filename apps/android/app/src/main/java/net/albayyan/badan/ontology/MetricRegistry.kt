@@ -1,6 +1,7 @@
 package net.albayyan.badan.ontology
 
 import android.content.res.AssetManager
+import android.util.Log
 import kotlinx.serialization.Serializable
 import net.albayyan.badan.domain.ChartHint
 import net.albayyan.badan.domain.MetricDefinition
@@ -27,8 +28,7 @@ class MetricRegistry(metrics: List<MetricDefinition>) {
         val metrics: List<MetricDefinition> = emptyList(),
     )
 
-    constructor(assets: AssetManager) :
-        this(BundleJson.load<RegistryFile>(assets, "registry")?.metrics ?: emptyList())
+    constructor(assets: AssetManager) : this(loadMetrics(assets))
 
     fun definition(metricId: String): MetricDefinition? = byId[metricId]
 
@@ -70,9 +70,28 @@ class MetricRegistry(metrics: List<MetricDefinition>) {
         if (q.isEmpty()) return all
         return all.filter {
             it.nameEn.foldedForSearch().contains(q) ||
-                it.nameAr.contains(query) ||
+                it.nameAr.foldedForSearch().contains(q) ||
                 it.metricId.contains(q) ||
                 it.preciseLabel.foldedForSearch().contains(q)
+        }
+    }
+
+    companion object {
+        private const val TAG = "MetricRegistry"
+
+        /** Expected `registry.json` schema version; mirrors the `packages/metric-ontology` source. */
+        const val EXPECTED_VERSION = "0.1.0"
+
+        private fun loadMetrics(assets: AssetManager): List<MetricDefinition> {
+            val file = BundleJson.load<RegistryFile>(assets, "registry")
+            if (file != null && file.version != EXPECTED_VERSION) {
+                Log.w(
+                    TAG,
+                    "registry.json version mismatch: expected $EXPECTED_VERSION, found '${file.version}' " +
+                        "— app and ontology schema may be out of sync",
+                )
+            }
+            return file?.metrics ?: emptyList()
         }
     }
 }

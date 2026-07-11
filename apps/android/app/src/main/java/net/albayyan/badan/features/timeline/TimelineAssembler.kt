@@ -17,6 +17,8 @@ import net.albayyan.badan.domain.SessionKind
 import net.albayyan.badan.domain.SymptomEntry
 import net.albayyan.badan.domain.TimelineEvent
 import net.albayyan.badan.domain.TimelineEventType
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlin.math.roundToInt
 
 /**
@@ -29,50 +31,67 @@ import kotlin.math.roundToInt
  */
 class TimelineAssembler(private val env: AppEnvironment) {
 
-    /** Assemble every event in the window, sorted newest-first. */
-    fun assemble(): List<TimelineEvent> {
+    /**
+     * Assemble every event in the window, sorted newest-first. The underlying repository calls
+     * are independent reads across different tables/connections, so they run concurrently
+     * (`coroutineScope` + `async`) rather than paying the sum of all their latencies.
+     */
+    suspend fun assemble(): List<TimelineEvent> = coroutineScope {
         val now = env.now()
         val from = now - windowDays.toLong() * MILLIS_PER_DAY
         val to = now
         val events = mutableListOf<TimelineEvent>()
 
         // Sleep + workout episodes (auto-ingested; provenance-locked).
-        for (session in env.measurements.sessions(kind = SessionKind.SLEEP_PRIMARY, from = from, to = to)) {
+        val sleepDeferred = async { env.measurements.sessions(kind = SessionKind.SLEEP_PRIMARY, from = from, to = to) }
+        val workoutDeferred = async { env.measurements.sessions(kind = SessionKind.WORKOUT, from = from, to = to) }
+
+        // Meds + symptoms live in the sensitive store — only read when that module is on.
+        val sensitiveEnabled = env.profile.sensitiveModulesEnabled
+        val symptomsDeferred = if (sensitiveEnabled) async { env.logging.symptoms(from, to) } else null
+        val regimensDeferred = if (sensitiveEnabled) async { env.logging.regimens() } else null
+        val adherenceDeferred = if (sensitiveEnabled) async { env.logging.adherence(from, to) } else null
+
+        // Meals are gated behind the nutrition module.
+        val nutritionEnabled = env.profile.nutritionEnabled
+        val nutritionDeferred = if (nutritionEnabled) async { env.logging.nutrition(from, to) } else null
+
+        // Notes (normal sensitivity) + body weight measurements.
+        val notesDeferred = async { env.logging.notes(from, to) }
+        val weightDeferred = async { env.measurements.rawSamples(metricId = MetricId.weight, from = from, to = to) }
+
+        for (session in sleepDeferred.await()) {
             events.add(sleepEvent(session))
         }
-        for (session in env.measurements.sessions(kind = SessionKind.WORKOUT, from = from, to = to)) {
+        for (session in workoutDeferred.await()) {
             events.add(workoutEvent(session))
         }
 
-        // Meds + symptoms live in the sensitive store — only read when that module is on.
-        if (env.profile.sensitiveModulesEnabled) {
-            for (symptom in env.logging.symptoms(from, to)) {
+        if (sensitiveEnabled) {
+            for (symptom in symptomsDeferred!!.await()) {
                 events.add(symptomEvent(symptom))
             }
-            val regimenById: Map<String, MedicationRegimen> = env.logging.regimens().associateBy { it.id }
-            for (adherence in env.logging.adherence(from, to)) {
+            val regimenById: Map<String, MedicationRegimen> = regimensDeferred!!.await().associateBy { it.id }
+            for (adherence in adherenceDeferred!!.await()) {
                 events.add(medicationEvent(adherence, regimenById[adherence.regimenId]))
             }
         }
 
-        // Meals are gated behind the nutrition module.
-        if (env.profile.nutritionEnabled) {
-            for (meal in env.logging.nutrition(from, to)) {
+        if (nutritionEnabled) {
+            for (meal in nutritionDeferred!!.await()) {
                 events.add(mealEvent(meal))
             }
         }
 
-        // Notes (normal sensitivity).
-        for (note in env.logging.notes(from, to)) {
+        for (note in notesDeferred.await()) {
             events.add(noteEvent(note))
         }
 
-        // Body weight measurements.
-        for (sample in env.measurements.rawSamples(metricId = MetricId.weight, from = from, to = to)) {
+        for (sample in weightDeferred.await()) {
             events.add(weightEvent(sample))
         }
 
-        return events.sortedByDescending { it.occurredAt }
+        events.sortedByDescending { it.occurredAt }
     }
 
     // MARK: - Event builders

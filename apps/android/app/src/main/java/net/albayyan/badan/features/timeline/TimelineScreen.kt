@@ -118,6 +118,9 @@ private fun TimelineLoaded(
     val active = if (power) selectedTypes.toSet() else emptySet()
     val visible = if (active.isEmpty()) events else events.filter { it.type in active }
     val days = groupByDay(visible)
+    // Memoized once per language above the list — day/event rows reuse these instead of each
+    // constructing a fresh SimpleDateFormat as they're composed while scrolling.
+    val formatters = remember(env.language) { TimelineFormatters(env.language) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -132,7 +135,7 @@ private fun TimelineLoaded(
                 FilteredEmptyState(onClear = { selectedTypes.clear() })
             }
         } else {
-            items(days, key = { it.key }) { day -> DaySection(day) }
+            items(days, key = { it.key }) { day -> DaySection(day, formatters) }
             item(key = "history-start") { HistoryStartFooter() }
         }
     }
@@ -141,11 +144,11 @@ private fun TimelineLoaded(
 // MARK: - Day sections & rows
 
 @Composable
-private fun DaySection(day: TimelineDay) {
+private fun DaySection(day: TimelineDay, formatters: TimelineFormatters) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
-        SectionHeader(env.s(dayLabel(day.key, env)))
+        SectionHeader(env.s(dayLabel(day, env, formatters)))
         BadanCard {
             day.events.forEachIndexed { index, event ->
                 if (index > 0) {
@@ -155,14 +158,14 @@ private fun DaySection(day: TimelineDay) {
                         color = colors.separator,
                     )
                 }
-                EventRow(event)
+                EventRow(event, formatters)
             }
         }
     }
 }
 
 @Composable
-private fun EventRow(event: TimelineEvent) {
+private fun EventRow(event: TimelineEvent, formatters: TimelineFormatters) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     val valueStyle = BadanType.bodyCompact.copy(
@@ -240,7 +243,7 @@ private fun EventRow(event: TimelineEvent) {
                 )
             }
             Text(
-                text = timeText(event.occurredAt, event.tzId, env),
+                text = formatters.timeText(event.occurredAt, event.tzId),
                 style = BadanType.caption,
                 color = colors.textSecondary,
                 textAlign = TextAlign.End,
@@ -358,8 +361,14 @@ private fun HistoryStartFooter() {
 
 // MARK: - Grouping & formatting helpers
 
-/** A day's worth of events, newest day first, newest event first within the day. */
-private data class TimelineDay(val key: String, val events: List<TimelineEvent>)
+/**
+ * A day's worth of events, newest day first, newest event first within the day. [tzId] is the
+ * timezone the bucket's [key] was actually attributed under (the first event's own `tzId`, the
+ * same basis [DayAttribution.localDayKey] used to bucket it) so relative-day labeling ("Today"/
+ * "Yesterday") stays consistent with the grouping instead of silently falling back to the
+ * device's current zone.
+ */
+private data class TimelineDay(val key: String, val tzId: String, val events: List<TimelineEvent>)
 
 private fun groupByDay(events: List<TimelineEvent>): List<TimelineDay> {
     val buckets = LinkedHashMap<String, MutableList<TimelineEvent>>()
@@ -368,7 +377,11 @@ private fun groupByDay(events: List<TimelineEvent>): List<TimelineDay> {
         buckets.getOrPut(key) { mutableListOf() }.add(event)
     }
     // "YYYY-MM-DD" sorts chronologically as a string; descending = newest day first.
-    return buckets.keys.sortedDescending().map { TimelineDay(it, buckets[it] ?: emptyList()) }
+    return buckets.keys.sortedDescending().map { key ->
+        val dayEvents = buckets[key] ?: emptyList()
+        val tzId = dayEvents.firstOrNull()?.tzId ?: TimeZone.getDefault().id
+        TimelineDay(key, tzId, dayEvents)
+    }
 }
 
 private fun presentTypes(events: List<TimelineEvent>): List<TimelineEventType> {
@@ -376,31 +389,52 @@ private fun presentTypes(events: List<TimelineEvent>): List<TimelineEventType> {
     return TimelineEventType.entries.filter { it in present }
 }
 
-private fun dayLabel(key: String, env: AppEnvironment): LocalizedString {
-    val tz = TimeZone.getDefault().id
+private fun dayLabel(day: TimelineDay, env: AppEnvironment, formatters: TimelineFormatters): LocalizedString {
+    // Same timezone basis groupByDay used to bucket this day, not the device's current zone.
+    val tz = day.tzId
     val todayKey = DayAttribution.localDayKey(env.now(), tz)
     val yesterdayKey = DayAttribution.localDayKey(DayAttribution.addingDays(-1, env.now(), tz), tz)
-    if (key == todayKey) return Loc.today
-    if (key == yesterdayKey) return LocalizedString(en = "Yesterday", ar = "أمس")
-    val millis = DayAttribution.dateFromDayKey(key, tz) ?: return LocalizedString(en = key, ar = key)
+    if (day.key == todayKey) return Loc.today
+    if (day.key == yesterdayKey) return LocalizedString(en = "Yesterday", ar = "أمس")
+    val millis = DayAttribution.dateFromDayKey(day.key, tz) ?: return LocalizedString(en = day.key, ar = day.key)
     return LocalizedString(
-        en = formattedDate(millis, AppLanguage.EN, tz),
-        ar = formattedDate(millis, AppLanguage.AR, tz),
+        en = formatters.formattedDate(millis, AppLanguage.EN, tz),
+        ar = formatters.formattedDate(millis, AppLanguage.AR, tz),
     )
 }
 
-private fun formattedDate(millis: Long, language: AppLanguage, tz: String): String {
-    val locale = Locale.forLanguageTag(language.localeTag)
-    val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, "EEEEdMMM")
-    val formatter = SimpleDateFormat(pattern, locale)
-    formatter.timeZone = TimeZone.getTimeZone(tz)
-    return formatter.format(Date(millis))
-}
+/**
+ * Caches the `SimpleDateFormat`s used for Timeline day headers and event times so a fresh
+ * formatter isn't constructed on every row as `LazyColumn` composes items during scroll. The
+ * date-header pattern only depends on locale (not timezone), so one formatter per language is
+ * reused across events with different `tzId`s by mutating its `timeZone` before each format call
+ * — safe here since Compose renders this single-threaded on the main thread.
+ */
+private class TimelineFormatters(currentLanguage: AppLanguage) {
+    private val dateFormatterEn = buildFormatter(AppLanguage.EN, "EEEEdMMM")
+    private val dateFormatterAr = buildFormatter(AppLanguage.AR, "EEEEdMMM")
+    private val timeFormatter = buildFormatter(currentLanguage, "jm")
 
-private fun timeText(millis: Long, tz: String, env: AppEnvironment): String {
-    val locale = Locale.forLanguageTag(env.language.localeTag)
-    val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, "jm")
-    val formatter = SimpleDateFormat(pattern, locale)
-    formatter.timeZone = TimeZone.getTimeZone(tz)
-    return formatter.format(Date(millis))
+    fun formattedDate(millis: Long, language: AppLanguage, tz: String): String {
+        val formatter = if (language == AppLanguage.AR) dateFormatterAr else dateFormatterEn
+        formatter.timeZone = TimeZone.getTimeZone(tz)
+        val text = formatter.format(Date(millis))
+        // Arabic weekday/month names can sit alongside Latin fragments or Arabic-Indic digits in
+        // one bidi run; wrap in Unicode isolation (FSI/PDI) so this header renders as a single
+        // self-contained direction regardless of surrounding RTL/LTR context.
+        return if (language == AppLanguage.AR) "⁨$text⁩" else text
+    }
+
+    fun timeText(millis: Long, tz: String): String {
+        timeFormatter.timeZone = TimeZone.getTimeZone(tz)
+        return timeFormatter.format(Date(millis))
+    }
+
+    private companion object {
+        fun buildFormatter(language: AppLanguage, skeleton: String): SimpleDateFormat {
+            val locale = Locale.forLanguageTag(language.localeTag)
+            val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton)
+            return SimpleDateFormat(pattern, locale)
+        }
+    }
 }

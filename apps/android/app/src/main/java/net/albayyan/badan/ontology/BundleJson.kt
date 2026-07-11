@@ -1,6 +1,7 @@
 package net.albayyan.badan.ontology
 
 import android.content.res.AssetManager
+import android.util.Log
 import net.albayyan.badan.storage.JsonCoding
 import java.text.Normalizer
 
@@ -11,14 +12,21 @@ import java.text.Normalizer
  * into the app assets by the resource-sync tooling.
  */
 object BundleJson {
+    @PublishedApi
+    internal const val TAG: String = "BundleJson"
+
     /**
      * Decode `assets/<name>.json` into [T] (the extension is appended, matching iOS which passes
-     * bare resource names). Returns null on a missing or malformed file rather than crashing.
+     * bare resource names). Returns null on a missing or malformed file rather than crashing, but
+     * logs the specific failure (missing asset vs. malformed JSON) so a packaging regression is
+     * discoverable rather than silently masked as "empty by design" by callers.
      */
     inline fun <reified T> load(assets: AssetManager, name: String): T? =
         runCatching {
             val text = assets.open("$name.json").bufferedReader().use { it.readText() }
             JsonCoding.json.decodeFromString<T>(text)
+        }.onFailure { e ->
+            Log.e(TAG, "Failed to load bundled resource \"$name.json\": ${e::class.simpleName}: ${e.message}", e)
         }.getOrNull()
 }
 
