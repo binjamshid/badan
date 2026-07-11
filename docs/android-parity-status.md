@@ -3,6 +3,10 @@
 > Tracks the Android app's parity with the working iOS flagship. Reference truth: the shipped
 > iOS implementation (`apps/ios/`), `packages/` contracts, and the blueprint. Updated as the
 > Android milestone progresses. Legend: ✅ done · 🟡 partial · ⏸ intentionally deferred · ⛔ blocked.
+>
+> **Verification note:** there is no Android CI job yet (tracked separately). Every ✅ below
+> reflects a local, point-in-time check (`assembleDebug`/`./gradlew test`/manual emulator run),
+> not a continuously-enforced CI guarantee — treat it as a snapshot, not a regression net.
 
 ## Stack & bridge decisions
 
@@ -62,3 +66,10 @@ Timezone attribution uses the device's current zone (HC stores offsets, not IANA
 Health Connect **background delivery / change-token incremental sync** (foreground pull is done) ·
 multi-device sync · vendor integrations · notifications · widgets/Wear · LLM insights · automated
 instrumented/Robolectric DB-pipeline tests (validated at runtime) · screenshot/AR-snapshot CI lane.
+
+**Screenshot coverage gap:** `docs/screenshots/android/` currently has 5 images covering Home
+(light + Arabic/RTL), Body, Log hub, and Data Sources only — Metric Detail, Anatomy sheet,
+Timeline, Symptom/Medication/Workout/Nutrition logging, Export, Insights, Onboarding, and Settings
+have no screenshot yet, and none of the 5 existing images is dark-mode. Capturing these is a
+manual, same-day QA task (use the `badan_route` deep-link extras in `MainActivity.kt` for fast
+navigation to each screen) — not something to synthesize.

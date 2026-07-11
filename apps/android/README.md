@@ -23,7 +23,7 @@ Everything language-neutral in `packages/` is the single source of truth for bot
 | `packages/contracts/insights/templates.json` | `InsightTemplateStore` | insight template store |
 | `packages/contracts/dictionaries/symptoms.json` | `SymptomDictionary` | symptom dictionary |
 | `packages/export-schemas/csv_columns.json` | `CSVWriter` | CSV writer |
-| The logical schema (`docs/data-model.md`) | raw SQLite (`Database`) | **Room** (same table/column names) |
+| The logical schema (`docs/data-model.md`) | raw SQLite (`Database`) | **framework SQLite** (ADR-0007, same table/column names) |
 | Invariants I1–I8, ADRs, vertical slices | — | — |
 
 An asset-copy step (mirroring `scripts/sync_ios_resources.sh`) copies the `packages/` JSON into
@@ -34,10 +34,10 @@ An asset-copy step (mirroring `scripts/sync_ios_resources.sh`) copies the `packa
 | iOS | Android |
 |---|---|
 | SwiftUI + `@Observable` view models | Compose + `ViewModel` + `StateFlow` |
-| raw SQLite via `SQLiteConnection` | Room (same DDL; schemas exported to `schemas/` for migration tests) |
+| raw SQLite via `SQLiteConnection` | framework SQLite via `SqliteConnection` (ADR-0007, same DDL, no Room/KSP) |
 | `HealthStorePort` + `FakeHealthStore` + `HealthKitAdapter` | same port; `FakeHealthStore` + `HealthConnectAdapter` |
 | `IngestionPipeline` / `DedupLite` / `BaselineEngine` | mirrored (duplicated-logic budget, D-4) |
-| two DB files (`badan.db` + `badan_sensitive.db`) | two Room databases |
+| two DB files (`badan.db` + `badan_sensitive.db`) | two SQLite databases |
 | `CustomizationProfile.depthPolicy` dual-altitude | same presentation switch |
 
 ## Conformance parity
@@ -66,6 +66,23 @@ adb shell am start -n net.albayyan.badan/.MainActivity
 ```
 
 Or open `apps/android` in Android Studio and Run.
+
+## Performance sign-off device tier
+
+`minSdk = 26` (Android 8.0, 2017-era hardware) is the supported floor, but day-to-day development
+happens on whatever emulator/device is at hand — typically mid-to-high-end. Before signing off on
+a performance-sensitive change (startup time, write batching, recomposition), also check it on a
+low-end reference profile, not just `Medium_Phone`:
+
+```bash
+# One-time: create a low-end reference AVD (2 GB RAM, 2 cores, API 26)
+avdmanager create avd -n Low_End_API26 -k "system-images;android-26;google_apis;x86_64" \
+  -d "Nexus 5" --force
+# then edit the AVD's config.ini (or Android Studio's AVD Manager) to cap RAM at ~2 GB
+# and vCPU count at 2 to approximate the `minSdk` floor.
+
+scripts/run_android.sh Low_End_API26
+```
 
 ## Stack
 

@@ -45,10 +45,6 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
         NSHealthShareUsageDescription: "BADAN reads your health data on your device to build your personal, private health repository. Nothing leaves your phone."
         NSHealthUpdateUsageDescription: "BADAN does not write to Apple Health in this version."
 
