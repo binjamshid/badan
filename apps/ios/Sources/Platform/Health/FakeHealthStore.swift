@@ -21,10 +21,36 @@ final class FakeHealthStore: HealthStorePort {
     private let allIntervals: [IntervalDTO]
     private let allSamples: [SampleDTO]
 
+    // Generation is a pure function of (historyDays, tz, today's local day) — a fresh
+    // FakeHealthStore built with unchanged inputs (e.g. every "Reset demo data" tap within the
+    // same day) produces byte-identical output, so cache it instead of regenerating.
+    private struct GeneratedData {
+        let sessions: [SessionDTO]
+        let intervals: [IntervalDTO]
+        let samples: [SampleDTO]
+    }
+    private static let cacheLock = NSLock()
+    private static var cache: [String: GeneratedData] = [:]
+
     init(clock: Clock, historyDays: Int = 90, tz: String = TimeZone.current.identifier) {
         self.clock = clock
         self.historyDays = max(1, historyDays)
         self.tz = tz
+
+        let now = clock.now()
+        let todayStart = DayAttribution.startOfDay(now, tz: tz)
+        let cacheKey = "\(self.historyDays)|\(tz)|\(DayAttribution.localDayKey(todayStart, tz: tz))"
+
+        Self.cacheLock.lock()
+        let cached = Self.cache[cacheKey]
+        Self.cacheLock.unlock()
+
+        if let cached {
+            self.allSessions = cached.sessions
+            self.allIntervals = cached.intervals
+            self.allSamples = cached.samples
+            return
+        }
 
         var sessions: [SessionDTO] = []
         var intervals: [IntervalDTO] = []
@@ -32,9 +58,18 @@ final class FakeHealthStore: HealthStorePort {
 
         // Pure, order-independent helpers (local funcs so they don't touch `self` mid-init).
         // FNV-1a (64-bit) of "metricKey:salt" mapped into [0, 1) — the sole source of variation.
+        // Hashes metricKey then ":" then salt as raw bytes (equivalent to hashing
+        // "\(metricKey):\(salt)".utf8) without allocating a fresh interpolated String per call —
+        // this closure runs 1,000+ times per generation.
         func unit(_ metricKey: String, _ salt: String) -> Double {
             var hash: UInt64 = 0xcbf29ce484222325
-            for byte in "\(metricKey):\(salt)".utf8 {
+            for byte in metricKey.utf8 {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x100000001b3
+            }
+            hash ^= UInt64(UInt8(ascii: ":"))
+            hash = hash &* 0x100000001b3
+            for byte in salt.utf8 {
                 hash ^= UInt64(byte)
                 hash = hash &* 0x100000001b3
             }
@@ -43,8 +78,6 @@ final class FakeHealthStore: HealthStorePort {
         func clamp(_ x: Double, _ lo: Double, _ hi: Double) -> Double { min(max(x, lo), hi) }
         func round1(_ x: Double) -> Double { (x * 10).rounded() / 10 }
 
-        let now = clock.now()
-        let todayStart = DayAttribution.startOfDay(now, tz: tz)
         let cal = DayAttribution.calendar(tz: tz)
 
         for dayIndex in 0..<self.historyDays {
@@ -164,6 +197,11 @@ final class FakeHealthStore: HealthStorePort {
         self.allSessions = sessions
         self.allIntervals = intervals
         self.allSamples = samples
+
+        let generated = GeneratedData(sessions: sessions, intervals: intervals, samples: samples)
+        Self.cacheLock.lock()
+        Self.cache[cacheKey] = generated
+        Self.cacheLock.unlock()
     }
 
     // MARK: HealthStorePort

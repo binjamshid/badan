@@ -9,37 +9,31 @@ final class MeasurementRepository {
 
     // MARK: - RawSample
 
-    /// Insert-or-update by identity. Returns true if a new row was created.
+    /// Insert-or-update by identity `(metric_id, external_id, source_id)` in a single statement
+    /// (PERF-125), replacing the previous SELECT-then-INSERT/UPDATE round trip. `RETURNING id`
+    /// tells us which row won: on conflict the existing row's `id` is left untouched by the
+    /// `DO UPDATE SET` clause, so it differs from the fresh `s.id` we attempted to insert.
+    /// Returns true if a new row was created.
     @discardableResult
     func upsertRawSample(_ s: RawSample) throws -> Bool {
-        if let externalId = s.provenance.externalId,
-           let existing = try firstId(from: "raw_samples", metricId: s.metricId,
-                                      externalId: externalId, sourceId: s.provenance.sourceId) {
-            try updateRawSample(s, existingId: existing)
-            return false
-        }
-        try db.run("""
+        let wonId = try db.query("""
             INSERT INTO raw_samples
               (id, metric_id, value, unit, original_value, original_unit, start_at, end_at, tz_id,
                \(Rows.provColumns), \(Rows.convColumns))
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders));
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders))
+            ON CONFLICT(metric_id, external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
+              value=excluded.value, unit=excluded.unit, original_value=excluded.original_value,
+              original_unit=excluded.original_unit, start_at=excluded.start_at, end_at=excluded.end_at,
+              tz_id=excluded.tz_id, ingested_at=excluded.ingested_at, quality_flags=excluded.quality_flags,
+              updated_at=excluded.updated_at
+            RETURNING id;
             """,
             [.text(s.id), .text(s.metricId), .real(s.value), .text(s.unit),
              .real(s.originalValue), .text(s.originalUnit), .date(s.startAt), .date(s.endAt), .text(s.tzId)]
             + Rows.provParams(s.provenance)
             + Rows.convParams(updatedAt: s.updatedAt, originDeviceId: s.originDeviceId, deletedAt: s.deletedAt))
-        return true
-    }
-
-    private func updateRawSample(_ s: RawSample, existingId: String) throws {
-        try db.run("""
-            UPDATE raw_samples SET value=?, unit=?, original_value=?, original_unit=?, start_at=?, end_at=?,
-              tz_id=?, ingested_at=?, quality_flags=?, updated_at=? WHERE id=?;
-            """,
-            [.real(s.value), .text(s.unit), .real(s.originalValue), .text(s.originalUnit),
-             .date(s.startAt), .date(s.endAt), .text(s.tzId), .date(s.provenance.ingestedAt),
-             .string(s.provenance.qualityFlags.isEmpty ? nil : s.provenance.qualityFlags.map(\.rawValue).joined(separator: ";")),
-             .date(s.updatedAt), .text(existingId)])
+            .first?.string("id")
+        return wonId == s.id
     }
 
     func rawSamples(metricId: String, from: Date? = nil, to: Date? = nil, includeSuppressed: Bool = false) throws -> [RawSample] {
@@ -54,27 +48,30 @@ final class MeasurementRepository {
 
     // MARK: - IntervalRecord
 
+    /// Insert-or-update by identity in a single statement (PERF-126). The `DO UPDATE SET` clause
+    /// also refreshes `start_at`/`end_at`/`tz_id`/`measured_at`/`recorded_at` — the previous
+    /// UPDATE path only touched `value`/`unit`/`coverage`, silently dropping a corrected time
+    /// span or provenance timestamp on re-ingest (OPT-170). See `upsertRawSample` for how the
+    /// `RETURNING id` comparison determines insert vs. update.
     @discardableResult
     func upsertIntervalRecord(_ r: IntervalRecord) throws -> Bool {
-        if let externalId = r.provenance.externalId,
-           let existing = try firstId(from: "interval_records", metricId: r.metricId,
-                                      externalId: externalId, sourceId: r.provenance.sourceId) {
-            try db.run("UPDATE interval_records SET value=?, unit=?, coverage=?, ingested_at=?, updated_at=? WHERE id=?;",
-                       [.real(r.value), .text(r.unit), .real(r.coverage), .date(r.provenance.ingestedAt),
-                        .date(r.updatedAt), .text(existing)])
-            return false
-        }
-        try db.run("""
+        let wonId = try db.query("""
             INSERT INTO interval_records
               (id, metric_id, value, unit, start_at, end_at, tz_id, aggregation, coverage,
                \(Rows.provColumns), \(Rows.convColumns))
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders));
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders))
+            ON CONFLICT(metric_id, external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
+              value=excluded.value, unit=excluded.unit, start_at=excluded.start_at, end_at=excluded.end_at,
+              tz_id=excluded.tz_id, coverage=excluded.coverage, measured_at=excluded.measured_at,
+              recorded_at=excluded.recorded_at, ingested_at=excluded.ingested_at, updated_at=excluded.updated_at
+            RETURNING id;
             """,
             [.text(r.id), .text(r.metricId), .real(r.value), .text(r.unit), .date(r.startAt),
              .date(r.endAt), .text(r.tzId), .text(r.aggregation.rawValue), .real(r.coverage)]
             + Rows.provParams(r.provenance)
             + Rows.convParams(updatedAt: r.updatedAt, originDeviceId: r.originDeviceId, deletedAt: r.deletedAt))
-        return true
+            .first?.string("id")
+        return wonId == r.id
     }
 
     func intervalRecords(metricId: String, from: Date? = nil, to: Date? = nil, includeSuppressed: Bool = false) throws -> [IntervalRecord] {
@@ -94,31 +91,43 @@ final class MeasurementRepository {
 
     // MARK: - Session
 
+    /// Insert-or-update by identity in a single statement (PERF-127). Stage rows are keyed off
+    /// the *winning* session id (the existing row's id on an update, since `DO UPDATE SET` never
+    /// touches `id` — not `stage.sessionId`, which callers set from the freshly-generated `s.id`
+    /// that may differ from an existing matched row). When `stages` is supplied, any previously
+    /// stored stages for that session are replaced so corrected/late-arriving stage data from a
+    /// re-delivered session isn't silently dropped (OPT-169); omitting `stages:` (e.g. the dedup
+    /// path) leaves existing stages untouched.
     @discardableResult
     func upsertSession(_ s: Session, stages: [SessionStage] = []) throws -> Bool {
-        let isNew: Bool
-        if let externalId = s.provenance.externalId,
-           let existing = try firstSessionId(kind: s.kind, externalId: externalId, sourceId: s.provenance.sourceId) {
-            try db.run("UPDATE sessions SET start_at=?, end_at=?, local_night=?, detail=?, ingested_at=?, updated_at=? WHERE id=?;",
-                       [.date(s.startAt), .date(s.endAt), .string(s.localNight), .text(JSONCoding.encode(s.detail)),
-                        .date(s.provenance.ingestedAt), .date(s.updatedAt), .text(existing)])
-            isNew = false
-        } else {
-            try db.run("""
-                INSERT INTO sessions
-                  (id, kind, subtype, start_at, end_at, tz_id, local_night, detail,
-                   \(Rows.provColumns), \(Rows.convColumns))
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders));
-                """,
-                [.text(s.id), .text(s.kind.rawValue), .string(s.subtype), .date(s.startAt), .date(s.endAt),
-                 .text(s.tzId), .string(s.localNight), .text(JSONCoding.encode(s.detail))]
-                + Rows.provParams(s.provenance)
-                + Rows.convParams(updatedAt: s.updatedAt, originDeviceId: s.originDeviceId, deletedAt: s.deletedAt))
+        let wonId = try db.query("""
+            INSERT INTO sessions
+              (id, kind, subtype, start_at, end_at, tz_id, local_night, detail,
+               \(Rows.provColumns), \(Rows.convColumns))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders))
+            ON CONFLICT(kind, external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
+              start_at=excluded.start_at, end_at=excluded.end_at, local_night=excluded.local_night,
+              detail=excluded.detail, ingested_at=excluded.ingested_at, updated_at=excluded.updated_at
+            RETURNING id;
+            """,
+            [.text(s.id), .text(s.kind.rawValue), .string(s.subtype), .date(s.startAt), .date(s.endAt),
+             .text(s.tzId), .string(s.localNight), .text(try JSONCoding.encodeOrThrow(s.detail))]
+            + Rows.provParams(s.provenance)
+            + Rows.convParams(updatedAt: s.updatedAt, originDeviceId: s.originDeviceId, deletedAt: s.deletedAt))
+            .first?.string("id")
+        let sessionId = wonId ?? s.id
+        let isNew = sessionId == s.id
+
+        if !stages.isEmpty {
+            try db.run("DELETE FROM session_stages WHERE session_id = ?;", [.text(sessionId)])
+            let placeholders = stages.map { _ in "(?, ?, ?, ?, ?)" }.joined(separator: ", ")
+            var params: [SQLValue] = []
+            params.reserveCapacity(stages.count * 5)
             for stage in stages {
-                try db.run("INSERT OR REPLACE INTO session_stages (session_id, seq, stage, start_at, end_at) VALUES (?, ?, ?, ?, ?);",
-                           [.text(stage.sessionId), .int(stage.seq), .text(stage.stage.rawValue), .date(stage.startAt), .date(stage.endAt)])
+                params.append(contentsOf: [.text(sessionId), .int(stage.seq), .text(stage.stage.rawValue),
+                                            .date(stage.startAt), .date(stage.endAt)])
             }
-            isNew = true
+            try db.run("INSERT OR REPLACE INTO session_stages (session_id, seq, stage, start_at, end_at) VALUES \(placeholders);", params)
         }
         return isNew
     }
@@ -149,11 +158,28 @@ final class MeasurementRepository {
 
     func stages(sessionId: String) throws -> [SessionStage] {
         try db.query("SELECT * FROM session_stages WHERE session_id = ? ORDER BY seq ASC;", [.text(sessionId)])
-            .map { row in
-                SessionStage(sessionId: row.requireString("session_id"), seq: row.intValue("seq") ?? 0,
-                             stage: SleepStage(rawValue: row.requireString("stage")) ?? .asleepUnspecified,
-                             startAt: row.requireDate("start_at"), endAt: row.requireDate("end_at"))
-            }
+            .map(Self.readSessionStage)
+    }
+
+    /// Batched form of `stages(sessionId:)` for callers rendering stage detail across several
+    /// sessions at once (e.g. a week-of-sleep-stages view), avoiding a structural N+1 (PERF-142).
+    func stages(sessionIds: [String]) throws -> [String: [SessionStage]] {
+        guard !sessionIds.isEmpty else { return [:] }
+        let placeholders = sessionIds.map { _ in "?" }.joined(separator: ", ")
+        let rows = try db.query("SELECT * FROM session_stages WHERE session_id IN (\(placeholders)) ORDER BY session_id, seq ASC;",
+                                 sessionIds.map { .text($0) })
+        var byId: [String: [SessionStage]] = [:]
+        for row in rows {
+            let stage = Self.readSessionStage(row)
+            byId[stage.sessionId, default: []].append(stage)
+        }
+        return byId
+    }
+
+    private static func readSessionStage(_ row: SQLiteRow) -> SessionStage {
+        SessionStage(sessionId: row.requireString("session_id"), seq: row.intValue("seq") ?? 0,
+                     stage: SleepStage(rawValue: row.requireString("stage")) ?? .asleepUnspecified,
+                     startAt: row.requireDate("start_at"), endAt: row.requireDate("end_at"))
     }
 
     // MARK: - Suppression (dedup)
@@ -165,17 +191,6 @@ final class MeasurementRepository {
 
     func session(id: String) throws -> Session? {
         try db.query("SELECT * FROM sessions WHERE id = ?;", [.text(id)]).first.map(Self.readSession)
-    }
-
-    // MARK: - Identity lookups
-
-    private func firstId(from table: String, metricId: String, externalId: String, sourceId: String) throws -> String? {
-        try db.query("SELECT id FROM \(table) WHERE metric_id = ? AND external_id = ? AND source_id = ? LIMIT 1;",
-                     [.text(metricId), .text(externalId), .text(sourceId)]).first?.string("id")
-    }
-    private func firstSessionId(kind: SessionKind, externalId: String, sourceId: String) throws -> String? {
-        try db.query("SELECT id FROM sessions WHERE kind = ? AND external_id = ? AND source_id = ? LIMIT 1;",
-                     [.text(kind.rawValue), .text(externalId), .text(sourceId)]).first?.string("id")
     }
 
     // MARK: - Row readers

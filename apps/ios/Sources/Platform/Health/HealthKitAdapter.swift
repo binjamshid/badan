@@ -10,6 +10,20 @@ final class HealthKitAdapter: HealthStorePort {
 
     init() {}
 
+    /// The MVP read set. Built once (rather than per `requestAuthorization` call) since each
+    /// type is a pure lookup of a fixed identifier. TODO(PERF-181): once more of the 44-metric
+    /// ontology gets real HealthKit backing, derive this from `MetricDefinition` instead of
+    /// hand-maintaining it here — that's a `registry.json` contract change (Android-affecting
+    /// too) and belongs to a dedicated ontology-expansion effort, not this cache-only fix.
+    private static let readTypes: Set<HKObjectType> = {
+        var read = Set<HKObjectType>()
+        if let t = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { read.insert(t) }
+        if let t = HKObjectType.quantityType(forIdentifier: .heartRate) { read.insert(t) }
+        if let t = HKObjectType.quantityType(forIdentifier: .restingHeartRate) { read.insert(t) }
+        if let t = HKObjectType.quantityType(forIdentifier: .stepCount) { read.insert(t) }
+        return read
+    }()
+
     func availability() -> HealthAvailability {
         HKHealthStore.isHealthDataAvailable() ? .available : .unsupported
     }
@@ -23,12 +37,7 @@ final class HealthKitAdapter: HealthStorePort {
     /// one simply skips it rather than crashing.
     func requestAuthorization(completion: @escaping (Bool, Error?) -> Void) {
         guard HKHealthStore.isHealthDataAvailable() else { completion(false, nil); return }
-        var read = Set<HKObjectType>()
-        if let t = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { read.insert(t) }
-        if let t = HKObjectType.quantityType(forIdentifier: .heartRate) { read.insert(t) }
-        if let t = HKObjectType.quantityType(forIdentifier: .restingHeartRate) { read.insert(t) }
-        if let t = HKObjectType.quantityType(forIdentifier: .stepCount) { read.insert(t) }
-        store.requestAuthorization(toShare: [], read: read) { granted, error in
+        store.requestAuthorization(toShare: [], read: Self.readTypes) { granted, error in
             completion(granted, error)
         }
     }

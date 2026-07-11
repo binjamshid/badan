@@ -84,4 +84,13 @@ public enum Units {
     public static func toCanonical(_ value: Double, from unit: String, canonical: String) -> Double {
         (try? convert(value, from: unit, to: canonical)) ?? value
     }
+
+    /// Returns the subset of `units` that have no `Units.table` entry. Intended for a
+    /// startup/test-time consistency check against the metric registry's `canonicalUnit`/
+    /// `primaryDisplayUnit` values, so a registry unit with no table entry (which would
+    /// otherwise silently pass through unconverted via `toCanonical`'s `?? value` fallback)
+    /// fails loudly instead.
+    public static func unknownUnits(in units: some Sequence<String>) -> Set<String> {
+        Set(units.filter { table[$0] == nil })
+    }
 }

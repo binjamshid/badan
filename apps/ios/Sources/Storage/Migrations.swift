@@ -182,6 +182,19 @@ enum Schema {
             "CREATE TABLE read_anchors (store TEXT NOT NULL, platform_type TEXT NOT NULL, anchor BLOB, updated_at INTEGER NOT NULL, PRIMARY KEY (store, platform_type));",
             "CREATE TABLE import_batches (id TEXT PRIMARY KEY, source_kind TEXT NOT NULL, file_name TEXT, state TEXT NOT NULL, chunk_cursor TEXT, counts TEXT, created_at INTEGER NOT NULL);",
             "CREATE TABLE sync_cursors (scope_key TEXT NOT NULL, device_id TEXT NOT NULL, lamport INTEGER NOT NULL, last_synced_at INTEGER, PRIMARY KEY (scope_key, device_id));",
+        ]),
+        // Version 2: index-completeness fixes surfaced by the storage audit (forward-only —
+        // no down-migrations, ever). export_jobs/insights had no index covering the sort
+        // column their only queries actually use (OPT-183, OPT-184, PERF-115, PERF-134); the
+        // three heaviest-read tables had no index matching their real WHERE clause once the
+        // soft-delete/suppression predicate is included (PERF-116).
+        Migration(version: 2, statements: [
+            "CREATE INDEX idx_export_jobs_created ON export_jobs(created_at DESC);",
+            "CREATE INDEX idx_insight_period ON insights(period_key);",
+            "CREATE INDEX idx_insight_generated ON insights(generated_at DESC);",
+            "CREATE INDEX idx_raw_metric_measured_live ON raw_samples(metric_id, measured_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
+            "CREATE INDEX idx_interval_metric_span_live ON interval_records(metric_id, start_at, end_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
+            "CREATE INDEX idx_session_kind_start_live ON sessions(kind, start_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
         ])]
     }
 
@@ -220,6 +233,11 @@ enum Schema {
               \(conventionCols)
             );
             """,
+        ]),
+        // Version 2: medication_regimens(ended_at) has no index for the activeOnly filter
+        // LoggingRepository.regimens(activeOnly:) applies (PERF-117).
+        Migration(version: 2, statements: [
+            "CREATE INDEX idx_regimen_ended ON medication_regimens(ended_at);",
         ])]
     }
 }

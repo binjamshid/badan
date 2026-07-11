@@ -7,11 +7,27 @@ final class ProfileRepository {
     private let db: SQLiteConnection
     init(_ db: SQLiteConnection) { self.db = db }
 
+    // PERF-135: the JSON singleton only ever changes via `save(_:)` in this same process, so
+    // once loaded/saved it's safe to serve subsequent `load()` calls (e.g. `resetDemoData`)
+    // from memory instead of a guaranteed disk + decode round trip.
+    private var cached: CustomizationProfile?
+
     func load() throws -> CustomizationProfile {
-        if let row = try db.query("SELECT json FROM customization_profile WHERE id = 1;").first,
-           let profile = JSONCoding.decode(CustomizationProfile.self, from: row.string("json")) {
+        if let cached { return cached }
+        // OPT-155: distinguish "no profile row yet" (expected on first launch) from "a row
+        // exists but failed to decode" (e.g. a future incompatible field-type change) — both
+        // used to fall through to the same silent full reset with no trace of which happened.
+        guard let row = try db.query("SELECT json FROM customization_profile WHERE id = 1;").first else {
+            let fresh = CustomizationProfile()
+            try save(fresh)
+            return fresh
+        }
+        if let profile = JSONCoding.decode(CustomizationProfile.self, from: row.string("json")) {
+            cached = profile
             return profile
         }
+        StorageErrorLog.record(SQLiteError.decodeFailed(entity: "CustomizationProfile", reason: "stored row present but failed to decode; resetting to defaults"),
+                                context: "ProfileRepository.load")
         let fresh = CustomizationProfile()
         try save(fresh)
         return fresh
@@ -19,7 +35,8 @@ final class ProfileRepository {
 
     func save(_ profile: CustomizationProfile) throws {
         try db.run("INSERT OR REPLACE INTO customization_profile (id, json) VALUES (1, ?);",
-                   [.text(JSONCoding.encode(profile))])
+                   [.text(try JSONCoding.encodeOrThrow(profile))])
+        cached = profile
     }
 
     // MARK: - Metric pins

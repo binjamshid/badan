@@ -10,12 +10,17 @@ struct RootView: View {
         Group {
             if !env.isReady {
                 SplashView()
+                    .transition(.opacity)
             } else if !env.onboardingComplete {
                 OnboardingView()
+                    .transition(.opacity)
             } else {
                 MainTabView()
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut, value: env.isReady)
+        .animation(.easeInOut, value: env.onboardingComplete)
         .badanChrome(env)
     }
 }
@@ -45,7 +50,18 @@ struct MainTabView: View {
     }
 }
 
+/// Shown while `AppEnvironment.bootstrap()` seeds/loads. On a slow first run this is the
+/// longest wait in the app, so it carries a calm status caption instead of a bare spinner
+/// (EASE-135, OPT-073, UIUX-069), and offers a way forward if the seed stalls (OPT-071).
 struct SplashView: View {
+    @Environment(AppEnvironment.self) private var env
+
+    private static let statusCaption = LocalizedString(
+        en: "Setting up your data…", ar: "جارٍ إعداد بياناتك…")
+    private static let stalledCaption = LocalizedString(
+        en: "This is taking longer than usual.", ar: "هذا يستغرق وقتًا أطول من المعتاد.")
+    private static let continueAction = LocalizedString(en: "Continue anyway", ar: "المتابعة على أي حال")
+
     var body: some View {
         ZStack {
             BadanColor.background.ignoresSafeArea()
@@ -53,9 +69,22 @@ struct SplashView: View {
                 Image(systemName: "heart.text.square.fill")
                     .font(.system(size: 56))
                     .foregroundStyle(BadanColor.primary)
+                    .accessibilityHidden(true)
                 Text("BADAN").font(.system(size: 28, weight: .bold))
                     .foregroundStyle(BadanColor.textPrimary)
                 ProgressView().tint(BadanColor.primary)
+                LText(env.bootstrapStalled ? Self.stalledCaption : Self.statusCaption)
+                    .font(.footnote)
+                    .foregroundStyle(BadanColor.textSecondary)
+                if env.bootstrapStalled {
+                    Button {
+                        env.dismissBootstrapStall()
+                    } label: {
+                        LText(Self.continueAction)
+                    }
+                    .tint(BadanColor.primary)
+                    .padding(.top, BadanSpace.space2)
+                }
             }
         }
     }

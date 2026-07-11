@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// One export row rendered as the 24-column, language-stable CSV contract
 /// (`packages/export-schemas/csv_columns.json`). Fields are pre-formatted cell strings so the
@@ -96,6 +97,27 @@ struct CSVWriter {
         return out
     }
 
+    /// Writes the same bytes `render(_:)` would produce directly to `handle`, one chunk at a
+    /// time, and returns their SHA-256 hex digest computed incrementally as each chunk is
+    /// written. This avoids ever holding the full CSV simultaneously as a `String` and a second
+    /// `Data` copy (PERF-168), and avoids a separate full-buffer hashing pass afterward
+    /// (PERF-170) — the returned digest is byte-identical to `sha256(Data(render(rows).utf8))`.
+    func write(_ rows: [ExportRow], to handle: FileHandle) throws -> String {
+        var hasher = SHA256()
+        func emit(_ s: String) throws {
+            let chunk = Data(s.utf8)
+            try handle.write(contentsOf: chunk)
+            hasher.update(data: chunk)
+        }
+        try emit(header())
+        for row in rows {
+            try emit(Self.newline)
+            try emit(line(row))
+        }
+        try emit(Self.newline)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     // MARK: - Field formatting helpers
 
     /// RFC-4180: quote a field containing comma, quote, CR or LF; double any embedded quote.
@@ -108,11 +130,17 @@ struct CSVWriter {
 
     /// A stable, locale-independent decimal string. Integer-valued doubles render without a
     /// fractional part so counts (steps) stay clean while measured values keep their precision.
+    /// Values are first rounded to 6 decimal places so floating-point noise from unit conversion
+    /// (e.g. `4.999999999999998` for what should be a clean `5`) doesn't leak into the exported
+    /// column as spurious precision, while still preserving any real sub-integer precision. The
+    /// rounding pass is skipped above 1e9 to keep the 1e6 scaling within Double's exact-integer
+    /// range (already far outside the integer fast path's own 1e15 bound).
     static func decimal(_ value: Double) -> String {
-        if value.rounded() == value && abs(value) < 1e15 {
-            return String(Int64(value))
+        let rounded = abs(value) < 1e9 ? (value * 1e6).rounded() / 1e6 : value
+        if rounded.rounded() == rounded && abs(rounded) < 1e15 {
+            return String(Int64(rounded))
         }
-        return String(value)
+        return String(rounded)
     }
 
     /// ISO-8601 with a numeric offset, formatted in the record's own timezone so the offset is

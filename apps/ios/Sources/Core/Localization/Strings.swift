@@ -31,7 +31,7 @@ enum Loc {
 
     // MARK: Home
     static let homeGreetingMorning = LocalizedString(en: "Good morning", ar: "صباح الخير")
-    static let homeGreetingAfternoon = LocalizedString(en: "Good afternoon", ar: "مساء الخير")
+    static let homeGreetingAfternoon = LocalizedString(en: "Good afternoon", ar: "طاب مساؤك")
     static let homeGreetingEvening = LocalizedString(en: "Good evening", ar: "مساء الخير")
     static let readiness = LocalizedString(en: "Readiness", ar: "الجاهزية")
     static let lastNight = LocalizedString(en: "Last night", ar: "الليلة الماضية")
@@ -146,7 +146,6 @@ enum Loc {
     // MARK: Onboarding
     static let welcomeTitle = LocalizedString(en: "Welcome to BADAN", ar: "مرحباً بك في بدن")
     static let welcomeSubtitle = LocalizedString(en: "Your private health repository.", ar: "مستودع صحتك الخاص.")
-    static let getStarted = LocalizedString(en: "Get started", ar: "لنبدأ")
     static let continueWithoutConnecting = LocalizedString(en: "Continue without connecting", ar: "المتابعة دون اتصال")
 
     // MARK: Depth / provenance labels
@@ -156,6 +155,13 @@ enum Loc {
     static let reversible = LocalizedString(en: "This can be reversed", ar: "يمكن التراجع عن هذا")
 
     /// Time-of-day greeting for a given hour (0-23).
+    ///
+    /// Intentionally keyed off the device's current wall-clock hour rather than routed
+    /// through `DayAttribution`'s tz-aware helpers (unlike readiness lookback, sleep
+    /// local-night, meds weekday, or day grouping): a greeting should reflect the moment
+    /// the user is actually experiencing right now, not a recorded data timezone. This is
+    /// a deliberate, documented exception to the app's "no wall-clock in domain code"
+    /// convention (see `Clock.swift`), not an oversight.
     static func greeting(forHour hour: Int) -> LocalizedString {
         switch hour {
         case 5..<12: return homeGreetingMorning

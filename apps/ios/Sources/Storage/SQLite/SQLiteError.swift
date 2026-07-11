@@ -7,6 +7,7 @@ enum SQLiteError: Error, CustomStringConvertible {
     case stepFailed(sql: String, message: String)
     case execFailed(sql: String, message: String)
     case decodeFailed(entity: String, reason: String)
+    case encodeFailed(entity: String)
 
     var description: String {
         switch self {
@@ -16,7 +17,19 @@ enum SQLiteError: Error, CustomStringConvertible {
         case .stepFailed(let sql, let m): return "SQLite step failed: \(m)\n\(sql)"
         case .execFailed(let sql, let m): return "SQLite exec failed: \(m)\n\(sql)"
         case .decodeFailed(let e, let r): return "Decode failed for \(e): \(r)"
+        case .encodeFailed(let e): return "Encode failed for \(e)"
         }
+    }
+}
+
+/// Minimal centralized error-logging seam (OPT-187) so `SQLiteError`'s typed diagnostic detail
+/// isn't silently discarded by call sites that swallow it via `try?`. Callers converting a
+/// swallowed error should route it through here first rather than dropping it with zero trace.
+enum StorageErrorLog {
+    static func record(_ error: Error, context: StaticString) {
+        #if DEBUG
+        print("[Storage] \(context): \(error)")
+        #endif
     }
 }
 
@@ -39,6 +52,16 @@ enum JSONCoding {
 
     static func encode<T: Encodable>(_ value: T) -> String {
         (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+    }
+
+    /// Throwing variant of `encode` (OPT-192) for call sites where a genuine encode failure
+    /// should fail the surrounding write rather than silently persisting the literal string
+    /// `"null"`, which would otherwise commit a corrupted row with no error at write time.
+    static func encodeOrThrow<T: Encodable>(_ value: T) throws -> String {
+        guard let data = try? encoder.encode(value), let text = String(data: data, encoding: .utf8) else {
+            throw SQLiteError.encodeFailed(entity: String(describing: T.self))
+        }
+        return text
     }
 
     static func decode<T: Decodable>(_ type: T.Type, from string: String?) -> T? {
