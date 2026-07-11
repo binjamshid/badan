@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import os
 
 // MARK: - Model
 
@@ -22,6 +24,14 @@ struct SourcesData {
 final class SourcesViewModel {
     var state: LoadState<SourcesData> = .loading
 
+    /// Sources-specific empty copy: this screen's whole job is connecting a source, so its
+    /// empty state should say that rather than reuse the generic "Nothing here yet" text
+    /// (EASE-196). A connect action isn't wired here — `StatefulContainer`'s `.empty` case
+    /// doesn't carry one yet; only the message is Sources-specific for now.
+    private static let noSourcesYet = LocalizedString(
+        en: "No sources connected yet. Connect Apple Health or another source from Settings to see your data here.",
+        ar: "لا مصادر متصلة بعد. اربط صحة آبل أو مصدراً آخر من الإعدادات لرؤية بياناتك هنا.")
+
     func load(_ env: AppEnvironment) {
         do {
             let sources = try env.catalog.sources()
@@ -33,7 +43,7 @@ final class SourcesViewModel {
             let stores = grouped.keys.sorted()
 
             if infos.isEmpty && permissions.isEmpty {
-                state = .empty(env.s(Loc.nothingYet))
+                state = .empty(env.s(Self.noSourcesYet))
             } else {
                 state = .loaded(SourcesData(sources: infos, permissionStores: stores, permissionsByStore: grouped))
             }
@@ -63,7 +73,7 @@ struct SourcesScreen: View {
         ar: "عندما يُبلّغ مصدران عن القراءة نفسها، يحتفظ بدن بالقراءة من المصدر الأعلى أولوية (مثل جهاز المعصم مقابل الهاتف) ويضع الأخرى جانباً بهدوء. لا يُحذف شيء — ويمكن التراجع عن وضعها جانباً.")
 
     var body: some View {
-        StatefulContainer(vm.state) { data in
+        StatefulContainer(vm.state, emptyIcon: "antenna.radiowaves.left.and.right") { data in
             ScrollView {
                 VStack(alignment: .leading, spacing: BadanSpace.space4) {
                     if !data.sources.isEmpty {
@@ -77,15 +87,16 @@ struct SourcesScreen: View {
                         .padding(.top, data.sources.isEmpty ? 0 : BadanSpace.space2)
                     SourcesPermissionCard(data: data, emptyNote: Self.noPermissions)
 
-                    if env.depth.showsPowerDetail {
-                        SourcesPriorityNote(title: Self.priorityTitle, note: Self.priorityNote)
-                    }
+                    // Shown at every depth (not just power): which source "wins" a duplicate
+                    // reading is a plain-language question casual users hit too (EASE-122).
+                    SourcesPriorityNote(title: Self.priorityTitle, note: Self.priorityNote)
                 }
                 .padding(BadanSpace.space4)
             }
         }
         .background(BadanColor.background.ignoresSafeArea())
         .navigationTitle(env.s(Loc.dataSources))
+        .task(id: env.profile) { vm.load(env) }
     }
 }
 
@@ -99,7 +110,17 @@ private struct SourcesSourceCard: View {
     private static let connectedLabel = LocalizedString(en: "Connected", ar: "تاريخ الاتصال")
     private static let lastDeliveryLabel = LocalizedString(en: "Last delivery", ar: "آخر تسليم")
     private static let bundleLabel = LocalizedString(en: "Bundle", ar: "الحزمة")
+    private static let updatedLabel = LocalizedString(en: "Updated", ar: "آخر تحديث")
     private static let lastSeenLabel = LocalizedString(en: "Last seen", ar: "آخر ظهور")
+    private static let firstSeenLabel = LocalizedString(en: "First seen", ar: "أول ظهور")
+    // fileprivate (not private): `statusDetail(_:)` below is a top-level helper in this file,
+    // not a member/extension of this type, so it needs file-scope visibility to read these.
+    fileprivate static let turnedOffDetail = LocalizedString(
+        en: "Turned off — permission was revoked in iOS Settings.",
+        ar: "متوقف — تم سحب الإذن من إعدادات iOS.")
+    fileprivate static let hiddenDetail = LocalizedString(
+        en: "Hidden — you chose to hide this source.",
+        ar: "مخفي — اخترت إخفاء هذا المصدر.")
 
     var body: some View {
         BadanCard {
@@ -122,6 +143,15 @@ private struct SourcesSourceCard: View {
                     PillLabel(env.s(status.label), systemImage: status.icon, tint: status.tint)
                 }
 
+                // Non-active statuses are dead ends without this: "Turned off" and "Hidden"
+                // otherwise give the user a status word with no explanation of what caused it
+                // or what to do about it (EASE-124).
+                if let detail = statusDetail(info.source.status) {
+                    LText(detail)
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
+
                 if env.depth.showsPowerDetail {
                     if let connected = info.source.connectedAt {
                         detailLine(Self.connectedLabel, value: SourcesDateText.string(connected, env.language))
@@ -129,6 +159,7 @@ private struct SourcesSourceCard: View {
                     if let delivery = info.source.lastDeliveryAt {
                         detailLine(Self.lastDeliveryLabel, value: SourcesDateText.string(delivery, env.language))
                     }
+                    detailLine(Self.updatedLabel, value: SourcesDateText.string(info.source.updatedAt, env.language))
                     if let bundle = info.source.platformBundleId {
                         detailLine(Self.bundleLabel, value: bundle)
                     }
@@ -158,15 +189,29 @@ private struct SourcesSourceCard: View {
                             Spacer(minLength: BadanSpace.space2)
                             if env.depth.showsPowerDetail {
                                 VStack(alignment: .trailing, spacing: BadanSpace.space1) {
+                                    LText(Self.firstSeenLabel)
+                                        .font(BadanFont.caption)
+                                        .foregroundStyle(BadanColor.textSecondary)
+                                    Text(SourcesDateText.string(device.firstSeen, env.language))
+                                        .font(BadanFont.caption)
+                                        .foregroundStyle(BadanColor.textSecondary)
                                     LText(Self.lastSeenLabel)
                                         .font(BadanFont.caption)
                                         .foregroundStyle(BadanColor.textSecondary)
+                                        .padding(.top, BadanSpace.space1)
                                     Text(SourcesDateText.string(device.lastSeen, env.language))
                                         .font(BadanFont.caption)
                                         .foregroundStyle(BadanColor.textSecondary)
                                 }
+                            } else {
+                                // Casual depth still gets a freshness signal — just the relative
+                                // form, not the full absolute-timestamp/bundle detail (EASE-123).
+                                Text(SourcesDateText.relative(device.lastSeen, env.language, now: env.now()))
+                                    .font(BadanFont.caption)
+                                    .foregroundStyle(BadanColor.textSecondary)
                             }
                         }
+                        .padding(.leading, BadanSpace.space3)
                         .frame(minHeight: BadanSpace.touchMin)
                     }
                 }
@@ -176,9 +221,13 @@ private struct SourcesSourceCard: View {
 
     private func detailLine(_ label: LocalizedString, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space2) {
+            // Fixed-minimum label width so "Connected"/"Bundle"/"Last delivery" line up into a
+            // scannable column instead of each row's value starting at a different offset
+            // (UIUX-030). `.leading` alignment mirrors automatically under RTL.
             LText(label)
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textSecondary)
+                .frame(minWidth: 92, alignment: .leading)
             Spacer(minLength: BadanSpace.space2)
             Text(value)
                 .font(BadanFont.caption)
@@ -195,6 +244,9 @@ private struct SourcesPermissionCard: View {
     let data: SourcesData
     let emptyNote: LocalizedString
 
+    private static let lastReadLabel = LocalizedString(en: "Last read", ar: "آخر قراءة")
+    private static let openSettings = LocalizedString(en: "Open Settings", ar: "فتح الإعدادات")
+
     var body: some View {
         BadanCard {
             if data.permissionStores.isEmpty {
@@ -209,22 +261,53 @@ private struct SourcesPermissionCard: View {
                                 .font(BadanFont.caption.weight(.semibold))
                                 .foregroundStyle(BadanColor.textSecondary)
                             ForEach(data.permissionsByStore[store] ?? []) { permission in
-                                HStack(spacing: BadanSpace.space2) {
-                                    LText(permissionTypeLabel(permission.platformType))
-                                        .font(BadanFont.bodyCompact)
-                                        .foregroundStyle(BadanColor.textPrimary)
-                                    Spacer(minLength: BadanSpace.space2)
-                                    let style = permissionStyle(permission.status)
-                                    PillLabel(env.s(permission.status.displayLabel),
-                                              systemImage: style.icon, tint: style.tint)
+                                VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                                    HStack(spacing: BadanSpace.space2) {
+                                        LText(permissionTypeLabel(permission.platformType))
+                                            .font(BadanFont.bodyCompact)
+                                            .foregroundStyle(BadanColor.textPrimary)
+                                        Spacer(minLength: BadanSpace.space2)
+                                        let style = permissionStyle(permission.status)
+                                        PillLabel(env.s(permission.status.displayLabel),
+                                                  systemImage: style.icon, tint: style.tint)
+                                    }
+                                    .frame(minHeight: BadanSpace.touchMin)
+
+                                    // Provenance: when this permission was last actually read,
+                                    // already captured on the model but previously unused (OPT-027).
+                                    if env.depth.showsPowerDetail, let lastReadAt = permission.lastReadAt {
+                                        HStack(spacing: BadanSpace.space2) {
+                                            LText(Self.lastReadLabel)
+                                                .font(BadanFont.caption)
+                                                .foregroundStyle(BadanColor.textSecondary)
+                                            Spacer(minLength: BadanSpace.space2)
+                                            Text(SourcesDateText.string(lastReadAt, env.language))
+                                                .font(BadanFont.caption)
+                                                .foregroundStyle(BadanColor.textSecondary)
+                                        }
+                                    }
+
+                                    // HealthKit can never re-prompt once denied — without this,
+                                    // a user who taps "Don't Allow" once has no way back (FEAT-016).
+                                    if permission.status == .denied, let settingsURL {
+                                        Link(destination: settingsURL) {
+                                            Text(env.s(Self.openSettings))
+                                                .font(BadanFont.caption.weight(.medium))
+                                                .foregroundStyle(BadanColor.primary)
+                                        }
+                                        .frame(minHeight: BadanSpace.touchMin, alignment: .leading)
+                                    }
                                 }
-                                .frame(minHeight: BadanSpace.touchMin)
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    private var settingsURL: URL? {
+        URL(string: UIApplication.openSettingsURLString)
     }
 }
 
@@ -253,6 +336,13 @@ private struct SourcesPriorityNote: View {
                 }
             }
         }
+        // A thin info-tinted border marks this as explanatory/meta content rather than another
+        // data card, so it doesn't read identically to the source/permission cards above it
+        // (UIUX-025).
+        .overlay(
+            RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
+                .strokeBorder(BadanColor.info.opacity(0.35), lineWidth: 1.5)
+        )
     }
 }
 
@@ -278,20 +368,41 @@ private func sourceTypeLabel(_ type: SourceType) -> LocalizedString {
     }
 }
 
+// `sourceStatus`/`permissionStyle` intentionally keep their own tint/icon mapping rather than
+// routing through `StatusChip`: `StatusChip` models baseline-position semantics (in/above/below
+// range, still-learning), while a source or permission's status is a different domain concept
+// (connected/revoked/hidden, granted/partial/denied) with its own PillLabel presentation. Worth
+// a design-system pass to unify one day (UIUX-029), not a one-off fix here.
 private func sourceStatus(_ status: SourceStatus) -> (label: LocalizedString, tint: Color, icon: String) {
     switch status {
-    case .active: return (LocalizedString(en: "Active", ar: "نشط"), BadanColor.primary, "checkmark.circle")
+    // Neutral, not `BadanColor.primary` — `primary` is the app's interactive/brand hue used for
+    // links and actions; reusing it for a passive status risks reading as tappable (UIUX-021).
+    case .active: return (LocalizedString(en: "Active", ar: "نشط"), BadanColor.inBand, "checkmark.circle")
     case .revoked: return (LocalizedString(en: "Turned off", ar: "متوقف"), BadanColor.outOfBand, "minus.circle")
     case .hidden: return (LocalizedString(en: "Hidden", ar: "مخفي"), BadanColor.textSecondary, "eye.slash")
     }
 }
 
+/// Short explanatory caption for non-Active source statuses — "Turned off"/"Hidden" alone are
+/// dead ends with no path to understanding or resolving them (EASE-124).
+private func statusDetail(_ status: SourceStatus) -> LocalizedString? {
+    switch status {
+    case .active: return nil
+    case .revoked: return SourcesSourceCard.turnedOffDetail
+    case .hidden: return SourcesSourceCard.hiddenDetail
+    }
+}
+
 private func deviceIcon(_ device: Device) -> String {
     let hay = (device.name + " " + (device.model ?? "")).lowercased()
-    if hay.contains("watch") { return "applewatch" }
-    if hay.contains("phone") { return "iphone" }
-    if hay.contains("ring") { return "circle.circle" }
-    if hay.contains("band") { return "wave.3.right.circle" }
+    // Arabic keyword equivalents alongside the English ones — an Arabic-named device (e.g.
+    // "ساعة أبل") previously never matched any English substring and always fell back to the
+    // generic sensor icon (UIUX-027). Also widened the English vocabulary slightly (OPT-025).
+    if hay.contains("watch") || hay.contains("ساعة") { return "applewatch" }
+    if hay.contains("phone") || hay.contains("هاتف") || hay.contains("جوال") { return "iphone" }
+    if hay.contains("ring") || hay.contains("خاتم") || hay.contains("حلقة") { return "circle.circle" }
+    if hay.contains("band") || hay.contains("سوار") { return "wave.3.right.circle" }
+    if hay.contains("scale") || hay.contains("ميزان") { return "scalemass" }
     return "sensor.tag.radiowaves.forward.fill"
 }
 
@@ -299,14 +410,25 @@ private func storeLabel(_ store: String) -> LocalizedString {
     switch store {
     case "healthkit": return LocalizedString(en: "Apple Health", ar: "صحة آبل")
     case "healthConnect": return LocalizedString(en: "Health Connect", ar: "هيلث كونكت")
-    default: return LocalizedString(en: store, ar: store)
+    case "manual": return LocalizedString(en: "Entered by you", ar: "إدخال يدوي")
+    case "import": return LocalizedString(en: "Imported file", ar: "ملف مستورد")
+    case "vendor": return LocalizedString(en: "Connected service", ar: "خدمة متصلة")
+    default:
+        // Unmapped store values fall back to the raw key in both languages — logged so a new
+        // store type is caught in QA instead of silently shipping untranslated text (EASE-125,
+        // OPT-028).
+        SourcesLog.logger.warning("Unmapped permission store '\(store, privacy: .public)' rendered as a raw label")
+        return LocalizedString(en: store, ar: store)
     }
 }
 
 private func permissionStyle(_ status: PermissionStatus) -> (tint: Color, icon: String) {
     switch status {
     case .granted: return (BadanColor.primary, "checkmark.circle")
-    case .partial: return (BadanColor.info, "circle.lefthalf.filled")
+    // Distinct from `BadanColor.info` (the "still learning" blue used elsewhere for baseline
+    // status) — "partial permission" is an unrelated concept and shouldn't share that hue
+    // (UIUX-020). The half-filled icon already carries the "some but not all" meaning.
+    case .partial: return (BadanColor.textSecondary, "circle.lefthalf.filled")
     case .denied: return (BadanColor.outOfBand, "xmark.circle")
     case .revoked: return (BadanColor.textSecondary, "minus.circle")
     case .notRequested: return (BadanColor.textSecondary, "questionmark.circle")
@@ -333,20 +455,51 @@ private func permissionTypeLabel(_ platformType: String) -> LocalizedString {
     }
 }
 
+private enum SourcesLog {
+    static let logger = Logger(subsystem: "net.albayyan.badan", category: "Sources")
+}
+
 /// Small formatting utilities kept together so both cards format dates and tokens identically.
 private enum SourcesDateText {
-    static func string(_ date: Date, _ language: AppLanguage) -> String {
+    // One formatter per language, built once instead of per call — this file renders several
+    // source/device timestamps per row in power mode, so a fresh `DateFormatter()` per call
+    // added up (PERF-033). File-local cache only; not the shared cross-file utility the audit's
+    // "implementation notes" floated, which is out of scope for this file.
+    private static let enFormatter: DateFormatter = makeFormatter(.en)
+    private static let arFormatter: DateFormatter = makeFormatter(.ar)
+
+    private static func makeFormatter(_ language: AppLanguage) -> DateFormatter {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: language.localeIdentifier)
+        formatter.locale = language.locale
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        return formatter.string(from: date)
+        return formatter
     }
 
-    /// "sleepAnalysis" -> "Sleep analysis": split camelCase and capitalize the first word.
+    static func string(_ date: Date, _ language: AppLanguage) -> String {
+        (language == .en ? enFormatter : arFormatter).string(from: date)
+    }
+
+    /// Relative freshness ("2 hours ago") for casual depth, where the full absolute timestamp
+    /// would be more detail than the question ("is this still talking to my phone?") needs
+    /// (EASE-123).
+    static func relative(_ date: Date, _ language: AppLanguage, now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = language.locale
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+
+    /// "sleepAnalysis" -> "Sleep analysis", "blood_oxygen" -> "Blood oxygen": splits both
+    /// camelCase and snake_case/kebab-case boundaries, since a non-HealthKit store (a future
+    /// file-import or vendor integration) may not use camelCase tokens at all (OPT-026).
     static func humanize(_ token: String) -> String {
         var out = ""
         for (index, character) in token.enumerated() {
+            if character == "_" || character == "-" {
+                out.append(" ")
+                continue
+            }
             if index > 0 && character.isUppercase { out.append(" ") }
             out.append(character)
         }

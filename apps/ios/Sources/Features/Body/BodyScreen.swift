@@ -8,8 +8,11 @@ struct BodyPillar: Identifiable {
     let family: MetricFamily
     let metricId: String
     let latest: Double
-    let values: [Double]      // chronological; last == most recent (for the sparkline)
+    let series: [(date: Date, value: Double)]   // chronological; last == most recent (for the sparkline)
     let baseline: Baseline?
+    /// Total baseline-eligible metrics tracked in this family, so the card can hint that more
+    /// than just the headline metric is available (EASE-179).
+    let familyMetricCount: Int
 
     var id: String { family.rawValue }
 }
@@ -27,6 +30,13 @@ final class BodyViewModel {
 
     /// Headline metric preference per family; falls back to any baseline-eligible metric that
     /// actually carries data. Same data, curated altitude — never a second dataset.
+    ///
+    /// Only 6 of `MetricFamily`'s 10 cases are curated here — `.subjective`/`.symptoms`/
+    /// `.medications`/`.other` have no typed `MetricID` constants yet (OPT-016), so they fall
+    /// through to `makePillar`'s uncurated "first baseline-eligible metric in registry order"
+    /// path below. Extending this dictionary for `.subjective`/`.other` needs new constants in
+    /// `Domain/MetricID.swift`, which this bundle doesn't own — left as a known, intentional gap
+    /// rather than hardcoding raw id strings here.
     private static let headline: [MetricFamily: [String]] = [
         .sleep: [MetricID.timeAsleep, MetricID.sleepEfficiency],
         .heart: [MetricID.restingHeartRate, MetricID.hrv, MetricID.heartRate],
@@ -36,64 +46,102 @@ final class BodyViewModel {
         .nutrition: [MetricID.energyIn, MetricID.protein, MetricID.water],
     ]
 
+    /// Guards against a redundant full reload (widest store fan-out of any presentation load,
+    /// PERF-026) when Body reappears with nothing changed. Mirrors Home's `lastLoadedAt` guard
+    /// (PERF-022); any real profile change still reloads immediately since `.task(id: env.profile)`
+    /// re-invokes `load` with a new task.
+    private var lastLoadedAt: Date?
+    private var lastLoadedProfile: CustomizationProfile?
+    private static let staleThreshold: TimeInterval = 5
+
     func load(_ env: AppEnvironment) {
-        var pillars: [BodyPillar] = []
-        for family in env.registry.families {
-            if let pillar = makePillar(env, family: family) { pillars.append(pillar) }
+        if case .loaded = state,
+           let lastLoadedAt, let lastLoadedProfile, lastLoadedProfile == env.profile,
+           env.now().timeIntervalSince(lastLoadedAt) < Self.staleThreshold {
+            return
         }
-        state = .loaded(BodyData(pillars: pillars))
+
+        let signpostState = PerformanceLog.signposter.beginInterval("BodyViewModel.load")
+        defer { PerformanceLog.signposter.endInterval("BodyViewModel.load", signpostState) }
+
+        do {
+            var pillars: [BodyPillar] = []
+            for family in env.registry.families {
+                if let pillar = try makePillar(env, family: family) { pillars.append(pillar) }
+            }
+            lastLoadedAt = env.now()
+            lastLoadedProfile = env.profile
+            state = .loaded(BodyData(pillars: pillars))
+        } catch {
+            // A genuine store failure, not "no data yet" — the try?-swallowing this replaced
+            // made every DB error render identically to an empty Body tab (OPT-015).
+            state = .error(String(describing: error))
+        }
     }
 
-    private func makePillar(_ env: AppEnvironment, family: MetricFamily) -> BodyPillar? {
+    private func makePillar(_ env: AppEnvironment, family: MetricFamily) throws -> BodyPillar? {
+        let eligible = env.registry.metrics(in: family).filter { $0.baselineEligible }
         var candidates = Self.headline[family] ?? []
-        candidates += env.registry.metrics(in: family).filter { $0.baselineEligible }.map(\.metricId)
+        candidates += eligible.map(\.metricId)
 
         var seen = Set<String>()
         for metricId in candidates where seen.insert(metricId).inserted {
-            let series = recentSeries(env, metricId: metricId, windowDays: 12)
+            let series = try recentSeries(env, metricId: metricId, windowDays: 12)
             guard let latest = series.last?.value else { continue }
-            let baseline = (try? env.derivation.latestBaseline(metricId: metricId)) ?? nil
+            // No trailing `?? nil` — `latestBaseline` already returns an honest `Baseline?`;
+            // a thrown error now propagates instead of masquerading as "no baseline yet" (OPT-018).
+            let baseline = try env.derivation.latestBaseline(metricId: metricId)
             return BodyPillar(
                 family: family, metricId: metricId, latest: latest,
-                values: series.suffix(7).map { $0.value }, baseline: baseline)
+                series: Array(series.suffix(7)), baseline: baseline,
+                familyMetricCount: max(eligible.count, 1))
         }
         return nil
     }
 
-    /// Recent daily-ish series for a metric, tried across the three stores it might live in:
-    /// derived rollups, interval records (latest per local day), then raw samples.
-    private func recentSeries(_ env: AppEnvironment, metricId: String, windowDays: Int) -> [(date: Date, value: Double)] {
+    /// Recent daily-ish series for a metric, tried across the stores it might live in: derived
+    /// rollups, interval records (latest per local day), then raw samples. `def.kind` short-
+    /// circuits the interval-records round trip for metrics that only ever land as raw samples
+    /// (PERF-026); an empty result from a store is a legitimate "nothing recorded there" and
+    /// keeps probing the next store, but a thrown error now propagates instead of being silently
+    /// swallowed and retried as if it were just an empty store (OPT-019).
+    private func recentSeries(_ env: AppEnvironment, metricId: String, windowDays: Int) throws -> [(date: Date, value: Double)] {
         let now = env.now()
         let from = now.addingTimeInterval(-Double(windowDays) * 86_400)
         let def = env.registry.definitionOrFallback(metricId)
 
         if def.kind == .derived {
-            let pts = derivedSeries(env, metricId: metricId, from: from)
+            let pts = try derivedSeries(env, metricId: metricId, from: from)
             if !pts.isEmpty { return pts }
         }
 
-        if let recs = try? env.measurements.intervalRecords(metricId: metricId, from: from, to: now), !recs.isEmpty {
-            var byDay: [String: IntervalRecord] = [:]
-            for r in recs {
-                let key = DayAttribution.localDayKey(r.startAt, tz: r.tzId)
-                if let existing = byDay[key], existing.startAt >= r.startAt { continue }
-                byDay[key] = r
+        if def.kind != .rawSample {
+            let recs = try env.measurements.intervalRecords(metricId: metricId, from: from, to: now)
+            if !recs.isEmpty {
+                var byDay: [String: IntervalRecord] = [:]
+                for r in recs {
+                    let key = DayAttribution.localDayKey(r.startAt, tz: r.tzId)
+                    if let existing = byDay[key], existing.startAt >= r.startAt { continue }
+                    byDay[key] = r
+                }
+                let pts = byDay.keys.sorted().compactMap { key -> (date: Date, value: Double)? in
+                    byDay[key].map { (date: $0.startAt, value: $0.value) }
+                }
+                if !pts.isEmpty { return pts }
             }
-            let pts = byDay.keys.sorted().compactMap { key -> (date: Date, value: Double)? in
-                byDay[key].map { (date: $0.startAt, value: $0.value) }
-            }
-            if !pts.isEmpty { return pts }
         }
 
-        if let recs = try? env.measurements.rawSamples(metricId: metricId, from: from, to: now), !recs.isEmpty {
-            return recs.map { (date: $0.startAt, value: $0.value) }.sorted { $0.date < $1.date }
+        let raws = try env.measurements.rawSamples(metricId: metricId, from: from, to: now)
+        if !raws.isEmpty {
+            return raws.map { (date: $0.startAt, value: $0.value) }.sorted { $0.date < $1.date }
         }
 
-        return derivedSeries(env, metricId: metricId, from: from)
+        return try derivedSeries(env, metricId: metricId, from: from)
     }
 
-    private func derivedSeries(_ env: AppEnvironment, metricId: String, from: Date) -> [(date: Date, value: Double)] {
-        guard let values = try? env.derivation.latestDerivedSeries(metricId: metricId), !values.isEmpty else { return [] }
+    private func derivedSeries(_ env: AppEnvironment, metricId: String, from: Date) throws -> [(date: Date, value: Double)] {
+        let values = try env.derivation.latestDerivedSeries(metricId: metricId)
+        guard !values.isEmpty else { return [] }
         let tz = TimeZone.current.identifier
         return values.compactMap { dv -> (date: Date, value: Double)? in
             let key = dv.periodKey.hasPrefix("day:") ? String(dv.periodKey.dropFirst(4)) : dv.periodKey
@@ -123,12 +171,7 @@ struct BodyScreen: View {
                     if !data.pillars.isEmpty {
                         SectionHeader(env.s(Self.pillarsHeader))
                         ForEach(data.pillars) { pillar in
-                            NavigationLink {
-                                MetricDetailScreen(metricId: pillar.metricId)
-                            } label: {
-                                BodyPillarCard(pillar: pillar)
-                            }
-                            .buttonStyle(.plain)
+                            BodyPillarCard(pillar: pillar)
                         }
                     }
 
@@ -141,7 +184,19 @@ struct BodyScreen: View {
         }
         .background(BadanColor.background.ignoresSafeArea())
         .navigationTitle(env.s(Loc.bodyTitle))
-        .task { vm.load(env) }
+        // A search-shaped question ("find this one metric") shouldn't require recognizing that
+        // "Browse everything → All metrics" is where search lives, two taps down (EASE-178).
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink {
+                    BodyAllMetricsBrowser()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel(Text(Loc.search, language: env.language))
+            }
+        }
+        .task(id: env.profile) { vm.load(env) }
     }
 }
 
@@ -149,49 +204,76 @@ struct BodyScreen: View {
 
 private struct BodyPillarCard: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let pillar: BodyPillar
+
+    private static let moreInFamily = LocalizedString(en: "+{n} more in this family", ar: "+{n} أخرى في هذه الفئة")
+    /// "In your usual range" alone is unfalsifiable without the numbers behind it; show the band
+    /// once here rather than forcing a second tap into Metric Detail to see it (EASE-140).
+    private static let usualRangeCaption = LocalizedString(en: "Usual range {low}–{high}", ar: "النطاق المعتاد {low}–{high}")
 
     var body: some View {
         BadanCard {
-            HStack(alignment: .center, spacing: BadanSpace.space4) {
-                VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                    HStack(spacing: BadanSpace.space2) {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                NavigationLink {
+                    MetricDetailScreen(metricId: pillar.metricId)
+                } label: {
+                    HStack(alignment: .top, spacing: BadanSpace.space3) {
                         Image(systemName: pillar.family.symbolName)
                             .imageScale(.medium)
                             .foregroundStyle(BadanColor.primary)
                             .accessibilityHidden(true)
-                        LText(pillar.family.displayName)
-                            .font(BadanFont.body.weight(.semibold))
-                            .foregroundStyle(BadanColor.textPrimary)
-                    }
 
-                    HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space1) {
-                        Text(env.format.heroValue(metricId: pillar.metricId, canonicalValue: pillar.latest))
-                            .font(BadanFont.numeralM)
-                            .foregroundStyle(BadanColor.textPrimary)
-                        if let unit = env.format.unitLabel(metricId: pillar.metricId), !unit.isEmpty {
-                            Text(unit)
-                                .font(BadanFont.bodyCompact)
-                                .foregroundStyle(BadanColor.textSecondary)
+                        VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                            let status = pillarStatus
+                            StatBox(
+                                value: env.format.heroValue(metricId: pillar.metricId, canonicalValue: pillar.latest),
+                                label: env.s(pillar.family.displayName),
+                                unit: env.format.unitLabel(metricId: pillar.metricId),
+                                chip: StatusChip(status.0, label: env.s(status.1), language: env.language),
+                                size: .compact
+                            )
+                            // Long family names shouldn't wrap into the sparkline/chevron column
+                            // at larger Dynamic Type sizes (UIUX-026).
+                            .lineLimit(1)
+                            if let bandCaption {
+                                Text(bandCaption)
+                                    .font(BadanFont.caption)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                            }
                         }
+
+                        Spacer(minLength: BadanSpace.space2)
+
+                        // Fixed-size decoration; hidden at accessibility text sizes rather than
+                        // fighting the growing label/value/chip stack for room (UIUX-018).
+                        if pillar.series.count >= 2, !dynamicTypeSize.isAccessibilitySize {
+                            MetricSparkline(series: pillar.series)
+                                .frame(width: 76, height: 36)
+                                .accessibilityHidden(true)
+                        }
+
+                        Image(systemName: "chevron.forward")
+                            .font(BadanFont.caption.weight(.semibold))
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .accessibilityHidden(true)
                     }
-
-                    let status = pillarStatus
-                    StatusChip(status.0, label: env.s(status.1), language: env.language)
                 }
+                .buttonStyle(.plain)
 
-                Spacer(minLength: BadanSpace.space2)
-
-                if pillar.values.count >= 2 {
-                    MetricSparkline(values: pillar.values)
-                        .frame(width: 76, height: 36)
-                        .accessibilityHidden(true)
+                // A family can carry several tracked metrics behind its one headline value; hint
+                // that more exist instead of leaving them undiscoverable outside "All metrics"
+                // (EASE-179). A separate tap target, not nested inside the link above.
+                if pillar.familyMetricCount > 1 {
+                    NavigationLink {
+                        BodyAllMetricsBrowser(initialFamily: pillar.family)
+                    } label: {
+                        Text(Self.moreInFamily.filling(["n": env.format.integer(pillar.familyMetricCount - 1)]), language: env.language)
+                            .font(BadanFont.caption.weight(.medium))
+                            .foregroundStyle(BadanColor.primary)
+                    }
+                    .buttonStyle(.plain)
                 }
-
-                Image(systemName: "chevron.forward")
-                    .font(BadanFont.caption.weight(.semibold))
-                    .foregroundStyle(BadanColor.textSecondary)
-                    .accessibilityHidden(true)
             }
         }
     }
@@ -207,6 +289,13 @@ private struct BodyPillarCard: View {
             }
         }
         return (.info, Loc.stillLearning)
+    }
+
+    private var bandCaption: String? {
+        guard let baseline = pillar.baseline, !baseline.provisional else { return nil }
+        let low = env.format.heroValue(metricId: pillar.metricId, canonicalValue: baseline.bandLow)
+        let high = env.format.heroValue(metricId: pillar.metricId, canonicalValue: baseline.bandHigh)
+        return Self.usualRangeCaption.filling(["low": low, "high": high]).resolved(env.language)
     }
 }
 
@@ -286,21 +375,39 @@ private struct BodyMetricGroup: Identifiable {
     var id: String { family.rawValue }
 }
 
+/// Session-scoped memory of the browser's last search query — not persisted across app
+/// launches, just kept alive for the process lifetime so a power user reopening the browser
+/// within the same session doesn't have to retype it (EASE-297, minimal scope: last query only,
+/// not a full recent/frequent-metrics history). Only ever touched from `BodyAllMetricsBrowser`,
+/// which is itself only ever used on the main thread.
+private enum RecentMetricSearch {
+    static var lastQuery: String = ""
+}
+
 /// The full ontology, searchable and grouped by family — raw catalog is never paywalled. Every
 /// row leads to the same universal metric detail.
 struct BodyAllMetricsBrowser: View {
     @Environment(AppEnvironment.self) private var env
-    @State private var query = ""
+    /// When set, scopes the browser to a single family — used by a pillar card's "+N more" link
+    /// (EASE-179) rather than dropping the user into the full unscoped ontology.
+    var initialFamily: MetricFamily? = nil
+    @State private var query = RecentMetricSearch.lastQuery
 
     private static let noMatches = LocalizedString(en: "No matching metrics", ar: "لا مؤشرات مطابقة")
+    private static let clearSearch = LocalizedString(en: "Clear search", ar: "مسح البحث")
 
     var body: some View {
         List {
             if groups.isEmpty {
-                Text(env.s(Self.noMatches))
-                    .font(BadanFont.body)
-                    .foregroundStyle(BadanColor.textSecondary)
-                    .listRowBackground(BadanColor.surface)
+                EmptyStateView(
+                    icon: "magnifyingglass",
+                    title: env.s(Self.noMatches),
+                    message: "",
+                    actionTitle: query.isEmpty ? nil : env.s(Self.clearSearch),
+                    action: query.isEmpty ? nil : { query = "" }
+                )
+                .listRowBackground(BadanColor.surface)
+                .listRowSeparator(.hidden)
             } else {
                 ForEach(groups) { group in
                     Section {
@@ -313,7 +420,14 @@ struct BodyAllMetricsBrowser: View {
                             .listRowBackground(BadanColor.surface)
                         }
                     } header: {
+                        // Native `List` section headers render in the system's default
+                        // gray-uppercase style; restyle to match `SectionHeader`'s look so this
+                        // screen doesn't read as visually distinct from the rest of the app
+                        // (UIUX-028).
                         Text(env.s(group.family.displayName))
+                            .font(BadanFont.sectionTitle)
+                            .foregroundStyle(BadanColor.textPrimary)
+                            .textCase(nil)
                     }
                 }
             }
@@ -322,26 +436,41 @@ struct BodyAllMetricsBrowser: View {
         .scrollContentBackground(.hidden)
         .background(BadanColor.background.ignoresSafeArea())
         .searchable(text: $query, prompt: Text(Loc.search, language: env.language))
+        .onChange(of: query) { _, newValue in RecentMetricSearch.lastQuery = newValue }
         .navigationTitle(env.s(Loc.allMetrics))
         .navigationBarTitleDisplayMode(.inline)
     }
 
     private func metricRow(_ def: MetricDefinition) -> some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space1) {
-            Text(def.label(depth: env.depth, language: env.language))
-                .font(BadanFont.body)
-                .foregroundStyle(BadanColor.textPrimary)
-            if env.depth.showsPowerDetail {
-                Text(def.metricId)
-                    .font(BadanFont.caption)
-                    .foregroundStyle(BadanColor.textSecondary)
+        HStack(spacing: BadanSpace.space3) {
+            // Every other row-based list in the app leads with a family/type icon; this was the
+            // one text-only list, exactly where scanning 44 unfamiliar metric names benefits
+            // most from it (UIUX-022).
+            Image(systemName: def.familyGroup.symbolName)
+                .font(.system(size: 17))
+                .foregroundStyle(BadanColor.primary)
+                .frame(width: 26)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                Text(def.label(depth: env.depth, language: env.language))
+                    .font(BadanFont.body)
+                    .foregroundStyle(BadanColor.textPrimary)
+                if env.depth.showsPowerDetail {
+                    // Monospaced marks this as a technical identifier, not a second descriptive
+                    // label, matching how algorithm/method strings are styled elsewhere (EASE-182).
+                    Text(def.metricId)
+                        .font(BadanFont.caption.monospaced())
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
             }
         }
         .padding(.vertical, BadanSpace.space1)
     }
 
     private var results: [MetricDefinition] {
-        query.trimmingCharacters(in: .whitespaces).isEmpty ? env.registry.all : env.registry.search(query)
+        let base = query.trimmingCharacters(in: .whitespaces).isEmpty ? env.registry.all : env.registry.search(query)
+        guard let initialFamily else { return base }
+        return base.filter { $0.familyGroup == initialFamily }
     }
 
     private var groups: [BodyMetricGroup] {
