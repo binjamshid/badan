@@ -6,7 +6,8 @@ import SwiftUI
 ///
 /// Four calm steps over `BadanColor.background`:
 ///   1. Welcome — with a live EN/AR language toggle so RTL flips immediately.
-///   2. A short "why BADAN" value set (private repository · your data is yours · works offline).
+///   2. A short "why BADAN" value set (your data is yours · works offline) — welcome already
+///      covers "private" so the value set doesn't restate it (EASE-110).
 ///   3. A depth preset choice — "Keep it simple" (.casual) vs "Show me detail" (.power).
 ///   4. A connect step — a primary connect action and a secondary "continue without connecting",
 ///      both of which complete onboarding.
@@ -15,6 +16,11 @@ struct OnboardingView: View {
 
     @State private var step = 0
     @State private var selectedDepth: DepthPolicy?
+
+    // FEAT-239/FEAT-248: onboarding is the first screen every user sees, so its page
+    // transitions and toggle animations are the highest-visibility instance of the app's
+    // (otherwise unimplemented) reduce-motion support — honour it locally here.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let lastStep = 3
     private var pageCount: Int { lastStep + 1 }
@@ -33,7 +39,7 @@ struct OnboardingView: View {
                     connectPage.tag(3)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                .animation(.easeInOut(duration: 0.25), value: step)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: step)
 
                 footer
             }
@@ -53,7 +59,7 @@ struct OnboardingView: View {
             HStack {
                 if step > 0 {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.25)) { step -= 1 }
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { step -= 1 }
                     } label: {
                         Label(env.s(Loc.back), systemImage: "chevron.backward")
                             .labelStyle(.titleAndIcon)
@@ -70,10 +76,13 @@ struct OnboardingView: View {
                 Spacer()
 
                 if step < lastStep {
+                    // UIUX-198: Skip exits the whole flow (a more consequential action than
+                    // stepping back one page), so it reads a notch quieter than Back rather
+                    // than sharing identical visual weight.
                     Button { env.completeOnboarding() } label: {
                         Text(env.s(Loc.skip))
-                            .font(BadanFont.bodyCompact)
-                            .foregroundStyle(BadanColor.textSecondary)
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary.opacity(0.75))
                             .frame(minWidth: BadanSpace.touchMin, minHeight: BadanSpace.touchMin,
                                    alignment: .trailing)
                     }
@@ -95,43 +104,58 @@ struct OnboardingView: View {
                     .frame(width: index == step ? 22 : 7, height: 7)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: step)
-        .accessibilityHidden(true)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: step)
+        // EASE-109/OPT-164/UIUX-192: the dots are a purely visual progress cue — rather than
+        // hiding progress from VoiceOver entirely, expose an accessible "Step N of total"
+        // equivalent so screen-reader users keep the same orientation sighted users get.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(env.s(Self.stepProgressTemplate.filling([
+            "current": "\(step + 1)", "total": "\(pageCount)"
+        ])))
     }
 
     // MARK: - Page 1: Welcome + language
 
     private var welcomePage: some View {
-        VStack(spacing: BadanSpace.space6) {
-            Spacer(minLength: 0)
+        // UIUX-194: match valuePage/depthPage in offering a scroll escape hatch, so larger
+        // Dynamic Type sizes or shorter devices never clip content with no way to reach it.
+        // `minHeight` keeps the Spacer-driven centered layout for the common case and only
+        // starts scrolling once content actually exceeds the available height.
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: BadanSpace.space6) {
+                    Spacer(minLength: 0)
 
-            iconMark("heart.text.square", tint: BadanColor.primary, diameter: 84)
+                    iconMark("heart.text.square", tint: BadanColor.primary, diameter: Self.heroIconDiameter)
 
-            VStack(spacing: BadanSpace.space3) {
-                Text(env.s(Loc.welcomeTitle))
-                    .font(Self.titleFont)
-                    .foregroundStyle(BadanColor.textPrimary)
-                Text(env.s(Loc.welcomeSubtitle))
-                    .font(BadanFont.body)
-                    .foregroundStyle(BadanColor.textSecondary)
-            }
-            .multilineTextAlignment(.center)
-
-            VStack(spacing: BadanSpace.space2) {
-                Text(env.s(Loc.language))
-                    .font(BadanFont.chip)
-                    .foregroundStyle(BadanColor.textSecondary)
-                languageToggle
-                Text(env.s(Self.languageHint))
-                    .font(BadanFont.caption)
-                    .foregroundStyle(BadanColor.textSecondary)
+                    VStack(spacing: BadanSpace.space3) {
+                        Text(env.s(Loc.welcomeTitle))
+                            .font(Self.titleFont)
+                            .foregroundStyle(BadanColor.textPrimary)
+                        Text(env.s(Loc.welcomeSubtitle))
+                            .font(BadanFont.body)
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
                     .multilineTextAlignment(.center)
-            }
-            .padding(.top, BadanSpace.space2)
 
-            Spacer(minLength: 0)
+                    VStack(spacing: BadanSpace.space2) {
+                        Text(env.s(Loc.language))
+                            .font(BadanFont.chip)
+                            .foregroundStyle(BadanColor.textSecondary)
+                        languageToggle
+                        Text(env.s(Self.languageHint))
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, BadanSpace.space2)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: proxy.size.height)
+                .padding(.horizontal, BadanSpace.space5)
+            }
         }
-        .padding(.horizontal, BadanSpace.space5)
     }
 
     private var languageToggle: some View {
@@ -139,7 +163,7 @@ struct OnboardingView: View {
             ForEach(AppLanguage.allCases) { lang in
                 let isSelected = env.language == lang
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                         env.update { $0.language = lang }
                     }
                 } label: {
@@ -159,6 +183,9 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
+                // UIUX-200: selecting flips the whole app's layout direction (RTL/LTR) — warn
+                // VoiceOver users before they trigger that, not just announce the trait.
+                .accessibilityHint(env.s(Self.languageToggleHint))
             }
         }
     }
@@ -174,9 +201,10 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
                     .padding(.top, BadanSpace.space4)
 
+                // EASE-110: welcome already promises "private" (welcomeSubtitle); this page
+                // now carries only the two facts welcome doesn't cover, instead of restating
+                // privacy a second time.
                 VStack(spacing: BadanSpace.space3) {
-                    valueCard(icon: "lock.shield", tint: BadanColor.primary,
-                              title: Self.valuePrivateTitle, body: Self.valuePrivateBody)
                     valueCard(icon: "square.and.arrow.up", tint: BadanColor.info,
                               title: Self.valueOwnTitle, body: Self.valueOwnBody)
                     valueCard(icon: "wifi.slash", tint: BadanColor.inBand,
@@ -192,7 +220,7 @@ struct OnboardingView: View {
                            title: LocalizedString, body: LocalizedString) -> some View {
         BadanCard {
             HStack(alignment: .top, spacing: BadanSpace.space3) {
-                iconMark(icon, tint: tint, diameter: 44)
+                iconMark(icon, tint: tint, diameter: Self.cardIconDiameter)
                 VStack(alignment: .leading, spacing: BadanSpace.space1) {
                     Text(env.s(title))
                         .font(BadanFont.body.weight(.semibold))
@@ -239,14 +267,14 @@ struct OnboardingView: View {
                              title: LocalizedString, body: LocalizedString) -> some View {
         let isSelected = selectedDepth == policy
         return Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                 selectedDepth = policy
                 env.update { $0.depthPolicy = policy }
             }
         } label: {
             BadanCard {
                 HStack(alignment: .top, spacing: BadanSpace.space3) {
-                    iconMark(icon, tint: BadanColor.primary, diameter: 44)
+                    iconMark(icon, tint: BadanColor.primary, diameter: Self.cardIconDiameter)
                     VStack(alignment: .leading, spacing: BadanSpace.space1) {
                         Text(env.s(title))
                             .font(BadanFont.body.weight(.semibold))
@@ -275,36 +303,46 @@ struct OnboardingView: View {
     // MARK: - Page 4: Connect
 
     private var connectPage: some View {
-        VStack(spacing: BadanSpace.space6) {
-            Spacer(minLength: 0)
+        // UIUX-194: same scroll escape hatch as welcomePage, for the same reason.
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: BadanSpace.space6) {
+                    Spacer(minLength: 0)
 
-            iconMark("waveform.path.ecg", tint: BadanColor.primary, diameter: 84)
+                    // EASE-115: an ECG waveform reads as "cardiac monitoring," not "connect
+                    // any health source" — use the source-agnostic glyph already established
+                    // for Data Sources elsewhere (BodyScreen's tool row, Settings).
+                    iconMark("antenna.radiowaves.left.and.right", tint: BadanColor.primary,
+                              diameter: Self.heroIconDiameter)
 
-            VStack(spacing: BadanSpace.space3) {
-                Text(env.s(Self.connectTitle))
-                    .font(Self.titleFont)
-                    .foregroundStyle(BadanColor.textPrimary)
-                Text(env.s(Self.connectSubtitle))
-                    .font(BadanFont.body)
-                    .foregroundStyle(BadanColor.textSecondary)
-            }
-            .multilineTextAlignment(.center)
+                    VStack(spacing: BadanSpace.space3) {
+                        Text(env.s(Self.connectTitle))
+                            .font(Self.titleFont)
+                            .foregroundStyle(BadanColor.textPrimary)
+                        Text(env.s(Self.connectSubtitle))
+                            .font(BadanFont.body)
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
+                    .multilineTextAlignment(.center)
 
-            Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-            VStack(spacing: BadanSpace.space3) {
-                primaryButton(Self.connectPrimary) { env.completeOnboarding() }
-                Button { env.completeOnboarding() } label: {
-                    Text(env.s(Loc.continueWithoutConnecting))
-                        .font(BadanFont.body)
-                        .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
-                        .foregroundStyle(BadanColor.textSecondary)
+                    VStack(spacing: BadanSpace.space3) {
+                        primaryButton(Self.connectPrimary) { env.completeOnboarding() }
+                        Button { env.completeOnboarding() } label: {
+                            Text(env.s(Loc.continueWithoutConnecting))
+                                .font(BadanFont.body)
+                                .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                                .foregroundStyle(BadanColor.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
+                .frame(minHeight: proxy.size.height)
+                .padding(.horizontal, BadanSpace.space5)
+                .padding(.bottom, BadanSpace.space5)
             }
         }
-        .padding(.horizontal, BadanSpace.space5)
-        .padding(.bottom, BadanSpace.space5)
     }
 
     // MARK: - Footer (Next for steps 0–2)
@@ -312,11 +350,22 @@ struct OnboardingView: View {
     @ViewBuilder private var footer: some View {
         if step < lastStep {
             let disabled = (step == 2 && selectedDepth == nil)
-            primaryButton(Loc.next) {
-                withAnimation(.easeInOut(duration: 0.25)) { step += 1 }
+            VStack(spacing: BadanSpace.space2) {
+                // EASE-106: repeat the "this choice is reversible" reassurance right next to
+                // the decision itself, not only in the page subtitle above the cards, since a
+                // disabled-until-chosen step is exactly where hesitant users need it most.
+                if step == 2 {
+                    Text(env.s(Self.depthReassurance))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                primaryButton(Loc.next) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { step += 1 }
+                }
+                .disabled(disabled)
+                .opacity(disabled ? 0.45 : 1)
             }
-            .disabled(disabled)
-            .opacity(disabled ? 0.45 : 1)
             .padding(.horizontal, BadanSpace.space5)
             .padding(.top, BadanSpace.space3)
             .padding(.bottom, BadanSpace.space5)
@@ -358,18 +407,36 @@ struct OnboardingView: View {
     /// light dark-theme teal — legible in both, since there is no dedicated on-primary token.
     private static let onPrimary = Color(light: "#FFFFFF", dark: "#08201D")
 
+    // UIUX-195: named, onboarding-scoped diameters instead of bare `84`/`44` literals at each
+    // call site — onboarding is the app's most visually bespoke screen and the least
+    // token-governed, so these document intent without promoting a global design-system token.
+    private static let heroIconDiameter: CGFloat = 84
+    private static let cardIconDiameter: CGFloat = 44
+
     // MARK: - Strings (bilingual; wellness-safe)
 
     private static let languageHint = LocalizedString(
         en: "Choose your language. You can change it anytime.",
         ar: "اختر لغتك. يمكنك تغييرها في أي وقت.")
 
-    private static let whyTitle = LocalizedString(en: "Why BADAN", ar: "لماذا بدن")
+    /// UIUX-200: spoken before a language toggle button activates, since selecting it flips
+    /// the whole app's layout direction (RTL/LTR), not just a preference value.
+    private static let languageToggleHint = LocalizedString(
+        en: "Switches the app language and layout direction.",
+        ar: "يبدّل لغة التطبيق واتجاه التخطيط.")
 
-    private static let valuePrivateTitle = LocalizedString(en: "A private repository", ar: "مستودع خاص")
-    private static let valuePrivateBody = LocalizedString(
-        en: "Your health lives in one place that belongs to you.",
-        ar: "صحتك في مكان واحد يخصّك وحدك.")
+    /// EASE-109/OPT-164/UIUX-192: accessible substitute for the purely visual progress dots.
+    private static let stepProgressTemplate = LocalizedString(
+        en: "Step {current} of {total}",
+        ar: "الخطوة {current} من {total}")
+
+    /// EASE-106: reassurance repeated next to the Next button on the depth step, not just in
+    /// the page subtitle above the cards.
+    private static let depthReassurance = LocalizedString(
+        en: "You can change this anytime in Settings.",
+        ar: "يمكنك تغيير هذا في أي وقت من الإعدادات.")
+
+    private static let whyTitle = LocalizedString(en: "Why BADAN", ar: "لماذا بدن")
 
     private static let valueOwnTitle = LocalizedString(en: "Your data is yours", ar: "بياناتك ملكك")
     private static let valueOwnBody = LocalizedString(
@@ -396,7 +463,9 @@ struct OnboardingView: View {
         en: "Raw values, your ranges, and where each number came from.",
         ar: "القيم الخام ونطاقاتك ومصدر كل رقم.")
 
-    private static let connectTitle = LocalizedString(en: "Bring in your health data", ar: "أحضِر بياناتك الصحية")
+    // EASE-126: standardize on "Connect"/"Data sources" vocabulary — matches `Loc.dataSources`
+    // and `connectPrimary` below rather than introducing a third verb ("bring in").
+    private static let connectTitle = LocalizedString(en: "Connect your health data", ar: "اربط بياناتك الصحية")
     private static let connectSubtitle = LocalizedString(
         en: "Connect a source now, or add it later — BADAN works either way.",
         ar: "اربط مصدراً الآن أو أضِفه لاحقاً — يعمل بدن في الحالتين.")
