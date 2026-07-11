@@ -1,5 +1,6 @@
 package net.albayyan.badan.features.insights
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +20,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.ThumbDown
@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -37,6 +38,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
@@ -86,7 +90,12 @@ import kotlin.math.abs
 fun InsightsScreen() {
     val env = LocalAppEnvironment.current
     val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     var state by remember { mutableStateOf<LoadState<InsightsData>>(LoadState.Loading) }
+    // Per-insight feedback lives in its own small map keyed by insight id, so a tap mutates
+    // exactly one entry instead of copying the whole insight list through the top-level
+    // LoadState (which would invalidate recomposition-skipping for every card). PERF-230.
+    val feedbackOverrides = remember { mutableStateMapOf<String, Int>() }
 
     // Reload when altitude (delta detail) or language (labels / value formatting) changes.
     LaunchedEffect(env.depth, env.language) {
@@ -99,14 +108,12 @@ fun InsightsScreen() {
     val handleFeedback: (String, Int) -> Unit = handler@{ id, value ->
         val loaded = state as? LoadState.Loaded<InsightsData> ?: return@handler
         val data = loaded.value
-        val idx = data.insights.indexOfFirst { it.id == id }
-        if (idx < 0) return@handler
-        val current = data.insights[idx].feedback ?: 0
+        val insight = data.insights.firstOrNull { it.id == id } ?: return@handler
+        val current = feedbackOverrides[id] ?: insight.feedback ?: 0
         val newValue = if (current == value) 0 else value
-        val updated = data.insights.toMutableList().also {
-            it[idx] = it[idx].copy(feedback = newValue)
-        }
-        state = LoadState.Loaded(data.copy(insights = updated))
+        // A light haptic tick confirms the tap registered — the icon-color change alone is subtle. UIUX-248.
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        feedbackOverrides[id] = newValue
         scope.launch(Dispatchers.IO) { runCatching { env.insightsRepo.setFeedback(id, newValue) } }
     }
 
@@ -133,7 +140,10 @@ fun InsightsScreen() {
                         EmptyFeedCard()
                     } else {
                         data.insights.forEach { insight ->
-                            FeedCard(insight = insight) { value -> handleFeedback(insight.id, value) }
+                            FeedCard(
+                                insight = insight,
+                                feedback = feedbackOverrides[insight.id] ?: insight.feedback,
+                            ) { value -> handleFeedback(insight.id, value) }
                         }
                     }
                 }
@@ -225,13 +235,13 @@ private fun WeeklyStatusChip(change: WeeklyChange) {
 // MARK: - Insight feed card
 
 @Composable
-private fun FeedCard(insight: Insight, onFeedback: (Int) -> Unit) {
+private fun FeedCard(insight: Insight, feedback: Int?, onFeedback: (Int) -> Unit) {
     val env = LocalAppEnvironment.current
     BadanCard {
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
             SentenceRow(insight)
             Separator()
-            FeedbackRow(feedback = insight.feedback, onFeedback = onFeedback)
+            FeedbackRow(feedback = feedback, onFeedback = onFeedback)
             if (env.depth.showsPowerDetail) {
                 WhyDisclosure(insight)
             }
@@ -366,11 +376,19 @@ private fun WhyDisclosure(insight: Insight) {
                 color = colors.primary,
                 modifier = Modifier.weight(1f),
             )
+            // Single chevron rotated 180° on expand rather than swapping two icons — smoother
+            // Material expand/collapse affordance. UIUX-285.
+            val chevronRotation by animateFloatAsState(
+                targetValue = if (expanded) 180f else 0f,
+                label = "whyChevron",
+            )
             Icon(
-                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                imageVector = Icons.Filled.ExpandMore,
                 contentDescription = null,
                 tint = colors.primary,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier
+                    .size(20.dp)
+                    .rotate(chevronRotation),
             )
         }
         if (expanded) {

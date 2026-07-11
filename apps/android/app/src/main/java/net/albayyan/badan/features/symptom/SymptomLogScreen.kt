@@ -24,7 +24,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
@@ -32,6 +31,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDefaults
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -168,10 +169,15 @@ private sealed interface SymptomChoice {
 /**
  * Everything the picker needs, gathered once: the distinct symptoms logged in the last 30 days
  * (for 2-tap re-log) plus the full dictionary grouped into category sections.
+ *
+ * [lastSeverityBySymptomId] and [personalTriggers] are derived from the same 30-day read used for
+ * [recents] — no separate store needed to personalize severity defaults or trigger suggestions.
  */
 private data class SymptomLogData(
     val recents: List<SymptomDefinition>,
     val categories: List<Pair<String, List<SymptomDefinition>>>,
+    val lastSeverityBySymptomId: Map<String, Int> = emptyMap(),
+    val personalTriggers: List<String> = emptyList(),
 )
 
 // MARK: - Screen
@@ -201,6 +207,7 @@ fun SymptomLogScreen() {
     var note by remember { mutableStateOf("") }
     var occurredAt by remember { mutableStateOf(env.now()) }
     var maxDate by remember { mutableStateOf(env.now()) }
+    var isSaving by remember { mutableStateOf(false) }
 
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
@@ -261,6 +268,7 @@ fun SymptomLogScreen() {
                         severity = severity,
                         onSeverityChange = { severity = it },
                         triggers = triggers,
+                        personalTriggers = data.personalTriggers,
                         newTrigger = newTrigger,
                         onNewTriggerChange = { newTrigger = it },
                         onAddTrigger = { addTrigger(triggers, it) },
@@ -275,7 +283,11 @@ fun SymptomLogScreen() {
                         onPickDate = { showDatePicker = true },
                         onPickTime = { showTimePicker = true },
                         onChangeSelection = { selection = null },
-                        onSave = { addAnother ->
+                        isSaving = isSaving,
+                        onSave = onSave@{ addAnother ->
+                            // Guard against a fast double-tap creating two entries (OPT-246).
+                            if (isSaving) return@onSave
+                            isSaving = true
                             val entry = SymptomEntry(
                                 id = Ulid.newId(),
                                 symptomId = choice.symptomId,
@@ -292,6 +304,7 @@ fun SymptomLogScreen() {
                                 val ok = withContext(Dispatchers.IO) {
                                     runCatching { env.logging.insertSymptom(entry) }.isSuccess
                                 }
+                                isSaving = false
                                 // Stay calm and non-destructive; keep the form so nothing is lost.
                                 if (!ok) return@launch
                                 if (addAnother) {
@@ -314,9 +327,15 @@ fun SymptomLogScreen() {
                         data = data,
                         searchText = searchText,
                         onSearchChange = { searchText = it },
-                        onSelect = {
+                        onSelect = { picked ->
                             searchText = ""
-                            selection = it
+                            selection = picked
+                            // Recurring, consistently-severe symptoms shouldn't need re-dragging the
+                            // slider away from a generic midpoint every time (EASE-292).
+                            val symptomId = (picked as? SymptomChoice.Known)?.symptomId
+                            symptomId?.let { data.lastSeverityBySymptomId[it] }?.let { last ->
+                                severity = last.toFloat()
+                            }
                         },
                     )
                 }
@@ -346,6 +365,10 @@ fun SymptomLogScreen() {
             dismissButton = {
                 TextButton(onClick = { showDatePicker = false }) { Text(env.s(Loc.cancel)) }
             },
+            // Match BadanCard's soft-shadow container language instead of the stock Material
+            // dialog radius/elevation (UIUX-210).
+            shape = RoundedCornerShape(BadanRadius.sheet),
+            colors = DatePickerDefaults.colors().copy(containerColor = colors.surface),
         ) {
             DatePicker(state = dpState)
         }
@@ -370,6 +393,10 @@ fun SymptomLogScreen() {
                 TextButton(onClick = { showTimePicker = false }) { Text(env.s(Loc.cancel)) }
             },
             text = { TimePicker(state = tpState) },
+            // Match BadanCard's soft-shadow container language instead of the stock Material
+            // dialog radius/elevation (UIUX-210).
+            shape = RoundedCornerShape(BadanRadius.sheet),
+            containerColor = colors.surface,
         )
     }
 }
@@ -465,6 +492,7 @@ private fun CaptureForm(
     severity: Float,
     onSeverityChange: (Float) -> Unit,
     triggers: List<String>,
+    personalTriggers: List<String>,
     newTrigger: String,
     onNewTriggerChange: (String) -> Unit,
     onAddTrigger: (String) -> Unit,
@@ -476,6 +504,7 @@ private fun CaptureForm(
     onPickDate: () -> Unit,
     onPickTime: () -> Unit,
     onChangeSelection: () -> Unit,
+    isSaving: Boolean,
     onSave: (Boolean) -> Unit,
 ) {
     val env = LocalAppEnvironment.current
@@ -483,9 +512,10 @@ private fun CaptureForm(
     val sev = severity.roundToInt()
     Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s4)) {
         SelectedHeader(choice = choice, onChange = onChangeSelection)
-        SeverityCard(severity = severity, sev = sev, power = power, onSeverityChange = onSeverityChange)
+        SeverityCard(severity = severity, sev = sev, onSeverityChange = onSeverityChange)
         TriggersCard(
             triggers = triggers,
+            personalTriggers = personalTriggers,
             newTrigger = newTrigger,
             onNewTriggerChange = onNewTriggerChange,
             onAddTrigger = onAddTrigger,
@@ -495,7 +525,7 @@ private fun CaptureForm(
         NoteCard(note = note, onNoteChange = onNoteChange)
         WhenCard(occurredAt = occurredAt, onPickDate = onPickDate, onPickTime = onPickTime)
         if (power) MetadataCard()
-        SaveButtons(onSave = onSave)
+        SaveButtons(isSaving = isSaving, onSave = onSave)
     }
 }
 
@@ -536,7 +566,7 @@ private fun SelectedHeader(choice: SymptomChoice, onChange: () -> Unit) {
 }
 
 @Composable
-private fun SeverityCard(severity: Float, sev: Int, power: Boolean, onSeverityChange: (Float) -> Unit) {
+private fun SeverityCard(severity: Float, sev: Int, onSeverityChange: (Float) -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     // Never red. Calm primary for most of the range; a subtle amber only at the top so the scale
@@ -546,16 +576,16 @@ private fun SeverityCard(severity: Float, sev: Int, power: Boolean, onSeverityCh
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
             SectionHeader(
                 title = env.s(Loc.severity),
-                trailing = if (power) {
-                    {
-                        // Raw 0–10 value is a power-only affordance.
-                        Text(
-                            text = "${env.format.integer(sev)}/${env.format.integer(10)}",
-                            style = BadanType.monospaceDigits(BadanType.chip),
-                            color = colors.textSecondary,
-                        )
-                    }
-                } else null,
+                trailing = {
+                    // A small, calm numeral readout — helpful live feedback while dragging for
+                    // every altitude, not just power (UIUX-241); the same raw value casual and
+                    // power modes already share.
+                    Text(
+                        text = "${env.format.integer(sev)}/${env.format.integer(10)}",
+                        style = BadanType.monospaceDigits(BadanType.chip),
+                        color = colors.textSecondary,
+                    )
+                },
             )
             Text(
                 text = env.s(severityDescriptor(sev)),
@@ -585,6 +615,7 @@ private fun SeverityCard(severity: Float, sev: Int, power: Boolean, onSeverityCh
 @Composable
 private fun TriggersCard(
     triggers: List<String>,
+    personalTriggers: List<String>,
     newTrigger: String,
     onNewTriggerChange: (String) -> Unit,
     onAddTrigger: (String) -> Unit,
@@ -605,23 +636,33 @@ private fun TriggersCard(
                 }
             }
 
-            val suggestions = SymptomLogStrings.triggerSuggestions
-                .map { env.s(it) }
+            // The user's own frequently-typed triggers surface first, ahead of the fixed list
+            // (EASE-280) — same personalization `recents` already gives symptoms themselves.
+            val suggestions = (personalTriggers + SymptomLogStrings.triggerSuggestions.map { env.s(it) })
+                .distinct()
                 .filter { it !in triggers }
             if (suggestions.isNotEmpty()) {
                 ChipRow {
                     for (label in suggestions) {
-                        SymptomChip(title = label, icon = Icons.Filled.Add) { onAddTrigger(label) }
+                        // Outlined, icon-free treatment distinguishes "add a tag" suggestions from
+                        // the primary symptom-selection chips above them (UIUX-293).
+                        SymptomChip(title = label, outlined = true) { onAddTrigger(label) }
                     }
                 }
             }
 
             val shape = RoundedCornerShape(BadanRadius.control)
+            var focused by remember { mutableStateOf(false) }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(shape)
                     .background(colors.surfaceElevated, shape)
+                    .border(
+                        width = if (focused) 1.5.dp else 0.dp,
+                        color = if (focused) colors.primary else Color.Transparent,
+                        shape = shape,
+                    )
                     .heightIn(min = BadanSpace.touchMin)
                     .padding(horizontal = BadanSpace.s3),
                 verticalAlignment = Alignment.CenterVertically,
@@ -643,7 +684,9 @@ private fun TriggersCard(
                         cursorBrush = SolidColor(colors.primary),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { onCommitTrigger() }),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focused = it.isFocused },
                     )
                 }
                 val canAdd = newTrigger.trim().isNotEmpty()
@@ -663,8 +706,19 @@ private fun TriggersCard(
 private fun NoteCard(note: String, onNoteChange: (String) -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
+    val shape = RoundedCornerShape(BadanRadius.control)
+    var focused by remember { mutableStateOf(false) }
     BadanCard {
-        Box(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .border(
+                    width = if (focused) 1.5.dp else 0.dp,
+                    color = if (focused) colors.primary else Color.Transparent,
+                    shape = shape,
+                ),
+        ) {
             if (note.isEmpty()) {
                 Text(
                     text = env.s(Loc.notePlaceholder),
@@ -678,7 +732,9 @@ private fun NoteCard(note: String, onNoteChange: (String) -> Unit) {
                 textStyle = BadanType.body.copy(color = colors.textPrimary),
                 maxLines = 4,
                 cursorBrush = SolidColor(colors.primary),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focused = it.isFocused },
             )
         }
     }
@@ -752,7 +808,7 @@ private fun MetadataCard() {
 }
 
 @Composable
-private fun SaveButtons(onSave: (Boolean) -> Unit) {
+private fun SaveButtons(isSaving: Boolean, onSave: (Boolean) -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     val shape = RoundedCornerShape(BadanRadius.control)
@@ -761,8 +817,8 @@ private fun SaveButtons(onSave: (Boolean) -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(shape)
-                .clickable { onSave(false) }
-                .background(colors.primary, shape)
+                .clickable(enabled = !isSaving) { onSave(false) }
+                .background(colors.primary.copy(alpha = if (isSaving) 0.75f else 1f), shape)
                 .heightIn(min = BadanSpace.touchMin)
                 .padding(horizontal = BadanSpace.s4),
             contentAlignment = Alignment.Center,
@@ -777,7 +833,7 @@ private fun SaveButtons(onSave: (Boolean) -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(shape)
-                .clickable { onSave(true) }
+                .clickable(enabled = !isSaving) { onSave(true) }
                 .background(colors.surface, shape)
                 .border(1.dp, colors.separator, shape)
                 .heightIn(min = BadanSpace.touchMin)
@@ -809,22 +865,27 @@ private fun ChipRow(content: @Composable () -> Unit) {
     }
 }
 
+/**
+ * @param outlined A quieter, icon-free "add a tag" treatment (trigger suggestions) that reads
+ *   distinctly from the default neutral chip used for single-select navigation (symptom pickers,
+ *   date/time chips) — UIUX-293.
+ */
 @Composable
 private fun SymptomChip(
     title: String,
     icon: ImageVector? = null,
-    selected: Boolean = false,
+    outlined: Boolean = false,
     onClick: () -> Unit,
 ) {
     val colors = BadanTheme.colors
     val shape = RoundedCornerShape(BadanRadius.chip)
-    val content = if (selected) Color.White else colors.textPrimary
+    val content = if (outlined) colors.primary else colors.textPrimary
     Row(
         modifier = Modifier
             .clip(shape)
             .clickable(onClick = onClick)
-            .background(if (selected) colors.primary else colors.surface, shape)
-            .then(if (selected) Modifier else Modifier.border(1.dp, colors.separator, shape))
+            .background(if (outlined) Color.Transparent else colors.surface, shape)
+            .border(1.dp, if (outlined) colors.primary else colors.separator, shape)
             .heightIn(min = BadanSpace.touchMin)
             .padding(horizontal = BadanSpace.s3),
         verticalAlignment = Alignment.CenterVertically,
@@ -867,12 +928,17 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     val shape = RoundedCornerShape(BadanRadius.control)
+    var focused by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(colors.surface, shape)
-            .border(1.dp, colors.separator, shape)
+            .border(
+                width = if (focused) 1.5.dp else 1.dp,
+                color = if (focused) colors.primary else colors.separator,
+                shape = shape,
+            )
             .heightIn(min = BadanSpace.touchMin)
             .padding(start = BadanSpace.s3),
         verticalAlignment = Alignment.CenterVertically,
@@ -894,7 +960,9 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit) {
                 textStyle = BadanType.body.copy(color = colors.textPrimary),
                 singleLine = true,
                 cursorBrush = SolidColor(colors.primary),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focused = it.isFocused },
             )
         }
         if (value.isNotEmpty()) {
@@ -972,20 +1040,42 @@ private fun loadSymptomData(env: AppEnvironment): LoadState<SymptomLogData> = ru
 
     val seen = LinkedHashSet<String>()
     val recents = mutableListOf<SymptomDefinition>()
+    // Entries are already most-recent-first, so the first severity seen per symptom is its last-logged value.
+    val lastSeverityBySymptomId = mutableMapOf<String, Int>()
+    val triggerCounts = LinkedHashMap<String, Int>()
     for (entry in recentEntries) {
+        for (trigger in entry.triggers) {
+            val key = trigger.trim()
+            if (key.isEmpty()) continue
+            triggerCounts[key] = (triggerCounts[key] ?: 0) + 1
+        }
         val id = entry.symptomId ?: continue
+        if (id !in lastSeverityBySymptomId) lastSeverityBySymptomId[id] = entry.severity
         if (id in seen) continue
         val def = env.symptoms.definition(id) ?: continue
         seen.add(id)
         recents.add(def)
     }
+    // A user's own most-used free-text triggers, promoted into the suggestion row alongside the
+    // fixed list — the same personalization `recents` already gives to symptoms themselves.
+    val personalTriggers = triggerCounts.entries
+        .sortedByDescending { it.value }
+        .map { it.key }
+        .take(5)
 
     val categories = env.symptoms.categories.map { key -> key to env.symptoms.inCategory(key) }
 
     if (recents.isEmpty() && categories.isEmpty()) {
         LoadState.Empty(env.s(Loc.chooseSymptom))
     } else {
-        LoadState.Loaded(SymptomLogData(recents = recents, categories = categories))
+        LoadState.Loaded(
+            SymptomLogData(
+                recents = recents,
+                categories = categories,
+                lastSeverityBySymptomId = lastSeverityBySymptomId,
+                personalTriggers = personalTriggers,
+            ),
+        )
     }
 }.getOrElse { LoadState.Error(it.toString()) }
 

@@ -2,6 +2,7 @@ package net.albayyan.badan.export
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.encodeToStream
 import net.albayyan.badan.domain.AdherenceEvent
 import net.albayyan.badan.domain.Baseline
 import net.albayyan.badan.domain.DerivedValue
@@ -15,6 +16,9 @@ import net.albayyan.badan.domain.SessionDetail
 import net.albayyan.badan.domain.SymptomEntry
 import net.albayyan.badan.domain.WorkoutEntry
 import net.albayyan.badan.storage.JsonCoding
+import java.io.OutputStream
+import java.security.DigestOutputStream
+import java.security.MessageDigest
 
 /**
  * Serializes a full export as one self-describing JSON bundle. Raw and derived are **physically
@@ -122,6 +126,38 @@ class JsonBundleWriter {
         manifest, rawSamples, intervalRecords, sessions, derivedValues, baselines,
         symptoms, adherence, workouts, nutrition,
     ).toByteArray(Charsets.UTF_8)
+
+    /**
+     * Streams the assembled bundle's JSON encoding directly to [outputStream] via kotlinx
+     * serialization's stream encoder, wrapped in a digest so the checksum is computed
+     * incrementally in the same pass, instead of first materializing the full JSON string *and*
+     * its UTF-8 byte array in memory (PERF-253/PERF-254). The domain->JSON-mirror objects for the
+     * bundle are still built up front ([makeBundle]); this only removes the final
+     * string+bytes double materialization of the (potentially very large) encoded output. Takes
+     * ownership of [outputStream] and closes it.
+     */
+    fun writeTo(
+        manifest: ExportManifest,
+        rawSamples: List<RawSample>,
+        intervalRecords: List<IntervalRecord>,
+        sessions: List<Session>,
+        derivedValues: List<DerivedValue>,
+        baselines: List<Baseline>,
+        symptoms: List<SymptomEntry>,
+        adherence: List<AdherenceEvent>,
+        workouts: List<WorkoutEntry>,
+        nutrition: List<NutritionEntry>,
+        outputStream: OutputStream,
+        digest: MessageDigest,
+    ) {
+        val bundle = makeBundle(
+            manifest, rawSamples, intervalRecords, sessions, derivedValues, baselines,
+            symptoms, adherence, workouts, nutrition,
+        )
+        DigestOutputStream(outputStream, digest).use { dos ->
+            JsonCoding.json.encodeToStream(bundle, dos)
+        }
+    }
 }
 
 // ===== Serializable mirrors of the domain entities (camelCase keys; epoch-millis Long dates) =====

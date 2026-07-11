@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -243,7 +245,7 @@ private fun NotificationsSection() {
         BadanCard {
             SettingsToggleRow(
                 title = env.s(SettingsStrings.notifMorning),
-                subtitle = null,
+                subtitle = env.s(SettingsStrings.notifMorningHint),
                 checked = env.profile.notifications.morningNarrative,
                 onCheckedChange = { value ->
                     env.update { it.copy(notifications = it.notifications.copy(morningNarrative = value)) }
@@ -252,7 +254,7 @@ private fun NotificationsSection() {
             SettingsDivider()
             SettingsToggleRow(
                 title = env.s(SettingsStrings.notifWeekly),
-                subtitle = null,
+                subtitle = env.s(SettingsStrings.notifWeeklyHint),
                 checked = env.profile.notifications.weeklyDigest,
                 onCheckedChange = { value ->
                     env.update { it.copy(notifications = it.notifications.copy(weeklyDigest = value)) }
@@ -261,7 +263,7 @@ private fun NotificationsSection() {
             SettingsDivider()
             SettingsToggleRow(
                 title = env.s(SettingsStrings.notifMeds),
-                subtitle = null,
+                subtitle = env.s(SettingsStrings.notifMedsHint),
                 checked = env.profile.notifications.medicationReminders,
                 onCheckedChange = { value ->
                     env.update { it.copy(notifications = it.notifications.copy(medicationReminders = value)) }
@@ -270,7 +272,7 @@ private fun NotificationsSection() {
             SettingsDivider()
             SettingsToggleRow(
                 title = env.s(SettingsStrings.notifPaused),
-                subtitle = null,
+                subtitle = env.s(SettingsStrings.notifPausedHint),
                 checked = env.profile.notifications.dataPausedAlerts,
                 onCheckedChange = { value ->
                     env.update { it.copy(notifications = it.notifications.copy(dataPausedAlerts = value)) }
@@ -377,25 +379,51 @@ private fun DataManagementSection(onRequestReset: () -> Unit) {
             .clip(RoundedCornerShape(BadanRadius.card))
             .clickable(onClick = onRequestReset),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .defaultMinSize(minHeight = BadanSpace.touchMin),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.RestartAlt,
-                contentDescription = null,
-                tint = colors.info,
-                modifier = Modifier.size(22.dp),
-            )
-            Text(
-                text = env.s(Loc.resetDemo),
-                style = BadanType.body,
-                color = colors.textPrimary,
-                modifier = Modifier.weight(1f),
-            )
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = BadanSpace.touchMin),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.RestartAlt,
+                    contentDescription = null,
+                    tint = colors.info,
+                    modifier = Modifier.size(22.dp),
+                )
+                Text(
+                    text = env.s(Loc.resetDemo),
+                    style = BadanType.body,
+                    color = colors.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                // chevron.forward — auto-mirrors under RTL; matches SettingsNavRow's tap affordance.
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = colors.textSecondary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            // Proportionate cue before the tap, matching SensitiveSection's purge-note pattern.
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.WarningAmber,
+                    contentDescription = null,
+                    tint = colors.outOfBand,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = env.s(SettingsStrings.resetHint),
+                    style = BadanType.caption,
+                    color = colors.textSecondary,
+                )
+            }
         }
     }
 }
@@ -585,14 +613,33 @@ private fun ConfirmDialog(
     val colors = BadanTheme.colors
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = title, style = BadanType.sectionTitle, color = colors.textPrimary) },
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.WarningAmber,
+                    contentDescription = null,
+                    tint = colors.critical,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(text = title, style = BadanType.sectionTitle, color = colors.textPrimary)
+            }
+        },
         text = { Text(text = message, style = BadanType.body, color = colors.textSecondary) },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.critical,
+                    contentColor = colors.onPrimary,
+                ),
+            ) {
                 Text(
                     text = confirmLabel,
                     style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
-                    color = colors.critical,
+                    color = colors.onPrimary,
                 )
             }
         },
@@ -661,11 +708,31 @@ private object SettingsStrings {
         en = "This restores the sample data set on this device.",
         ar = "يعيد هذا مجموعة البيانات التجريبية على هذا الجهاز.",
     )
+    val resetHint = LocalizedString(
+        en = "Replaces current data on this device with the sample set.",
+        ar = "يستبدل البيانات الحالية على هذا الجهاز بمجموعة البيانات التجريبية.",
+    )
 
     val notifMorning = LocalizedString(en = "Morning summary", ar = "ملخّص الصباح")
+    val notifMorningHint = LocalizedString(
+        en = "A calm recap of the night and the day ahead.",
+        ar = "ملخّص هادئ لليلة واليوم القادم.",
+    )
     val notifWeekly = LocalizedString(en = "Weekly digest", ar = "الملخّص الأسبوعي")
+    val notifWeeklyHint = LocalizedString(
+        en = "A summary of trends across the past week.",
+        ar = "ملخّص للاتجاهات خلال الأسبوع الماضي.",
+    )
     val notifMeds = LocalizedString(en = "Medication reminders", ar = "تذكيرات الأدوية")
+    val notifMedsHint = LocalizedString(
+        en = "Nudges at the times you've scheduled for each medication.",
+        ar = "تنبيهات في الأوقات التي حدّدتها لكل دواء.",
+    )
     val notifPaused = LocalizedString(en = "Data-paused reminders", ar = "تذكيرات توقّف البيانات")
+    val notifPausedHint = LocalizedString(
+        en = "Nudge me if no data has synced in a while.",
+        ar = "نبّهني إذا لم تتم مزامنة أي بيانات لفترة.",
+    )
 
     fun depthSubtitle(depth: DepthPolicy): LocalizedString = when (depth) {
         DepthPolicy.CASUAL -> LocalizedString(en = "Calm and minimal.", ar = "هادئ ومبسّط.")

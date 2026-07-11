@@ -45,6 +45,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -107,6 +110,7 @@ fun OnboardingScreen() {
                 pageCount = pageCount,
                 onBack = { scope.launch { pagerState.animateScrollToPage(step - 1) } },
                 onSkip = { env.completeOnboarding() },
+                s = env::s,
             )
 
             HorizontalPager(
@@ -165,6 +169,7 @@ private fun OnboardingHeader(
     pageCount: Int,
     onBack: () -> Unit,
     onSkip: () -> Unit,
+    s: (LocalizedString) -> String,
 ) {
     val colors = BadanTheme.colors
     Box(
@@ -175,7 +180,12 @@ private fun OnboardingHeader(
         contentAlignment = Alignment.Center,
     ) {
         // Centred progress dots.
-        Row(horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1)) {
+        Row(
+            modifier = Modifier.semantics {
+                contentDescription = s(stepAnnouncement(step, pageCount))
+            },
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1),
+        ) {
             repeat(pageCount) { index ->
                 val isCurrent = index == step
                 Box(
@@ -197,7 +207,8 @@ private fun OnboardingHeader(
             if (step > 0) {
                 Row(
                     modifier = Modifier
-                        .size(width = 96.dp, height = BadanSpace.touchMin)
+                        .heightIn(min = BadanSpace.touchMin)
+                        .padding(horizontal = BadanSpace.s2)
                         .clickable(onClick = onBack),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1),
@@ -223,7 +234,8 @@ private fun OnboardingHeader(
             if (step < lastStep) {
                 Box(
                     modifier = Modifier
-                        .size(width = 96.dp, height = BadanSpace.touchMin)
+                        .heightIn(min = BadanSpace.touchMin)
+                        .padding(horizontal = BadanSpace.s2)
                         .clickable(onClick = onSkip),
                     contentAlignment = Alignment.CenterEnd,
                 ) {
@@ -265,6 +277,7 @@ private fun WelcomePage(
             style = titleFont,
             color = colors.textPrimary,
             textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { heading() },
         )
         Spacer(modifier = Modifier.size(BadanSpace.s3))
         Text(
@@ -351,6 +364,7 @@ private fun ValuePage(s: (LocalizedString) -> String) {
             style = titleFont,
             color = colors.textPrimary,
             textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { heading() },
         )
         ValueCard(
             icon = Icons.Filled.Shield,
@@ -424,6 +438,7 @@ private fun DepthPage(
             style = titleFont,
             color = colors.textPrimary,
             textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { heading() },
         )
         Text(
             text = s(depthSubtitle),
@@ -445,6 +460,14 @@ private fun DepthPage(
             isSelected = selected == DepthPolicy.POWER,
             onClick = { onSelect(DepthPolicy.POWER) },
         )
+        if (selected == null) {
+            Text(
+                text = s(depthChooseHint),
+                style = BadanType.caption,
+                color = colors.textSecondary,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
@@ -523,6 +546,7 @@ private fun ConnectPage(
             style = titleFont,
             color = colors.textPrimary,
             textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { heading() },
         )
         Spacer(modifier = Modifier.size(BadanSpace.s3))
         Text(
@@ -620,6 +644,12 @@ private fun locBack(): String = LocalAppEnvironment.current.s(Loc.back)
 @Composable
 private fun locSkip(): String = LocalAppEnvironment.current.s(Loc.skip)
 
+/** Spoken step progress for TalkBack, e.g. "Step 2 of 4". */
+private fun stepAnnouncement(step: Int, pageCount: Int): LocalizedString = LocalizedString(
+    en = "Step ${step + 1} of $pageCount",
+    ar = "الخطوة ${step + 1} من $pageCount",
+)
+
 // MARK: - Strings (bilingual; wellness-safe)
 
 private val languageHint = LocalizedString(
@@ -663,6 +693,11 @@ private val depthDetailTitle = LocalizedString(en = "Show me detail", ar = "أر
 private val depthDetailBody = LocalizedString(
     en = "Raw values, your ranges, and where each number came from.",
     ar = "القيم الخام ونطاقاتك ومصدر كل رقم.",
+)
+
+private val depthChooseHint = LocalizedString(
+    en = "Choose one to continue",
+    ar = "اختر أحد الخيارين للمتابعة",
 )
 
 private val connectTitle = LocalizedString(en = "Bring in your health data", ar = "أحضِر بياناتك الصحية")

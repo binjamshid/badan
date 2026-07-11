@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.StrictMode
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -62,8 +63,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -163,6 +166,16 @@ private object ExportCopy {
         en = "No exports yet — create your first above.",
         ar = "لا توجد تصديرات بعد — أنشئ أول تصدير أعلاه.",
     )
+    val loadMoreHistory = LocalizedString(en = "Load more", ar = "تحميل المزيد")
+    val filesUnavailable = LocalizedString(
+        en = "Files no longer available",
+        ar = "الملفات لم تعد متوفرة",
+    )
+
+    val scopeIncludes = LocalizedString(en = "Includes:", ar = "يتضمّن:")
+    val scopeExcludes = LocalizedString(en = "Excludes:", ar = "يستبعد:")
+
+    val copied = LocalizedString(en = "Copied", ar = "تم النسخ")
 
     val couldntPrepare = LocalizedString(
         en = "That export couldn't be prepared. Nothing left your device.",
@@ -196,6 +209,11 @@ private enum class ExportRange {
     }
 }
 
+/** History page size and matching on-run retention window for the on-disk export folders. */
+private const val HISTORY_PAGE_SIZE = 20
+private const val EXPORT_RETENTION_DAYS = 30L
+private const val EXPORT_RETENTION_MILLIS = EXPORT_RETENTION_DAYS * 24 * 60 * 60 * 1000
+
 // MARK: - Screen
 
 /**
@@ -223,14 +241,33 @@ fun ExportScreen() {
     var range by remember { mutableStateOf(ExportRange.LAST30) }
 
     var history by remember { mutableStateOf<List<ExportJob>>(emptyList()) }
+    var historyHasMore by remember { mutableStateOf(false) }
+    var isLoadingMoreHistory by remember { mutableStateOf(false) }
     var lastResult by remember { mutableStateOf<ExportRunner.ExportResult?>(null) }
     var isRunning by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
-    // History is a secondary surface: load it off the main thread on first show.
+    // History is a secondary surface: load it off the main thread on first show, one page at a time.
     LaunchedEffect(Unit) {
-        history = withContext(Dispatchers.IO) {
-            runCatching { env.exportJobs.recent(20) }.getOrDefault(emptyList())
+        val page = withContext(Dispatchers.IO) {
+            runCatching { env.exportJobs.recent(HISTORY_PAGE_SIZE) }.getOrDefault(emptyList())
+        }
+        history = page
+        historyHasMore = page.size == HISTORY_PAGE_SIZE
+    }
+
+    fun loadMoreHistory() {
+        if (isLoadingMoreHistory || !historyHasMore) return
+        isLoadingMoreHistory = true
+        coroutineScope.launch {
+            val more = withContext(Dispatchers.IO) {
+                runCatching {
+                    env.exportJobs.recent(HISTORY_PAGE_SIZE, offset = history.size)
+                }.getOrDefault(emptyList())
+            }
+            history = history + more
+            historyHasMore = more.size == HISTORY_PAGE_SIZE
+            isLoadingMoreHistory = false
         }
     }
 
@@ -251,6 +288,12 @@ fun ExportScreen() {
             val outcome = withContext(Dispatchers.IO) {
                 runCatching {
                     val base = context.externalCacheDir ?: context.cacheDir
+                    // Best-effort housekeeping: repeated exports would otherwise accumulate on-disk
+                    // folders forever. Never let a pruning failure block the export itself.
+                    runCatching {
+                        val keepJobs = env.exportJobs.recent(HISTORY_PAGE_SIZE)
+                        pruneOldExports(base, keepJobs)
+                    }
                     val dir = File(base, "badan-exports/${System.currentTimeMillis()}")
                     env.exporter.run(scope = scoped, format = chosenFormat, outputDir = dir)
                 }
@@ -258,9 +301,11 @@ fun ExportScreen() {
             outcome
                 .onSuccess { result ->
                     lastResult = result
-                    history = withContext(Dispatchers.IO) {
-                        runCatching { env.exportJobs.recent(20) }.getOrDefault(emptyList())
+                    val page = withContext(Dispatchers.IO) {
+                        runCatching { env.exportJobs.recent(HISTORY_PAGE_SIZE) }.getOrDefault(emptyList())
                     }
+                    history = page
+                    historyHasMore = page.size == HISTORY_PAGE_SIZE
                     // Mirror iOS: a fresh result presents the share sheet immediately.
                     shareFiles(context, result.files)
                 }
@@ -317,6 +362,7 @@ fun ExportScreen() {
                         modifier = Modifier.weight(1f),
                         title = "CSV",
                         subtitle = env.s(ExportCopy.formatCSVSubtitle),
+                        fileNames = listOf("raw.csv", "derived.csv", "manifest.json"),
                         icon = Icons.Filled.TableChart,
                         selected = format == ExportFormat.CSV,
                         onClick = { format = ExportFormat.CSV },
@@ -325,6 +371,7 @@ fun ExportScreen() {
                         modifier = Modifier.weight(1f),
                         title = "JSON",
                         subtitle = env.s(ExportCopy.formatJSONSubtitle),
+                        fileNames = listOf("bundle.json"),
                         icon = Icons.Filled.DataObject,
                         selected = format == ExportFormat.JSON,
                         onClick = { format = ExportFormat.JSON },
@@ -407,6 +454,7 @@ fun ExportScreen() {
                 }
             }
 
+            ScopeSummary(scope = exportScope)
             RunButton(isRunning = isRunning, onClick = ::runExport)
 
             errorText?.let { ErrorCard(message = it, showDetail = env.depth.showsPowerDetail) }
@@ -443,6 +491,9 @@ fun ExportScreen() {
                                 }
                             }
                         }
+                    }
+                    if (historyHasMore) {
+                        LoadMoreRow(isLoading = isLoadingMoreHistory, onClick = ::loadMoreHistory)
                     }
                 }
             }
@@ -501,6 +552,7 @@ private fun ExportFormatCard(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    fileNames: List<String> = emptyList(),
 ) {
     val colors = BadanTheme.colors
     val shape = RoundedCornerShape(BadanRadius.card)
@@ -547,6 +599,18 @@ private fun ExportFormatCard(
             style = BadanType.caption,
             color = colors.textSecondary,
         )
+        if (fileNames.isNotEmpty()) {
+            // Filenames are technical identifiers — always left-to-right, in any language.
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Text(
+                    text = fileNames.joinToString(" · "),
+                    style = BadanType.monospaceDigits(BadanType.caption),
+                    color = if (selected) colors.primary else colors.textSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
@@ -665,6 +729,43 @@ private fun SensitiveNote(text: String) {
     }
 }
 
+// MARK: - Scope summary
+
+/**
+ * A single legible line echoing exactly what the run will include/exclude, right above the button
+ * that commits to it — so a scope that's silently missing a category (e.g. an unchecked "Computed
+ * values") is never discovered only after the export is out the door.
+ */
+@Composable
+private fun ScopeSummary(scope: ExportScope) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val categories = listOf(
+        Loc.includeRaw to scope.includeRaw,
+        Loc.includeDerived to scope.includeDerived,
+        Loc.includeSuppressed to scope.includeSuppressed,
+        Loc.includeSensitive to scope.includeSensitive,
+    )
+    val included = categories.filter { it.second }.map { env.s(it.first) }
+    val excluded = categories.filter { !it.second }.map { env.s(it.first) }
+    if (included.isEmpty() && excluded.isEmpty()) return
+
+    val text = buildString {
+        if (included.isNotEmpty()) {
+            append(env.s(ExportCopy.scopeIncludes))
+            append(' ')
+            append(included.joinToString(", "))
+        }
+        if (excluded.isNotEmpty()) {
+            if (isNotEmpty()) append("  ")
+            append(env.s(ExportCopy.scopeExcludes))
+            append(' ')
+            append(excluded.joinToString(", "))
+        }
+    }
+    Text(text = text, style = BadanType.caption, color = colors.textSecondary)
+}
+
 // MARK: - Run button
 
 @Composable
@@ -750,6 +851,9 @@ private fun ErrorCard(message: String, showDetail: Boolean) {
 private fun ExportSuccessCard(result: ExportRunner.ExportResult, onShare: () -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val copiedLabel = env.s(ExportCopy.copied)
     val checksums = result.job.manifest?.checksums ?: emptyMap()
 
     BadanCard {
@@ -786,8 +890,18 @@ private fun ExportSuccessCard(result: ExportRunner.ExportResult, onShare: () -> 
                     color = colors.textSecondary,
                 )
                 for (name in checksums.keys.sorted()) {
+                    val fullHash = checksums[name] ?: ""
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(BadanRadius.control))
+                            // Tap to copy the full hash — the truncated display alone can't be used
+                            // to actually verify export integrity against an external tool.
+                            .clickable(enabled = fullHash.isNotEmpty()) {
+                                clipboard.setText(AnnotatedString(fullHash))
+                                Toast.makeText(context, copiedLabel, Toast.LENGTH_SHORT).show()
+                            }
+                            .heightIn(min = BadanSpace.touchMin),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
                     ) {
@@ -800,7 +914,7 @@ private fun ExportSuccessCard(result: ExportRunner.ExportResult, onShare: () -> 
                         // Hashes read left-to-right in any language.
                         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                             Text(
-                                text = shortHash(checksums[name] ?: ""),
+                                text = shortHash(fullHash),
                                 style = BadanType.monospaceDigits(BadanType.caption),
                                 color = colors.textSecondary,
                             )
@@ -837,7 +951,18 @@ private fun ManifestDetail(manifest: ExportManifest) {
             value = formatTimestamp(manifest.generatedAt, env.language),
         )
         DetailLine(label = env.s(ExportCopy.rangeField), value = manifest.dateRange)
-        DetailLine(label = env.s(ExportCopy.exportId), value = manifest.exportId.take(10))
+        val context = LocalContext.current
+        val clipboard = LocalClipboardManager.current
+        val copiedLabel = env.s(ExportCopy.copied)
+        DetailLine(
+            label = env.s(ExportCopy.exportId),
+            value = manifest.exportId.take(10) + if (manifest.exportId.length > 10) "…" else "",
+            // Tap to copy the full id — useful when referencing this export in a support request.
+            onClick = {
+                clipboard.setText(AnnotatedString(manifest.exportId))
+                Toast.makeText(context, copiedLabel, Toast.LENGTH_SHORT).show()
+            },
+        )
 
         if (manifest.perMetricRowCounts.isNotEmpty()) {
             Text(
@@ -873,10 +998,14 @@ private fun ManifestDetail(manifest: ExportManifest) {
 }
 
 @Composable
-private fun DetailLine(label: String, value: String) {
+private fun DetailLine(label: String, value: String, onClick: (() -> Unit)? = null) {
     val colors = BadanTheme.colors
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .let { if (onClick != null) it.clip(RoundedCornerShape(BadanRadius.control)).clickable(onClick = onClick) else it }
+            .heightIn(min = if (onClick != null) BadanSpace.touchMin else 0.dp),
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
     ) {
         Text(text = label, style = BadanType.caption, color = colors.textSecondary)
@@ -930,10 +1059,15 @@ private fun ExportHistoryRow(job: ExportJob, onShare: () -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     val files = remember(job.id) { availableFiles(job) }
+    val canShare = files.isNotEmpty()
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(BadanRadius.control))
+            // The whole row shares the same files as the trailing icon — matches the fully-tappable
+            // row pattern used elsewhere (e.g. SettingsNavRow, BodyToolRow) instead of only the icon.
+            .clickable(enabled = canShare, onClick = onShare)
             .heightIn(min = BadanSpace.touchMin),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
@@ -967,19 +1101,55 @@ private fun ExportHistoryRow(job: ExportJob, onShare: () -> Unit) {
                 color = colors.textSecondary,
             )
         }
-        if (files.isNotEmpty()) {
-            IconButton(
-                onClick = onShare,
-                modifier = Modifier.size(BadanSpace.touchMin),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Share,
-                    contentDescription = env.s(Loc.share),
-                    tint = colors.primary,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+        if (canShare) {
+            Icon(
+                imageVector = Icons.Filled.Share,
+                contentDescription = env.s(Loc.share),
+                tint = colors.primary,
+                modifier = Modifier.size(20.dp),
+            )
+        } else {
+            // Explain the gap instead of silently omitting the share affordance — the files that
+            // backed this job are no longer on disk (e.g. cleared cache).
+            Text(
+                text = env.s(ExportCopy.filesUnavailable),
+                style = BadanType.caption,
+                color = colors.textSecondary,
+                textAlign = TextAlign.End,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.width(88.dp),
+            )
         }
+    }
+}
+
+/** Simple text affordance to page in the next [HISTORY_PAGE_SIZE] history rows. */
+@Composable
+private fun LoadMoreRow(isLoading: Boolean, onClick: () -> Unit) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(BadanRadius.control))
+            .clickable(enabled = !isLoading, onClick = onClick)
+            .heightIn(min = BadanSpace.touchMin),
+        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(
+                color = colors.primary,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        Text(
+            text = env.s(ExportCopy.loadMoreHistory),
+            style = BadanType.body.copy(fontWeight = FontWeight.Medium),
+            color = colors.primary,
+        )
     }
 }
 
@@ -1052,6 +1222,24 @@ private fun shareFiles(context: Context, files: List<File>) {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     runCatching { context.startActivity(chooser) }
+}
+
+/**
+ * Delete on-disk export folders under `<base>/badan-exports/` older than [EXPORT_RETENTION_DAYS]
+ * that aren't referenced by any of [recentJobs] (so a still-shareable history row's files are never
+ * removed). Runs on [Dispatchers.IO] right before a new export is written; failures are swallowed by
+ * the caller so housekeeping never blocks the export itself.
+ */
+private fun pruneOldExports(base: File, recentJobs: List<ExportJob>) {
+    val exportsDir = File(base, "badan-exports")
+    val dirs = exportsDir.listFiles { file -> file.isDirectory } ?: return
+    val keepPaths = recentJobs.mapNotNull { it.outputPath }.toSet()
+    val cutoff = System.currentTimeMillis() - EXPORT_RETENTION_MILLIS
+    for (dir in dirs) {
+        if (dir.absolutePath in keepPaths) continue
+        if (dir.lastModified() >= cutoff) continue
+        dir.deleteRecursively()
+    }
 }
 
 private fun mimeTypeFor(file: File): String = when (file.extension.lowercase()) {
