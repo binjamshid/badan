@@ -1,5 +1,6 @@
 package net.albayyan.badan.features.workoutnutrition
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,9 +15,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -52,10 +57,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -111,6 +121,10 @@ private val wKm = LocalizedString(en = "km", ar = "كم")
 private val wKcal = LocalizedString(en = "kcal", ar = "سعرة")
 private val wMeters = LocalizedString(en = "m", ar = "م")
 private val wSeconds = LocalizedString(en = "s", ar = "ث")
+private val wHighValueHint = LocalizedString(
+    en = "That seems unusually high — worth double-checking.",
+    ar = "هذا يبدو مرتفعاً بشكل غير معتاد — يستحق التأكد.",
+)
 
 // MARK: - Activity model
 
@@ -173,6 +187,17 @@ fun WorkoutLogScreen() {
     var kcalText by remember { mutableStateOf("") }
     var distanceText by remember { mutableStateOf("") }
 
+    // Direct numeric entry for duration — tapping the numeral opens a small text field so a long
+    // workout doesn't require dozens of ±5-minute stepper taps.
+    var editingDuration by remember { mutableStateOf(false) }
+    var durationInput by remember { mutableStateOf("") }
+    val durationFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    fun commitDuration() {
+        durationInput.toIntOrNull()?.let { minutes = it.coerceIn(1, 360) }
+        editingDuration = false
+    }
+
     // Recent list (secondary surface) — loaded off the main thread, like the sibling log surfaces.
     var recent by remember { mutableStateOf<List<WorkoutEntry>>(emptyList()) }
     var loggedToday by remember { mutableStateOf(false) }
@@ -181,6 +206,15 @@ fun WorkoutLogScreen() {
         val data = withContext(Dispatchers.IO) { loadWorkoutData(env) }
         recent = data.recent
         loggedToday = data.loggedToday
+        // Pre-fill duration/effort from the most recent entry for this activity type, so a
+        // habitual routine doesn't need re-adjusting from the generic defaults every visit.
+        data.recent
+            .filter { it.activityType == activity.key }
+            .maxByOrNull { it.startAt }
+            ?.let { last ->
+                minutes = (last.durationSeconds / 60.0).roundToInt().coerceIn(1, 360)
+                last.perceivedEffort?.let { rpe = it.toFloat().coerceIn(1f, 10f) }
+            }
     }
 
     Scaffold(
@@ -267,11 +301,38 @@ fun WorkoutLogScreen() {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
                     ) {
-                        Text(
-                            text = env.format.duration(minutes.toDouble() * 60, "min"),
-                            style = BadanType.numeralM,
-                            color = colors.textPrimary,
-                        )
+                        if (editingDuration) {
+                            BasicTextField(
+                                value = durationInput,
+                                onValueChange = { durationInput = it.filter(Char::isDigit).take(3) },
+                                textStyle = BadanType.numeralM.copy(color = colors.textPrimary),
+                                singleLine = true,
+                                cursorBrush = SolidColor(colors.primary),
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number,
+                                    imeAction = ImeAction.Done,
+                                ),
+                                keyboardActions = KeyboardActions(onDone = {
+                                    commitDuration()
+                                    focusManager.clearFocus()
+                                }),
+                                modifier = Modifier
+                                    .width(72.dp)
+                                    .focusRequester(durationFocusRequester)
+                                    .onFocusChanged { if (!it.isFocused && editingDuration) commitDuration() },
+                            )
+                            LaunchedEffect(Unit) { durationFocusRequester.requestFocus() }
+                        } else {
+                            Text(
+                                text = env.format.duration(minutes.toDouble() * 60, "min"),
+                                style = BadanType.numeralM,
+                                color = colors.textPrimary,
+                                modifier = Modifier.clickable {
+                                    durationInput = minutes.toString()
+                                    editingDuration = true
+                                },
+                            )
+                        }
                         Spacer(modifier = Modifier.weight(1f))
                         StepButton(icon = Icons.Filled.Remove, onClick = { minutes = (minutes - 5).coerceAtLeast(1) })
                         StepButton(icon = Icons.Filled.Add, onClick = { minutes = (minutes + 5).coerceAtMost(360) })
@@ -327,6 +388,7 @@ fun WorkoutLogScreen() {
                         value = kcalText,
                         onValueChange = { kcalText = it },
                         unit = env.s(wKcal),
+                        warning = parseDecimal(kcalText)?.takeIf { it > 5000.0 }?.let { env.s(wHighValueHint) },
                     )
                     HorizontalDivider(color = colors.separator)
                     NumberField(
@@ -335,6 +397,7 @@ fun WorkoutLogScreen() {
                         value = distanceText,
                         onValueChange = { distanceText = it },
                         unit = env.s(wKm),
+                        warning = parseDecimal(distanceText)?.takeIf { it > 200.0 }?.let { env.s(wHighValueHint) },
                     )
                     if (power) {
                         Text(
@@ -496,6 +559,8 @@ private fun WorkoutRow(workout: WorkoutEntry, power: Boolean) {
             )
 
             if (power) {
+                // Separate the user-facing summary above from the technical detail below.
+                HorizontalDivider(color = colors.separator)
                 // Power altitude: raw canonical values + lineage.
                 val parts = buildList {
                     add("${env.format.integer(workout.durationSeconds.roundToInt())} ${env.s(wSeconds)}")
@@ -519,12 +584,19 @@ private fun WorkoutRow(workout: WorkoutEntry, power: Boolean) {
 
 // MARK: - Shared controls
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SelectPill(selected: Boolean, icon: ImageVector, label: String, onClick: () -> Unit) {
     val colors = BadanTheme.colors
     val shape = RoundedCornerShape(BadanRadius.chip)
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    // If this pill starts (or becomes) selected off-screen, scroll the row to reveal it.
+    LaunchedEffect(selected) {
+        if (selected) bringIntoViewRequester.bringIntoView()
+    }
     Row(
         modifier = Modifier
+            .bringIntoViewRequester(bringIntoViewRequester)
             .clip(shape)
             .clickable(onClick = onClick)
             .background(color = if (selected) colors.primary else colors.surface, shape = shape)
@@ -582,40 +654,47 @@ private fun NumberField(
     value: String,
     onValueChange: (String) -> Unit,
     unit: String,
+    warning: String? = null,
 ) {
     val colors = BadanTheme.colors
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = BadanSpace.touchMin),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = colors.textSecondary,
-            modifier = Modifier.size(20.dp),
-        )
-        Box(modifier = Modifier.weight(1f)) {
-            if (value.isEmpty()) {
-                Text(
-                    text = placeholder,
-                    style = BadanType.body,
-                    color = colors.textSecondary.copy(alpha = 0.6f),
+    Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s1)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BadanSpace.touchMin),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = colors.textSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+            Box(modifier = Modifier.weight(1f)) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        style = BadanType.body,
+                        color = colors.textSecondary.copy(alpha = 0.6f),
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    textStyle = BadanType.body.copy(color = colors.textPrimary),
+                    singleLine = true,
+                    cursorBrush = SolidColor(colors.primary),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                textStyle = BadanType.body.copy(color = colors.textPrimary),
-                singleLine = true,
-                cursorBrush = SolidColor(colors.primary),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Text(text = unit, style = BadanType.body, color = colors.textSecondary)
         }
-        Text(text = unit, style = BadanType.body, color = colors.textSecondary)
+        // Soft, non-blocking sanity hint — never disables save, never moralizes.
+        if (warning != null) {
+            Text(text = warning, style = BadanType.caption, color = colors.outOfBand)
+        }
     }
 }
 
@@ -643,9 +722,9 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
 
 // MARK: - Helpers
 
-/** Parse a decimal the user typed (comma or dot), keeping only strictly-positive values. */
+/** Parse a decimal the user typed (comma or dot). Zero is a valid explicit value; negatives are not. */
 private fun parseDecimal(text: String): Double? =
-    text.replace(",", ".").trim().toDoubleOrNull()?.takeIf { it > 0.0 }
+    text.replace(",", ".").trim().toDoubleOrNull()?.takeIf { it >= 0.0 }
 
 private fun dateTimeText(millis: Long, localeTag: String): String {
     val locale = Locale.forLanguageTag(localeTag)

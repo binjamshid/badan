@@ -1,5 +1,7 @@
 package net.albayyan.badan.features.body
 
+import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -33,19 +36,24 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.albayyan.badan.app.AppEnvironment
 import net.albayyan.badan.app.LocalAppEnvironment
@@ -66,6 +74,7 @@ import net.albayyan.badan.domain.PermissionStatus
 import net.albayyan.badan.domain.Source
 import net.albayyan.badan.domain.SourceStatus
 import net.albayyan.badan.domain.SourceType
+import net.albayyan.badan.platform.health.HealthConnectAdapter
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -83,6 +92,13 @@ private data class SourcesData(
 
 // MARK: - Loading (mirror of iOS SourcesViewModel)
 
+/** Wellness-safe by default; raw exception text is reserved for power depth, mirroring
+ *  `ExportScreen`'s altitude-gated error detail (never a stack-trace-style string for casual users). */
+private val sourcesLoadFailed = LocalizedString(
+    en = "Couldn't load your sources right now. Try again in a moment.",
+    ar = "تعذّر تحميل مصادرك الآن. حاول مرة أخرى بعد قليل.",
+)
+
 private fun loadSources(env: AppEnvironment): LoadState<SourcesData> =
     try {
         val sources = env.catalog.sources()
@@ -97,7 +113,7 @@ private fun loadSources(env: AppEnvironment): LoadState<SourcesData> =
             LoadState.Loaded(SourcesData(infos, stores, grouped))
         }
     } catch (t: Throwable) {
-        LoadState.Error(t.toString())
+        LoadState.Error(if (env.depth.showsPowerDetail) t.toString() else env.s(sourcesLoadFailed))
     }
 
 // MARK: - Screen
@@ -111,6 +127,9 @@ private val priorityNote = LocalizedString(
     en = "When two sources report the same reading, BADAN keeps the one from the higher-priority source (for example a wrist device over a phone) and quietly sets the other aside. Nothing is deleted — the setting-aside can be reversed.",
     ar = "عندما يُبلّغ مصدران عن القراءة نفسها، يحتفظ بدن بالقراءة من المصدر الأعلى أولوية (مثل جهاز المعصم مقابل الهاتف) ويضع الأخرى جانباً بهدوء. لا يُحذف شيء — ويمكن التراجع عن وضعها جانباً.",
 )
+private val jumpToHealthConnect = LocalizedString(en = "Health Connect", ar = "هيلث كونكت")
+private val jumpToSources = LocalizedString(en = "Sources", ar = "المصادر")
+private val jumpToPermissions = LocalizedString(en = "Permissions", ar = "الأذونات")
 
 /**
  * Data sources — where every number comes from. Read-only and calm: what is connected, which
@@ -121,37 +140,86 @@ private val priorityNote = LocalizedString(
 fun SourcesScreen() {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
+    val scope = rememberCoroutineScope()
 
     var state by remember { mutableStateOf<LoadState<SourcesData>>(LoadState.Loading) }
-    LaunchedEffect(Unit) {
+    suspend fun reload() {
         state = withContext(Dispatchers.IO) { loadSources(env) }
     }
+    LaunchedEffect(Unit) { reload() }
+
+    // Lets a "Grant" action on a NOT_REQUESTED permission row (EASE-275) trigger the same
+    // Health Connect permission flow as the card above, without reaching into HealthConnectCard's
+    // own internal state — an independent launcher for the same contract.
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = HealthConnectAdapter.requestPermissionsContract()
+    ) { grantedSet ->
+        scope.launch {
+            env.recordHealthConnectPermissions(grantedSet)
+            reload()
+        }
+    }
+
+    val scrollState = rememberScrollState()
+    var healthConnectAnchor by remember { mutableStateOf(0) }
+    var sourcesAnchor by remember { mutableStateOf(0) }
+    var permissionsAnchor by remember { mutableStateOf(0) }
 
     Box(modifier = Modifier.fillMaxSize().background(colors.background)) {
         StatefulContainer(state) { data ->
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scrollState)
                     .padding(BadanSpace.s4),
                 verticalArrangement = Arrangement.spacedBy(BadanSpace.s4),
             ) {
-                SectionHeader(env.s(connectHeader))
-                HealthConnectCard()
+                // A small jump menu so a screen with several sources/devices/permissions doesn't
+                // demand a fully linear scroll every visit (EASE-263).
+                SourcesJumpMenu(
+                    showSources = data.sources.isNotEmpty(),
+                    onJumpToHealthConnect = { scope.launch { scrollState.animateScrollTo(healthConnectAnchor) } },
+                    onJumpToSources = { scope.launch { scrollState.animateScrollTo(sourcesAnchor) } },
+                    onJumpToPermissions = { scope.launch { scrollState.animateScrollTo(permissionsAnchor) } },
+                )
 
-                if (data.sources.isNotEmpty()) {
-                    SectionHeader(
-                        title = env.s(Loc.dataSources),
-                        modifier = Modifier.padding(top = BadanSpace.s2),
-                    )
-                    data.sources.forEach { SourcesSourceCard(it) }
+                Column(
+                    modifier = Modifier.onGloballyPositioned {
+                        healthConnectAnchor = (it.positionInParent().y + scrollState.value).toInt()
+                    },
+                    verticalArrangement = Arrangement.spacedBy(BadanSpace.s4),
+                ) {
+                    SectionHeader(env.s(connectHeader))
+                    HealthConnectCard()
                 }
 
-                SectionHeader(
-                    title = env.s(permissionsHeader),
-                    modifier = Modifier.padding(top = if (data.sources.isNotEmpty()) BadanSpace.s2 else 0.dp),
-                )
-                SourcesPermissionCard(data)
+                if (data.sources.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.onGloballyPositioned {
+                            sourcesAnchor = (it.positionInParent().y + scrollState.value).toInt()
+                        },
+                        verticalArrangement = Arrangement.spacedBy(BadanSpace.s4),
+                    ) {
+                        SectionHeader(
+                            title = env.s(Loc.dataSources),
+                            modifier = Modifier.padding(top = BadanSpace.s2),
+                        )
+                        data.sources.forEach { SourcesSourceCard(it) }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.onGloballyPositioned {
+                        permissionsAnchor = (it.positionInParent().y + scrollState.value).toInt()
+                    },
+                    verticalArrangement = Arrangement.spacedBy(BadanSpace.s4),
+                ) {
+                    SectionHeader(
+                        title = env.s(permissionsHeader),
+                        modifier = Modifier.padding(top = if (data.sources.isNotEmpty()) BadanSpace.s2 else 0.dp),
+                    )
+                    SourcesPermissionCard(data, onGrantHealthConnect = { permissionLauncher.launch(HealthConnectAdapter.permissions) })
+                }
 
                 if (env.depth.showsPowerDetail) {
                     SourcesPriorityNote()
@@ -161,12 +229,37 @@ fun SourcesScreen() {
     }
 }
 
+@Composable
+private fun SourcesJumpMenu(
+    showSources: Boolean,
+    onJumpToHealthConnect: () -> Unit,
+    onJumpToSources: () -> Unit,
+    onJumpToPermissions: () -> Unit,
+) {
+    val env = LocalAppEnvironment.current
+    Row(horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+        TextButton(onClick = onJumpToHealthConnect) { Text(env.s(jumpToHealthConnect)) }
+        if (showSources) {
+            TextButton(onClick = onJumpToSources) { Text(env.s(jumpToSources)) }
+        }
+        TextButton(onClick = onJumpToPermissions) { Text(env.s(jumpToPermissions)) }
+    }
+}
+
 // MARK: - Source card
 
 private val connectedLabel = LocalizedString(en = "Connected", ar = "تاريخ الاتصال")
 private val lastDeliveryLabel = LocalizedString(en = "Last delivery", ar = "آخر تسليم")
 private val bundleLabel = LocalizedString(en = "Bundle", ar = "الحزمة")
 private val lastSeenLabel = LocalizedString(en = "Last seen", ar = "آخر ظهور")
+private val deviceActiveLabel = LocalizedString(en = "Active", ar = "نشط")
+private val deviceInactiveLabel = LocalizedString(en = "Inactive", ar = "غير نشط")
+private val showLessDevices = LocalizedString(en = "Show less", ar = "عرض أقل")
+private fun showMoreDevices(count: Int) = LocalizedString(en = "Show $count more", ar = "عرض $count أخرى")
+
+/** A source's own device list stays short by default once it grows past a handful, rather than
+ *  scrolling on unbounded (EASE-274). */
+private const val DEVICES_COLLAPSED_LIMIT = 3
 
 @Composable
 private fun SourcesSourceCard(info: SourcesSourceInfo) {
@@ -200,7 +293,9 @@ private fun SourcesSourceCard(info: SourcesSourceInfo) {
                         color = colors.textSecondary,
                     )
                 }
-                SourceStatusPill(info.source.status)
+                Box(modifier = Modifier.widthIn(min = 96.dp), contentAlignment = Alignment.CenterEnd) {
+                    SourceStatusPill(info.source.status)
+                }
             }
 
             if (env.depth.showsPowerDetail) {
@@ -216,7 +311,19 @@ private fun SourcesSourceCard(info: SourcesSourceInfo) {
                     style = BadanType.caption,
                     color = colors.textSecondary,
                 )
-                info.devices.forEach { DeviceRow(it) }
+                var devicesExpanded by remember(info.source.id) { mutableStateOf(false) }
+                val hiddenCount = info.devices.size - DEVICES_COLLAPSED_LIMIT
+                val visibleDevices = if (!devicesExpanded && hiddenCount > 0) {
+                    info.devices.take(DEVICES_COLLAPSED_LIMIT)
+                } else {
+                    info.devices
+                }
+                visibleDevices.forEach { DeviceRow(it) }
+                if (hiddenCount > 0) {
+                    TextButton(onClick = { devicesExpanded = !devicesExpanded }) {
+                        Text(env.s(if (devicesExpanded) showLessDevices else showMoreDevices(hiddenCount)))
+                    }
+                }
             }
         }
     }
@@ -292,14 +399,34 @@ private fun DeviceRow(device: Device) {
                     color = colors.textSecondary,
                 )
             }
+        } else {
+            // Casual altitude still deserves a basic recency signal — whether a device is actively
+            // contributing data isn't power-only detail (UIUX-291). The exact timestamp stays power-gated.
+            DeviceRecencyPill(device.lastSeen)
         }
+    }
+}
+
+private const val DEVICE_ACTIVE_WINDOW_MILLIS = 3L * 24 * 60 * 60 * 1000 // 3 days
+
+@Composable
+private fun DeviceRecencyPill(lastSeen: Long) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val isActive = env.now() - lastSeen < DEVICE_ACTIVE_WINDOW_MILLIS
+    if (isActive) {
+        PillLabel(text = env.s(deviceActiveLabel), icon = Icons.Filled.CheckCircle, tint = colors.primary)
+    } else {
+        PillLabel(text = env.s(deviceInactiveLabel), icon = Icons.Filled.RemoveCircle, tint = colors.textSecondary)
     }
 }
 
 // MARK: - Permission card
 
+private val grantLabel = LocalizedString(en = "Grant", ar = "منح")
+
 @Composable
-private fun SourcesPermissionCard(data: SourcesData) {
+private fun SourcesPermissionCard(data: SourcesData, onGrantHealthConnect: () -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
 
@@ -331,7 +458,18 @@ private fun SourcesPermissionCard(data: SourcesData) {
                                     color = colors.textPrimary,
                                     modifier = Modifier.weight(1f),
                                 )
-                                PermissionPill(permission.status)
+                                // A gap the user can act on exactly where they see it, rather than only
+                                // via the Health Connect card scrolled far above (EASE-275).
+                                if (permission.status == PermissionStatus.NOT_REQUESTED && store == "healthConnect") {
+                                    TextButton(onClick = onGrantHealthConnect) {
+                                        Text(env.s(grantLabel))
+                                    }
+                                }
+                                // A fixed-width trailing column keeps every status pill aligned to the
+                                // same right edge regardless of label length (UIUX-233).
+                                Box(modifier = Modifier.widthIn(min = 116.dp), contentAlignment = Alignment.CenterEnd) {
+                                    PermissionPill(permission.status)
+                                }
                             }
                         }
                     }
@@ -456,21 +594,29 @@ private fun permissionTypeLabel(platformType: String): LocalizedString = when (p
     "oxygenSaturation", "spo2" -> LocalizedString(en = "Blood oxygen", ar = "أكسجين الدم")
     "bodyMass", "weight" -> LocalizedString(en = "Weight", ar = "الوزن")
     else -> {
+        // Not yet in the explicit lookup table above — log it so it can be added, and fall back to
+        // a best-effort humanized label rather than a garbled one (EASE-285).
+        Log.w("SourcesScreen", "Unmapped Health Connect permission type: $platformType")
         val humanized = humanize(platformType)
         LocalizedString(en = humanized, ar = humanized)
     }
 }
 
-/** "sleepAnalysis" -> "Sleep analysis": split camelCase and capitalize the first word. */
+/** Splits camelCase *and* acronym boundaries, e.g. "heartRateVariabilitySDNN" -> "Heart rate
+ *  variability SDNN" (acronyms like "SDNN" are kept intact rather than lowercased). */
+private val humanizeWordBoundary = Regex("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
 private fun humanize(token: String): String {
-    val sb = StringBuilder()
-    token.forEachIndexed { index, c ->
-        if (index > 0 && c.isUpperCase()) sb.append(' ')
-        sb.append(c)
-    }
-    val out = sb.toString()
-    if (out.isEmpty()) return out
-    return out.substring(0, 1).uppercase() + out.substring(1).lowercase()
+    if (token.isEmpty()) return token
+    val words = humanizeWordBoundary.split(token).filter { it.isNotEmpty() }
+    return words.mapIndexed { index, word ->
+        val isAcronym = word.length > 1 && word.all { it.isUpperCase() }
+        when {
+            isAcronym -> word
+            index == 0 -> word.replaceFirstChar { it.uppercase() }
+            else -> word.lowercase()
+        }
+    }.joinToString(" ")
 }
 
 private fun formatDateTime(millis: Long, language: AppLanguage): String {

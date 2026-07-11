@@ -5,7 +5,10 @@ import android.os.Bundle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.albayyan.badan.core.AppLanguage
 import net.albayyan.badan.core.Clock
@@ -94,9 +97,16 @@ class AppEnvironment(context: Context) {
     suspend fun syncHealthConnect(): IngestionPipeline.IngestSummary? = withContext(Dispatchers.IO) {
         val now = clock.now()
         val range = HealthDateRange(now - 90L * MILLIS_PER_DAY, now)
-        val summary = runCatching { ingestion.ingest(healthConnect, range) }.getOrNull()
+        // Batch the ingest + baseline recompute in one transaction (mirrors the seed path) so this
+        // recurring sync doesn't pay a commit-per-row cost across up to 90 days of history.
+        val summary = runCatching {
+            database.main.transaction {
+                val result = ingestion.ingest(healthConnect, range)
+                baselines.recomputeAll(now)
+                result
+            }
+        }.getOrNull()
         if (summary != null) {
-            runCatching { baselines.recomputeAll(now) }
             val tz = java.util.TimeZone.getDefault().id
             for (d in 0..3) runCatching { insightEngine.generate(now - d * MILLIS_PER_DAY, tz) }
         }
@@ -114,21 +124,36 @@ class AppEnvironment(context: Context) {
         runCatching { catalog.upsertPermission(PermissionState("healthConnect", "health", status, clock.now())) }
     }
 
-    // Live presentation state (Compose-observable).
-    var profile by mutableStateOf(profiles.load())
+    // Live presentation state (Compose-observable). `profile` starts at the default and is
+    // replaced by the persisted value once `bootstrap()` loads it off the main thread — screens
+    // don't read it until `isReady` flips, so the placeholder is never shown.
+    var profile by mutableStateOf(CustomizationProfile())
     var isReady by mutableStateOf(false)
     var onboardingComplete by mutableStateOf(prefs.getBoolean(ONBOARDING_KEY, false))
+
+    // Launch overrides recorded before `profile` has loaded (see [applyLaunchOverrides]); applied
+    // on top of the persisted profile once `bootstrap()` loads it, so they can't be clobbered by
+    // the async load overwriting an override applied to the placeholder default.
+    private var pendingLanguageOverride: AppLanguage? = null
+    private var pendingDepthOverride: DepthPolicy? = null
+
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // MARK: - Lifecycle
 
     /**
-     * Seed on first run (off the main thread), then flip [isReady]. The UI shows a calm loading
-     * state until ready.
+     * Load the persisted profile and seed on first run (off the main thread), then flip
+     * [isReady]. The UI shows a calm loading state until ready.
      */
     suspend fun bootstrap() {
-        withContext(Dispatchers.IO) {
+        val loaded = withContext(Dispatchers.IO) {
+            var p = profiles.load()
+            pendingLanguageOverride?.let { p = p.copy(language = it) }
+            pendingDepthOverride?.let { p = p.copy(depthPolicy = it) }
             runCatching { seedController.seedIfNeeded(clock.now()) }
+            p
         }
+        profile = loaded
         isReady = true
     }
 
@@ -151,7 +176,10 @@ class AppEnvironment(context: Context) {
 
     fun update(mutate: (CustomizationProfile) -> CustomizationProfile) {
         profile = mutate(profile)
-        profiles.save(profile)
+        // Persist off the UI thread — settings toggles call this directly from Compose click
+        // handlers, and a synchronous SQLite write there is a frame-drop risk.
+        val snapshot = profile
+        ioScope.launch { profiles.save(snapshot) }
     }
 
     val language: AppLanguage get() = profile.language
@@ -177,17 +205,20 @@ class AppEnvironment(context: Context) {
     /**
      * Ephemeral demo / screenshot launch overrides (not persisted). Read from intent extras
      * `badan_lang` (en|ar), `badan_depth` (casual|balanced|power), `badan_skip_onboarding` (1).
+     * Called before [bootstrap] loads the persisted profile, so language/depth are recorded as
+     * pending and applied on top of the loaded profile in [bootstrap] rather than mutated here
+     * directly — otherwise the async load would silently clobber them.
      */
     fun applyLaunchOverrides(extras: Bundle?) {
         if (extras == null) return
         extras.getString("badan_lang")?.let { raw ->
             AppLanguage.entries.firstOrNull { it.code == raw }?.let { lang ->
-                profile = profile.copy(language = lang)
+                pendingLanguageOverride = lang
             }
         }
         extras.getString("badan_depth")?.let { raw ->
             DepthPolicy.entries.firstOrNull { it.code == raw }?.let { depth ->
-                profile = profile.copy(depthPolicy = depth)
+                pendingDepthOverride = depth
             }
         }
         val skip = extras.getString("badan_skip_onboarding")

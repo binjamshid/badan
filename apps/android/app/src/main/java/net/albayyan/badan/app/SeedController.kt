@@ -43,14 +43,16 @@ class SeedController(
     private val clock: Clock,
     private val deviceId: String,
 ) {
-    private val tz: String = TimeZone.getDefault().id
-
     fun seedIfNeeded(nowMillis: Long) {
         if (catalog.sources().isNotEmpty()) return
         seed(nowMillis)
     }
 
     fun seed(nowMillis: Long) {
+        // Resolved fresh on every call (not cached at construction) so a device timezone change
+        // before "Settings -> Reset demo data" is honored rather than reseeding under a stale zone.
+        val tz = TimeZone.getDefault().id
+
         // 1. Ingest 90 days of device data (sources/devices, samples, intervals, sessions, dedup).
         val store = FakeHealthStore(clock, 90, tz)
         val range = HealthDateRange(start = nowMillis - 90L * MILLIS_PER_DAY, end = nowMillis)
@@ -65,10 +67,10 @@ class SeedController(
         )
 
         // 3. Manual logs.
-        seedMedications(nowMillis)
-        seedSymptoms(nowMillis)
-        seedWorkouts(nowMillis)
-        seedNutrition(nowMillis)
+        seedMedications(nowMillis, tz)
+        seedSymptoms(nowMillis, tz)
+        seedWorkouts(nowMillis, tz)
+        seedNutrition(nowMillis, tz)
         logging.upsertNote(
             NoteEntry(
                 id = Ulid.newId(),
@@ -87,7 +89,13 @@ class SeedController(
 
     // MARK: - Manual log seeds
 
-    private fun seedMedications(now: Long) {
+    /** [daysAgo] full days before [now], nudged by [offsetMillis] so entries land at a stable
+     *  time-of-day within that local day rather than exactly on the day boundary. All units are
+     *  epoch millis — named so a future edit can't silently swap in a seconds-scale offset. */
+    private fun ago(daysAgo: Int, now: Long, offsetMillis: Long = 0L): Long =
+        now - daysAgo.toLong() * MILLIS_PER_DAY + offsetMillis
+
+    private fun seedMedications(now: Long, tz: String) {
         val vitD = MedicationRegimen(
             id = Ulid.newId(), name = "Vitamin D", strength = "1000 IU", form = "capsule",
             schedule = MedicationSchedule.Daily(listOf("09:00")),
@@ -131,7 +139,7 @@ class SeedController(
         }
     }
 
-    private fun seedSymptoms(now: Long) {
+    private fun seedSymptoms(now: Long, tz: String) {
         // (symptomId, severity, daysAgo)
         val samples = listOf(
             SymptomSeed("headache", 4, 1),
@@ -144,14 +152,14 @@ class SeedController(
             logging.insertSymptom(
                 SymptomEntry(
                     id = Ulid.newId(), symptomId = s.id, severity = s.severity,
-                    occurredAt = now + (-s.daysAgo.toLong() * 86_400L + 40_000L) * 1000L,
+                    occurredAt = ago(s.daysAgo, now, offsetMillis = 40_000_000L),
                     tzId = tz, updatedAt = now, originDeviceId = deviceId,
                 ),
             )
         }
     }
 
-    private fun seedWorkouts(now: Long) {
+    private fun seedWorkouts(now: Long, tz: String) {
         // (type, minutes, daysAgo, kcal, rpe)
         val items = listOf(
             WorkoutSeed("Run", 34.0, 1, 320.0, 6),
@@ -159,7 +167,7 @@ class SeedController(
             WorkoutSeed("Walk", 52.0, 4, 180.0, 3),
         )
         for (w in items) {
-            val start = now + (-w.daysAgo.toLong() * 86_400L + 30_000L) * 1000L
+            val start = ago(w.daysAgo, now, offsetMillis = 30_000_000L)
             logging.upsertWorkout(
                 WorkoutEntry(
                     id = Ulid.newId(), activityType = w.type, startAt = start,
@@ -172,7 +180,7 @@ class SeedController(
         }
     }
 
-    private fun seedNutrition(now: Long) {
+    private fun seedNutrition(now: Long, tz: String) {
         // (description, mealType, kcal, protein, hoursAgo)
         val meals = listOf(
             MealSeed("Oats with yogurt and dates", MealType.BREAKFAST, 420.0, 18.0, 6),

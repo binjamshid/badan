@@ -1,6 +1,7 @@
 package net.albayyan.badan.designsystem.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
@@ -30,7 +31,9 @@ import net.albayyan.badan.domain.DepthPolicy
 /**
  * A small, generic labelled pill with an optional leading icon and tint (mirror of iOS
  * `PillLabel`). The base shape reused by the depth and provisional badges. Tint defaults to the
- * secondary text colour when not specified.
+ * secondary text colour when not specified — that untinted default renders with a
+ * `surfaceElevated` fill and a hairline border rather than a barely-there tinted wash, so it
+ * still reads clearly as a pill rather than as plain caption text (UIUX-282).
  */
 @Composable
 fun PillLabel(
@@ -41,9 +44,17 @@ fun PillLabel(
 ) {
     val colors = BadanTheme.colors
     val resolvedTint = tint ?: colors.textSecondary
+    val shape = RoundedCornerShape(BadanRadius.chip)
+    val backgroundModifier = if (tint != null) {
+        Modifier.background(resolvedTint.copy(alpha = 0.12f), shape)
+    } else {
+        Modifier
+            .background(colors.surfaceElevated, shape)
+            .border(width = 1.dp, color = colors.separator, shape = shape)
+    }
     Row(
         modifier = modifier
-            .background(resolvedTint.copy(alpha = 0.12f), RoundedCornerShape(BadanRadius.chip))
+            .then(backgroundModifier)
             .padding(horizontal = BadanSpace.s2, vertical = BadanSpace.s1),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1),

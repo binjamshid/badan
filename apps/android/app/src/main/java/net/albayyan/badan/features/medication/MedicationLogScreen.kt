@@ -1,5 +1,6 @@
 package net.albayyan.badan.features.medication
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -122,6 +125,13 @@ private val timesLabel = LocalizedString(en = "Times", ar = "الأوقات")
 private val namePlaceholder = LocalizedString(en = "e.g. Vitamin D", ar = "مثال: فيتامين د")
 private val strengthPlaceholder = LocalizedString(en = "e.g. 1000 IU", ar = "مثال: ١٠٠٠ وحدة")
 private val addedManually = LocalizedString(en = "Recorded by you", ar = "مسجَّل بواسطتك")
+private val addTimeHint = LocalizedString(
+    en = "Add at least one time to save.",
+    ar = "أضف وقتاً واحداً على الأقل للحفظ.",
+)
+private val morningLabel = LocalizedString(en = "Morning", ar = "الصباح")
+private val afternoonLabel = LocalizedString(en = "Afternoon", ar = "الظهيرة")
+private val eveningLabel = LocalizedString(en = "Evening", ar = "المساء")
 
 // MARK: - Read-model
 
@@ -130,6 +140,19 @@ private enum class SlotStatus { TAKEN, SKIPPED, PENDING }
 private enum class DotKind { TAKEN, SKIPPED, PENDING, NONE }
 
 private enum class AddMode { DAILY, AS_NEEDED }
+
+/** A coarse time-of-day bucket, used to group the due list once it grows past a few slots. */
+private enum class TimeOfDay(val label: LocalizedString) {
+    MORNING(morningLabel),
+    AFTERNOON(afternoonLabel),
+    EVENING(eveningLabel),
+}
+
+private fun timeOfDayBucket(minutesOfDay: Int): TimeOfDay = when {
+    minutesOfDay < 12 * 60 -> TimeOfDay.MORNING
+    minutesOfDay < 17 * 60 -> TimeOfDay.AFTERNOON
+    else -> TimeOfDay.EVENING
+}
 
 /** One expanded scheduled dose for today. */
 private data class DueSlot(
@@ -382,17 +405,44 @@ private fun DueSection(
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
-            data.dueSlots.forEach { slot ->
-                DueSlotCard(
-                    slot = slot,
-                    skippingSlotId = skippingSlotId,
-                    editingSlotId = editingSlotId,
-                    onTake = onTake,
-                    onStartSkip = onStartSkip,
-                    onCancelSkip = onCancelSkip,
-                    onSkip = onSkip,
-                    onStartEdit = onStartEdit,
-                )
+            // Past a handful of concurrent due slots, group by time-of-day so a busy regimen
+            // list stays scannable; below that threshold a flat list reads fine on its own.
+            if (data.dueSlots.size > 4) {
+                TimeOfDay.entries.forEach { bucket ->
+                    val slotsInBucket = data.dueSlots.filter { timeOfDayBucket(it.minutesOfDay) == bucket }
+                    if (slotsInBucket.isNotEmpty()) {
+                        Text(
+                            text = env.s(bucket.label),
+                            style = BadanType.chip,
+                            color = colors.textSecondary,
+                        )
+                        slotsInBucket.forEach { slot ->
+                            DueSlotCard(
+                                slot = slot,
+                                skippingSlotId = skippingSlotId,
+                                editingSlotId = editingSlotId,
+                                onTake = onTake,
+                                onStartSkip = onStartSkip,
+                                onCancelSkip = onCancelSkip,
+                                onSkip = onSkip,
+                                onStartEdit = onStartEdit,
+                            )
+                        }
+                    }
+                }
+            } else {
+                data.dueSlots.forEach { slot ->
+                    DueSlotCard(
+                        slot = slot,
+                        skippingSlotId = skippingSlotId,
+                        editingSlotId = editingSlotId,
+                        onTake = onTake,
+                        onStartSkip = onStartSkip,
+                        onCancelSkip = onCancelSkip,
+                        onSkip = onSkip,
+                        onStartEdit = onStartEdit,
+                    )
+                }
             }
         }
     }
@@ -478,10 +528,12 @@ private fun DueSlotCard(
             }
 
             if (showActions) {
-                if (skippingSlotId == slot.id) {
-                    SkipReasonPicker(slot = slot, onCancelSkip = onCancelSkip, onSkip = onSkip)
-                } else {
-                    ActionRow(slot = slot, onTake = onTake, onStartSkip = onStartSkip)
+                Crossfade(targetState = skippingSlotId == slot.id, label = "medActionsSwap") { skipping ->
+                    if (skipping) {
+                        SkipReasonPicker(slot = slot, onCancelSkip = onCancelSkip, onSkip = onSkip)
+                    } else {
+                        ActionRow(slot = slot, onTake = onTake, onStartSkip = onStartSkip)
+                    }
                 }
             }
         }
@@ -531,21 +583,7 @@ private fun SkippedPill(reason: SkipReason?) {
     } else {
         env.s(Loc.skipped)
     }
-    Row(
-        modifier = Modifier
-            .border(1.dp, colors.separator, RoundedCornerShape(BadanRadius.chip))
-            .padding(horizontal = BadanSpace.s2, vertical = BadanSpace.s1),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1),
-    ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.Redo,
-            contentDescription = null,
-            tint = colors.textSecondary,
-            modifier = Modifier.size(14.dp),
-        )
-        Text(text = text, style = BadanType.chip, color = colors.textSecondary)
-    }
+    PillLabel(text = text, icon = Icons.AutoMirrored.Filled.Redo, tint = colors.textSecondary)
 }
 
 @Composable
@@ -553,40 +591,44 @@ private fun ActionRow(slot: DueSlot, onTake: (DueSlot) -> Unit, onStartSkip: (St
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     val onPrimary = if (colors.isDark) colors.background else Color.White
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
-    ) {
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(BadanRadius.control))
-                .background(colors.primary)
-                .clickable { onTake(slot) }
-                .heightIn(min = BadanSpace.touchMin),
-            contentAlignment = Alignment.Center,
+    // Capped and centered so the pair doesn't stretch into oversized pills on large-screen
+    // devices; on a typical phone the cap exceeds the available width, so nothing changes.
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Row(
+            modifier = Modifier.widthIn(max = 440.dp),
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
         ) {
-            Text(
-                text = env.s(takeAction),
-                style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
-                color = onPrimary,
-            )
-        }
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(BadanRadius.control))
-                .background(colors.surfaceElevated)
-                .border(1.dp, colors.separator, RoundedCornerShape(BadanRadius.control))
-                .clickable { onStartSkip(slot.id) }
-                .heightIn(min = BadanSpace.touchMin),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = env.s(Loc.skip_),
-                style = BadanType.body.copy(fontWeight = FontWeight.Medium),
-                color = colors.textSecondary,
-            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(BadanRadius.control))
+                    .background(colors.primary)
+                    .clickable { onTake(slot) }
+                    .heightIn(min = BadanSpace.touchMin),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = env.s(takeAction),
+                    style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
+                    color = onPrimary,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(BadanRadius.control))
+                    .background(colors.surfaceElevated)
+                    .border(1.dp, colors.separator, RoundedCornerShape(BadanRadius.control))
+                    .clickable { onStartSkip(slot.id) }
+                    .heightIn(min = BadanSpace.touchMin),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = env.s(Loc.skip_),
+                    style = BadanType.body.copy(fontWeight = FontWeight.Medium),
+                    color = colors.textSecondary,
+                )
+            }
         }
     }
 }
@@ -746,7 +788,9 @@ private fun AdherenceDot(kind: DotKind) {
         DotKind.TAKEN -> Box(base.background(colors.primary))
         DotKind.SKIPPED -> Box(base.border(1.5.dp, colors.textSecondary, CircleShape))
         DotKind.PENDING -> Box(base.background(colors.textSecondary.copy(alpha = 0.22f)))
-        DotKind.NONE -> Box(base.background(colors.separator.copy(alpha = 0.5f)))
+        // Fully transparent so an unscheduled day recedes rather than competing with SKIPPED's
+        // outline — the two states were hard to tell apart at 11dp, especially in dark mode.
+        DotKind.NONE -> Box(base.background(Color.Transparent))
     }
 }
 
@@ -764,18 +808,35 @@ private fun MedEmptyState(onAdd: () -> Unit) {
     }
 }
 
+/** Scope-of-service disclaimer, given the same tinted-icon treatment as `ExportScreen`'s
+ * `SensitiveNote` so it reads as a deliberate boundary statement rather than blending into
+ * ordinary caption text. */
 @Composable
 private fun BoundaryFooter() {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
-    Text(
-        text = env.s(Loc.medsBoundary),
-        style = BadanType.caption,
-        color = colors.textSecondary,
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = BadanSpace.s2),
-    )
+            .padding(top = BadanSpace.s2)
+            .clip(RoundedCornerShape(BadanRadius.control))
+            .background(colors.info.copy(alpha = 0.10f))
+            .padding(BadanSpace.s3),
+        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Info,
+            contentDescription = null,
+            tint = colors.info,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            text = env.s(Loc.medsBoundary),
+            style = BadanType.caption,
+            color = colors.textSecondary,
+        )
+    }
 }
 
 // MARK: - Add medication sheet
@@ -882,14 +943,26 @@ private fun AddMedicationSheetContent(
                 Text(text = env.s(timesLabel), style = BadanType.caption, color = colors.textSecondary)
 
                 if (times.isNotEmpty()) {
+                    val tz = remember { TimeZone.getDefault().id }
+                    val clock = remember(env.language, tz) { clockFormatter(env.language, tz) }
+                    val startOfToday = remember(tz) { DayAttribution.startOfDay(env.now(), tz) }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
                         verticalArrangement = Arrangement.spacedBy(BadanSpace.s2),
                     ) {
                         times.forEach { t ->
-                            TimeChip(display = displayTime(env, t), onRemove = { times.remove(t) })
+                            val display = clock.format(Date(slotDate(t, startOfToday, tz)))
+                            TimeChip(display = display, onRemove = { times.remove(t) })
                         }
                     }
+                } else {
+                    // Explain the otherwise-silent disabled Save state rather than leaving the
+                    // user to guess why a Daily schedule with no times won't let them proceed.
+                    Text(
+                        text = env.s(addTimeHint),
+                        style = BadanType.caption,
+                        color = colors.outOfBand,
+                    )
                 }
 
                 Box(
@@ -922,7 +995,8 @@ private fun AddMedicationSheetContent(
     }
 
     if (showTimePicker) {
-        val timeState = rememberTimePickerState(initialHour = 9, initialMinute = 0)
+        val (suggestedHour, suggestedMinute) = suggestedNextTime(times)
+        val timeState = rememberTimePickerState(initialHour = suggestedHour, initialMinute = suggestedMinute)
         AlertDialog(
             onDismissRequest = { showTimePicker = false },
             confirmButton = {
@@ -1024,10 +1098,13 @@ private fun LabeledField(
             contentAlignment = Alignment.CenterStart,
         ) {
             if (value.isEmpty()) {
+                // 0.6 stacked on top of the already-muted textSecondary failed WCAG AA contrast
+                // (~2.6:1 light / ~3.3:1 dark, both below the 4.5:1 minimum for normal text);
+                // 0.9 clears 4.5:1 in both themes while still reading as a placeholder.
                 Text(
                     text = placeholder,
                     style = BadanType.body,
-                    color = colors.textSecondary.copy(alpha = 0.6f),
+                    color = colors.textSecondary.copy(alpha = 0.9f),
                 )
             }
             BasicTextField(
@@ -1292,11 +1369,20 @@ private fun slotDate(time: String, dayStartMillis: Long, tz: String): Long {
 private fun canonicalTime(hour: Int, minute: Int): String =
     String.format(Locale.US, "%02d:%02d", hour, minute)
 
-/** Localize a canonical "HH:mm" into a clock string for the current language. */
-private fun displayTime(env: AppEnvironment, canonical: String): String {
-    val tz = TimeZone.getDefault().id
-    val start = DayAttribution.startOfDay(env.now(), tz)
-    return clockFormatter(env.language, tz).format(Date(slotDate(canonical, start, tz)))
+/**
+ * A sensible default for the "add a time" picker: the current time-of-day if no times have been
+ * added yet, otherwise the latest added time plus a typical dosing interval (wrapping past
+ * midnight) — so adding a 2nd or 3rd daily dose doesn't always land back on a fixed hour.
+ */
+private fun suggestedNextTime(times: List<String>): Pair<Int, Int> {
+    if (times.isEmpty()) {
+        val c = Calendar.getInstance()
+        return c.get(Calendar.HOUR_OF_DAY) to c.get(Calendar.MINUTE)
+    }
+    val typicalIntervalMinutes = 4 * 60
+    val last = times.sorted().last()
+    val totalMinutes = (minutesOfDay(last) + typicalIntervalMinutes) % (24 * 60)
+    return (totalMinutes / 60) to (totalMinutes % 60)
 }
 
 private fun clockFormatter(language: AppLanguage, tz: String): SimpleDateFormat {

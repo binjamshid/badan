@@ -1,5 +1,7 @@
 package net.albayyan.badan.storage.repositories
 
+import android.util.Log
+import kotlinx.serialization.decodeFromString
 import net.albayyan.badan.domain.CustomizationProfile
 import net.albayyan.badan.domain.Goal
 import net.albayyan.badan.domain.GoalDirection
@@ -16,9 +18,15 @@ class ProfileRepository(private val db: SqliteConnection) {
 
     fun load(): CustomizationProfile {
         val row = db.query("SELECT json FROM customization_profile WHERE id = 1;").firstOrNull()
-        if (row != null) {
-            val profile = JsonCoding.decodeOrNull<CustomizationProfile>(row.getString("json"))
-            if (profile != null) return profile
+        val raw = row?.getString("json")
+        if (raw != null) {
+            val result = runCatching { JsonCoding.json.decodeFromString<CustomizationProfile>(raw) }
+            result.getOrNull()?.let { return it }
+            // Keep the failure visible instead of silently discarding the user's saved
+            // language/theme/depth/unit/pin preferences — a bug report can at least reveal what
+            // was lost, and this is a strong signal something upstream (e.g. a field rename)
+            // broke backward compatibility.
+            Log.w(TAG, "Failed to decode customization_profile; resetting to defaults. raw=$raw", result.exceptionOrNull())
         }
         val fresh = CustomizationProfile()
         save(fresh)
@@ -65,5 +73,9 @@ class ProfileRepository(private val db: SqliteConnection) {
 
     fun deleteGoal(id: String) {
         db.run("DELETE FROM goals WHERE id = ?;", listOf(id))
+    }
+
+    companion object {
+        private const val TAG = "ProfileRepository"
     }
 }

@@ -15,7 +15,6 @@ import net.albayyan.badan.domain.SessionDetail
 import net.albayyan.badan.domain.SessionStage
 import net.albayyan.badan.domain.Source
 import net.albayyan.badan.domain.SourceStatus
-import net.albayyan.badan.domain.SourceType
 import net.albayyan.badan.ontology.MetricRegistry
 import net.albayyan.badan.platform.health.HealthDateRange
 import net.albayyan.badan.platform.health.HealthStorePort
@@ -49,6 +48,9 @@ class IngestionPipeline(
         var intervals: Int = 0,
         var sessions: Int = 0,
         var suppressed: Int = 0,
+        /** Records skipped because their metric id has no `registry` definition — a registry/adapter mismatch. */
+        var unmapped: Int = 0,
+        val unmappedMetricIds: MutableSet<String> = mutableSetOf(),
     )
 
     fun ingest(port: HealthStorePort, range: HealthDateRange): IngestSummary {
@@ -66,7 +68,12 @@ class IngestionPipeline(
 
         // (c) Instant readings -> raw_samples (canonicalized, provenance stamped).
         for (dto in samples) {
-            val def = registry.definition(dto.metricId) ?: continue
+            val def = registry.definition(dto.metricId)
+            if (def == null) {
+                summary.unmapped += 1
+                summary.unmappedMetricIds.add(dto.metricId)
+                continue
+            }
             val value = Units.toCanonical(dto.value, dto.unit, def.canonicalUnit)
             val sample = RawSample(
                 id = Ulid.newId(), metricId = dto.metricId, value = value, unit = def.canonicalUnit,
@@ -83,7 +90,12 @@ class IngestionPipeline(
 
         // (c) Normalized aggregates -> interval_records.
         for (dto in intervals) {
-            val def = registry.definition(dto.metricId) ?: continue
+            val def = registry.definition(dto.metricId)
+            if (def == null) {
+                summary.unmapped += 1
+                summary.unmappedMetricIds.add(dto.metricId)
+                continue
+            }
             val value = Units.toCanonical(dto.value, dto.unit, def.canonicalUnit)
             val record = IntervalRecord(
                 id = Ulid.newId(), metricId = dto.metricId, value = value, unit = def.canonicalUnit,
@@ -216,7 +228,7 @@ class IngestionPipeline(
             val existing = catalog.source(d.id)
             catalog.upsertSource(
                 Source(
-                    id = d.id, type = SourceType.HEALTHKIT, displayName = d.displayName,
+                    id = d.id, type = d.type, displayName = d.displayName,
                     platformBundleId = d.bundleId, status = SourceStatus.ACTIVE,
                     connectedAt = existing?.connectedAt ?: now, lastDeliveryAt = now,
                     updatedAt = now, originDeviceId = deviceId,
@@ -240,7 +252,14 @@ class IngestionPipeline(
         return priorityBySource
     }
 
-    private fun inferredPriority(d: SourceDescriptor): Int {
+    /**
+     * Fallback contract for source integrations that don't set an explicit [SourceDescriptor.priority]:
+     * an English "watch"/"phone" substring match in the device name/model/display name, else 0
+     * (lowest priority). Every descriptor today (`FakeHealthStore`, `HealthConnectAdapter`) sets an
+     * explicit non-zero priority, so this path is currently unexercised in practice — it exists as
+     * the documented default a future source integration falls back to.
+     */
+    internal fun inferredPriority(d: SourceDescriptor): Int {
         if (d.priority != 0) return d.priority
         val hay = ((d.deviceName ?: "") + " " + (d.deviceModel ?: "") + " " + d.displayName).lowercase()
         if (hay.contains("watch")) return 2

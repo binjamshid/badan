@@ -1,6 +1,7 @@
 package net.albayyan.badan.app
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -17,6 +19,11 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material.icons.outlined.AddCircle
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -59,7 +66,11 @@ fun RootScreen() {
     }
 }
 
-private data class Tab(val label: net.albayyan.badan.core.LocalizedString, val icon: ImageVector)
+private data class Tab(
+    val label: net.albayyan.badan.core.LocalizedString,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector,
+)
 
 @Composable
 private fun MainShell() {
@@ -67,24 +78,35 @@ private fun MainShell() {
     val nav = LocalNavigator.current
     val detail = nav.current
 
-    if (detail != null) BackHandler(enabled = true) { nav.pop() }
+    if (detail != null) {
+        BackHandler(enabled = true) { nav.pop() }
+    } else {
+        // Retrace tab history before falling through to the platform's default exit behavior.
+        BackHandler(enabled = nav.tabHistory.size > 1) { nav.popTabHistory() }
+    }
 
     val tabs = listOf(
-        Tab(Loc.tabToday, Icons.Filled.WbSunny),
-        Tab(Loc.tabBody, Icons.Filled.Person),
-        Tab(Loc.tabLog, Icons.Filled.AddCircle),
-        Tab(Loc.tabInsights, Icons.Filled.AutoAwesome),
-        Tab(Loc.tabSettings, Icons.Filled.Settings),
+        Tab(Loc.tabToday, Icons.Filled.WbSunny, Icons.Outlined.WbSunny),
+        Tab(Loc.tabBody, Icons.Filled.Person, Icons.Outlined.Person),
+        Tab(Loc.tabLog, Icons.Filled.AddCircle, Icons.Outlined.AddCircle),
+        Tab(Loc.tabInsights, Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
+        Tab(Loc.tabSettings, Icons.Filled.Settings, Icons.Outlined.Settings),
     )
 
     Scaffold(
         bottomBar = {
             NavigationBar {
                 tabs.forEachIndexed { index, tab ->
+                    val selected = detail == null && nav.selectedTab == index
                     NavigationBarItem(
-                        selected = detail == null && nav.selectedTab == index,
+                        selected = selected,
                         onClick = { nav.detailStack.clear(); nav.selectTab(index) },
-                        icon = { Icon(tab.icon, contentDescription = env.s(tab.label)) },
+                        icon = {
+                            Icon(
+                                if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                contentDescription = env.s(tab.label),
+                            )
+                        },
                         label = { Text(env.s(tab.label)) },
                     )
                 }
@@ -93,14 +115,23 @@ private fun MainShell() {
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             if (detail != null) {
-                DetailContent(detail)
+                // Crossfade between pushed detail screens; the tab content below is left mounted
+                // (see the `else` branch) so it isn't disposed while a detail is on screen.
+                Crossfade(targetState = detail, label = "detail") { route -> DetailContent(route) }
             } else {
-                when (nav.selectedTab) {
-                    0 -> HomeScreen()
-                    1 -> BodyScreen()
-                    2 -> LogHubScreen()
-                    3 -> InsightsScreen()
-                    else -> SettingsScreen()
+                // Keep every tab composed (collapsed to zero size when not selected) instead of
+                // switching on a bare `when`, so revisiting a tab doesn't re-run its loaders.
+                tabs.indices.forEach { index ->
+                    val visible = nav.selectedTab == index
+                    Box(if (visible) Modifier.fillMaxSize() else Modifier.size(0.dp)) {
+                        when (index) {
+                            0 -> HomeScreen()
+                            1 -> BodyScreen()
+                            2 -> LogHubScreen()
+                            3 -> InsightsScreen()
+                            else -> SettingsScreen()
+                        }
+                    }
                 }
             }
         }
@@ -118,7 +149,6 @@ private fun DetailContent(route: Route) {
         Route.MedicationLog -> MedicationLogScreen()
         Route.WorkoutLog -> WorkoutLogScreen()
         Route.NutritionLog -> NutritionLogScreen()
-        else -> {} // tab routes are rendered by the shell, not as pushed detail
     }
 }
 

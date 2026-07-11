@@ -71,15 +71,17 @@ fun MetricAnatomySheet(data: MetricDetailData, onClose: () -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = BadanSpace.s4)
-            .padding(bottom = BadanSpace.s7),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(BadanSpace.s5),
     ) {
+        // Pinned outside the scrollable content below so a user scrolled deep into a long
+        // manifest never loses the title's orientation or the Close action at the same time
+        // (EASE-273).
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = BadanSpace.s4)
+                .padding(top = BadanSpace.s2),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -93,19 +95,28 @@ fun MetricAnatomySheet(data: MetricDetailData, onClose: () -> Unit) {
             }
         }
 
-        BaselineCard(data)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = BadanSpace.s4)
+                .padding(bottom = BadanSpace.s7),
+            verticalArrangement = Arrangement.spacedBy(BadanSpace.s5),
+        ) {
+            BaselineCard(data)
 
-        val manifest = data.manifest
-        if (manifest != null && manifest.inputs.isNotEmpty()) {
-            RecordsCard(data, manifest.inputs)
-        } else {
-            StraightFromRecordsCard()
-        }
+            val manifest = data.manifest
+            if (manifest != null && manifest.inputs.isNotEmpty()) {
+                RecordsCard(data, manifest.inputs)
+            } else {
+                StraightFromRecordsCard()
+            }
 
-        methodStringOrNull(data)?.let { MethodCard(it) }
+            methodStringOrNull(data)?.let { MethodCard(it) }
 
-        if (data.recentDedup.isNotEmpty()) {
-            DedupCard(data)
+            if (data.recentDedup.isNotEmpty()) {
+                DedupCard(data)
+            }
         }
     }
 }
@@ -210,18 +221,27 @@ private fun DedupCard(data: MetricDetailData) {
                 color = colors.textPrimary,
             )
             data.recentDedup.take(3).forEach { decision ->
+                // The dedup detail journal carries the winning/losing source ids (DedupLite) —
+                // naming them on the pills is the one piece of "how this was worked out" a
+                // curious power user with two wearables most wants to know (UIUX-286).
+                val winnerSource = decision.detail["winner_source"]?.let { data.sourceNames[it] ?: it }
+                val loserSource = decision.detail["loser_source"]?.let { data.sourceNames[it] ?: it }
+                val keptLabel = winnerSource?.let { "${env.s(AnatomyStrings.kept)} · $it" }
+                    ?: env.s(AnatomyStrings.kept)
+                val suppressedLabel = loserSource?.let { "${env.s(Loc.suppressedDuplicate)} · $it" }
+                    ?: env.s(Loc.suppressedDuplicate)
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(BadanSpace.s1),
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
                         PillLabel(
-                            text = env.s(AnatomyStrings.kept),
+                            text = keptLabel,
                             icon = Icons.Filled.Check,
                             tint = colors.inBand,
                         )
                         PillLabel(
-                            text = env.s(Loc.suppressedDuplicate),
+                            text = suppressedLabel,
                             icon = Icons.AutoMirrored.Filled.Undo,
                             tint = colors.textSecondary,
                         )

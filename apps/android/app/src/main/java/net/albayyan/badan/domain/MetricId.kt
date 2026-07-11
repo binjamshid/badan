@@ -1,9 +1,12 @@
 package net.albayyan.badan.domain
 
 /**
- * Typed constants for the metric ids that BADAN code references directly (seeding, ingestion,
- * derivation). Apps never scatter raw metric-id strings; everything else comes from the
- * data-driven registry. Keep in sync with `packages/metric-ontology/registry.json`.
+ * Typed constants for the key metric ids that BADAN code references directly (seeding, ingestion,
+ * derivation) — currently a subset of the ~44 ids in `packages/metric-ontology/registry.json`, not
+ * the full set. Metric ids outside this list (most `nutrition.*`, all `subjective.*`/`symptoms.*`,
+ * and several others) are referenced as raw strings from the registry today; add a constant here
+ * when a call site needs compile-time safety for one of them. Keep existing entries in sync with
+ * the registry.
  */
 object MetricId {
     // Sleep

@@ -1,5 +1,7 @@
 package net.albayyan.badan.features.workoutnutrition
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +18,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -96,6 +100,10 @@ private val nNoneYet = LocalizedString(en = "Nothing logged today yet.", ar = "�
 private val nQuickTag = LocalizedString(en = "Quick", ar = "سريع")
 private val nKcal = LocalizedString(en = "kcal", ar = "سعرة")
 private val nGrams = LocalizedString(en = "g", ar = "جم")
+private val nHighValueHint = LocalizedString(
+    en = "That seems unusually high — worth double-checking.",
+    ar = "هذا يبدو مرتفعاً بشكل غير معتاد — يستحق التأكد.",
+)
 
 // MARK: - Loaded data
 
@@ -123,6 +131,24 @@ private fun mealForHour(hour: Int): MealType = when (hour) {
     in 11..15 -> MealType.LUNCH
     in 16..20 -> MealType.DINNER
     else -> MealType.SNACK
+}
+
+private fun hourOfMillis(millis: Long): Int =
+    Calendar.getInstance().apply { timeInMillis = millis }.get(Calendar.HOUR_OF_DAY)
+
+/**
+ * If the user has, on a recent visit, manually corrected the hour-based meal guess for a similar
+ * time of day, recall that choice instead of repeating the same guess every time. Falls back to
+ * [currentGuess] when no such override is found in the last 30 days.
+ */
+private fun recalledMealType(env: AppEnvironment, currentGuess: MealType): MealType {
+    val now = env.now()
+    val from = now - 30L * 86_400_000L
+    val history = runCatching { env.logging.nutrition(from, now) }.getOrDefault(emptyList())
+    val override = history
+        .filter { mealForHour(hourOfMillis(it.occurredAt)) == currentGuess && it.mealType != currentGuess }
+        .maxByOrNull { it.occurredAt }
+    return override?.mealType ?: currentGuess
 }
 
 // MARK: - Screen
@@ -162,6 +188,10 @@ fun NutritionLogScreen() {
         meals = data.meals
         kcalTotal = data.kcalTotal
         proteinTotal = data.proteinTotal
+        // Prefer a previously-overridden meal type for this time of day over the raw hour guess,
+        // but never stomp a choice the user already made while this was loading.
+        val recalled = withContext(Dispatchers.IO) { recalledMealType(env, initialMeal) }
+        if (mealType == initialMeal) mealType = recalled
     }
 
     val canSave = descriptionText.trim().isNotEmpty()
@@ -265,7 +295,13 @@ fun NutritionLogScreen() {
                     )
                     Switch(
                         checked = quickCalories,
-                        onCheckedChange = { quickCalories = it },
+                        onCheckedChange = {
+                            quickCalories = it
+                            // Turning quick-calories on drops the protein value at save time —
+                            // clear it visibly so the field never shows a number that silently
+                            // stops being recorded.
+                            if (it) proteinText = ""
+                        },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = colors.primary,
@@ -275,50 +311,56 @@ fun NutritionLogScreen() {
                 }
             }
 
-            // Optional macros, or the quick-energy shorthand.
-            if (!quickCalories) {
-                BadanCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
-                        SectionHeader(title = env.s(nOptionalDetails))
-                        NumberField(
-                            icon = Icons.Filled.LocalFireDepartment,
-                            placeholder = env.s(Loc.calories),
-                            value = kcalText,
-                            onValueChange = { kcalText = it },
-                            unit = env.s(nKcal),
-                        )
-                        HorizontalDivider(color = colors.separator)
-                        NumberField(
-                            icon = Icons.Filled.Restaurant,
-                            placeholder = env.s(nProtein),
-                            value = proteinText,
-                            onValueChange = { proteinText = it },
-                            unit = env.s(nGrams),
-                        )
-                        if (power) {
+            // Optional macros, or the quick-energy shorthand. Animated so the height/content swap
+            // triggered by the toggle just above reads as a transition, not an abrupt jump.
+            Column(modifier = Modifier.animateContentSize()) {
+                if (!quickCalories) {
+                    BadanCard {
+                        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
+                            SectionHeader(title = env.s(nOptionalDetails))
+                            NumberField(
+                                icon = Icons.Filled.LocalFireDepartment,
+                                placeholder = env.s(Loc.calories),
+                                value = kcalText,
+                                onValueChange = { kcalText = it },
+                                unit = env.s(nKcal),
+                                warning = parseDecimal(kcalText)?.takeIf { it > 5000.0 }?.let { env.s(nHighValueHint) },
+                            )
+                            HorizontalDivider(color = colors.separator)
+                            NumberField(
+                                icon = Icons.Filled.Restaurant,
+                                placeholder = env.s(nProtein),
+                                value = proteinText,
+                                onValueChange = { proteinText = it },
+                                unit = env.s(nGrams),
+                                warning = parseDecimal(proteinText)?.takeIf { it > 300.0 }?.let { env.s(nHighValueHint) },
+                            )
+                            if (power) {
+                                Text(
+                                    text = env.s(IngestionPath.MANUAL.displayLabel),
+                                    style = BadanType.caption,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    BadanCard {
+                        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+                            NumberField(
+                                icon = Icons.Filled.LocalFireDepartment,
+                                placeholder = env.s(Loc.calories),
+                                value = kcalText,
+                                onValueChange = { kcalText = it },
+                                unit = env.s(nKcal),
+                                warning = parseDecimal(kcalText)?.takeIf { it > 5000.0 }?.let { env.s(nHighValueHint) },
+                            )
                             Text(
-                                text = env.s(IngestionPath.MANUAL.displayLabel),
+                                text = env.s(Loc.quickCalories),
                                 style = BadanType.caption,
                                 color = colors.textSecondary,
                             )
                         }
-                    }
-                }
-            } else {
-                BadanCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
-                        NumberField(
-                            icon = Icons.Filled.LocalFireDepartment,
-                            placeholder = env.s(Loc.calories),
-                            value = kcalText,
-                            onValueChange = { kcalText = it },
-                            unit = env.s(nKcal),
-                        )
-                        Text(
-                            text = env.s(Loc.quickCalories),
-                            style = BadanType.caption,
-                            color = colors.textSecondary,
-                        )
                     }
                 }
             }
@@ -459,6 +501,8 @@ private fun MealRow(meal: NutritionEntry, power: Boolean) {
             }
 
             if (power) {
+                // Separate the user-facing summary above from the technical detail below.
+                HorizontalDivider(color = colors.separator)
                 Text(
                     text = env.s(IngestionPath.MANUAL.displayLabel),
                     style = BadanType.caption,
@@ -471,12 +515,20 @@ private fun MealRow(meal: NutritionEntry, power: Boolean) {
 
 // MARK: - Shared controls
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SelectPill(selected: Boolean, icon: ImageVector, label: String, onClick: () -> Unit) {
     val colors = BadanTheme.colors
     val shape = RoundedCornerShape(BadanRadius.chip)
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    // If this pill starts (or becomes) selected off-screen, scroll the row to reveal it — an
+    // auto-picked meal type should never be invisible to the user.
+    LaunchedEffect(selected) {
+        if (selected) bringIntoViewRequester.bringIntoView()
+    }
     Row(
         modifier = Modifier
+            .bringIntoViewRequester(bringIntoViewRequester)
             .clip(shape)
             .clickable(onClick = onClick)
             .background(color = if (selected) colors.primary else colors.surface, shape = shape)
@@ -512,40 +564,47 @@ private fun NumberField(
     value: String,
     onValueChange: (String) -> Unit,
     unit: String,
+    warning: String? = null,
 ) {
     val colors = BadanTheme.colors
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = BadanSpace.touchMin),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = colors.textSecondary,
-            modifier = Modifier.size(20.dp),
-        )
-        Box(modifier = Modifier.weight(1f)) {
-            if (value.isEmpty()) {
-                Text(
-                    text = placeholder,
-                    style = BadanType.body,
-                    color = colors.textSecondary.copy(alpha = 0.6f),
+    Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s1)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BadanSpace.touchMin),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = colors.textSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+            Box(modifier = Modifier.weight(1f)) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        style = BadanType.body,
+                        color = colors.textSecondary.copy(alpha = 0.6f),
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    textStyle = BadanType.body.copy(color = colors.textPrimary),
+                    singleLine = true,
+                    cursorBrush = SolidColor(colors.primary),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                textStyle = BadanType.body.copy(color = colors.textPrimary),
-                singleLine = true,
-                cursorBrush = SolidColor(colors.primary),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Text(text = unit, style = BadanType.body, color = colors.textSecondary)
         }
-        Text(text = unit, style = BadanType.body, color = colors.textSecondary)
+        // Soft, non-blocking sanity hint — never disables save, never moralizes.
+        if (warning != null) {
+            Text(text = warning, style = BadanType.caption, color = colors.outOfBand)
+        }
     }
 }
 
@@ -573,9 +632,9 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
 
 // MARK: - Helpers
 
-/** Parse a decimal the user typed (comma or dot), keeping only strictly-positive values. */
+/** Parse a decimal the user typed (comma or dot). Zero is a valid explicit value; negatives are not. */
 private fun parseDecimal(text: String): Double? =
-    text.replace(",", ".").trim().toDoubleOrNull()?.takeIf { it > 0.0 }
+    text.replace(",", ".").trim().toDoubleOrNull()?.takeIf { it >= 0.0 }
 
 private fun timeText(millis: Long, localeTag: String): String {
     val locale = Locale.forLanguageTag(localeTag)

@@ -27,6 +27,12 @@ data class BadanColors(
     val outOfBand: Color,
     val info: Color,
     val critical: Color,
+    /**
+     * Text/icon colour for content painted on top of a [primary]-filled surface (e.g. a filled
+     * primary button). One shared token instead of re-deriving `if (isDark) ... else ...` at
+     * each call site (UIUX-223).
+     */
+    val onPrimary: Color,
     /** Whether this set is the dark palette — used to derive the Material colour scheme. */
     val isDark: Boolean,
 )
@@ -44,6 +50,7 @@ fun badanLightColors(): BadanColors = BadanColors(
     outOfBand = Color(0xFFB97A14),
     info = Color(0xFF2678C4),
     critical = Color(0xFFC9353B),
+    onPrimary = Color.White,
     isDark = false,
 )
 
@@ -60,6 +67,9 @@ fun badanDarkColors(): BadanColors = BadanColors(
     outOfBand = Color(0xFFE8A13A),
     info = Color(0xFF4C9FE8),
     critical = Color(0xFFE5484D),
+    // Matches the already-tuned dark on-primary value from `OnboardingScreen.kt`'s
+    // `PrimaryButton`, reused here as the single source of truth (UIUX-223).
+    onPrimary = Color(0xFF08201D),
     isDark = true,
 )
 
@@ -111,6 +121,15 @@ object BadanType {
         fontSize = 28.sp,
         fontWeight = FontWeight.Medium,
         fontFeatureSettings = "tnum",
+    )
+
+    /**
+     * Large page titles (Log, Settings, Onboarding-style headers). One shared token instead of
+     * three independently hand-rolled "28sp bold" styles at each call site (UIUX-263).
+     */
+    val pageTitle = TextStyle(
+        fontSize = 28.sp,
+        fontWeight = FontWeight.Bold,
     )
 
     /** Card headers. */

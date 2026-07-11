@@ -1,5 +1,6 @@
 package net.albayyan.badan.storage
 
+import android.os.Trace
 import net.albayyan.badan.storage.sqlite.SqliteConnection
 import java.io.File
 
@@ -39,10 +40,20 @@ class Database(val directory: File) {
             .mapNotNull { it.getString("name") }
         main.transaction {
             main.execute("PRAGMA foreign_keys = OFF;")
-            for (name in tables) main.execute("DROP TABLE IF EXISTS \"$name\";")
+            for (name in tables) main.execute("DROP TABLE IF EXISTS ${quoteIdent(name)};")
             main.execute("PRAGMA foreign_keys = ON;")
         }
         migrate(main, Schema.mainMigrations)
+    }
+
+    /**
+     * Truncates the WAL file back into the main db file on both namespaces. Nothing calls this
+     * automatically today — wire it to an app-background lifecycle transition (e.g.
+     * `Activity.onStop`/`ProcessLifecycleOwner`) so it never competes with foreground work.
+     */
+    fun checkpointWal() {
+        main.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        sensitive.execute("PRAGMA wal_checkpoint(TRUNCATE);")
     }
 
     companion object {
@@ -51,15 +62,30 @@ class Database(val directory: File) {
 
         fun forApp(filesDir: File): Database = Database(File(filesDir, "BADAN"))
 
+        /** Quotes a SQL identifier (doubling embedded quotes) for the rare case a table/column
+         *  name must be interpolated into DDL — never build SQL from unquoted dynamic identifiers. */
+        private fun quoteIdent(name: String): String = "\"" + name.replace("\"", "\"\"") + "\""
+
         private fun migrate(conn: SqliteConnection, migrations: List<Migration>) {
-            conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);")
-            val current = conn.query("SELECT MAX(version) AS v FROM schema_migrations;").firstOrNull()?.getLong("v") ?: 0L
-            for (m in migrations.filter { it.version.toLong() > current }) {
-                conn.transaction {
-                    for (stmt in m.statements) conn.execute(stmt)
-                    conn.run("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?);",
-                        listOf(m.version.toLong(), System.currentTimeMillis()))
+            // Named marker (platform android.os.Trace — no new dependency) so a Perfetto/Studio
+            // Profiler capture of app startup shows this hot path labeled instead of raw samples.
+            Trace.beginSection("Database.migrate")
+            try {
+                conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);")
+                val current = conn.query("SELECT MAX(version) AS v FROM schema_migrations;").firstOrNull()?.getLong("v") ?: 0L
+                val pending = migrations.filter { it.version.toLong() > current }
+                for (m in pending) {
+                    conn.transaction {
+                        for (stmt in m.statements) conn.execute(stmt)
+                        conn.run("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?);",
+                            listOf(m.version.toLong(), System.currentTimeMillis()))
+                    }
                 }
+                // Refresh planner statistics once, only when the schema actually changed — avoids
+                // paying ANALYZE's cost on every unchanged cold start.
+                if (pending.isNotEmpty()) conn.execute("ANALYZE;")
+            } finally {
+                Trace.endSection()
             }
         }
     }

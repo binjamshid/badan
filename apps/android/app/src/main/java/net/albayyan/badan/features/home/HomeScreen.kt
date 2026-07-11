@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.Functions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,14 +90,18 @@ fun HomeScreen() {
     val env = LocalAppEnvironment.current
     var state by remember { mutableStateOf<LoadState<HomeData>>(LoadState.Loading) }
 
-    // Reload when any altitude / gating preference the loader branches on changes.
+    // Reload when any altitude / gating preference the loader branches on changes. If we
+    // already have data on screen, keep showing it during the reload instead of flashing back
+    // to a full-screen spinner — only a first load (or a prior error/empty) shows Loading.
     LaunchedEffect(
         env.depth,
         env.language,
         env.profile.sensitiveModulesEnabled,
         env.profile.nutritionEnabled,
     ) {
-        state = LoadState.Loading
+        if (state !is LoadState.Loaded) {
+            state = LoadState.Loading
+        }
         state = withContext(Dispatchers.IO) { loadHomeData(env) }
     }
 
@@ -138,6 +144,8 @@ private fun HomeHeader(data: HomeData) {
                 text = env.s(env.greeting),
                 style = BadanType.sectionTitle,
                 color = colors.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = longDate(data.date, env.language),
@@ -207,7 +215,10 @@ private fun HomePowerBody(data: HomeData) {
                         text = env.s(Loc.seeAll),
                         style = BadanType.chip,
                         color = colors.primary,
-                        modifier = Modifier.clickable { nav.selectTab(BODY_TAB) },
+                        modifier = Modifier
+                            .heightIn(min = BadanSpace.touchMin)
+                            .wrapContentHeight(Alignment.CenterVertically)
+                            .clickable { nav.selectTab(BODY_TAB) },
                     )
                 }
                 MetricGrid(data.metrics)
@@ -337,11 +348,23 @@ private fun MetricModuleCard(metric: HomeKeyMetric, secondary: HomeKeyMetric?) {
                         horizontalAlignment = Alignment.End,
                         verticalArrangement = Arrangement.spacedBy(BadanSpace.s1),
                     ) {
-                        Text(
-                            text = secondary.heroValue,
-                            style = BadanType.numeralM,
-                            color = colors.textPrimary,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1),
+                        ) {
+                            Text(
+                                text = secondary.heroValue,
+                                style = BadanType.numeralM,
+                                color = colors.textPrimary,
+                            )
+                            secondary.unit?.let {
+                                Text(
+                                    text = it,
+                                    style = BadanType.caption,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                        }
                         Text(
                             text = secondary.label,
                             style = BadanType.caption,
@@ -361,14 +384,19 @@ private fun MetricGrid(metrics: List<HomeKeyMetric>) {
     // A manual two-column grid — a LazyVGrid cannot nest inside the screen's vertical scroll.
     Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
         metrics.chunked(2).forEach { row ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
-            ) {
-                row.forEach { metric ->
-                    Box(modifier = Modifier.weight(1f)) { MetricGridCell(metric) }
+            if (row.size == 1) {
+                // Lone trailing card: span the full row width instead of leaving an empty
+                // half-width gap.
+                MetricGridCell(row[0])
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
+                ) {
+                    row.forEach { metric ->
+                        Box(modifier = Modifier.weight(1f)) { MetricGridCell(metric) }
+                    }
                 }
-                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }
@@ -535,7 +563,10 @@ private fun TimelinePreviewCard(events: List<HomeEvent>) {
                 text = env.s(Loc.seeAll),
                 style = BadanType.chip,
                 color = colors.primary,
-                modifier = Modifier.clickable { nav.push(Route.Timeline) },
+                modifier = Modifier
+                    .heightIn(min = BadanSpace.touchMin)
+                    .wrapContentHeight(Alignment.CenterVertically)
+                    .clickable { nav.push(Route.Timeline) },
             )
         }
         BadanCard {
@@ -648,6 +679,10 @@ private fun eventTimeText(millis: Long, language: AppLanguage): String {
 
 // MARK: - Data model
 
+// @Immutable: every field is a val assigned once at construction from freshly-built
+// lists/values (never mutated afterward), so these are safe to promise as stable to the
+// Compose compiler even though `List` itself is not inferred stable (see PERF-213).
+@Immutable
 data class HomeKeyMetric(
     val metricId: String,
     val label: String,
@@ -659,12 +694,14 @@ data class HomeKeyMetric(
     val familySymbol: String,
 )
 
+@Immutable
 data class HomeSleepSummary(
     val seconds: Double,
     val position: Baseline.Position?,
     val spark: List<Double>,
 )
 
+@Immutable
 data class HomeEvent(
     val id: String,
     val type: TimelineEventType,
@@ -672,6 +709,7 @@ data class HomeEvent(
     val detail: String?,
 )
 
+@Immutable
 data class HomeData(
     val date: Long,
     val readiness: DerivedValue?,
@@ -723,9 +761,15 @@ private fun loadHomeData(env: AppEnvironment): LoadState<HomeData> {
             )
         }
     } catch (t: Throwable) {
-        LoadState.Error(t.toString())
+        LoadState.Error(env.s(homeLoadErrorMessage))
     }
 }
+
+// A calm, wellness-safe fallback shown in place of a raw exception message (see UIUX-249).
+private val homeLoadErrorMessage = LocalizedString(
+    en = "Something didn't load. Try again.",
+    ar = "لم يتم تحميل شيء ما. حاول مرة أخرى.",
+)
 
 // Readiness — walk back up to four days for the latest daily score.
 private fun latestReadiness(env: AppEnvironment, now: Long, tz: String): DerivedValue? {
