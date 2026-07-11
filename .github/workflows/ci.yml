@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  data-contracts:
+    name: Validate shared data contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: JSON is valid and iOS resources are in sync
+        run: |
+          python3 - <<'PY'
+          import json, sys, pathlib
+          root = pathlib.Path('.')
+          canonical = {
+            'packages/metric-ontology/registry.json': 'apps/ios/Sources/Resources/registry.json',
+            'packages/contracts/insights/templates.json': 'apps/ios/Sources/Resources/insight_templates.json',
+            'packages/contracts/dictionaries/symptoms.json': 'apps/ios/Sources/Resources/symptoms.json',
+            'packages/export-schemas/csv_columns.json': 'apps/ios/Sources/Resources/csv_columns.json',
+          }
+          fail = False
+          for src, mirror in canonical.items():
+            a = json.loads((root/src).read_text())
+            b = json.loads((root/mirror).read_text())
+            if a != b:
+              print(f"::error::{mirror} is out of sync with {src} — run scripts/sync_ios_resources.sh")
+              fail = True
+          print("metrics:", len(json.loads((root/'packages/metric-ontology/registry.json').read_text())['metrics']))
+          sys.exit(1 if fail else 0)
+          PY
+
+  ios-build-test:
+    name: iOS build + test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: apps/ios
+        run: xcodegen generate
+      - name: Build & test
+        working-directory: apps/ios
+        run: |
+          xcodebuild -project BADAN.xcodeproj -scheme BADAN \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            test | xcpretty || xcodebuild -project BADAN.xcodeproj -scheme BADAN \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 16' test

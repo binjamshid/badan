@@ -1,0 +1,342 @@
+{
+  "version": "0.1.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§16-21 Screen blueprint)",
+  "screens": [
+    {
+      "id": "S-10…S-17",
+      "name": "Onboarding & setup wizards",
+      "purpose": "An eight-stage, kill-and-resume-safe wizard (Welcome → Platform connect → Backfill+first insight → Tuning → Notifications → Source wizard → Sync choice → Stories) that earns trust and delivers a personal fact in the first session.",
+      "casualLayer": "Runs to Essential defaults: three-question tuning maps to a Casual preset (labelSet=CASUAL, maxTodayModules=5); every stage after Tuning is skippable to sane defaults; notification 'floor' (morning narrative + weekly digest) is the only default; language/RTL flips live on the Welcome screen.",
+      "powerLayer": "'Understand everything' goal + 'show me depth' resolves the Analyst/Power preset; module opt-ins (nutrition, cycle, meds, glucose, biology) trigger their permission bundles; source wizard exposes direct/broker connectors, per-vendor OEM-battery walkthroughs, and BACKGROUND permission; Sync choice offers E2E sync + account, else LOCAL_ONLY first-class.",
+      "components": [
+        "ValuePromiseCarousel",
+        "LanguagePicker",
+        "PermissionValueCard",
+        "GrantChecklist",
+        "ManualModeExplainer",
+        "BackfillProgressList",
+        "FirstFactCard",
+        "SparseHistoryNotice",
+        "TuningQuestionPager",
+        "GoalOptionCard",
+        "ModuleTogglesGrid",
+        "NotificationPreviewCard",
+        "DetectedSourceRow",
+        "ConnectorSuggestionCard",
+        "BatteryOptimizationWalkthrough",
+        "SyncChoiceCard",
+        "TradeoffsTable",
+        "StoryPager"
+      ],
+      "copyEn": [
+        "Reading 214 nights of sleep…",
+        "I'll learn your baseline over about 2 weeks — here's what works right now.",
+        "What do you want from BADAN? Feel better · Train smarter · Track a health issue · Understand everything",
+        "That's all — the morning note and a weekly digest. Everything else stays opt-in.",
+        "Continue without connecting"
+      ]
+    },
+    {
+      "id": "S-20",
+      "name": "Today root (Home / flagship)",
+      "purpose": "The daily contract answered in under 10 seconds: how I slept, how ready I am, anything unusual, and one thing worth doing — everything else is curated modules.",
+      "casualLayer": "Triple-ring hero with one-word drivers, One True Sentence narrative, and at most 5 comfortable-density modules; deviation shown as arrows only; provisional badges and gentle >36h 'data paused' banner; manual-mode hero (subjective check-in + phone steps) when no wearable.",
+      "powerLayer": "Up to 12 stat-dense compact modules (6-tile dense health monitor, stress/energy, training-today, biology watchlist), arrow+number deviation badges, sparkline axes on tap, tables default-open; long-press module context menu (pin/hide/reorder/explain); same routes, more altitude via PresentationPolicy.",
+      "components": [
+        "DatePagerHeader",
+        "ContextStrip",
+        "TripleRingHero",
+        "NarrativeCard",
+        "HealthMonitorGrid",
+        "VitalsTile",
+        "MedsDueStrip",
+        "StressEnergyCard",
+        "NutritionSnapshotCard",
+        "TimelinePreviewList",
+        "WeeklyProgressChip",
+        "ProvisionalBadge",
+        "StalenessBanner",
+        "TodayModuleRegistry"
+      ],
+      "copyEn": [
+        "Readiness 62 — short sleep",
+        "Why →",
+        "Your data's been paused for a while — let's reconnect.",
+        "Back to today",
+        "Above your usual range"
+      ]
+    },
+    {
+      "id": "S-40 / S-55",
+      "name": "Body root & All-Metrics browser",
+      "purpose": "The single 'your body's data' front door — presence-based pillar cards, repository tools, and inactive-module discovery — backed by the full ~300-entry metric catalog behind curated surfaces.",
+      "casualLayer": "Shows only 3 active pillar cards (Sleep/Recovery/Strain always present), each a headline stat + status word + 7-day sparkline; inactive modules tucked in a collapsed 'Add more' row; no empty panels — denied pillars show a 'connect data' footer instead of blanks.",
+      "powerLayer": "Up to 10 pillar cards plus a repository tools row (All Metrics / Raw Data / Data Sources / Export); All-Metrics browser adds has-data/pinned/out-of-band filters and recency/name/deviation sorts, A–Z rail, pinning, and FTS search over names + synonyms.",
+      "components": [
+        "PillarCard",
+        "AddModulesRow",
+        "RepositoryToolsList",
+        "MetricCatalogRow",
+        "CatalogFilterBar",
+        "RegistrySearchField",
+        "AZIndexRail"
+      ],
+      "copyEn": [
+        "Sleep, 7 hours 12 minutes, in your normal range",
+        "Add more",
+        "No data — tap to learn how to feed this",
+        "Recovery day",
+        "12 of 390 tracked"
+      ]
+    },
+    {
+      "id": "S-56",
+      "name": "Universal metric detail",
+      "purpose": "One learnable grammar for every metric — instantiated by metricId from the registry so adding a metric never adds a screen (header → status band → chart → trends → anatomy → resources).",
+      "casualLayer": "Header value + status word vs personal range + a simple chart; annotation layers default off; rolling-delta 'Trends' table hidden behind 'See trends'; casual labels (precise term in parentheses for first 3 visits); provisional badge with countdown.",
+      "powerLayer": "Everything default-open: annotation layers (Statuses/Meds/Cycle/Experiments) on, 3/7/14/30/90-day rolling-delta table expanded with meaningful-change flags, sparkline axes, score-anatomy input bars, raw source/method note, compare + export-slice actions; precise labels, numeric confidence.",
+      "components": [
+        "MetricHeader",
+        "StatusBand",
+        "MetricSwitcherChips",
+        "ChartArea",
+        "AnnotationLayerToggle",
+        "PeriodSelector",
+        "TrendsTable",
+        "AnatomySection",
+        "ResourcesSection",
+        "DefinitionFooter",
+        "ActionsBar"
+      ],
+      "copyEn": [
+        "Above normal · 74.0–82.2 bpm",
+        "Based on 7-day rolling averages",
+        "HRV: RMSSD from raw beats, entire-sleep window — change in Calculations",
+        "Still learning your baseline — about 9 days to go",
+        "Export this slice"
+      ]
+    },
+    {
+      "id": "S-31",
+      "name": "Unified Timeline (History)",
+      "purpose": "The anti-fragmentation spine: one chronological, day-grouped, filterable stream of every typed event (sleep, workout, meal, med, symptom, note, status, lab, sync) with infinite back-scroll.",
+      "casualLayer": "Reached via Today's Timeline preview; clean day headers with day-score micro-rings and simple rows (icon + title + key value + time); filtered-empty and history-start states worded gently.",
+      "powerLayer": "Multi-select filter chips that compose (meds+symptoms), jump-to-date, and bulk-select mode for tag/delete of manual entries or 'send to Correlation Lab' (auto-ingested rows are provenance-locked and not deletable).",
+      "components": [
+        "TimelineDayHeader",
+        "TimelineRow",
+        "EventFilterChips",
+        "BulkSelectBar",
+        "HistoryStartCard"
+      ],
+      "copyEn": [
+        "Your record begins here — March 2021",
+        "No meds events in this range",
+        "Clear filters",
+        "Send to Correlation Lab"
+      ]
+    },
+    {
+      "id": "S-70",
+      "name": "Log hub (the + hub)",
+      "purpose": "The global logging front door — opens in under 300 ms with a one-handed reach grid of enabled log types plus a personalized recents row.",
+      "casualLayer": "Rania never needs it (auto-import covers her); when opened it's a simple module-gated grid — no food tile when Nutrition is hidden.",
+      "powerLayer": "Recents row ranked by frequency×recency prefills flows ('Log Metformin', 'Coffee 250 ml'); long-press on the Log tab skips the hub entirely via a recents radial shortcut; per-type deep links for widgets/watch.",
+      "components": [
+        "RecentsRow",
+        "LogTypeGrid",
+        "RecentsRadialMenu"
+      ],
+      "copyEn": [
+        "Log Metformin",
+        "Coffee 250 ml",
+        "What would you like to log?"
+      ]
+    },
+    {
+      "id": "S-78",
+      "name": "Symptom log",
+      "purpose": "Under-10-second symptom capture — recents chips to severity and duration, with optional depth (body map, triggers, note/photo) and a vocabulary-chaos guard.",
+      "casualLayer": "Recents-first chips for 2-tap re-log; a 3-level severity slider (Mild/Moderate/Severe); fuzzy-match prompt prevents duplicate vocabulary; photos stay device-local and out of exports.",
+      "powerLayer": "0–10 numeric severity scale (stored normalized with scale-origin preserved), body-map region picker, trigger tags (foods/stress/weather/meds change/custom), onset/ongoing flags, and episode recurrence linking.",
+      "components": [
+        "RecentsChips",
+        "SeveritySlider",
+        "BodyMapPicker",
+        "TriggerTagRow",
+        "AttachmentRow",
+        "SaveBar",
+        "BackdatePicker"
+      ],
+      "copyEn": [
+        "Did you mean 'light-headed' (used 4×)?",
+        "Mild · Moderate · Severe",
+        "Still ongoing?",
+        "Save · Save and add another"
+      ]
+    },
+    {
+      "id": "S-79 / S-50",
+      "name": "Medication log (action sheet & hub)",
+      "purpose": "Non-punitive medication logging: one-tap take-all or per-med take/skip-with-reason from the due list, over a repository hub that states its own no-advice boundary.",
+      "casualLayer": "Due strip mirrors Today's; overdue reads as a neutral 'still due', never a red alarm; all-taken shows a calm completed state; skipped renders as a neutral outline, not a red X.",
+      "powerLayer": "Per-slot take-all, skip-reason enum chips with optional note, retro-logging via backdate, PRN handling, watch take-from-wrist parity; hub adds regimen cards, 7-day adherence strip, and regimen-change chart annotations.",
+      "components": [
+        "DueSlotGroup",
+        "TakeAllButton",
+        "SkipReasonChips",
+        "PrnRow",
+        "DueStrip",
+        "RegimenCard",
+        "AdherenceWeekStrip",
+        "BoundaryFooter"
+      ],
+      "copyEn": [
+        "Still due",
+        "Skipped — forgot · side effects · ran out · doctor's advice · other",
+        "BADAN records your medications — it never advises on dosing.",
+        "Take all"
+      ]
+    },
+    {
+      "id": "S-76 / S-77",
+      "name": "Workout log (quick-add & strength runner)",
+      "purpose": "Manual 3-tap workout quick-add and edit of imported sessions (S-76) plus a crash-safe strength session runner with per-set logging, plate math, rest timer, and finish summary (S-77).",
+      "casualLayer": "Quick-add is type + duration + RPE in three taps; imported sessions show source-locked fields with a provenance note; rest-day framing stays neutral ('recovery day', never 'you did nothing').",
+      "powerLayer": "Full strength runner: template start, steppers pre-filled from last session (≤2-tap repeat set), plate-math popover, superset rotation, mid-session exercise swap, RPE chips, Live-Activity rest timer, and a volume/e1RM/PR finish summary with write-back.",
+      "components": [
+        "WorkoutTypePicker",
+        "SetEntryCard",
+        "RestTimerBar",
+        "PlateMathPopover",
+        "SupersetIndicator",
+        "SessionSummarySheet",
+        "TemplateGallery",
+        "ExerciseSwapSheet"
+      ],
+      "copyEn": [
+        "Recovery day",
+        "A connected device would capture heart-rate detail.",
+        "Log set",
+        "Discard session?"
+      ]
+    },
+    {
+      "id": "S-71 / S-72",
+      "name": "Nutrition log (food search & photo-AI review)",
+      "purpose": "Search-first food logging with all four pathways from one screen (search, barcode, photo, describe), plus a correction-loop review UI that teaches personal aliases.",
+      "casualLayer": "Favorites/recents/'my usual breakfast' one-tap re-logging; a quick-calories fallback logged honestly as low-detail; passive nutrition state invites a first meal instead of showing 0g/0g/0g; offline logging fully works.",
+      "powerLayer": "Photo-AI multi-item detection with per-item High/Med/Low confidence chips and ± portion sliders; every correction writes a device-local personal alias that pre-resolves next time; recipe builder with per-serving math; micronutrient dot-matrix and auto-tags (late-meal, high-added-sugar) with uncertainty hints.",
+      "components": [
+        "FoodSearchBar",
+        "VerifiedResultRow",
+        "MyFoodsTabs",
+        "PortionStepper",
+        "MealSlotPicker",
+        "CandidateItemCard",
+        "AliasBadge",
+        "AddMissedItemChip",
+        "SaveBar"
+      ],
+      "copyEn": [
+        "My usual breakfast",
+        "Detected: flatbread, medium confidence, portion 80 g — adjustable",
+        "Search limited — showing your saved and cached foods",
+        "Not sure — want to describe it instead?"
+      ]
+    },
+    {
+      "id": "S-61",
+      "name": "Export Center",
+      "purpose": "The flagship trust feature's cockpit: format cards, a four-step scope picker, templates, history with checksums, and (Pro) schedules — one-off full-archive exports are free forever.",
+      "casualLayer": "Reaches curated one-tap versions of the same engine ('Share this week'); template gallery (Physician visit, Sleep study, Training block, Full archive) and simple format cards with size estimates.",
+      "powerLayer": "Custom four-step scope (metrics/date/sources/options), unit profile + display language, include-suppressed-duplicates toggle, job progress with per-metric resume-after-kill, checksum verify, scheduled exports (RRULE) and personal API; sensitive-class (cycle) inclusion requires an explicit confirm gate.",
+      "components": [
+        "FormatCardRow",
+        "ScopePicker",
+        "TemplateGallery",
+        "JobProgressCard",
+        "ExportHistoryList",
+        "SchedulesSection",
+        "SensitiveClassGate"
+      ],
+      "copyEn": [
+        "Export: everything, always",
+        "Personal wellness records collected by consumer devices and self-reports; not a medical record; accuracy varies by device.",
+        "Include cycle data in this export?",
+        "Verify checksum"
+      ]
+    },
+    {
+      "id": "S-100",
+      "name": "Settings root",
+      "purpose": "The complete configuration tree — one screen deep to everything (account, membership, appearance, modules, calculations, data & privacy, automation, resources) as a modal that X-closes.",
+      "casualLayer": "Status rows summarize current values with chevrons; module toggles show a live-preview mockup and a consequence warning before any destructive hide; local-only accounts see a calm 'device only' state card.",
+      "powerLayer": "Per-metric unit overrides (mmol/L↔mg/dL, kg↔lb, °C↔°F), multi-method HR zones, Calculations panel (HRV RMSSD-from-raw-beats, sampling windows) each linking its algorithm page, depth dial with per-surface overrides, notification self-audit, and settings FTS search.",
+      "components": [
+        "SettingsSection",
+        "StatusRow",
+        "ModulePreviewSwitch",
+        "SettingsSearchBar",
+        "CalculationsSheet",
+        "UnitsSheet",
+        "HrZonesEditor",
+        "NotificationsMatrixSheet"
+      ],
+      "copyEn": [
+        "Device only",
+        "Hiding Nutrition disables all related features and screens.",
+        "BADAN sent you 3 notifications this week",
+        "Your scores were re-derived after this change."
+      ]
+    },
+    {
+      "id": "S-59 / S-60",
+      "name": "Provenance / Source detail (lineage & data sources)",
+      "purpose": "Per-sample provenance — the full chain plus the dedup decision (S-59) — and the data-sources manager with per-metric source counts, priority ordering, and health monitoring (S-60).",
+      "casualLayer": "Reached only when curiosity strikes; the lineage sheet reads as a plain vertical chain (device → app → OS store → BADAN ingest → normalization → dedup); Data Sources shows healthy/degraded rows with fix paths.",
+      "powerLayer": "Dedup decision card naming the winning record and rule, competitor cross-navigation, transform log, and 'copy sample JSON'; Data Sources adds drag-reorder priority that flips dedup tie-breaks (with a visible recompute note) and per-metric hide toggles.",
+      "components": [
+        "ProvenanceChain",
+        "DedupDecisionCard",
+        "FlagList",
+        "TransformLog",
+        "SourceHealthList",
+        "PerMetricSourceTable",
+        "PriorityReorderList",
+        "HideSourceToggleRow"
+      ],
+      "copyEn": [
+        "Suppressed duplicate of ✓ Apple Watch sample — rule: device-priority",
+        "14 duplicates suppressed this week",
+        "Recorded before lineage v2",
+        "Received 8:02 · Processed 8:03"
+      ]
+    },
+    {
+      "id": "S-90 / S-32 / S-33",
+      "name": "Insights / Reports (Coach, digests & annual)",
+      "purpose": "The interpretation layer's home: expanded narrative and insight feed with evidence links and feedback (S-90), plus weekly/monthly digests (S-32) and the story-format Year-in-Body annual report (S-33) — every claim deep-links its evidence.",
+      "casualLayer": "Narrative-only reading at a B1 level with a 👍/👎 on each insight; digests arrive as a friendly narrative + key charts + 'what changed' table; provisional framing when baselines are still calibrating; AI-off leaves deterministic narrative intact and hides Ask.",
+      "powerLayer": "'Why am I seeing this' shows trigger + evidence + template id; grounded Ask-BADAN Q&A with a non-dismissible grounding footnote and a verifier that refuses to show unverified numbers; deep digest variant and annual decomposition; 'this doesn't match how I feel' feeds perceived-gap calibration.",
+      "components": [
+        "NarrativeCard",
+        "InsightCard",
+        "FeedbackButtons",
+        "AskField",
+        "GroundingFootnote",
+        "VerifierFallbackCard",
+        "DigestNarrativeBlock",
+        "WhatChangedTable",
+        "NextFocusCard",
+        "AnnualStoryPager"
+      ],
+      "copyEn": [
+        "This doesn't match how I feel",
+        "Data used: sleep sessions Jun 8–Jul 8 (30 nights, 2 sources) · HRV daily values (28 days) · baselines v12",
+        "I couldn't produce a fully verified answer to that.",
+        "Why am I seeing this?"
+      ]
+    }
+  ]
+}
