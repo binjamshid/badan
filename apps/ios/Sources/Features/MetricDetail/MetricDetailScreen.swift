@@ -87,30 +87,73 @@ struct MetricDetailData {
 
 // MARK: - View model
 
+/// Everything `MetricDetailViewModel.fetch` needs to run off the main actor (PERF-01) — the
+/// thread-safe repository references plus value-type snapshots of the profile/metric bits the
+/// query logic reads.
+struct MetricDetailFetchInputs {
+    var registry: MetricRegistry
+    var measurements: MeasurementRepository
+    var derivation: DerivationRepository
+    var catalog: CatalogRepository
+    var reconciliation: ReconciliationRepository
+    var depth: DepthPolicy
+    var now: Date
+    var metricId: String
+}
+
 @Observable
 @MainActor
 final class MetricDetailViewModel {
     var state: LoadState<MetricDetailData> = .loading
 
-    /// Gather the metric's baseline, chart series, lineage and (for composites) its manifest.
-    func load(_ env: AppEnvironment, metricId: String) {
+    /// Gather the metric's baseline, chart series, lineage and (for composites) its manifest —
+    /// on a detached task so the most data-dense screen in the app never blocks the main thread
+    /// (PERF-01). A cancelled load (e.g. navigating to a different metric before this one
+    /// finished) never clobbers state.
+    func load(_ env: AppEnvironment, metricId: String) async {
+        let inputs = MetricDetailFetchInputs(
+            registry: env.registry, measurements: env.measurements, derivation: env.derivation,
+            catalog: env.catalog, reconciliation: env.reconciliation, depth: env.depth,
+            now: env.now(), metricId: metricId)
+
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Self.fetch(inputs)
+        }.value
+
+        guard !Task.isCancelled else { return }
+
+        switch outcome {
+        case .success(let data):
+            if data.fullSeries.isEmpty {
+                state = .empty(env.s(Loc.noDataMetric))
+            } else {
+                state = .loaded(data)
+            }
+        case .failure(let error):
+            state = .error(String(describing: error))
+        }
+    }
+
+    // MARK: Fetch core (nonisolated — runs on a detached task)
+
+    nonisolated static func fetch(_ inputs: MetricDetailFetchInputs) -> Result<MetricDetailData, Error> {
         let tz = TimeZone.current.identifier
         do {
-            let def = env.registry.definitionOrFallback(metricId)
+            let def = inputs.registry.definitionOrFallback(inputs.metricId)
             // Casual mode never shows more than a fixed 30-day window, so only power mode
             // needs to fetch the full period-selector range up front (PERF-038).
-            let fetchDays = env.depth.showsPowerDetail ? metricDetailMaxPeriodDays : 30
-            let from = env.now().addingTimeInterval(-Double(fetchDays) * 86_400)
+            let fetchDays = inputs.depth.showsPowerDetail ? metricDetailMaxPeriodDays : 30
+            let from = inputs.now.addingTimeInterval(-Double(fetchDays) * 86_400)
 
-            let intervals = try env.measurements.intervalRecords(metricId: metricId, from: from, to: env.now())
-            let derivedSeries = try env.derivation.latestDerivedSeries(metricId: metricId)
-            let baseline = try env.derivation.latestBaseline(metricId: metricId)
+            let intervals = try inputs.measurements.intervalRecords(metricId: inputs.metricId, from: from, to: inputs.now)
+            let derivedSeries = try inputs.derivation.latestDerivedSeries(metricId: inputs.metricId)
+            let baseline = try inputs.derivation.latestBaseline(metricId: inputs.metricId)
 
             // The single most recent derived value drives the anatomy manifest.
             let latestDerived = derivedSeries.max { $0.computedAt < $1.computedAt }
             let manifest: InputManifest?
             if let manifestId = latestDerived?.inputManifestId {
-                manifest = try env.derivation.manifest(id: manifestId)
+                manifest = try inputs.derivation.manifest(id: manifestId)
             } else {
                 manifest = nil
             }
@@ -121,14 +164,14 @@ final class MetricDetailViewModel {
             let sourceNames: [String: String]
             if !intervals.isEmpty {
                 sourceNames = Dictionary(
-                    try env.catalog.sources().map { ($0.id, $0.displayName) },
+                    try inputs.catalog.sources().map { ($0.id, $0.displayName) },
                     uniquingKeysWith: { a, _ in a })
             } else {
                 sourceNames = [:]
             }
 
             // Only sleep time-asleep surfaces the dedup decision (one kept, one suppressed).
-            let dedup = metricId == MetricID.timeAsleep ? (try env.reconciliation.recent(limit: 6)) : []
+            let dedup = inputs.metricId == MetricID.timeAsleep ? (try inputs.reconciliation.recent(limit: 6)) : []
 
             let fullSeries: [(date: Date, value: Double)]
             if !intervals.isEmpty {
@@ -144,13 +187,9 @@ final class MetricDetailViewModel {
                 latestDerivedValue: latestDerived, manifest: manifest, sourceNames: sourceNames,
                 recentDedup: dedup, fullSeries: fullSeries)
 
-            if data.fullSeries.isEmpty {
-                state = .empty(env.s(Loc.noDataMetric))
-            } else {
-                state = .loaded(data)
-            }
+            return .success(data)
         } catch {
-            state = .error(String(describing: error))
+            return .failure(error)
         }
     }
 }
@@ -215,7 +254,7 @@ struct MetricDetailScreen: View {
         }
         // Reload on any profile change (language/units/depth), not just first appearance, so
         // the most data-dense screen in the app never shows stale-language content (OPT-040).
-        .task(id: env.profile) { vm.load(env, metricId: metricId) }
+        .task(id: env.profile) { await vm.load(env, metricId: metricId) }
     }
 
     // MARK: Body composition

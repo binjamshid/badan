@@ -25,23 +25,40 @@ final class ViewModelPerformanceTests: XCTestCase {
         tempDir = nil
     }
 
+    /// `measure {}` doesn't support `async` — these now exercise the extracted, nonisolated
+    /// fetch cores directly (PERF-01 split `load()` into a main-actor dispatcher + a pure
+    /// fetch function), which is exactly the query cost this regression guard was written to
+    /// track in the first place.
     func testHomeViewModelLoadPerformance() {
+        let inputs = HomeFetchInputs(
+            measurements: env.measurements, derivation: env.derivation, catalog: env.catalog,
+            logging: env.logging, insightsRepo: env.insightsRepo, registry: env.registry,
+            format: env.format, language: env.language, depth: env.depth,
+            nutritionEnabled: env.profile.nutritionEnabled,
+            sensitiveModulesEnabled: env.profile.sensitiveModulesEnabled,
+            now: env.now())
         measure {
-            let vm = HomeViewModel()
-            vm.load(env)
+            _ = HomeViewModel.fetch(inputs)
         }
     }
 
     func testBodyViewModelLoadPerformance() {
+        let inputs = BodyFetchInputs(
+            registry: env.registry, derivation: env.derivation, measurements: env.measurements,
+            now: env.now())
         measure {
-            let vm = BodyViewModel()
-            vm.load(env)
+            _ = BodyViewModel.fetch(inputs)
         }
     }
 
     func testTimelineAssemblerPerformance() {
+        let assembler = TimelineAssembler(
+            measurements: env.measurements, logging: env.logging, registry: env.registry,
+            symptoms: env.symptoms, format: env.format, language: env.language,
+            sensitiveModulesEnabled: env.profile.sensitiveModulesEnabled,
+            nutritionEnabled: env.profile.nutritionEnabled, now: env.now())
         measure {
-            _ = try? TimelineAssembler(env: env).assemble()
+            _ = try? assembler.assemble()
         }
     }
 }
