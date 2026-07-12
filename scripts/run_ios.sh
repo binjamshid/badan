@@ -4,7 +4,7 @@
 set -euo pipefail
 IOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../apps/ios" && pwd)"
 SIM="${1:-iPhone 17}"
-BUNDLE_ID="net.albayyan.badan"
+BUNDLE_ID="net.binjamshid.badan"
 
 cd "$IOS_DIR"
 echo "▸ Generating project…"

@@ -12,7 +12,7 @@ config-ready**; the remaining steps require your Apple credentials and must be d
   anytime with real artwork; the wiring stays the same.
 - **Versioning** — `MARKETING_VERSION 0.1.0`, `CURRENT_PROJECT_VERSION 1` (project.yml).
   Info.plist `CFBundleShortVersionString`/`CFBundleVersion` reference them.
-- **Bundle identifier** — `net.albayyan.badan`.
+- **Bundle identifier** — `net.binjamshid.badan`.
 - **Export-compliance** — `ITSAppUsesNonExemptEncryption = false` in Info.plist (app uses
   only standard HTTPS + SHA-256, which is exempt), so uploads skip the encryption question.
 - **HealthKit purpose strings** — present in Info.plist. See the HealthKit note below.
@@ -23,10 +23,10 @@ config-ready**; the remaining steps require your Apple credentials and must be d
 ## What only you can do (credential / account gated)
 
 1. **Apple Developer Program** — enroll ($99/yr) if not already: <https://developer.apple.com/programs/>.
-2. **Register the bundle ID** `net.albayyan.badan` (Certificates, Identifiers & Profiles ▸ Identifiers).
+2. **Register the bundle ID** `net.binjamshid.badan` (Certificates, Identifiers & Profiles ▸ Identifiers).
    - Enable the **HealthKit** capability on it **only if** you keep HealthKit linked — see note below.
 3. **Create the app record** in App Store Connect (<https://appstoreconnect.apple.com>):
-   - Platform iOS, name "BADAN", bundle ID `net.albayyan.badan`, SKU (any unique string).
+   - Platform iOS, name "BADAN", bundle ID `net.binjamshid.badan`, SKU (any unique string).
 4. **Sign in to Xcode** with an account on that team: Xcode ▸ Settings ▸ Accounts. This lets
    Automatic signing fetch a Distribution provisioning profile — no manual certs needed.
 5. **Find your Team ID** — the 10-character string in the Apple Developer portal (Membership),
