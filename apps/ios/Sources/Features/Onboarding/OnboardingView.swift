@@ -16,6 +16,19 @@ struct OnboardingView: View {
 
     @State private var step = 0
     @State private var selectedDepth: DepthPolicy?
+    /// FEAT-01: local UI state for the real HealthKit connect attempt on `connectPage`. Not
+    /// persisted — only `env.isHealthKitConnected`/`env.onboardingComplete` survive past this
+    /// screen.
+    @State private var connectState: ConnectState = .idle
+
+    private enum ConnectState {
+        case idle
+        case connecting
+        /// Authorization was denied or HealthKit is unavailable on this device/simulator — shown
+        /// as a calm inline notice rather than navigating away immediately, so the user actually
+        /// sees the reassurance before onboarding completes.
+        case unavailable
+    }
 
     // FEAT-239/FEAT-248: onboarding is the first screen every user sees, so its page
     // transitions and toggle animations are the highest-visibility instance of the app's
@@ -330,14 +343,28 @@ struct OnboardingView: View {
                     Spacer(minLength: 0)
 
                     VStack(spacing: BadanSpace.space3) {
-                        primaryButton(Self.connectPrimary) { env.completeOnboarding() }
-                        Button { env.completeOnboarding() } label: {
-                            Text(env.s(Loc.continueWithoutConnecting))
-                                .font(BadanFont.body)
-                                .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                        if connectState == .unavailable {
+                            Text(env.s(Self.connectUnavailableNotice))
+                                .font(BadanFont.bodyCompact)
                                 .foregroundStyle(BadanColor.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, BadanSpace.space2)
+                            primaryButton(Loc.done) { env.completeOnboarding() }
+                        } else {
+                            primaryButton(connectState == .connecting ? Self.connecting : Self.connectPrimary) {
+                                startConnect()
+                            }
+                            .disabled(connectState == .connecting)
+                            .opacity(connectState == .connecting ? 0.7 : 1)
+                            Button { env.completeOnboarding() } label: {
+                                Text(env.s(Loc.continueWithoutConnecting))
+                                    .font(BadanFont.body)
+                                    .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(connectState == .connecting)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
                 .frame(minHeight: proxy.size.height)
@@ -375,6 +402,23 @@ struct OnboardingView: View {
     }
 
     // MARK: - Shared building blocks
+
+    /// FEAT-01: request real HealthKit authorization; on grant, hand off to the shell right
+    /// away (the backfill ingest keeps running in the background — see
+    /// `AppEnvironment.connectHealthKit`). On denial/unavailable, stay on this page and show a
+    /// calm notice instead of silently completing, so the user isn't left wondering what
+    /// happened to their tap.
+    private func startConnect() {
+        connectState = .connecting
+        Task {
+            let granted = await env.connectHealthKit()
+            if granted {
+                env.completeOnboarding()
+            } else {
+                connectState = .unavailable
+            }
+        }
+    }
 
     private func primaryButton(_ label: LocalizedString, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -473,4 +517,10 @@ struct OnboardingView: View {
         ar: "اربط مصدراً الآن أو أضِفه لاحقاً — يعمل بدن في الحالتين.")
 
     private static let connectPrimary = LocalizedString(en: "Connect health data", ar: "ربط البيانات الصحية")
+
+    // FEAT-01: real HealthKit connect states.
+    private static let connecting = LocalizedString(en: "Connecting…", ar: "جارٍ الاتصال…")
+    private static let connectUnavailableNotice = LocalizedString(
+        en: "We couldn't connect right now. You can connect later from Sources.",
+        ar: "تعذّر الاتصال الآن. يمكنك الاتصال لاحقاً من صفحة المصادر.")
 }

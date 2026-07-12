@@ -26,11 +26,12 @@ final class SourcesViewModel {
 
     /// Sources-specific empty copy: this screen's whole job is connecting a source, so its
     /// empty state should say that rather than reuse the generic "Nothing here yet" text
-    /// (EASE-196). A connect action isn't wired here — `StatefulContainer`'s `.empty` case
-    /// doesn't carry one yet; only the message is Sources-specific for now.
+    /// (EASE-196). FEAT-01: previously pointed users to "Settings," which had no connect
+    /// control and looped back here — now points at the Connect card this screen itself renders
+    /// (`SourcesConnectCard`, shown above the `StatefulContainer` content in every load state).
     private static let noSourcesYet = LocalizedString(
-        en: "No sources connected yet. Connect Apple Health or another source from Settings to see your data here.",
-        ar: "لا مصادر متصلة بعد. اربط صحة آبل أو مصدراً آخر من الإعدادات لرؤية بياناتك هنا.")
+        en: "No sources connected yet. Connect Apple Health above to see your data here.",
+        ar: "لا مصادر متصلة بعد. اربط صحة آبل أعلاه لرؤية بياناتك هنا.")
 
     func load(_ env: AppEnvironment) {
         do {
@@ -73,30 +74,126 @@ struct SourcesScreen: View {
         ar: "عندما يُبلّغ مصدران عن القراءة نفسها، يحتفظ بدن بالقراءة من المصدر الأعلى أولوية (مثل جهاز المعصم مقابل الهاتف) ويضع الأخرى جانباً بهدوء. لا يُحذف شيء — ويمكن التراجع عن وضعها جانباً.")
 
     var body: some View {
-        StatefulContainer(vm.state, emptyIcon: "antenna.radiowaves.left.and.right") { data in
-            ScrollView {
-                VStack(alignment: .leading, spacing: BadanSpace.space4) {
-                    if !data.sources.isEmpty {
-                        SectionHeader(env.s(Loc.dataSources))
-                        ForEach(data.sources) { info in
-                            SourcesSourceCard(info: info, devicesLabel: Self.devicesLabel)
-                        }
-                    }
-
-                    SectionHeader(env.s(Self.permissionsHeader))
-                        .padding(.top, data.sources.isEmpty ? 0 : BadanSpace.space2)
-                    SourcesPermissionCard(data: data, emptyNote: Self.noPermissions)
-
-                    // Shown at every depth (not just power): which source "wins" a duplicate
-                    // reading is a plain-language question casual users hit too (EASE-122).
-                    SourcesPriorityNote(title: Self.priorityTitle, note: Self.priorityNote)
+        // FEAT-01: the Connect card lives outside `StatefulContainer`'s switch so it renders in
+        // every load state (loading/empty/error/loaded) whenever real HealthKit isn't connected
+        // yet — `StatefulContainer`'s `.empty` case only carries a message, no action, so an
+        // always-present card here (rather than something bolted onto `.empty` alone) is what
+        // actually fits its shape (also satisfies "Apple Health isn't among sources": once
+        // connected, `env.isHealthKitConnected` flips and the card disappears for good).
+        ScrollView {
+            VStack(alignment: .leading, spacing: BadanSpace.space4) {
+                if !env.isHealthKitConnected {
+                    SourcesConnectCard { vm.load(env) }
                 }
-                .padding(BadanSpace.space4)
+
+                StatefulContainer(vm.state, emptyIcon: "antenna.radiowaves.left.and.right") { data in
+                    VStack(alignment: .leading, spacing: BadanSpace.space4) {
+                        if !data.sources.isEmpty {
+                            SectionHeader(env.s(Loc.dataSources))
+                            ForEach(data.sources) { info in
+                                SourcesSourceCard(info: info, devicesLabel: Self.devicesLabel)
+                            }
+                        }
+
+                        SectionHeader(env.s(Self.permissionsHeader))
+                            .padding(.top, data.sources.isEmpty ? 0 : BadanSpace.space2)
+                        SourcesPermissionCard(data: data, emptyNote: Self.noPermissions)
+
+                        // Shown at every depth (not just power): which source "wins" a duplicate
+                        // reading is a plain-language question casual users hit too (EASE-122).
+                        SourcesPriorityNote(title: Self.priorityTitle, note: Self.priorityNote)
+                    }
+                }
             }
+            .padding(BadanSpace.space4)
         }
         .background(BadanColor.background.ignoresSafeArea())
         .navigationTitle(env.s(Loc.dataSources))
         .task(id: env.profile) { vm.load(env) }
+    }
+}
+
+// MARK: - Connect card (FEAT-01)
+
+/// The one real "connect a source" control in the app — Onboarding's connect step and Home's
+/// "Connect a source" empty-state link both eventually land here. Shown whenever real HealthKit
+/// isn't connected yet, regardless of what other (manual/demo) sources exist.
+private struct SourcesConnectCard: View {
+    @Environment(AppEnvironment.self) private var env
+    /// Re-run the screen's load after a successful connect, so the newly ingested source shows
+    /// up without waiting for the next `.task(id:)` trigger.
+    let onConnected: () -> Void
+
+    @State private var isConnecting = false
+    @State private var showUnavailableNotice = false
+
+    private static let title = LocalizedString(en: "Connect Apple Health", ar: "اربط صحة آبل")
+    private static let subtitle = LocalizedString(
+        en: "Bring in sleep, heart rate, and steps from Apple Health. Raw data is never locked away.",
+        ar: "أضِف بيانات النوم ومعدل القلب والخطوات من صحة آبل. البيانات الخام لا تُحجب أبداً.")
+    private static let action = LocalizedString(en: "Connect", ar: "اتصال")
+    private static let connecting = LocalizedString(en: "Connecting…", ar: "جارٍ الاتصال…")
+    private static let unavailableNotice = LocalizedString(
+        en: "We couldn't connect right now. You can try again anytime.",
+        ar: "تعذّر الاتصال الآن. يمكنك المحاولة مرة أخرى في أي وقت.")
+    /// Legible white/near-black on the primary teal in both themes (no shared design-system
+    /// token for this yet — every screen with a filled primary button defines its own, matching
+    /// `OnboardingView`/`MedicationLogView`).
+    private static let onPrimary = Color(light: "#FFFFFF", dark: "#08201D")
+
+    var body: some View {
+        BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                HStack(alignment: .top, spacing: BadanSpace.space3) {
+                    Image(systemName: "heart.text.square.fill")
+                        .imageScale(.large)
+                        .foregroundStyle(BadanColor.primary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                        LText(Self.title)
+                            .font(BadanFont.body.weight(.semibold))
+                            .foregroundStyle(BadanColor.textPrimary)
+                        LText(Self.subtitle)
+                            .font(BadanFont.bodyCompact)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if showUnavailableNotice {
+                    LText(Self.unavailableNotice)
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
+
+                Button(action: connect) {
+                    Text(env.s(isConnecting ? Self.connecting : Self.action))
+                        .font(BadanFont.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                        .foregroundStyle(Self.onPrimary)
+                        .background(BadanColor.primary,
+                                   in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isConnecting)
+                .opacity(isConnecting ? 0.7 : 1)
+            }
+        }
+    }
+
+    private func connect() {
+        isConnecting = true
+        showUnavailableNotice = false
+        Task {
+            let granted = await env.connectHealthKit()
+            isConnecting = false
+            if granted {
+                onConnected()
+            } else {
+                showUnavailableNotice = true
+            }
+        }
     }
 }
 

@@ -178,7 +178,11 @@ enum Schema {
             """,
             "CREATE TABLE customization_profile (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);",
             "CREATE TABLE metric_pins (metric_id TEXT PRIMARY KEY, pinned_at INTEGER NOT NULL);",
-            // Reserved, unused in MVP (sync-ready / import-ready scaffolding).
+            // FEAT-01: backs `ReadAnchorRepository` — `HealthKitAdapter` persists one
+            // NSKeyedArchiver-encoded `HKQueryAnchor` per HealthKit type here so a real backfill
+            // resumes incrementally instead of re-scanning full history. `resetAll()` drops this
+            // table like every other main-DB table, which is exactly what a real backfill
+            // restart needs.
             "CREATE TABLE read_anchors (store TEXT NOT NULL, platform_type TEXT NOT NULL, anchor BLOB, updated_at INTEGER NOT NULL, PRIMARY KEY (store, platform_type));",
             "CREATE TABLE import_batches (id TEXT PRIMARY KEY, source_kind TEXT NOT NULL, file_name TEXT, state TEXT NOT NULL, chunk_cursor TEXT, counts TEXT, created_at INTEGER NOT NULL);",
             "CREATE TABLE sync_cursors (scope_key TEXT NOT NULL, device_id TEXT NOT NULL, lamport INTEGER NOT NULL, last_synced_at INTEGER, PRIMARY KEY (scope_key, device_id));",

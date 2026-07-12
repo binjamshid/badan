@@ -15,7 +15,9 @@ config-ready**; the remaining steps require your Apple credentials and must be d
 - **Bundle identifier** — `net.binjamshid.badan`.
 - **Export-compliance** — `ITSAppUsesNonExemptEncryption = false` in Info.plist (app uses
   only standard HTTPS + SHA-256, which is exempt), so uploads skip the encryption question.
-- **HealthKit purpose strings** — present in Info.plist. See the HealthKit note below.
+- **HealthKit** — real reads are wired (`HealthKitAdapter`), the `com.apple.developer.healthkit`
+  entitlement is enabled (`apps/ios/App/BADAN.entitlements`), and the purpose string in
+  Info.plist names exactly what's read. See the HealthKit note below.
 - **Signing** — set to **Automatic**; `DEVELOPMENT_TEAM` is intentionally blank for you to fill.
 - **Archive tooling** — `scripts/archive_ios.sh <TEAM_ID>` + `apps/ios/ExportOptions.plist`.
 - Verified: Debug + Release both compile; 29 unit tests pass; icon compiles into the bundle.
@@ -24,7 +26,7 @@ config-ready**; the remaining steps require your Apple credentials and must be d
 
 1. **Apple Developer Program** — enroll ($99/yr) if not already: <https://developer.apple.com/programs/>.
 2. **Register the bundle ID** `net.binjamshid.badan` (Certificates, Identifiers & Profiles ▸ Identifiers).
-   - Enable the **HealthKit** capability on it **only if** you keep HealthKit linked — see note below.
+   - Enable the **HealthKit** capability on it — the app entitlement now requests it (see note below).
 3. **Create the app record** in App Store Connect (<https://appstoreconnect.apple.com>):
    - Platform iOS, name "BADAN", bundle ID `net.binjamshid.badan`, SKU (any unique string).
 4. **Sign in to Xcode** with an account on that team: Xcode ▸ Settings ▸ Accounts. This lets
@@ -65,18 +67,19 @@ TestFlight app. External testing (up to 10,000) needs a short Beta App Review.
   and stores health data only on-device; declare data collection accordingly (currently: none
   leaves the device).
 
-## HealthKit note (decide before submitting)
+## HealthKit note
 
-The binary **links** HealthKit (`HealthKitAdapter.swift`), but the running app **never calls
-it** — the only data source today is the seeded `FakeHealthStore`. So:
+As of FEAT-01, the app **actually uses** HealthKit: `HealthKitAdapter` performs real anchored
+reads (sleep, heart rate, resting heart rate, steps; 90-day backfill) once a user taps "Connect
+health data" in onboarding or "Connect" on the Data Sources screen. The
+`com.apple.developer.healthkit` entitlement is enabled (`apps/ios/App/BADAN.entitlements`,
+wired via `CODE_SIGN_ENTITLEMENTS` in `project.yml`), and the Info.plist purpose string names
+exactly what's read. Users who skip connecting still get the deterministic demo dataset —
+either path is honest about which one they're on (no HealthKit data is ever fabricated).
 
-- **Simplest first build (recommended):** leave it as-is. Do **not** enable the HealthKit
-  capability on the App ID and do **not** add an entitlement. The unused link is harmless for
-  TestFlight, and the purpose strings are already present. (For a full public App Store release,
-  Apple prefers that a linked-and-declared HealthKit app actually use it — so wire real reads,
-  add the `com.apple.developer.healthkit` entitlement, and enable the capability *then*.)
-- **If you'd rather ship zero HealthKit now:** tell me and I'll exclude `HealthKitAdapter.swift`
-  from the build so the framework isn't linked at all.
+Before submitting: enable the **HealthKit** capability on the registered App ID in the Apple
+Developer portal (step 2 above) — the entitlement alone doesn't provision it. Nothing else to
+decide here; there's no "leave it unused" path anymore.
 
 ## Bump the build number for each new TestFlight upload
 
