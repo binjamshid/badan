@@ -152,6 +152,17 @@ enum Loc {
     static let welcomeSubtitle = LocalizedString(en: "Your private health repository.", ar: "مستودع صحتك الخاص.")
     static let continueWithoutConnecting = LocalizedString(en: "Continue without connecting", ar: "المتابعة دون اتصال")
 
+    // MARK: Onboarding — first fact (NEW-01)
+    // Wellness-safe baseline-statement fallback used by `FirstFact` when no generated insight
+    // exists yet — hedged ("about", "lately"), self-referenced, no "healthy/normal" framing,
+    // matching `insight_templates.json`'s wellnessRules.
+    static let firstFactSleepBaseline = LocalizedString(
+        en: "You've been averaging about {value} of sleep lately.",
+        ar: "كنت تنام بمعدّل {value} تقريباً في الفترة الأخيرة.")
+    static let firstFactRHRBaseline = LocalizedString(
+        en: "Your resting heart rate has been averaging about {value} lately.",
+        ar: "كان معدّل نبضك أثناء الراحة حوالي {value} تقريباً في الفترة الأخيرة.")
+
     // MARK: Depth / provenance labels
     static let simpleView = LocalizedString(en: "Simple", ar: "مبسّط")
     static let detailedView = LocalizedString(en: "Detailed", ar: "مفصّل")
