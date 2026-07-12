@@ -81,17 +81,22 @@ final class BaselineEngine {
     /// composites still consider the full window, since they read across metrics); `nil`
     /// (the default) recomputes everything, preserving today's full-recompute behavior.
     func recomputeAll(asOf: Date, metricIds: [String]? = nil) throws {
-        let eligible = metricIds.map { ids in registry.baselineEligible.filter { ids.contains($0.metricId) } }
-            ?? registry.baselineEligible
-        for def in eligible {
-            try recompute(metricId: def.metricId, asOf: asOf)
+        // One transaction for the whole recompute instead of a commit+fsync per baseline/derived
+        // row: `derivation` is the only repo written here, so its connection covers every write
+        // this method makes (PERF-02 (audit 2026-07-12)).
+        try derivation.transaction {
+            let eligible = metricIds.map { ids in registry.baselineEligible.filter { ids.contains($0.metricId) } }
+                ?? registry.baselineEligible
+            for def in eligible {
+                try recompute(metricId: def.metricId, asOf: asOf)
+            }
+            // Fetched once and shared: both composites below independently need time_asleep for
+            // the same window, so this avoids querying it twice per recompute cycle.
+            let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
+            let asleepByDay = try latestPerDay(metricId: MetricID.timeAsleep, from: from, to: asOf)
+            try appendSleepEfficiency(asleepByDay: asleepByDay, asOf: asOf)
+            try appendReadinessScore(asleepByDay: asleepByDay, asOf: asOf)
         }
-        // Fetched once and shared: both composites below independently need time_asleep for
-        // the same window, so this avoids querying it twice per recompute cycle.
-        let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
-        let asleepByDay = try latestPerDay(metricId: MetricID.timeAsleep, from: from, to: asOf)
-        try appendSleepEfficiency(asleepByDay: asleepByDay, asOf: asOf)
-        try appendReadinessScore(asleepByDay: asleepByDay, asOf: asOf)
     }
 
     /// sleep.efficiency = time_asleep / time_in_bed * 100, per local day, for every day that

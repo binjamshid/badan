@@ -6,6 +6,13 @@ final class InsightRepository {
     private let db: SQLiteConnection
     init(_ db: SQLiteConnection) { self.db = db }
 
+    /// Run a batch of writes as a single transaction instead of one implicit commit+fsync per
+    /// row (PERF-02 (audit 2026-07-12)).
+    @discardableResult
+    func transaction<T>(_ body: () throws -> T) throws -> T {
+        try db.transaction(body)
+    }
+
     func insert(_ i: Insight) throws {
         try db.run("""
             INSERT OR REPLACE INTO insights

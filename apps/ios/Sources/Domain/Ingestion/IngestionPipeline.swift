@@ -37,6 +37,18 @@ final class IngestionPipeline {
     }
 
     func ingest(from port: HealthStorePort, range: HealthDateRange) throws -> IngestSummary {
+        // `measurements`, `catalog`, and `reconciliation` all share the same main-DB connection,
+        // so wrapping the whole ingest body here (rather than committing per row/session/night as
+        // before) turns what used to be hundreds of implicit WAL commit+fsyncs into one
+        // (PERF-02 (audit 2026-07-12)).
+        return try measurements.transaction {
+            try ingestUnbatched(from: port, range: range)
+        }
+    }
+
+    // MARK: - Ingest body (runs inside `measurements.transaction` above)
+
+    private func ingestUnbatched(from port: HealthStorePort, range: HealthDateRange) throws -> IngestSummary {
         let now = clock.now()
         var summary = IngestSummary()
 
