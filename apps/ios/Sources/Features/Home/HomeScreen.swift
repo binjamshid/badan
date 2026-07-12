@@ -95,7 +95,7 @@ struct HomeScreen: View {
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.today))
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: env.profile) { vm.load(env) }
+        .task(id: env.profile) { await vm.load(env) }
     }
 }
 
@@ -754,6 +754,33 @@ struct HomeData {
 
 // MARK: - View model
 
+/// Everything `HomeViewModel.fetch` needs to run off the main actor: the thread-safe repository
+/// references (locked `SQLiteConnection` underneath, PERF-01) plus value-type snapshots of the
+/// bits of `AppEnvironment` the query logic reads. Deliberately narrower than passing `env`
+/// itself, which is `@MainActor`-bound.
+struct HomeFetchInputs {
+    var measurements: MeasurementRepository
+    var derivation: DerivationRepository
+    var catalog: CatalogRepository
+    var logging: LoggingRepository
+    var insightsRepo: InsightRepository
+    var registry: MetricRegistry
+    var format: ValueFormatter
+    var language: AppLanguage
+    var depth: DepthPolicy
+    var nutritionEnabled: Bool
+    var sensitiveModulesEnabled: Bool
+    var now: Date
+}
+
+/// The result of the off-main fetch, before it's applied to `HomeViewModel.state` on the
+/// main actor.
+enum HomeFetchOutcome {
+    case loaded(HomeData)
+    case empty(hasConnectedSource: Bool)
+    case failure
+}
+
 @Observable
 @MainActor
 final class HomeViewModel {
@@ -769,34 +796,71 @@ final class HomeViewModel {
     private var lastLoadedProfile: CustomizationProfile?
     private static let staleThreshold: TimeInterval = 5
 
-    func load(_ env: AppEnvironment) {
+    /// Evaluates the staleness guard on the main actor, then (PERF-01) runs the actual queries
+    /// on a detached task against the thread-safe store so a Home reload never blocks the main
+    /// thread. A cancelled load (e.g. `.task(id:)` re-firing before this one finished) never
+    /// clobbers state — mirrors `AppEnvironment.bootstrap`'s `Task.isCancelled` guard.
+    func load(_ env: AppEnvironment) async {
         if case .loaded = state,
            let lastLoadedAt, let lastLoadedProfile, lastLoadedProfile == env.profile,
            env.now().timeIntervalSince(lastLoadedAt) < Self.staleThreshold {
             return
         }
 
+        let now = env.now()
+        let profileSnapshot = env.profile
+        let inputs = HomeFetchInputs(
+            measurements: env.measurements, derivation: env.derivation, catalog: env.catalog,
+            logging: env.logging, insightsRepo: env.insightsRepo, registry: env.registry,
+            format: env.format, language: env.language, depth: env.depth,
+            nutritionEnabled: profileSnapshot.nutritionEnabled,
+            sensitiveModulesEnabled: profileSnapshot.sensitiveModulesEnabled,
+            now: now)
+
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Self.fetch(inputs)
+        }.value
+
+        guard !Task.isCancelled else { return }
+
+        switch outcome {
+        case .loaded(let data):
+            lastLoadedAt = now
+            lastLoadedProfile = profileSnapshot
+            state = .loaded(data)
+        case .empty(let hasConnectedSource):
+            emptyHasConnectedSource = hasConnectedSource
+            state = .empty(hasConnectedSource ? env.s(HomeStrings.stillComingIn) : env.s(Loc.nothingYet))
+        case .failure:
+            state = .error(env.s(HomeStrings.genericLoadError))
+        }
+    }
+
+    // MARK: Fetch core (nonisolated — runs on a detached task)
+
+    /// The pure, synchronous query core — everything `load` used to do inline on the main
+    /// thread. Kept `internal` (not `private`) so `ViewModelPerformanceTests` can measure query
+    /// cost directly, same as before this change.
+    nonisolated static func fetch(_ inputs: HomeFetchInputs) -> HomeFetchOutcome {
         let signpostState = PerformanceLog.signposter.beginInterval("HomeViewModel.load")
         defer { PerformanceLog.signposter.endInterval("HomeViewModel.load", signpostState) }
 
         let tz = TimeZone.current.identifier
-        let now = env.now()
+        let now = inputs.now
         do {
-            let (readiness, dayOffset) = try latestReadiness(env, now: now, tz: tz)
-            let readinessProgress = readiness == nil ? readinessProgressDays(env) : nil
-            let sleep = try loadSleep(env, now: now, tz: tz)
-            let metrics = try loadMetrics(env, now: now)
-            let meds = try loadMeds(env, now: now, tz: tz)
-            let insight = try env.insightsRepo.recent(limit: 1).first
-            let (events, eventsPartial) = env.depth.showsPowerDetail ? loadEvents(env, now: now) : ([], false)
+            let (readiness, dayOffset) = try latestReadiness(inputs, now: now, tz: tz)
+            let readinessProgress = readiness == nil ? readinessProgressDays(inputs) : nil
+            let sleep = try loadSleep(inputs, now: now, tz: tz)
+            let metrics = try loadMetrics(inputs, now: now)
+            let meds = try loadMeds(inputs, now: now, tz: tz)
+            let insight = try inputs.insightsRepo.recent(limit: 1).first
+            let (events, eventsPartial) = inputs.depth.showsPowerDetail ? loadEvents(inputs, now: now) : ([], false)
 
             let hasAny = readiness != nil || sleep != nil || !metrics.isEmpty
                 || meds.active > 0 || insight != nil || !events.isEmpty
             guard hasAny else {
-                let hasConnectedSource = (try? env.catalog.sources())?.contains { $0.status == .active } ?? false
-                emptyHasConnectedSource = hasConnectedSource
-                state = .empty(hasConnectedSource ? env.s(HomeStrings.stillComingIn) : env.s(Loc.nothingYet))
-                return
+                let hasConnectedSource = (try? inputs.catalog.sources())?.contains { $0.status == .active } ?? false
+                return .empty(hasConnectedSource: hasConnectedSource)
             }
 
             let data = HomeData(
@@ -814,24 +878,22 @@ final class HomeViewModel {
                 recentEvents: events,
                 recentEventsPartial: eventsPartial
             )
-            lastLoadedAt = now
-            lastLoadedProfile = env.profile
-            state = .loaded(data)
+            return .loaded(data)
         } catch {
             #if DEBUG
             print("HomeViewModel.load failed: \(error)")
             #endif
-            state = .error(env.s(HomeStrings.genericLoadError))
+            return .failure
         }
     }
 
     // MARK: Readiness
 
-    private func latestReadiness(_ env: AppEnvironment, now: Date, tz: String) throws -> (value: DerivedValue?, dayOffset: Int) {
+    private nonisolated static func latestReadiness(_ inputs: HomeFetchInputs, now: Date, tz: String) throws -> (value: DerivedValue?, dayOffset: Int) {
         for offset in 0..<4 {
             let day = now.addingTimeInterval(Double(-offset) * 86_400)
             let key = DayAttribution.dayPeriodKey(day, tz: tz)
-            if let value = try env.derivation.latestDerived(metricId: "readiness.score", periodKey: key) {
+            if let value = try inputs.derivation.latestDerived(metricId: "readiness.score", periodKey: key) {
                 return (value, offset)
             }
         }
@@ -842,31 +904,31 @@ final class HomeViewModel {
     /// baselines) already have banked, so the "still learning" fallback can read as a countdown
     /// rather than an open-ended wait (EASE-139). Best-effort: a fetch failure here just means
     /// no progress hint is shown, never a broken Home load.
-    private func readinessProgressDays(_ env: AppEnvironment) -> Int? {
-        let sleepPoints = (try? env.derivation.latestBaseline(metricId: MetricID.timeAsleep))?.nPoints ?? 0
-        let rhrPoints = (try? env.derivation.latestBaseline(metricId: MetricID.restingHeartRate))?.nPoints ?? 0
+    private nonisolated static func readinessProgressDays(_ inputs: HomeFetchInputs) -> Int? {
+        let sleepPoints = (try? inputs.derivation.latestBaseline(metricId: MetricID.timeAsleep))?.nPoints ?? 0
+        let rhrPoints = (try? inputs.derivation.latestBaseline(metricId: MetricID.restingHeartRate))?.nPoints ?? 0
         return min(min(sleepPoints, rhrPoints), BaselineEngine.minPointsForConfident)
     }
 
     // MARK: Sleep
 
-    private func loadSleep(_ env: AppEnvironment, now: Date, tz: String) throws -> HomeSleepSummary? {
+    private nonisolated static func loadSleep(_ inputs: HomeFetchInputs, now: Date, tz: String) throws -> HomeSleepSummary? {
         let localNight = DayAttribution.localNight(sessionEnd: now, tz: tz)
         var seconds: Double?
-        if let session = try env.measurements.primarySleep(localNight: localNight) {
+        if let session = try inputs.measurements.primarySleep(localNight: localNight) {
             seconds = session.detail.timeAsleepSeconds ?? session.durationSeconds
-        } else if let interval = try env.measurements.latestInterval(metricId: MetricID.timeAsleep) {
+        } else if let interval = try inputs.measurements.latestInterval(metricId: MetricID.timeAsleep) {
             seconds = interval.value
         }
         guard let seconds else { return nil }
 
-        let baseline = try env.derivation.latestBaseline(metricId: MetricID.timeAsleep)
+        let baseline = try inputs.derivation.latestBaseline(metricId: MetricID.timeAsleep)
         let position = baseline?.position(of: seconds)
 
         let from = now.addingTimeInterval(-14 * 86_400)
         // Sparkline history is decorative, not primary content — a failure here should cost the
         // sparkline, not the whole Home screen (OPT-011).
-        let nights = (try? env.measurements.sessions(kind: .sleepPrimary, from: from, to: now)) ?? []
+        let nights = (try? inputs.measurements.sessions(kind: .sleepPrimary, from: from, to: now)) ?? []
         let spark = nights
             .sorted { $0.startAt < $1.startAt }
             .map { $0.detail.timeAsleepSeconds ?? $0.durationSeconds }
@@ -876,26 +938,26 @@ final class HomeViewModel {
 
     // MARK: Key metrics
 
-    private func loadMetrics(_ env: AppEnvironment, now: Date) throws -> [HomeKeyMetric] {
+    private nonisolated static func loadMetrics(_ inputs: HomeFetchInputs, now: Date) throws -> [HomeKeyMetric] {
         let ids = [MetricID.restingHeartRate, MetricID.hrv, MetricID.steps, MetricID.activeEnergy]
         let from = now.addingTimeInterval(-14 * 86_400)
         var result: [HomeKeyMetric] = []
         for id in ids {
-            guard let latest = try env.measurements.latestInterval(metricId: id) else { continue }
-            let def = env.registry.definitionOrFallback(id)
-            let baseline = try env.derivation.latestBaseline(metricId: id)
+            guard let latest = try inputs.measurements.latestInterval(metricId: id) else { continue }
+            let def = inputs.registry.definitionOrFallback(id)
+            let baseline = try inputs.derivation.latestBaseline(metricId: id)
             let position = baseline?.position(of: latest.value)
             // Sparkline history is decorative — isolate its failure from the primary
             // latest-value/baseline fetches above (OPT-011).
-            let spark = (try? env.measurements.intervalRecords(metricId: id, from: from, to: now))?.map(\.value) ?? []
-            let delta: String? = (env.depth.showsPowerDetail ? baseline : nil).map {
-                signedDelta(env, metricId: id, value: latest.value, center: $0.center)
+            let spark = (try? inputs.measurements.intervalRecords(metricId: id, from: from, to: now))?.map(\.value) ?? []
+            let delta: String? = (inputs.depth.showsPowerDetail ? baseline : nil).map {
+                signedDelta(inputs, metricId: id, value: latest.value, center: $0.center)
             }
             result.append(HomeKeyMetric(
                 metricId: id,
-                label: def.label(depth: env.depth, language: env.language),
-                heroValue: env.format.heroValue(metricId: id, canonicalValue: latest.value),
-                unit: env.format.unitLabel(metricId: id),
+                label: def.label(depth: inputs.depth, language: inputs.language),
+                heroValue: inputs.format.heroValue(metricId: id, canonicalValue: latest.value),
+                unit: inputs.format.unitLabel(metricId: id),
                 position: position,
                 deltaText: delta,
                 spark: spark,
@@ -906,29 +968,29 @@ final class HomeViewModel {
         return result
     }
 
-    private func signedDelta(_ env: AppEnvironment, metricId: String, value: Double, center: Double) -> String {
+    private nonisolated static func signedDelta(_ inputs: HomeFetchInputs, metricId: String, value: Double, center: Double) -> String {
         let delta = value - center
         let sign = delta >= 0 ? "+" : "\u{2212}"
-        let magnitude = env.format.heroValue(metricId: metricId, canonicalValue: abs(delta))
+        let magnitude = inputs.format.heroValue(metricId: metricId, canonicalValue: abs(delta))
         // Matches Insights' "vs your usual" wording (InsightsLoc.vsUsual) so the same comparison
         // doesn't read as two different concepts across adjacent tabs (EASE-149).
         let vs = LocalizedString(en: "vs your usual", ar: "مقارنةً بالمعتاد")
-        if let unit = env.format.unitLabel(metricId: metricId) {
-            return "\(sign)\(magnitude) \(unit) \u{00B7} \(env.s(vs))"
+        if let unit = inputs.format.unitLabel(metricId: metricId) {
+            return "\(sign)\(magnitude) \(unit) \u{00B7} \(vs.resolved(inputs.language))"
         }
-        return "\(sign)\(magnitude) \u{00B7} \(env.s(vs))"
+        return "\(sign)\(magnitude) \u{00B7} \(vs.resolved(inputs.language))"
     }
 
     // MARK: Meds
 
-    private func loadMeds(_ env: AppEnvironment, now: Date, tz: String) throws -> (due: Int, active: Int, firstDueName: String?) {
-        let active = try env.logging.regimens(activeOnly: true)
+    private nonisolated static func loadMeds(_ inputs: HomeFetchInputs, now: Date, tz: String) throws -> (due: Int, active: Int, firstDueName: String?) {
+        let active = try inputs.logging.regimens(activeOnly: true)
         let weekday = mondayBasedWeekday(now, tz: tz)
 
         let dayStart = DayAttribution.startOfDay(now, tz: tz)
         let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: tz)
         let handledByRegimen = Dictionary(
-            grouping: try env.logging.adherence(from: dayStart, to: dayEnd), by: \.regimenId
+            grouping: try inputs.logging.adherence(from: dayStart, to: dayEnd), by: \.regimenId
         ).mapValues(\.count)
 
         var due = 0
@@ -946,7 +1008,7 @@ final class HomeViewModel {
         return (due, active.count, firstDueName)
     }
 
-    private func mondayBasedWeekday(_ date: Date, tz: String) -> Int {
+    private nonisolated static func mondayBasedWeekday(_ date: Date, tz: String) -> Int {
         let cal = DayAttribution.calendar(tz: tz)
         let sundayBased = cal.component(.weekday, from: date) // 1 = Sunday ... 7 = Saturday
         return ((sundayBased + 5) % 7) + 1                    // 1 = Monday ... 7 = Sunday
@@ -954,40 +1016,40 @@ final class HomeViewModel {
 
     // MARK: Recent events (power timeline preview)
 
-    private func loadEvents(_ env: AppEnvironment, now: Date) -> (events: [HomeEvent], partial: Bool) {
+    private nonisolated static func loadEvents(_ inputs: HomeFetchInputs, now: Date) -> (events: [HomeEvent], partial: Bool) {
         // Reuses Timeline's own "recent" window so the two screens' notion of "recent" can't
         // silently diverge (OPT-008).
         let from = now.addingTimeInterval(-Double(TimelineAssembler.windowDays) * 86_400)
         var byType: [TimelineEventType: [HomeEvent]] = [:]
         var partial = false
 
-        if let workouts = try? env.logging.workouts(from: from, to: now) {
+        if let workouts = try? inputs.logging.workouts(from: from, to: now) {
             byType[.workout] = workouts.map {
                 HomeEvent(id: "w:\($0.id)", type: .workout, occurredAt: $0.startAt, detail: $0.activityType)
             }
         } else { partial = true }
 
-        if let notes = try? env.logging.notes(from: from, to: now) {
+        if let notes = try? inputs.logging.notes(from: from, to: now) {
             byType[.note] = notes.map {
                 HomeEvent(id: "n:\($0.id)", type: .note, occurredAt: $0.occurredAt, detail: $0.text)
             }
         } else { partial = true }
 
-        if env.profile.nutritionEnabled {
-            if let meals = try? env.logging.nutrition(from: from, to: now) {
+        if inputs.nutritionEnabled {
+            if let meals = try? inputs.logging.nutrition(from: from, to: now) {
                 byType[.meal] = meals.map {
                     HomeEvent(id: "m:\($0.id)", type: .meal, occurredAt: $0.occurredAt, detail: $0.description)
                 }
             } else { partial = true }
         }
 
-        if env.profile.sensitiveModulesEnabled {
-            if let symptoms = try? env.logging.symptoms(from: from, to: now) {
+        if inputs.sensitiveModulesEnabled {
+            if let symptoms = try? inputs.logging.symptoms(from: from, to: now) {
                 byType[.symptom] = symptoms.map {
                     HomeEvent(id: "s:\($0.id)", type: .symptom, occurredAt: $0.occurredAt, detail: nil)
                 }
             } else { partial = true }
-            if let doses = try? env.logging.adherence(from: from, to: now) {
+            if let doses = try? inputs.logging.adherence(from: from, to: now) {
                 byType[.medication] = doses.map {
                     HomeEvent(id: "a:\($0.id)", type: .medication, occurredAt: $0.occurredAt, detail: nil)
                 }
@@ -1030,7 +1092,7 @@ final class HomeViewModel {
         static let balanced = 45.0
     }
 
-    private func narrative(for readiness: DerivedValue?, sleep: HomeSleepSummary?) -> LocalizedString {
+    private nonisolated static func narrative(for readiness: DerivedValue?, sleep: HomeSleepSummary?) -> LocalizedString {
         guard let readiness else {
             return LocalizedString(en: "Here's your day at a glance.", ar: "إليك يومك بلمحة.")
         }

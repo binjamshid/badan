@@ -6,9 +6,21 @@ import Foundation
 /// raw samples. Every row carries its own provenance (ingestion path) so the Timeline can show
 /// "where this came from" without a join. Sensitive rows (meds/symptoms) are gated behind the
 /// same module switches that govern the sensitive database.
-@MainActor
+///
+/// Deliberately *not* `@MainActor` (PERF-01): it no longer holds the `@MainActor`-bound
+/// `AppEnvironment` directly, only the thread-safe repository references plus value-type
+/// snapshots of the profile/format bits it needs, so `TimelineViewModel.load` can run
+/// `assemble()` on a detached task.
 struct TimelineAssembler {
-    let env: AppEnvironment
+    let measurements: MeasurementRepository
+    let logging: LoggingRepository
+    let registry: MetricRegistry
+    let symptoms: SymptomDictionary
+    let format: ValueFormatter
+    let language: AppLanguage
+    let sensitiveModulesEnabled: Bool
+    let nutritionEnabled: Bool
+    let now: Date
 
     /// How far back the unified spine reaches.
     static let windowDays = 21
@@ -18,48 +30,47 @@ struct TimelineAssembler {
         let signpostState = PerformanceLog.signposter.beginInterval("TimelineAssembler.assemble")
         defer { PerformanceLog.signposter.endInterval("TimelineAssembler.assemble", signpostState) }
 
-        let now = env.now()
         let from = now.addingTimeInterval(-Double(Self.windowDays) * 86_400)
         let to = now
         var events: [TimelineEvent] = []
 
         // Sleep + workout episodes (auto-ingested; provenance-locked).
-        for session in try env.measurements.sessions(kind: .sleepPrimary, from: from, to: to) {
+        for session in try measurements.sessions(kind: .sleepPrimary, from: from, to: to) {
             events.append(sleepEvent(session))
         }
-        for session in try env.measurements.sessions(kind: .workout, from: from, to: to) {
+        for session in try measurements.sessions(kind: .workout, from: from, to: to) {
             events.append(workoutEvent(session))
         }
 
         // Meds + symptoms live in the sensitive store — only read when that module is on.
-        if env.profile.sensitiveModulesEnabled {
-            for symptom in try env.logging.symptoms(from: from, to: to) {
+        if sensitiveModulesEnabled {
+            for symptom in try logging.symptoms(from: from, to: to) {
                 events.append(symptomEvent(symptom))
             }
-            let regimens = try env.logging.regimens()
+            let regimens = try logging.regimens()
             let regimenById = Dictionary(regimens.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            for adherence in try env.logging.adherence(from: from, to: to) {
+            for adherence in try logging.adherence(from: from, to: to) {
                 events.append(medicationEvent(adherence, regimen: regimenById[adherence.regimenId]))
             }
         }
 
         // Meals are gated behind the nutrition module.
-        if env.profile.nutritionEnabled {
-            for meal in try env.logging.nutrition(from: from, to: to) {
+        if nutritionEnabled {
+            for meal in try logging.nutrition(from: from, to: to) {
                 events.append(mealEvent(meal))
             }
         }
 
         // Notes (normal sensitivity).
-        for note in try env.logging.notes(from: from, to: to) {
+        for note in try logging.notes(from: from, to: to) {
             events.append(noteEvent(note))
         }
 
         // Body measurements — any raw-sample metric in the body family (weight, body fat %,
         // lean mass, waist, …), not just weight, so any manually-logged body measurement
         // appears in the unified spine.
-        for def in env.registry.metrics(in: .body) where def.kind == .rawSample {
-            for sample in try env.measurements.rawSamples(metricId: def.metricId, from: from, to: to) {
+        for def in registry.metrics(in: .body) where def.kind == .rawSample {
+            for sample in try measurements.rawSamples(metricId: def.metricId, from: from, to: to) {
                 events.append(measurementEvent(sample, def: def))
             }
         }
@@ -75,7 +86,7 @@ struct TimelineAssembler {
         return TimelineEvent(
             id: "sleep:\(s.id)", type: .sleep, occurredAt: s.endAt, tzId: s.tzId,
             title: TimelineEventType.sleep.displayName,
-            valueText: env.format.duration(seconds: asleep),
+            valueText: format.duration(seconds: asleep),
             sourceRecordId: s.id, ingestionPath: s.provenance.ingestionPath,
             sensitive: false, deletable: false)
     }
@@ -85,7 +96,7 @@ struct TimelineAssembler {
         return TimelineEvent(
             id: "workout:\(s.id)", type: .workout, occurredAt: s.startAt, tzId: s.tzId,
             title: TimelineEventType.workout.displayName, subtitle: activity,
-            valueText: env.format.duration(seconds: s.durationSeconds),
+            valueText: format.duration(seconds: s.durationSeconds),
             sourceRecordId: s.id, ingestionPath: s.provenance.ingestionPath,
             sensitive: false, deletable: false)
     }
@@ -93,9 +104,9 @@ struct TimelineAssembler {
     private func symptomEvent(_ s: SymptomEntry) -> TimelineEvent {
         TimelineEvent(
             id: "symptom:\(s.id)", type: .symptom, occurredAt: s.occurredAt, tzId: s.tzId,
-            title: env.symptoms.displayName(forId: s.symptomId, customLabel: s.customLabel),
+            title: symptoms.displayName(forId: s.symptomId, customLabel: s.customLabel),
             subtitle: symptomSubtitle(s),
-            valueText: severityLabel(s.severity).map(env.s),
+            valueText: severityLabel(s.severity).map { $0.resolved(language) },
             sourceRecordId: s.id, ingestionPath: .manual,
             sensitive: true, deletable: false)
     }
@@ -113,7 +124,7 @@ struct TimelineAssembler {
         let subtitle = a.kind == .skipped ? (skipSubtitle(a) ?? strength) : strength
         return TimelineEvent(
             id: "medication:\(a.id)", type: .medication, occurredAt: a.occurredAt, tzId: a.tzId,
-            title: title, subtitle: subtitle, valueText: env.s(kindLabel(a.kind)),
+            title: title, subtitle: subtitle, valueText: kindLabel(a.kind).resolved(language),
             sourceRecordId: a.id, ingestionPath: .manual,
             sensitive: true, deletable: true)
     }
@@ -158,7 +169,7 @@ struct TimelineAssembler {
             id: "measurement:\(def.metricId):\(sample.id)", type: .measurement,
             occurredAt: sample.startAt, tzId: sample.tzId,
             title: def.displayName,
-            valueText: env.format.full(metricId: def.metricId, canonicalValue: sample.value),
+            valueText: format.full(metricId: def.metricId, canonicalValue: sample.value),
             sourceRecordId: sample.id, ingestionPath: sample.provenance.ingestionPath,
             sensitive: false, deletable: false)
     }
@@ -189,14 +200,14 @@ struct TimelineAssembler {
     /// site.
     private func caloriesText(_ kcal: Double) -> String {
         let count = Int(kcal.rounded())
-        guard env.language == .ar else {
-            return "\(env.format.integer(count)) kcal"
+        guard language == .ar else {
+            return "\(format.integer(count)) kcal"
         }
         switch count {
         case 1: return "سعرة واحدة"
         case 2: return "سعرتان"
-        case 3...10: return "\(env.format.integer(count)) سعرات"
-        default: return "\(env.format.integer(count)) سعرة"
+        case 3...10: return "\(format.integer(count)) سعرات"
+        default: return "\(format.integer(count)) سعرة"
         }
     }
 }

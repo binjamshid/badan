@@ -8,11 +8,26 @@ import SwiftUI
 final class TimelineViewModel {
     var state: LoadState<[TimelineEvent]> = .loading
 
-    func load(_ env: AppEnvironment) {
-        do {
-            let events = try TimelineAssembler(env: env).assemble()
+    /// Assembles the unified spine on a detached task (PERF-01) — Timeline's 7-store fan-out
+    /// used to run synchronously on the main thread every time a relevant profile field
+    /// changed. A cancelled load never clobbers state.
+    func load(_ env: AppEnvironment) async {
+        let assembler = TimelineAssembler(
+            measurements: env.measurements, logging: env.logging, registry: env.registry,
+            symptoms: env.symptoms, format: env.format, language: env.language,
+            sensitiveModulesEnabled: env.profile.sensitiveModulesEnabled,
+            nutritionEnabled: env.profile.nutritionEnabled, now: env.now())
+
+        let outcome = await Task.detached(priority: .userInitiated) { () -> Result<[TimelineEvent], Error> in
+            do { return .success(try assembler.assemble()) } catch { return .failure(error) }
+        }.value
+
+        guard !Task.isCancelled else { return }
+
+        switch outcome {
+        case .success(let events):
             state = events.isEmpty ? .empty(env.s(Loc.noEventsInRange)) : .loaded(events)
-        } catch {
+        case .failure(let error):
             state = .error(String(describing: error))
         }
     }
@@ -72,7 +87,7 @@ struct TimelineScreen: View {
         .searchable(text: $searchText, prompt: Text(searchPrompt.resolved(env.language)))
         // Reload the assembled read-model only when a field that actually affects Timeline's
         // rendered output changes (language, digits, units, depth, module toggles).
-        .task(id: relevantProfileState) { vm.load(env) }
+        .task(id: relevantProfileState) { await vm.load(env) }
         // Filters are a power affordance; switching away from power should clear a stale
         // selection instead of silently ignoring it while leaving it armed for next time.
         .onChange(of: env.depth) { _, newDepth in

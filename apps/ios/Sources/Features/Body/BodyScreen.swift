@@ -23,6 +23,15 @@ struct BodyData {
 
 // MARK: - View model
 
+/// Everything `BodyViewModel.fetch` needs to run off the main actor — the thread-safe
+/// registry/repository references plus a `now` snapshot (PERF-01).
+struct BodyFetchInputs {
+    var registry: MetricRegistry
+    var derivation: DerivationRepository
+    var measurements: MeasurementRepository
+    var now: Date
+}
+
 @Observable
 @MainActor
 final class BodyViewModel {
@@ -37,7 +46,9 @@ final class BodyViewModel {
     /// path below. Extending this dictionary for `.subjective`/`.other` needs new constants in
     /// `Domain/MetricID.swift`, which this bundle doesn't own — left as a known, intentional gap
     /// rather than hardcoding raw id strings here.
-    private static let headline: [MetricFamily: [String]] = [
+    /// `nonisolated` — read from `makePillar`, which now runs off the main actor (PERF-01); a
+    /// plain immutable `let` of `Sendable` value types is safe to hand to a nonisolated context.
+    private nonisolated static let headline: [MetricFamily: [String]] = [
         .sleep: [MetricID.timeAsleep, MetricID.sleepEfficiency],
         .heart: [MetricID.restingHeartRate, MetricID.hrv, MetricID.heartRate],
         .activity: [MetricID.steps, MetricID.activeEnergy, MetricID.distance, MetricID.exerciseMinutes],
@@ -54,43 +65,70 @@ final class BodyViewModel {
     private var lastLoadedProfile: CustomizationProfile?
     private static let staleThreshold: TimeInterval = 5
 
-    func load(_ env: AppEnvironment) {
+    /// Evaluates the staleness guard on the main actor, then (PERF-01) runs the actual queries
+    /// on a detached task so a Body reload — the widest store fan-out of any screen — never
+    /// blocks the main thread. A cancelled load never clobbers state.
+    func load(_ env: AppEnvironment) async {
         if case .loaded = state,
            let lastLoadedAt, let lastLoadedProfile, lastLoadedProfile == env.profile,
            env.now().timeIntervalSince(lastLoadedAt) < Self.staleThreshold {
             return
         }
 
-        let signpostState = PerformanceLog.signposter.beginInterval("BodyViewModel.load")
-        defer { PerformanceLog.signposter.endInterval("BodyViewModel.load", signpostState) }
+        let now = env.now()
+        let profileSnapshot = env.profile
+        let inputs = BodyFetchInputs(
+            registry: env.registry, derivation: env.derivation, measurements: env.measurements, now: now)
 
-        do {
-            var pillars: [BodyPillar] = []
-            for family in env.registry.families {
-                if let pillar = try makePillar(env, family: family) { pillars.append(pillar) }
-            }
-            lastLoadedAt = env.now()
-            lastLoadedProfile = env.profile
-            state = .loaded(BodyData(pillars: pillars))
-        } catch {
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Self.fetch(inputs)
+        }.value
+
+        guard !Task.isCancelled else { return }
+
+        switch outcome {
+        case .success(let data):
+            lastLoadedAt = now
+            lastLoadedProfile = profileSnapshot
+            state = .loaded(data)
+        case .failure(let error):
             // A genuine store failure, not "no data yet" — the try?-swallowing this replaced
             // made every DB error render identically to an empty Body tab (OPT-015).
             state = .error(String(describing: error))
         }
     }
 
-    private func makePillar(_ env: AppEnvironment, family: MetricFamily) throws -> BodyPillar? {
-        let eligible = env.registry.metrics(in: family).filter { $0.baselineEligible }
+    // MARK: Fetch core (nonisolated — runs on a detached task)
+
+    /// Kept `internal` (not `private`) so `ViewModelPerformanceTests` can measure query cost
+    /// directly, same as before this change.
+    nonisolated static func fetch(_ inputs: BodyFetchInputs) -> Result<BodyData, Error> {
+        let signpostState = PerformanceLog.signposter.beginInterval("BodyViewModel.load")
+        defer { PerformanceLog.signposter.endInterval("BodyViewModel.load", signpostState) }
+
+        do {
+            var pillars: [BodyPillar] = []
+            for family in inputs.registry.families {
+                if let pillar = try makePillar(inputs, family: family) { pillars.append(pillar) }
+            }
+            return .success(BodyData(pillars: pillars))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private nonisolated static func makePillar(_ inputs: BodyFetchInputs, family: MetricFamily) throws -> BodyPillar? {
+        let eligible = inputs.registry.metrics(in: family).filter { $0.baselineEligible }
         var candidates = Self.headline[family] ?? []
         candidates += eligible.map(\.metricId)
 
         var seen = Set<String>()
         for metricId in candidates where seen.insert(metricId).inserted {
-            let series = try recentSeries(env, metricId: metricId, windowDays: 12)
+            let series = try recentSeries(inputs, metricId: metricId, windowDays: 12)
             guard let latest = series.last?.value else { continue }
             // No trailing `?? nil` — `latestBaseline` already returns an honest `Baseline?`;
             // a thrown error now propagates instead of masquerading as "no baseline yet" (OPT-018).
-            let baseline = try env.derivation.latestBaseline(metricId: metricId)
+            let baseline = try inputs.derivation.latestBaseline(metricId: metricId)
             return BodyPillar(
                 family: family, metricId: metricId, latest: latest,
                 series: Array(series.suffix(7)), baseline: baseline,
@@ -105,18 +143,18 @@ final class BodyViewModel {
     /// (PERF-026); an empty result from a store is a legitimate "nothing recorded there" and
     /// keeps probing the next store, but a thrown error now propagates instead of being silently
     /// swallowed and retried as if it were just an empty store (OPT-019).
-    private func recentSeries(_ env: AppEnvironment, metricId: String, windowDays: Int) throws -> [(date: Date, value: Double)] {
-        let now = env.now()
+    private nonisolated static func recentSeries(_ inputs: BodyFetchInputs, metricId: String, windowDays: Int) throws -> [(date: Date, value: Double)] {
+        let now = inputs.now
         let from = now.addingTimeInterval(-Double(windowDays) * 86_400)
-        let def = env.registry.definitionOrFallback(metricId)
+        let def = inputs.registry.definitionOrFallback(metricId)
 
         if def.kind == .derived {
-            let pts = try derivedSeries(env, metricId: metricId, from: from)
+            let pts = try derivedSeries(inputs, metricId: metricId, from: from)
             if !pts.isEmpty { return pts }
         }
 
         if def.kind != .rawSample {
-            let recs = try env.measurements.intervalRecords(metricId: metricId, from: from, to: now)
+            let recs = try inputs.measurements.intervalRecords(metricId: metricId, from: from, to: now)
             if !recs.isEmpty {
                 var byDay: [String: IntervalRecord] = [:]
                 for r in recs {
@@ -131,16 +169,16 @@ final class BodyViewModel {
             }
         }
 
-        let raws = try env.measurements.rawSamples(metricId: metricId, from: from, to: now)
+        let raws = try inputs.measurements.rawSamples(metricId: metricId, from: from, to: now)
         if !raws.isEmpty {
             return raws.map { (date: $0.startAt, value: $0.value) }.sorted { $0.date < $1.date }
         }
 
-        return try derivedSeries(env, metricId: metricId, from: from)
+        return try derivedSeries(inputs, metricId: metricId, from: from)
     }
 
-    private func derivedSeries(_ env: AppEnvironment, metricId: String, from: Date) throws -> [(date: Date, value: Double)] {
-        let values = try env.derivation.latestDerivedSeries(metricId: metricId)
+    private nonisolated static func derivedSeries(_ inputs: BodyFetchInputs, metricId: String, from: Date) throws -> [(date: Date, value: Double)] {
+        let values = try inputs.derivation.latestDerivedSeries(metricId: metricId)
         guard !values.isEmpty else { return [] }
         let tz = TimeZone.current.identifier
         return values.compactMap { dv -> (date: Date, value: Double)? in
@@ -196,7 +234,7 @@ struct BodyScreen: View {
                 .accessibilityLabel(Text(Loc.search, language: env.language))
             }
         }
-        .task(id: env.profile) { vm.load(env) }
+        .task(id: env.profile) { await vm.load(env) }
     }
 }
 

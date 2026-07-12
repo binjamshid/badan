@@ -45,7 +45,7 @@ struct InsightsScreen: View {
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.tabInsights))
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: env.profile) { vm.load(env) }
+        .task(id: env.profile) { await vm.load(env) }
     }
 }
 
@@ -422,6 +422,24 @@ private struct InsightsData {
     var insights: [Insight]
 }
 
+/// Everything the fetch core needs to run off the main actor (PERF-01) — thread-safe repository
+/// references plus value-type snapshots of the profile/format bits it reads.
+private struct InsightsFetchInputs {
+    var measurements: MeasurementRepository
+    var derivation: DerivationRepository
+    var insightsRepo: InsightRepository
+    var registry: MetricRegistry
+    var format: ValueFormatter
+    var language: AppLanguage
+    var depth: DepthPolicy
+    var now: Date
+}
+
+private enum InsightsFetchOutcome {
+    case loaded(InsightsData)
+    case empty
+}
+
 @Observable
 @MainActor
 private final class InsightsViewModel {
@@ -430,19 +448,44 @@ private final class InsightsViewModel {
     /// brief inline signal instead of silently looking like a no-op.
     var failedFeedbackIds: Set<String> = []
 
-    func load(_ env: AppEnvironment) {
+    /// Runs the weekly-summary + feed queries on a detached task (PERF-01). A cancelled load
+    /// never clobbers state.
+    func load(_ env: AppEnvironment) async {
+        let inputs = InsightsFetchInputs(
+            measurements: env.measurements, derivation: env.derivation, insightsRepo: env.insightsRepo,
+            registry: env.registry, format: env.format, language: env.language, depth: env.depth,
+            now: env.now())
+
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Self.fetch(inputs)
+        }.value
+
+        guard !Task.isCancelled else { return }
+
+        switch outcome {
+        case .success(.loaded(let data)):
+            state = .loaded(data)
+        case .success(.empty):
+            state = .empty(env.s(InsightsLoc.emptyTitle))
+        case .failure(let error):
+            state = .error(String(describing: error))
+        }
+    }
+
+    // MARK: Fetch core (nonisolated — runs on a detached task)
+
+    nonisolated private static func fetch(_ inputs: InsightsFetchInputs) -> Result<InsightsFetchOutcome, Error> {
         let signpostState = PerformanceLog.signposter.beginInterval("InsightsViewModel.load")
         defer { PerformanceLog.signposter.endInterval("InsightsViewModel.load", signpostState) }
         do {
-            let weekly = try Self.weeklyChanges(env)
-            let insights = try env.insightsRepo.recent(limit: 20)
+            let weekly = try weeklyChanges(inputs)
+            let insights = try inputs.insightsRepo.recent(limit: 20)
             if weekly.isEmpty && insights.isEmpty {
-                state = .empty(env.s(InsightsLoc.emptyTitle))
-            } else {
-                state = .loaded(InsightsData(weekly: weekly, insights: insights))
+                return .success(.empty)
             }
+            return .success(.loaded(InsightsData(weekly: weekly, insights: insights)))
         } catch {
-            state = .error(String(describing: error))
+            return .failure(error)
         }
     }
 
@@ -465,47 +508,47 @@ private final class InsightsViewModel {
 
     // MARK: Weekly summary
 
-    private static func weeklyChanges(_ env: AppEnvironment) throws -> [WeeklyChange] {
-        let now = env.now()
+    private nonisolated static func weeklyChanges(_ inputs: InsightsFetchInputs) throws -> [WeeklyChange] {
+        let now = inputs.now
         let tz = TimeZone.current.identifier
         var out: [WeeklyChange] = []
-        if let seconds = try sleepSeconds(env, now: now, tz: tz) {
-            out.append(makeChange(env, metricId: MetricID.timeAsleep, value: seconds))
+        if let seconds = try sleepSeconds(inputs, now: now, tz: tz) {
+            out.append(makeChange(inputs, metricId: MetricID.timeAsleep, value: seconds))
         }
-        if let rhr = try env.measurements.latestInterval(metricId: MetricID.restingHeartRate) {
-            out.append(makeChange(env, metricId: MetricID.restingHeartRate, value: rhr.value))
+        if let rhr = try inputs.measurements.latestInterval(metricId: MetricID.restingHeartRate) {
+            out.append(makeChange(inputs, metricId: MetricID.restingHeartRate, value: rhr.value))
         }
         return out
     }
 
-    private static func sleepSeconds(_ env: AppEnvironment, now: Date, tz: String) throws -> Double? {
+    private nonisolated static func sleepSeconds(_ inputs: InsightsFetchInputs, now: Date, tz: String) throws -> Double? {
         let localNight = DayAttribution.localNight(sessionEnd: now, tz: tz)
-        if let session = try env.measurements.primarySleep(localNight: localNight) {
+        if let session = try inputs.measurements.primarySleep(localNight: localNight) {
             return session.detail.timeAsleepSeconds ?? session.durationSeconds
         }
-        if let interval = try env.measurements.latestInterval(metricId: MetricID.timeAsleep) {
+        if let interval = try inputs.measurements.latestInterval(metricId: MetricID.timeAsleep) {
             return interval.value
         }
         return nil
     }
 
-    private static func makeChange(_ env: AppEnvironment, metricId: String, value: Double) -> WeeklyChange {
-        let def = env.registry.definitionOrFallback(metricId)
-        let baseline = try? env.derivation.latestBaseline(metricId: metricId)
+    private nonisolated static func makeChange(_ inputs: InsightsFetchInputs, metricId: String, value: Double) -> WeeklyChange {
+        let def = inputs.registry.definitionOrFallback(metricId)
+        let baseline = try? inputs.derivation.latestBaseline(metricId: metricId)
         let stillLearning = baseline?.provisional ?? true
         let position = baseline?.position(of: value)
         var delta: String?
-        if env.depth.showsPowerDetail, let b = baseline, !stillLearning {
-            delta = signedDelta(env, metricId: metricId, value: value, center: b.center)
+        if inputs.depth.showsPowerDetail, let b = baseline, !stillLearning {
+            delta = signedDelta(inputs, metricId: metricId, value: value, center: b.center)
         }
-        let consistency = baseline.map { consistencyText(env, nPoints: $0.nPoints, windowDays: $0.windowDays) }
+        let consistency = baseline.map { consistencyText(inputs, nPoints: $0.nPoints, windowDays: $0.windowDays) }
         return WeeklyChange(
             metricId: metricId,
             familySymbol: def.familyGroup.symbolName,
-            label: def.label(depth: env.depth, language: env.language),
+            label: def.label(depth: inputs.depth, language: inputs.language),
             position: stillLearning ? nil : position,
             stillLearning: stillLearning,
-            valueText: env.format.full(metricId: metricId, canonicalValue: value),
+            valueText: inputs.format.full(metricId: metricId, canonicalValue: value),
             deltaText: delta,
             consistencyText: consistency
         )
@@ -513,15 +556,15 @@ private final class InsightsViewModel {
 
     /// A free, already-computed positive-framing signal: how many of the baseline's window days
     /// actually had data. Never comparative, never "good/bad" — just a count.
-    private static func consistencyText(_ env: AppEnvironment, nPoints: Int, windowDays: Int) -> String {
-        "\(env.format.integer(nPoints))/\(env.format.integer(windowDays)) \(env.s(InsightsLoc.daysLogged))"
+    private nonisolated static func consistencyText(_ inputs: InsightsFetchInputs, nPoints: Int, windowDays: Int) -> String {
+        "\(inputs.format.integer(nPoints))/\(inputs.format.integer(windowDays)) \(InsightsLoc.daysLogged.resolved(inputs.language))"
     }
 
-    private static func signedDelta(_ env: AppEnvironment, metricId: String, value: Double, center: Double) -> String {
+    private nonisolated static func signedDelta(_ inputs: InsightsFetchInputs, metricId: String, value: Double, center: Double) -> String {
         let delta = value - center
         let sign = delta >= 0 ? "+" : "\u{2212}"
-        let magnitude = env.format.full(metricId: metricId, canonicalValue: abs(delta))
-        return "\(sign)\(magnitude) \u{00B7} \(env.s(InsightsLoc.vsUsual))"
+        let magnitude = inputs.format.full(metricId: metricId, canonicalValue: abs(delta))
+        return "\(sign)\(magnitude) \u{00B7} \(InsightsLoc.vsUsual.resolved(inputs.language))"
     }
 }
 
