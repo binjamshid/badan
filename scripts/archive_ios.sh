@@ -3,7 +3,7 @@
 #
 # Prereqs (one-time, done by YOU — see docs/TESTFLIGHT.md):
 #   • Apple Developer Program membership
-#   • Bundle ID net.albayyan.badan registered in App Store Connect
+#   • Bundle ID net.binjamshid.badan registered in App Store Connect
 #   • You are signed into Xcode with an account on that team (Xcode ▸ Settings ▸ Accounts),
 #     so Automatic signing can fetch a Distribution provisioning profile.
 #
