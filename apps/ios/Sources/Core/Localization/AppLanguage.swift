@@ -89,8 +89,10 @@ public enum Numerals {
 
     // `NumberFormatter` construction (locale resolution, digit symbol tables) is
     // comparatively expensive; cache one per (language, arabicDigits, fractionDigits)
-    // combination instead of allocating fresh on every call (PERF-011). All call sites
-    // are `@MainActor`, so read/write of this cache is not subject to concurrent mutation.
+    // combination instead of allocating fresh on every call (PERF-011). Formatting now
+    // runs off the main actor from background screen fetches (PERF-01), so the cache is
+    // guarded by a lock to keep concurrent read/write safe.
+    private static let cacheLock = NSLock()
     private static var formatterCache: [String: NumberFormatter] = [:]
 
     private static func cachedFormatter(
@@ -99,6 +101,8 @@ public enum Numerals {
         fractionDigits: Int
     ) -> NumberFormatter {
         let key = "\(language.rawValue)-\(arabicDigits)-\(fractionDigits)"
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
         if let existing = formatterCache[key] { return existing }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
