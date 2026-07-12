@@ -1,22 +1,23 @@
 import Foundation
 
 /// The dual-altitude mechanism (D-5). Casual and power are presentation policies over a
-/// single component library and identical queries — never separate products.
+/// single component library and identical queries — never separate products. (UX-03: a third
+/// "balanced" tier used to exist here but rendered identically to casual everywhere while
+/// badged as "Recommended" in Settings; it was removed rather than actually implemented as a
+/// distinct altitude. See `CustomizationProfile.init(from:)` for the tolerant decode that maps
+/// any persisted "balanced" — or other unknown — value to `.casual`.)
 public enum DepthPolicy: String, Codable, Hashable, Sendable, CaseIterable {
-    case casual, balanced, power
+    case casual, power
 
     public var displayName: LocalizedString {
         switch self {
         case .casual: return LocalizedString(en: "Simple", ar: "مبسّط")
-        case .balanced: return LocalizedString(en: "Balanced", ar: "متوازن")
         case .power: return LocalizedString(en: "Detailed", ar: "مفصّل")
         }
     }
 
     /// Whether power-only affordances (raw values, lineage, tables, algorithm strings) show.
     public var showsPowerDetail: Bool { self == .power }
-    /// The most compact number of home modules this depth prefers to show.
-    public var maxHomeModules: Int { self == .casual ? 5 : 12 }
 }
 
 public enum AppTheme: String, Codable, Hashable, Sendable, CaseIterable {
@@ -117,7 +118,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     /// Remembered-but-not-precious session/navigation state — see `SessionPreferences`.
     public var sessionPreferences: SessionPreferences
 
-    public init(depthPolicy: DepthPolicy = .balanced, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
+    public init(depthPolicy: DepthPolicy = .casual, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
                 unitOverrides: [String: String] = [:], unitProfile: UnitProfileMode = .display,
                 language: AppLanguage = .en, arabicDigits: Bool = false, theme: AppTheme = .system,
                 notifications: NotificationPreference = NotificationPreference(),
@@ -137,7 +138,12 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     // resets the user to defaults — a missing-key decode error must never do that here).
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        depthPolicy = try c.decode(DepthPolicy.self, forKey: .depthPolicy)
+        // Decoding tolerance (UX-03): a profile persisted before the "balanced" tier was
+        // removed may still have depthPolicy == "balanced" on disk — or, in principle, any
+        // other future-and-then-removed value. Map anything DepthPolicy doesn't recognize to
+        // `.casual` rather than letting the whole profile decode fail (which ProfileRepository
+        // treats as "no saved profile" and silently resets every other preference too).
+        depthPolicy = (try? c.decode(DepthPolicy.self, forKey: .depthPolicy)) ?? .casual
         homeModules = try c.decode([HomeModule].self, forKey: .homeModules)
         unitOverrides = try c.decode([String: String].self, forKey: .unitOverrides)
         unitProfile = try c.decode(UnitProfileMode.self, forKey: .unitProfile)

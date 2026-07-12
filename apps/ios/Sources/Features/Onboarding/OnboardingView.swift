@@ -46,7 +46,9 @@ struct OnboardingView: View {
         }
         .onAppear {
             // Reflect any already-chosen depth so returning to the picker shows it selected.
-            selectedDepth = (env.depth == .balanced) ? nil : env.depth
+            // No special-casing needed now that DepthPolicy only has casual/power (UX-03) —
+            // the profile default (.casual) simply preselects Casual, same as an explicit choice.
+            selectedDepth = env.depth
         }
     }
 

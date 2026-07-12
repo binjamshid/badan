@@ -53,8 +53,8 @@ struct PillLabel: View {
     .padding()
 }
 
-/// Indicates the current depth altitude ("Simple"/"Balanced"/"Detailed"). One model, two
-/// altitudes — this badge just names which altitude is showing.
+/// Indicates the current depth altitude ("Simple"/"Detailed"). One model, two altitudes —
+/// this badge just names which altitude is showing.
 struct DepthBadge: View {
     var depth: DepthPolicy
     var language: AppLanguage
@@ -73,12 +73,11 @@ struct DepthBadge: View {
         )
     }
 
-    // A coherent "level" family (low/medium/high dial) so the three depths read as one
-    // spectrum rather than three unrelated glyphs.
+    // A coherent "level" family (low/high dial) so the two depths read as one spectrum
+    // rather than unrelated glyphs.
     private var iconName: String {
         switch depth {
         case .casual: return "dial.low.fill"
-        case .balanced: return "dial.medium.fill"
         case .power: return "dial.high.fill"
         }
     }
@@ -87,7 +86,6 @@ struct DepthBadge: View {
 #Preview("DepthBadge") {
     VStack(alignment: .leading, spacing: BadanSpace.space2) {
         DepthBadge(.casual, language: .en)
-        DepthBadge(.balanced, language: .en)
         DepthBadge(.power, language: .en)
         DepthBadge(.power, language: .ar)
     }
