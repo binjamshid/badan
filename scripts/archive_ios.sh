@@ -35,6 +35,7 @@ echo "▸ Archiving (Release, generic iOS device)…"
 xcodebuild -project BADAN.xcodeproj -scheme BADAN \
   -configuration Release -destination "generic/platform=iOS" \
   -archivePath "$ARCHIVE" \
+  -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
   clean archive
 
