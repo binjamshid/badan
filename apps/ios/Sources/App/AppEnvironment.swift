@@ -61,6 +61,10 @@ final class AppEnvironment {
     let featureFlags = FeatureFlags()
 
     private let seedController: SeedController
+    /// NEW-01: the ingest→derive Task kicked off by the most recent `connectHealthKit()` call,
+    /// so onboarding can await its completion (bounded by a timeout) to show a real first fact
+    /// without ever blocking indefinitely on backfill duration. `nil` on the demo/skip path.
+    private var backfillTask: Task<Void, Never>?
 
     init(database: Database, clock: Clock = SystemClock()) {
         // Measures the synchronous DB-open + repository-wiring cost on the pre-first-frame
@@ -237,7 +241,7 @@ final class AppEnvironment {
         UserDefaults.standard.set(true, forKey: Self.healthKitConnectedKey)
 
         let db = database
-        Task.detached(priority: .userInitiated) { [seedController, clock, adapter] in
+        backfillTask = Task.detached(priority: .userInitiated) { [seedController, clock, adapter] in
             do {
                 // Bootstrap already demo-seeded on first launch (it runs before onboarding is
                 // even shown) — wipe that before the real backfill so a connected user never
@@ -251,6 +255,31 @@ final class AppEnvironment {
             }
         }
         return true
+    }
+
+    /// NEW-01: await the backfill+derivation kicked off by the most recent `connectHealthKit()`
+    /// call, up to `timeoutSeconds`. Returns `true` if it finished in time, `false` on timeout —
+    /// the backfill itself is never cancelled and keeps running in the background regardless;
+    /// this only bounds how long onboarding's first-fact card waits for it. Returns `true`
+    /// immediately when no connect is in flight (nothing to wait for).
+    func awaitBackfillCompletion(timeoutSeconds: Double = 12) async -> Bool {
+        guard let task = backfillTask else { return true }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await task.value; return true }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// NEW-01: the onboarding "first fact" payoff — see `FirstFact`. A handful of indexed
+    /// SQLite lookups, cheap enough to call directly on the main actor.
+    func firstFact() throws -> LocalizedString? {
+        try FirstFact.select(insights: insightsRepo, derivation: derivation, format: format)
     }
 
     private func makeHealthKitAdapter() -> HealthKitAdapter {

@@ -21,13 +21,23 @@ struct OnboardingView: View {
     /// screen.
     @State private var connectState: ConnectState = .idle
 
-    private enum ConnectState {
+    private enum ConnectState: Equatable {
         case idle
         case connecting
         /// Authorization was denied or HealthKit is unavailable on this device/simulator — shown
         /// as a calm inline notice rather than navigating away immediately, so the user actually
         /// sees the reassurance before onboarding completes.
         case unavailable
+        /// NEW-01: authorization granted; the backfill→derivation the connect path kicked off
+        /// (`AppEnvironment.connectHealthKit`) is still running. A "Continue" escape hatch stays
+        /// available the whole time — this state never blocks the user.
+        case awaitingFirstFact
+        /// NEW-01: a real, wellness-safe fact was found (freshest insight, else a baseline
+        /// statement) — the trust ladder's first rung.
+        case factReady(LocalizedString)
+        /// NEW-01: nothing usable within the timeout (fresh account, sparse data, or the
+        /// derivation genuinely came up empty). Honest, not fabricated.
+        case factUnavailable
     }
 
     // FEAT-239/FEAT-248: onboarding is the first screen every user sees, so its page
@@ -343,14 +353,42 @@ struct OnboardingView: View {
                     Spacer(minLength: 0)
 
                     VStack(spacing: BadanSpace.space3) {
-                        if connectState == .unavailable {
+                        switch connectState {
+                        case .unavailable:
                             Text(env.s(Self.connectUnavailableNotice))
                                 .font(BadanFont.bodyCompact)
                                 .foregroundStyle(BadanColor.textSecondary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, BadanSpace.space2)
                             primaryButton(Loc.done) { env.completeOnboarding() }
-                        } else {
+
+                        // NEW-01: the backfill is still deriving — a calm progress state, never
+                        // a blocking one. "Continue" always works and skips straight into the
+                        // app without waiting for the fact (styled as secondary, not primary,
+                        // since nothing is confirmed yet).
+                        case .awaitingFirstFact:
+                            firstFactProgress
+                            Button { env.completeOnboarding() } label: {
+                                Text(env.s(Self.continueLabel))
+                                    .font(BadanFont.body)
+                                    .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                            }
+                            .buttonStyle(.plain)
+
+                        case .factReady(let fact):
+                            firstFactCard(fact)
+                            primaryButton(Loc.done) { env.completeOnboarding() }
+
+                        case .factUnavailable:
+                            Text(env.s(Self.firstFactFallback))
+                                .font(BadanFont.bodyCompact)
+                                .foregroundStyle(BadanColor.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, BadanSpace.space2)
+                            primaryButton(Loc.done) { env.completeOnboarding() }
+
+                        case .idle, .connecting:
                             primaryButton(connectState == .connecting ? Self.connecting : Self.connectPrimary) {
                                 startConnect()
                             }
@@ -403,21 +441,68 @@ struct OnboardingView: View {
 
     // MARK: - Shared building blocks
 
-    /// FEAT-01: request real HealthKit authorization; on grant, hand off to the shell right
-    /// away (the backfill ingest keeps running in the background — see
-    /// `AppEnvironment.connectHealthKit`). On denial/unavailable, stay on this page and show a
-    /// calm notice instead of silently completing, so the user isn't left wondering what
-    /// happened to their tap.
+    /// FEAT-01/NEW-01: request real HealthKit authorization. On denial/unavailable, stay on this
+    /// page and show a calm notice instead of silently completing, so the user isn't left
+    /// wondering what happened to their tap. On grant, stay on this page a little longer and
+    /// await the backfill→derivation the connect path kicks off
+    /// (`AppEnvironment.connectHealthKit`/`awaitBackfillCompletion`) so onboarding can pay off
+    /// its "you'll see something real about yourself" promise with one real fact — but never for
+    /// longer than `firstFactTimeout`, and the "Continue" escape hatch works the whole time.
     private func startConnect() {
         connectState = .connecting
         Task {
             let granted = await env.connectHealthKit()
-            if granted {
-                env.completeOnboarding()
-            } else {
-                connectState = .unavailable
+            guard granted else {
+                setConnectState(.unavailable)
+                return
+            }
+            setConnectState(.awaitingFirstFact)
+            let completedInTime = await env.awaitBackfillCompletion(timeoutSeconds: Self.firstFactTimeout)
+            guard completedInTime, let fact = try? env.firstFact() else {
+                setConnectState(.factUnavailable)
+                return
+            }
+            setConnectState(.factReady(fact))
+        }
+    }
+
+    private func setConnectState(_ newValue: ConnectState) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { connectState = newValue }
+    }
+
+    /// NEW-01: "Looking at your last few weeks…" — shown while the connect path's
+    /// backfill→derivation is still running. `.accessibilityElement(children: .combine)` reads
+    /// the spinner + text as one phrase, matching `StatBox`'s combined-label pattern.
+    private var firstFactProgress: some View {
+        VStack(spacing: BadanSpace.space3) {
+            ProgressView()
+            Text(env.s(Self.firstFactProgressText))
+                .font(BadanFont.bodyCompact)
+                .foregroundStyle(BadanColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(env.s(Self.firstFactProgressText))
+    }
+
+    /// NEW-01: the trust-ladder payoff — one real, wellness-safe fact. Combined into a single
+    /// VoiceOver phrase ("Your first insight, {fact}"), matching `StatBox`'s
+    /// `accessibilityLabelText` pattern rather than letting VoiceOver hit the caption and body
+    /// text as separate, disconnected stops.
+    private func firstFactCard(_ fact: LocalizedString) -> some View {
+        BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                Text(env.s(Self.firstFactLabel))
+                    .font(BadanFont.chip)
+                    .foregroundStyle(BadanColor.textSecondary)
+                Text(env.s(fact))
+                    .font(BadanFont.body.weight(.medium))
+                    .foregroundStyle(BadanColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(env.s(Self.firstFactLabel)), \(env.s(fact))")
     }
 
     private func primaryButton(_ label: LocalizedString, action: @escaping () -> Void) -> some View {
@@ -458,6 +543,12 @@ struct OnboardingView: View {
     // token-governed, so these document intent without promoting a global design-system token.
     private static let heroIconDiameter: CGFloat = 84
     private static let cardIconDiameter: CGFloat = 44
+
+    /// NEW-01: how long the connect page waits for the backfill→derivation to produce a first
+    /// fact before falling back to the honest "still settling in" notice. Chosen to comfortably
+    /// cover a 90-day HealthKit read + baseline recompute + insight generation on a real device
+    /// without ever reading as a stall.
+    private static let firstFactTimeout: Double = 12
 
     // MARK: - Strings (bilingual; wellness-safe)
 
@@ -523,4 +614,20 @@ struct OnboardingView: View {
     private static let connectUnavailableNotice = LocalizedString(
         en: "We couldn't connect right now. You can connect later from Sources.",
         ar: "تعذّر الاتصال الآن. يمكنك الاتصال لاحقاً من صفحة المصادر.")
+
+    // MARK: - Strings — NEW-01 first-fact payoff
+
+    private static let firstFactProgressText = LocalizedString(
+        en: "Looking at your last few weeks…",
+        ar: "نلقي نظرة على أسابيعك الأخيرة…")
+
+    private static let firstFactLabel = LocalizedString(en: "Your first insight", ar: "ملاحظتك الأولى")
+
+    /// Honest fallback for a fresh HealthKit account, sparse data, or a denied-after-grant edge
+    /// — never a fabricated fact, and the primary action still proceeds into the app.
+    private static let firstFactFallback = LocalizedString(
+        en: "Your data is still settling in — your first insight will be waiting on Home.",
+        ar: "لا تزال بياناتك تستقر — ستجد أول ملاحظاتك بانتظارك في الصفحة الرئيسية.")
+
+    private static let continueLabel = LocalizedString(en: "Continue", ar: "متابعة")
 }

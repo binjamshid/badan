@@ -123,6 +123,75 @@ final class PipelineTests: XCTestCase {
         }
     }
 
+    // MARK: - NEW-01 first fact
+
+    /// `FirstFact.select` prefers the freshest generated insight over a composed baseline
+    /// statement — seeded directly (no need for a full 90-day ingest) so this stays fast.
+    func testFirstFactPrefersFreshestInsight() throws {
+        let insights = InsightRepository(db.main)
+        let derivation = DerivationRepository(db.main)
+        let format = ValueFormatter(profile: CustomizationProfile(), registry: .shared)
+
+        // A confident (non-provisional) baseline exists too, but the insight should win.
+        try derivation.upsertBaseline(makeBaseline(metricId: MetricID.timeAsleep, center: 7 * 3600))
+        let insight = Insight(id: ULID.newID(), insightType: "statusExplanation", templateId: "vitals_within_band",
+                              templateVersion: "1", metricIds: [MetricID.timeAsleep], periodKey: "day:2026-07-01",
+                              depthVariant: .casual,
+                              renderedText: LocalizedString(en: "Your sleep is 7h 12m today.", ar: "نومك اليوم 7س 12د."),
+                              evidenceRefs: [], generatedAt: clock.now())
+        try insights.insert(insight)
+
+        let fact = try FirstFact.select(insights: insights, derivation: derivation, format: format)
+        XCTAssertEqual(fact, insight.renderedText)
+    }
+
+    /// With no generated insight, `FirstFact.select` falls back to a composed baseline
+    /// statement for the first eligible metric with a confident (non-provisional) baseline.
+    func testFirstFactFallsBackToBaselineStatement() throws {
+        let insights = InsightRepository(db.main)
+        let derivation = DerivationRepository(db.main)
+        let format = ValueFormatter(profile: CustomizationProfile(), registry: .shared)
+
+        try derivation.upsertBaseline(makeBaseline(metricId: MetricID.timeAsleep, center: 7 * 3600))
+
+        let fact = try XCTUnwrap(try FirstFact.select(insights: insights, derivation: derivation, format: format))
+        XCTAssertEqual(fact, Loc.firstFactSleepBaseline.filling(["value": format.full(metricId: MetricID.timeAsleep, canonicalValue: 7 * 3600)]))
+        XCTAssertFalse(fact.ar.isEmpty, "the baseline-statement fallback must carry Arabic too")
+    }
+
+    /// No insight, no confident baseline anywhere — `FirstFact.select` returns `nil` rather
+    /// than fabricating a fact, so callers show the honest "still settling in" notice.
+    func testFirstFactReturnsNilWhenNothingIsAvailable() throws {
+        let insights = InsightRepository(db.main)
+        let derivation = DerivationRepository(db.main)
+        let format = ValueFormatter(profile: CustomizationProfile(), registry: .shared)
+
+        let fact = try FirstFact.select(insights: insights, derivation: derivation, format: format)
+        XCTAssertNil(fact)
+    }
+
+    /// A still-provisional baseline (thin data) must not be presented as a settled fact.
+    func testFirstFactSkipsProvisionalBaseline() throws {
+        let insights = InsightRepository(db.main)
+        let derivation = DerivationRepository(db.main)
+        let format = ValueFormatter(profile: CustomizationProfile(), registry: .shared)
+
+        var provisional = makeBaseline(metricId: MetricID.timeAsleep, center: 7 * 3600)
+        provisional.provisional = true
+        provisional.nPoints = 2
+        try derivation.upsertBaseline(provisional)
+
+        let fact = try FirstFact.select(insights: insights, derivation: derivation, format: format)
+        XCTAssertNil(fact)
+    }
+
+    private func makeBaseline(metricId: String, center: Double) -> Baseline {
+        Baseline(id: ULID.newID(), metricId: metricId, windowDays: 14, center: center,
+                spread: center * 0.05, bandLow: center * 0.9, bandHigh: center * 1.1,
+                nPoints: 14, provisional: false, algorithmVersion: BaselineEngine.baselineAlgorithm.id,
+                validFrom: clock.now(), computedAt: clock.now(), unit: "s")
+    }
+
     // MARK: - Export
 
     func testCSVExportRoundTrips() throws {
