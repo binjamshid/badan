@@ -29,22 +29,29 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.albayyan.badan
         GENERATE_INFOPLIST_FILE: NO
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_IDENTITY: ""
+        # Automatic signing. Simulator/CI builds need no team; device/archive builds require
+        # DEVELOPMENT_TEAM — supply it on the archive command line (see docs/TESTFLIGHT.md)
+        # or set it here, e.g. DEVELOPMENT_TEAM: ABCDE12345.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: BADAN
-        CFBundleShortVersionString: "0.1.0"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleLocalizations: [en, ar]
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # Standard crypto only (HTTPS, SHA-256 checksums) — exempt from export compliance.
+        # Avoids the manual encryption question on every TestFlight upload.
+        ITSAppUsesNonExemptEncryption: false
         NSHealthShareUsageDescription: "BADAN reads your health data on your device to build your personal, private health repository. Nothing leaves your phone."
         NSHealthUpdateUsageDescription: "BADAN does not write to Apple Health in this version."
 
