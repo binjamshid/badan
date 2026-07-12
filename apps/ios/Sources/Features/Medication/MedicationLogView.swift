@@ -306,6 +306,11 @@ final class MedicationLogViewModel {
         do {
             try env.logging.upsertRegimen(regimen)
             load(env)
+            // NEW-02/UX-02: a new regimen changes what's due, so refresh scheduled reminders.
+            // No-op unless the pref is on and notifications are authorized; never prompts.
+            // (Regimen edit/delete have no UI path in this view today; when one is added, it
+            // should call the same hook.)
+            Task { await env.refreshMedicationReminders() }
             return true
         } catch {
             return false

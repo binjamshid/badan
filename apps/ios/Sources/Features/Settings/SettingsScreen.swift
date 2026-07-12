@@ -233,27 +233,20 @@ struct SettingsScreen: View {
 
     // MARK: Notifications
 
+    // Only medication reminders actually schedule and deliver notifications today. The other
+    // three toggles (morning summary, weekly digest, data-paused alerts) persisted a preference
+    // but had no delivery mechanism at all — a toggle that silently does nothing — so they're
+    // hidden until those features exist (NEW-02/UX-02). Their profile fields are kept.
     private var notificationsSection: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(Loc.notifications))
             BadanCard {
                 VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                    VStack(spacing: 0) {
-                        SettingsToggleRow(title: SettingsStrings.notifMorning, subtitle: SettingsStrings.notifMorningSubtitle,
-                                          isOn: notificationBinding(\.morningNarrative))
-                        settingsDivider
-                        SettingsToggleRow(title: SettingsStrings.notifWeekly, subtitle: SettingsStrings.notifWeeklySubtitle,
-                                          isOn: notificationBinding(\.weeklyDigest))
-                        settingsDivider
-                        SettingsToggleRow(title: SettingsStrings.notifMeds, subtitle: SettingsStrings.notifMedsSubtitle,
-                                          isOn: notificationBinding(\.medicationReminders))
-                        settingsDivider
-                        SettingsToggleRow(title: SettingsStrings.notifPaused, subtitle: SettingsStrings.notifPausedSubtitle,
-                                          isOn: notificationBinding(\.dataPausedAlerts))
-                    }
+                    SettingsToggleRow(title: SettingsStrings.notifMeds, subtitle: SettingsStrings.notifMedsSubtitle,
+                                      isOn: medicationRemindersBinding)
                     // A toggle that's on here but blocked at the OS level would otherwise fail
                     // silently, with no way for the user to tell why from this screen.
-                    if notificationsDeniedAtSystemLevel && anyNotificationPreferenceEnabled {
+                    if notificationsDeniedAtSystemLevel && env.profile.notifications.medicationReminders {
                         HStack(alignment: .top, spacing: BadanSpace.space2) {
                             Image(systemName: "bell.slash")
                                 .imageScale(.small)
@@ -271,9 +264,36 @@ struct SettingsScreen: View {
         .task { await refreshSystemNotificationAuthorization() }
     }
 
-    private var anyNotificationPreferenceEnabled: Bool {
-        let n = env.profile.notifications
-        return n.morningNarrative || n.weeklyDigest || n.medicationReminders || n.dataPausedAlerts
+    /// The medication-reminders toggle. Turning ON requests notification authorization
+    /// contextually (never at launch): only on a real grant do we persist the preference and
+    /// schedule from current regimens; on denial the preference stays off (the toggle reverts,
+    /// since its `get` reads the persisted value) and we surface the honest status. Turning OFF
+    /// persists and cancels every scheduled reminder.
+    private var medicationRemindersBinding: Binding<Bool> {
+        Binding(
+            get: { env.profile.notifications.medicationReminders },
+            set: { newValue in
+                if newValue {
+                    Task {
+                        let granted = await NotificationScheduler.shared.requestAuthorizationIfNeeded()
+                        await refreshSystemNotificationAuthorization()
+                        if granted {
+                            env.update { $0.notifications.medicationReminders = true }
+                            let regimens = (try? env.logging.regimens(activeOnly: true)) ?? []
+                            await NotificationScheduler.shared.rescheduleMedicationReminders(
+                                regimens: regimens, enabled: true, language: env.language)
+                        } else {
+                            // Keep the preference off (the toggle visibly reverts) and say why.
+                            env.update { $0.notifications.medicationReminders = false }
+                            showTransientNotice(SettingsStrings.notifPermissionDenied)
+                        }
+                    }
+                } else {
+                    env.update { $0.notifications.medicationReminders = false }
+                    Task { await NotificationScheduler.shared.cancelAllMedicationReminders() }
+                }
+            }
+        )
     }
 
     private func refreshSystemNotificationAuthorization() async {
@@ -461,14 +481,6 @@ struct SettingsScreen: View {
         Binding(
             get: { env.profile[keyPath: keyPath] },
             set: { newValue in env.update { $0[keyPath: keyPath] = newValue } }
-        )
-    }
-
-    /// A persisted binding onto a field of the nested notification preferences.
-    private func notificationBinding(_ keyPath: WritableKeyPath<NotificationPreference, Bool>) -> Binding<Bool> {
-        Binding(
-            get: { env.profile.notifications[keyPath: keyPath] },
-            set: { newValue in env.update { $0.notifications[keyPath: keyPath] = newValue } }
         )
     }
 
@@ -826,21 +838,16 @@ private enum SettingsStrings {
 
     static let dataManagementHeader = LocalizedString(en: "Data management", ar: "إدارة البيانات")
 
-    static let notifMorning = LocalizedString(en: "Morning summary", ar: "ملخّص الصباح")
-    static let notifMorningSubtitle = LocalizedString(
-        en: "A calm recap each morning.", ar: "ملخّص هادئ كل صباح.")
-    static let notifWeekly = LocalizedString(en: "Weekly digest", ar: "الملخّص الأسبوعي")
-    static let notifWeeklySubtitle = LocalizedString(
-        en: "A weekly look back at your trends.", ar: "نظرة أسبوعية على اتجاهاتك.")
     static let notifMeds = LocalizedString(en: "Medication reminders", ar: "تذكيرات الأدوية")
     static let notifMedsSubtitle = LocalizedString(
-        en: "A nudge when a dose is due.", ar: "تذكير عند حلول موعد الجرعة.")
-    static let notifPaused = LocalizedString(en: "Data-paused reminders", ar: "تذكيرات توقّف البيانات")
-    static let notifPausedSubtitle = LocalizedString(
-        en: "A nudge if a data source goes quiet for a while.", ar: "تذكير إذا توقّف مصدر بياناتك لفترة.")
+        en: "A gentle nudge at your usual times. No names appear on the lock screen.",
+        ar: "تذكير لطيف في أوقاتك المعتادة. لا تظهر أي أسماء على شاشة القفل.")
     static let systemNotificationsOffNote = LocalizedString(
         en: "Notifications are off at the system level. Enable them in iOS Settings to receive these.",
         ar: "الإشعارات متوقفة على مستوى النظام. فعّلها من إعدادات iOS لتصلك هذه التذكيرات.")
+    static let notifPermissionDenied = LocalizedString(
+        en: "To get reminders, enable notifications for BADAN in iOS Settings.",
+        ar: "لتصلك التذكيرات، فعّل الإشعارات لتطبيق بدن من إعدادات iOS.")
 
     static let depthChangeNotice = LocalizedString(
         en: "Applied — you'll see the change on Home and other screens.",
