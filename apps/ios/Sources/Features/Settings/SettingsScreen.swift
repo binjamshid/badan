@@ -50,7 +50,7 @@ struct SettingsScreen: View {
                     sensitiveSection
                         .padding(.top, BadanSpace.space3)
                 }
-                if matchesSearch(["privacy", "export", "sources", "خصوصية", "تصدير", "مصادر"]) {
+                if matchesSearch(["privacy", "policy", "export", "sources", "خصوصية", "سياسة", "تصدير", "مصادر"]) {
                     privacySection
                 }
                 if matchesSearch(["reset", "delete", "demo", "data management", "إعادة تعيين", "حذف", "إدارة البيانات"]) {
@@ -378,6 +378,15 @@ struct SettingsScreen: View {
                     NavigationLink { ExportCenterScreen() } label: {
                         SettingsNavRowLabel(icon: "square.and.arrow.up",
                                             title: Loc.exportTitle)
+                    }
+                    .buttonStyle(.plain)
+                    settingsDivider
+                    // COMP-04: the full policy, rendered in-app and bilingually (no hosted URL —
+                    // the app is offline-first). Hosting it and entering that URL in App Store
+                    // Connect is a documented owner step before public submission (docs/TESTFLIGHT.md).
+                    NavigationLink { PrivacyPolicyScreen() } label: {
+                        SettingsNavRowLabel(icon: "lock.doc",
+                                            title: SettingsStrings.privacyPolicyTitle)
                     }
                     .buttonStyle(.plain)
                 }
@@ -867,6 +876,8 @@ private enum SettingsStrings {
             + "Display mode (if you prefer km) shows 10 km instead.",
         ar: "مثال: سجّل مصدر Apple Health مسافة 6.2 ميل. يعرضها الوضع الأصلي 6.2 ميل دون تغيير. أما وضع "
             + "العرض (إن كنت تفضّل الكيلومتر) فيعرض 10 كم بدلاً منها.")
+
+    static let privacyPolicyTitle = LocalizedString(en: "Privacy Policy", ar: "سياسة الخصوصية")
 
     static let resourcesHeader = LocalizedString(en: "Resources", ar: "الموارد")
     static let whatsNewTitle = LocalizedString(en: "What's new", ar: "ما الجديد")

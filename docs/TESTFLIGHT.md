@@ -66,6 +66,19 @@ TestFlight app. External testing (up to 10,000) needs a short Beta App Review.
 - **Privacy** — a privacy policy URL and App Privacy "nutrition label". BADAN is local-first
   and stores health data only on-device; declare data collection accordingly (currently: none
   leaves the device).
+  - **The policy already exists** as `docs/PRIVACY_POLICY.md` (accurate to the app's
+    local-first, zero-collection behavior) and is rendered in-app, bilingually, at
+    **Settings → Data & privacy → Privacy Policy** — so testers can read it offline (COMP-04).
+  - **Two required owner actions before public App Store submission** (App Store Connect
+    requires a *hosted* URL — you must do these; they are not, and cannot be, done from this
+    repo):
+    1. **Host `docs/PRIVACY_POLICY.md` at a public URL** (e.g. a GitHub Pages page, your own
+       site, or any static host). Before hosting, fill in the `[CONTACT …]` placeholder in the
+       document (and the matching contact line in the in-app screen,
+       `apps/ios/Sources/Features/Settings/PrivacyPolicyScreen.swift`) with a real support
+       email or address.
+    2. **Enter that URL** in App Store Connect ▸ your app ▸ App Privacy (and the App Information
+       ▸ Privacy Policy URL field). Nothing here publishes or hosts anything for you.
 
 ## HealthKit note
 
