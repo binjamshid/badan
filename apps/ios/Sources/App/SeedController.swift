@@ -52,8 +52,7 @@ final class SeedController {
         // 1. Ingest 90 days of device data (sources/devices, samples, intervals, sessions, dedup).
         // `ingest` batches its own writes into one transaction internally (PERF-02).
         let store = FakeHealthStore(clock: clock, historyDays: 90, tz: tz)
-        let range = HealthDateRange(start: now.addingTimeInterval(-90 * 86_400), end: now)
-        _ = try ingestion.ingest(from: store, range: range)
+        _ = try ingestHealthData(from: store, historyDays: 90, asOf: now)
 
         // 2+3. Main-DB seed writes (profile, workouts, nutrition, note) batched into one
         // transaction. Medications/symptoms are excluded here — they write to the *sensitive*
@@ -80,10 +79,35 @@ final class SeedController {
             try seedSymptoms(now: now)
         }
 
-        // 4. Derivations + insights. `generate` is a handful of narrow, indexed lookups per key
-        // metric (see InsightEngine), so widening this from the prior 4 days to 14 stays cheap
-        // while making the Insights feed actually reflect a meaningful slice of the 90-day
-        // seeded history instead of looking sparse next to it (EASE-134).
+        // 4. Derivations + insights.
+        try deriveAndGenerateInsights(asOf: now)
+    }
+
+    // MARK: - Shared ingest/derive chain (FEAT-01)
+    //
+    // Both the demo seed above and the real HealthKit connect flow (`AppEnvironment.
+    // connectHealthKit`, `AppEnvironment.resetDemoData`) funnel through these two entry points
+    // rather than duplicating the ingest→derive→insight sequence per source — the only thing
+    // that differs between "demo" and "real" is which `HealthStorePort` is passed in, and
+    // whether the demo-only manual-log seeding (medications, workouts, nutrition, …) runs in
+    // between. `seed(asOf:)` above still runs the exact same operations in the exact same order
+    // it always has; this split is a refactor, not a behavior change.
+
+    /// Ingest `historyDays` of data from `port` (source/device registration, samples, intervals,
+    /// sessions, dedup — see `IngestionPipeline`). `ingest` batches its own writes into one
+    /// transaction internally (PERF-02).
+    @discardableResult
+    func ingestHealthData(from port: HealthStorePort, historyDays: Int, asOf now: Date) throws -> IngestionPipeline.IngestSummary {
+        let range = HealthDateRange(start: now.addingTimeInterval(-Double(historyDays) * 86_400), end: now)
+        return try ingestion.ingest(from: port, range: range)
+    }
+
+    /// Recompute baselines and (re)generate the last 14 days of insights. Must run *after* all
+    /// of a run's ingestion + manual-log seeding (baselines read whatever is in the DB at call
+    /// time). `generate` is a handful of narrow, indexed lookups per key metric (see
+    /// `InsightEngine`), so 14 days stays cheap while making the Insights feed actually reflect
+    /// a meaningful slice of history instead of looking sparse next to it (EASE-134).
+    func deriveAndGenerateInsights(asOf now: Date) throws {
         try baselines.recomputeAll(asOf: now)
         for dayOffset in 0..<14 {
             try? insightEngine.generate(forDay: now.addingTimeInterval(Double(-dayOffset) * 86_400), tz: tz)

@@ -37,6 +37,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # FEAT-01: HealthKitAdapter now performs real reads (previously linked but unused), so
+        # the capability + entitlement are wired for real rather than left unset (COMP-01/02).
+        CODE_SIGN_ENTITLEMENTS: App/BADAN.entitlements
     info:
       path: App/Info.plist
       properties:
@@ -52,8 +55,11 @@ targets:
         # Standard crypto only (HTTPS, SHA-256 checksums) — exempt from export compliance.
         # Avoids the manual encryption question on every TestFlight upload.
         ITSAppUsesNonExemptEncryption: false
-        NSHealthShareUsageDescription: "BADAN reads your health data on your device to build your personal, private health repository. Nothing leaves your phone."
-        NSHealthUpdateUsageDescription: "BADAN does not write to Apple Health in this version."
+        # COMP-08: names exactly what's read (sleep, heart rate, resting heart rate, steps) and
+        # the on-device benefit, rather than a generic "your health data" description.
+        NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, and step data on your device to build your personal, private health repository. Nothing leaves your phone."
+        # COMP-10: NSHealthUpdateUsageDescription removed — HealthKitAdapter requests read-only
+        # access (`toShare: []`); a write-usage string with no write path was misleading.
 
   BADANTests:
     type: bundle.unit-test

@@ -26,8 +26,10 @@ calm amber + an arrow marks "outside your usual range".
 ## What works today (iOS)
 
 - Real canonical domain model, SQLite persistence in two DB files (main + sensitive namespace).
-- Deterministic 90-day seeded health history via a `HealthStorePort` fake source (the same seam
-  the real HealthKit adapter plugs into).
+- Real HealthKit ingestion (sleep, heart rate, resting heart rate, steps; 90-day backfill,
+  incremental anchored reads) behind an explicit connect flow (onboarding + Data Sources), all
+  through the same `HealthStorePort` seam a deterministic 90-day fake source uses when a user
+  skips connecting — either path is honest about which one it is; nothing is fabricated.
 - Ingestion → unit normalization → timezone/day attribution → **sleep dedup** with a reversible
   decision journal.
 - 14-day median/MAD **personal baselines**, append-only derived values, and wellness-safe

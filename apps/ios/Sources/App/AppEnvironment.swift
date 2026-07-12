@@ -1,5 +1,7 @@
 import Foundation
+import HealthKit
 import Observation
+import os
 
 /// The composition root and dependency container. Owns the database, repositories, services,
 /// and the live `CustomizationProfile`. Injected into the SwiftUI environment; view models
@@ -39,6 +41,11 @@ final class AppEnvironment {
     var profile: CustomizationProfile
     var isReady: Bool = false
     var onboardingComplete: Bool
+    /// Whether the user has granted real HealthKit read access (FEAT-01). When `true`,
+    /// `resetDemoData()` re-runs the real backfill instead of re-seeding demo data, and no
+    /// bootstrap ever re-seeds demo data over a connected user's real history (their sources
+    /// are never empty once connected, so `SeedController.seedIfNeeded`'s gate stays closed).
+    var isHealthKitConnected: Bool
     /// Set if bootstrap's first-run seed hasn't reported `isReady` after a reasonable wait,
     /// so `SplashView` can offer a way forward instead of spinning indefinitely (OPT-071).
     var bootstrapStalled: Bool = false
@@ -97,6 +104,7 @@ final class AppEnvironment {
 
         self.profile = (try? profiles.load()) ?? CustomizationProfile()
         self.onboardingComplete = UserDefaults.standard.bool(forKey: Self.onboardingKey)
+        self.isHealthKitConnected = UserDefaults.standard.bool(forKey: Self.healthKitConnectedKey)
         self.seedController = SeedController(catalog: catalog, ingestion: ingestion, logging: logging,
                                              measurements: measurements, baselines: baselines,
                                              insightEngine: insightEngine, registry: registry,
@@ -172,14 +180,25 @@ final class AppEnvironment {
         isReady = true
     }
 
+    /// FEAT-01: a connected-HealthKit user's "delete all data" must not silently paper back over
+    /// their real history with demo data. `resetAll()` drops every main-DB table (including
+    /// `read_anchors`), so the HealthKit adapter's incremental cursor is gone too by the time
+    /// the real re-ingest below runs — a correct, full backfill restart, not a partial resume.
     func resetDemoData() async {
         isReady = false
         resetError = nil
         let db = database
-        let thrown: Error? = await Task.detached(priority: .userInitiated) { [seedController, clock] () -> Error? in
+        let connected = isHealthKitConnected
+        let adapter = connected ? makeHealthKitAdapter() : nil
+        let thrown: Error? = await Task.detached(priority: .userInitiated) { [seedController, clock, adapter] () -> Error? in
             do {
                 try db.resetAll()
-                try seedController.seed(asOf: clock.now())
+                if let adapter {
+                    _ = try seedController.ingestHealthData(from: adapter, historyDays: 90, asOf: clock.now())
+                    try seedController.deriveAndGenerateInsights(asOf: clock.now())
+                } else {
+                    try seedController.seed(asOf: clock.now())
+                }
                 return nil
             } catch {
                 return error
@@ -196,6 +215,46 @@ final class AppEnvironment {
     func completeOnboarding() {
         onboardingComplete = true
         UserDefaults.standard.set(true, forKey: Self.onboardingKey)
+    }
+
+    // MARK: - HealthKit connect (FEAT-01)
+
+    /// Request real HealthKit read access and, on success, replace whatever demo data bootstrap
+    /// already seeded with a real 90-day backfill. Returns `true` once authorization succeeded
+    /// (see `HealthKitAdapter.requestAuthorization` for why that isn't the same as "every type
+    /// was granted") — callers should proceed to `completeOnboarding()` regardless of the
+    /// result, per the "connect now or later, BADAN works either way" promise; the backfill
+    /// itself keeps running in the background after this returns, so onboarding never blocks on
+    /// ingest duration.
+    @discardableResult
+    func connectHealthKit() async -> Bool {
+        guard HKHealthStore.isHealthDataAvailable() else { return false }
+        let adapter = makeHealthKitAdapter()
+        let granted = await adapter.requestAuthorization()
+        guard granted else { return false }
+
+        isHealthKitConnected = true
+        UserDefaults.standard.set(true, forKey: Self.healthKitConnectedKey)
+
+        let db = database
+        Task.detached(priority: .userInitiated) { [seedController, clock, adapter] in
+            do {
+                // Bootstrap already demo-seeded on first launch (it runs before onboarding is
+                // even shown) — wipe that before the real backfill so a connected user never
+                // ends up with demo rows mixed into their real history (FEAT-01 demo/real
+                // boundary). `resetAll()` also clears `read_anchors`, so this is a clean start.
+                try db.resetAll()
+                _ = try seedController.ingestHealthData(from: adapter, historyDays: 90, asOf: clock.now())
+                try seedController.deriveAndGenerateInsights(asOf: clock.now())
+            } catch {
+                HealthKitConnectLog.logger.error("Post-connect backfill failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        return true
+    }
+
+    private func makeHealthKitAdapter() -> HealthKitAdapter {
+        HealthKitAdapter(anchors: ReadAnchorRepository(database.main))
     }
 
     // MARK: - Presentation mutations (persisted)
@@ -236,6 +295,7 @@ final class AppEnvironment {
 
     private static let deviceKey = "badan.deviceId"
     private static let onboardingKey = "badan.onboardingComplete"
+    private static let healthKitConnectedKey = "badan.healthKitConnected"
 
     private static func resolveDeviceId() -> String {
         if let existing = UserDefaults.standard.string(forKey: deviceKey) { return existing }
@@ -243,4 +303,8 @@ final class AppEnvironment {
         UserDefaults.standard.set(id, forKey: deviceKey)
         return id
     }
+}
+
+private enum HealthKitConnectLog {
+    static let logger = Logger(subsystem: "net.binjamshid.badan", category: "HealthKitConnect")
 }
