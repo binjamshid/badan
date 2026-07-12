@@ -25,10 +25,42 @@ final class Database {
         try sensitive.execute("PRAGMA auto_vacuum = INCREMENTAL;")
         try Self.migrate(main, Schema.mainMigrations)
         try Self.migrate(sensitive, Schema.sensitiveMigrations)
+        Self.applyHardening(to: directory)
     }
 
-    /// Default on-device location: Application Support/BADAN (excluded from iCloud backup
-    /// would be a later hardening step; local-first means this file IS the source of truth).
+    /// Best-effort, non-fatal hardening applied after the databases exist (COMP-05): exclude the
+    /// BADAN directory (and therefore both DB files + their -wal/-shm siblings) from iCloud/device
+    /// backup, and set file protection. Failures here must never take down the open path — a health
+    /// app that can't launch because a backup flag couldn't be set is worse than one that launches
+    /// with the flag unset, so every step below is `try?`.
+    private static func applyHardening(to directory: URL) {
+        var mutableDirectory = directory
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        try? mutableDirectory.setResourceValues(resourceValues)
+
+        // `.completeUntilFirstUserAuthentication` (not `.complete`): `.complete` makes the files
+        // unreadable whenever the device is locked, which would break any future background
+        // ingest/maintenance (see performBackgroundMaintenance) that runs while the phone is
+        // locked but has been unlocked at least once since boot.
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: directory.path
+        )
+        if let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for fileURL in contents {
+                try? FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                    ofItemAtPath: fileURL.path
+                )
+            }
+        }
+    }
+
+    /// Default on-device location: Application Support/BADAN. The directory (and thus both DB
+    /// files and their -wal/-shm siblings) is excluded from iCloud/device backup and protected
+    /// with `.completeUntilFirstUserAuthentication` — see `applyHardening` (COMP-05). Local-first
+    /// means this file IS the source of truth, so it must not silently leave the device via backup.
     static func applicationDefault() throws -> Database {
         let base = try FileManager.default.url(for: .applicationSupportDirectory,
                                                in: .userDomainMask, appropriateFor: nil, create: true)

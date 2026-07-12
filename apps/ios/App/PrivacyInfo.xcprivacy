@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- BADAN is local-first: zero network calls, no third-party SDKs, no analytics, no
+	     accounts. Nothing is ever transmitted off-device, so there is no tracking and no
+	     "collected data" in the App Store Privacy Nutrition Label sense — reading/writing
+	     data into the app's own on-device SQLite databases and UserDefaults is on-device
+	     processing, not "collection," which Apple's privacy manifest spec defines as
+	     transmission off the device (or to a third party on-device). -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<!-- Database.swift diskUsage() calls FileManager.attributesOfItem(atPath:) on the app's
+		     own DB files (badan.db / badan_sensitive.db and -wal/-shm siblings) under
+		     Application Support/BADAN to report on-device storage usage (PERF-122). File
+		     timestamps of files inside the app's own container. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+		<!-- FeatureFlags.swift and AppEnvironment.swift use UserDefaults.standard to store the
+		     app's own preferences (onboarding-complete flag, device id, debug feature flags) —
+		     never shared with or read from outside the app. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
