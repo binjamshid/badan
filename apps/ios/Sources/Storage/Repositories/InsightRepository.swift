@@ -47,7 +47,9 @@ final class InsightRepository {
                 templateId: r.requireString("template_id"), templateVersion: r.requireString("template_version"),
                 metricIds: JSONCoding.decode([String].self, from: r.string("metric_ids")) ?? [],
                 periodKey: r.requireString("period_key"),
-                depthVariant: DepthPolicy(rawValue: r.requireString("depth_variant")) ?? .balanced,
+                // Decoding tolerance (UX-03): rows persisted while "balanced" existed, or any
+                // other unrecognized value, fall back to .casual rather than throwing.
+                depthVariant: DepthPolicy(rawValue: r.requireString("depth_variant")) ?? .casual,
                 renderedText: LocalizedString(en: r.requireString("rendered_en"), ar: r.requireString("rendered_ar")),
                 evidenceRefs: JSONCoding.decode([String].self, from: r.string("evidence_refs")) ?? [],
                 generatedAt: r.requireDate("generated_at"), algorithmVersion: r.string("algorithm_version"),

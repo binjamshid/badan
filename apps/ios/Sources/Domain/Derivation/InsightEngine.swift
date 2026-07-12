@@ -60,7 +60,7 @@ final class InsightEngine {
                 let insight = Insight(
                     id: ULID.newID(), insightType: "statusExplanation", templateId: template.templateId,
                     templateVersion: "1", metricIds: [metricId], periodKey: periodKey,
-                    depthVariant: .balanced, renderedText: rendered,
+                    depthVariant: .casual, renderedText: rendered,
                     evidenceRefs: [record.id, baseline.id], generatedAt: clock.now())
                 try insights.insert(insight)
             }

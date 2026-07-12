@@ -32,7 +32,7 @@ struct SettingsScreen: View {
                 if matchesSearch(["language", "arabic", "digits", "لغة", "أرقام"]) {
                     languageSection
                 }
-                if matchesSearch(["depth", "detail", "simple", "balanced", "power", "تفصيل", "مستوى"]) {
+                if matchesSearch(["depth", "detail", "simple", "power", "تفصيل", "مستوى"]) {
                     detailSection
                 }
                 if env.depth.showsPowerDetail, matchesSearch(["units", "canonical", "display", "وحدات"]) {
@@ -53,7 +53,7 @@ struct SettingsScreen: View {
                 if matchesSearch(["privacy", "export", "sources", "خصوصية", "تصدير", "مصادر"]) {
                     privacySection
                 }
-                if matchesSearch(["reset", "demo", "data management", "إعادة تعيين", "إدارة البيانات"]) {
+                if matchesSearch(["reset", "delete", "demo", "data management", "إعادة تعيين", "حذف", "إدارة البيانات"]) {
                     dataManagementSection
                 }
                 if matchesSearch(["about", "version", "what's new", "resources", "حول", "الإصدار", "الموارد"]) {
@@ -90,7 +90,7 @@ struct SettingsScreen: View {
             isPresented: $showResetConfirm,
             titleVisibility: .visible
         ) {
-            Button(env.s(Loc.resetDemo), role: .destructive) {
+            Button(env.s(Loc.deleteAllData), role: .destructive) {
                 Task { await env.resetDemoData() }
             }
             Button(env.s(Loc.cancel), role: .cancel) { }
@@ -165,8 +165,7 @@ struct SettingsScreen: View {
                 options: DepthPolicy.allCases,
                 title: { $0.displayName.resolved(env.language) },
                 subtitle: { SettingsStrings.depthSubtitle($0).resolved(env.language) },
-                isOn: { $0 == env.depth },
-                badgeText: { $0 == .balanced ? SettingsStrings.recommendedTag.resolved(env.language) : nil }
+                isOn: { $0 == env.depth }
             ) { depth in
                 withAnimation(.easeInOut(duration: 0.2)) {
                     env.update { $0.depthPolicy = depth }
@@ -374,13 +373,13 @@ struct SettingsScreen: View {
             BadanCard {
                 Button { showResetConfirm = true } label: {
                     HStack(spacing: BadanSpace.space3) {
-                        Image(systemName: "arrow.counterclockwise")
+                        Image(systemName: "trash")
                             .imageScale(.medium)
                             // Warning-toned, not the same neutral tint as a harmless toggle —
                             // this is a destructive, confirm-gated action.
                             .foregroundStyle(BadanColor.outOfBand)
                             .accessibilityHidden(true)
-                        LText(Loc.resetDemo)
+                        LText(Loc.deleteAllData)
                             .font(BadanFont.body)
                             .foregroundStyle(BadanColor.textPrimary)
                         Spacer(minLength: BadanSpace.space2)
@@ -813,10 +812,17 @@ private enum SettingsStrings {
         ar: "يزيل هذا نهائياً كل سجلات الأدوية والأعراض من هذا الجهاز.")
     static let purgeConfirmAction = LocalizedString(en: "Turn off & remove", ar: "إيقاف وإزالة")
 
-    static let resetConfirmTitle = LocalizedString(en: "Reset demo data?", ar: "إعادة تعيين بيانات العرض؟")
+    // COMP-09: this used to read "Reset demo data?" / "This restores the sample data set,"
+    // which read as if only bundled demo content was affected. `resetAll()` actually drops
+    // every table in both databases first — any medications, symptoms, workouts, nutrition
+    // logs or notes the user has entered are gone — and only afterward re-seeds the sample
+    // data set, so the copy says both things plainly.
+    static let resetConfirmTitle = LocalizedString(en: "Delete all data?", ar: "حذف جميع البيانات؟")
     static let resetConfirmMessage = LocalizedString(
-        en: "This restores the sample data set on this device.",
-        ar: "يعيد هذا مجموعة البيانات التجريبية على هذا الجهاز.")
+        en: "This permanently deletes everything on this device — including anything you've "
+            + "logged yourself — and replaces it with the bundled sample data set. This can't be undone.",
+        ar: "يؤدي هذا إلى حذف كل شيء على هذا الجهاز نهائياً — بما في ذلك كل ما سجّلته بنفسك — "
+            + "واستبداله بمجموعة البيانات التجريبية المرفقة. لا يمكن التراجع عن هذا.")
 
     static let dataManagementHeader = LocalizedString(en: "Data management", ar: "إدارة البيانات")
 
@@ -836,7 +842,6 @@ private enum SettingsStrings {
         en: "Notifications are off at the system level. Enable them in iOS Settings to receive these.",
         ar: "الإشعارات متوقفة على مستوى النظام. فعّلها من إعدادات iOS لتصلك هذه التذكيرات.")
 
-    static let recommendedTag = LocalizedString(en: "Recommended", ar: "موصى به")
     static let depthChangeNotice = LocalizedString(
         en: "Applied — you'll see the change on Home and other screens.",
         ar: "تم التطبيق — سترى التغيير في الرئيسية وشاشات أخرى.")
@@ -865,7 +870,6 @@ private enum SettingsStrings {
     static func depthSubtitle(_ depth: DepthPolicy) -> LocalizedString {
         switch depth {
         case .casual: return LocalizedString(en: "Calm and minimal.", ar: "هادئ ومبسّط.")
-        case .balanced: return LocalizedString(en: "A little more context.", ar: "سياق أكثر قليلاً.")
         case .power: return LocalizedString(en: "Raw values, lineage and tables.",
                                             ar: "القيم الخام والمصدر والجداول.")
         }

@@ -156,4 +156,29 @@ final class UnitTests: XCTestCase {
         XCTAssertEqual(center, 3, accuracy: 0.0001)
         XCTAssertEqual(BaselineEngine.mad(data, center: center), 1, accuracy: 0.0001)
     }
+
+    // MARK: - CustomizationProfile depth-policy decode tolerance (UX-03)
+
+    /// "balanced" was a real, persisted `depthPolicy` value before the two-tier collapse
+    /// (UX-03). A `CustomizationProfile` JSON blob saved before that change must still decode
+    /// as `.casual` — not throw, which `ProfileRepository.load()` treats as "no saved profile"
+    /// and silently resets every other preference (home modules, language, theme, ...) too.
+    func testCustomizationProfileDecodesPersistedBalancedDepthAsCasual() throws {
+        let encoded = try JSONCoding.encodeOrThrow(CustomizationProfile())
+        let legacy = encoded.replacingOccurrences(of: "\"depthPolicy\":\"casual\"",
+                                                   with: "\"depthPolicy\":\"balanced\"")
+        XCTAssertTrue(legacy.contains("\"depthPolicy\":\"balanced\""), "test fixture didn't patch depthPolicy")
+        let decoded = try XCTUnwrap(JSONCoding.decode(CustomizationProfile.self, from: legacy))
+        XCTAssertEqual(decoded.depthPolicy, .casual)
+    }
+
+    /// Same tolerance for any other unrecognized value, not just the specific "balanced" case.
+    func testCustomizationProfileDecodesUnknownDepthAsCasual() throws {
+        let encoded = try JSONCoding.encodeOrThrow(CustomizationProfile())
+        let unknown = encoded.replacingOccurrences(of: "\"depthPolicy\":\"casual\"",
+                                                    with: "\"depthPolicy\":\"future_tier\"")
+        XCTAssertTrue(unknown.contains("\"depthPolicy\":\"future_tier\""), "test fixture didn't patch depthPolicy")
+        let decoded = try XCTUnwrap(JSONCoding.decode(CustomizationProfile.self, from: unknown))
+        XCTAssertEqual(decoded.depthPolicy, .casual)
+    }
 }

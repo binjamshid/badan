@@ -138,7 +138,11 @@ enum Loc {
     static let notifications = LocalizedString(en: "Notifications", ar: "الإشعارات")
     static let privacy = LocalizedString(en: "Data & privacy", ar: "البيانات والخصوصية")
     static let deviceOnly = LocalizedString(en: "On this device only", ar: "على هذا الجهاز فقط")
-    static let resetDemo = LocalizedString(en: "Reset demo data", ar: "إعادة تعيين بيانات العرض")
+    // COMP-09: this used to read "Reset demo data," but the control wipes every database on
+    // the device (medications/symptoms, workouts, nutrition, notes, ingested history) before
+    // re-seeding sample data — say so plainly rather than implying only bundled demo content
+    // is affected.
+    static let deleteAllData = LocalizedString(en: "Delete all data", ar: "حذف جميع البيانات")
     static let localFirstNote = LocalizedString(
         en: "Everything stays on your device. BADAN makes no network calls in this version.",
         ar: "كل شيء يبقى على جهازك. لا يجري بدن أي اتصال بالشبكة في هذا الإصدار.")
