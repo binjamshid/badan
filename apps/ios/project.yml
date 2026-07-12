@@ -33,7 +33,7 @@ targets:
         # DEVELOPMENT_TEAM — supply it on the archive command line (see docs/TESTFLIGHT.md)
         # or set it here, e.g. DEVELOPMENT_TEAM: ABCDE12345.
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: "54T3MDUR7H"
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
