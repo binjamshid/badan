@@ -35,31 +35,35 @@ final class InsightEngine {
         let dayStart = DayAttribution.startOfDay(date, tz: tz)
         let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: tz)
 
-        // Idempotent regeneration.
-        try insights.deleteForPeriod(periodKey)
+        // Idempotent regeneration. Delete + up to `keyMetrics.count` inserts batched into one
+        // transaction instead of one commit+fsync per write; `insights` is the only repo written
+        // here, so its connection covers the whole batch (PERF-02 (audit 2026-07-12)).
+        try insights.transaction {
+            try insights.deleteForPeriod(periodKey)
 
-        for metricId in Self.keyMetrics {
-            let records = try measurements.intervalRecords(metricId: metricId, from: dayStart, to: dayEnd)
-            guard let record = records.filter({ $0.startAt < dayEnd }).last else { continue }
-            guard let baseline = try derivation.latestBaseline(metricId: metricId) else { continue }
+            for metricId in Self.keyMetrics {
+                let records = try measurements.intervalRecords(metricId: metricId, from: dayStart, to: dayEnd)
+                guard let record = records.filter({ $0.startAt < dayEnd }).last else { continue }
+                guard let baseline = try derivation.latestBaseline(metricId: metricId) else { continue }
 
-            guard let templateId = Self.templateId(for: metricId, baseline: baseline, value: record.value),
-                  let template = templates.template(templateId) else { continue }
+                guard let templateId = Self.templateId(for: metricId, baseline: baseline, value: record.value),
+                      let template = templates.template(templateId) else { continue }
 
-            let def = registry.definitionOrFallback(metricId)
-            let valueStr = Self.formatValue(record.value, unit: record.unit)
-            let baselineStr = Self.formatValue(baseline.center, unit: baseline.unit)
+                let def = registry.definitionOrFallback(metricId)
+                let valueStr = Self.formatValue(record.value, unit: record.unit)
+                let baselineStr = Self.formatValue(baseline.center, unit: baseline.unit)
 
-            let rendered = LocalizedString(
-                en: Self.fill(template.textEn, ["metric": def.nameEn, "value": valueStr, "baseline": baselineStr]),
-                ar: Self.fill(template.textAr, ["metric": def.nameAr, "value": valueStr, "baseline": baselineStr]))
+                let rendered = LocalizedString(
+                    en: Self.fill(template.textEn, ["metric": def.nameEn, "value": valueStr, "baseline": baselineStr]),
+                    ar: Self.fill(template.textAr, ["metric": def.nameAr, "value": valueStr, "baseline": baselineStr]))
 
-            let insight = Insight(
-                id: ULID.newID(), insightType: "statusExplanation", templateId: template.templateId,
-                templateVersion: "1", metricIds: [metricId], periodKey: periodKey,
-                depthVariant: .balanced, renderedText: rendered,
-                evidenceRefs: [record.id, baseline.id], generatedAt: clock.now())
-            try insights.insert(insight)
+                let insight = Insight(
+                    id: ULID.newID(), insightType: "statusExplanation", templateId: template.templateId,
+                    templateVersion: "1", metricIds: [metricId], periodKey: periodKey,
+                    depthVariant: .balanced, renderedText: rendered,
+                    evidenceRefs: [record.id, baseline.id], generatedAt: clock.now())
+                try insights.insert(insight)
+            }
         }
     }
 

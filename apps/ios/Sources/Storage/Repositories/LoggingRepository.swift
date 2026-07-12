@@ -12,6 +12,23 @@ final class LoggingRepository {
         self.sensitive = sensitive
     }
 
+    /// Run a batch of main-DB writes (this repo's workouts/nutrition/notes, or any other
+    /// main-DB repo called from inside `body`) as a single transaction instead of one implicit
+    /// commit+fsync per row. Kept separate from `transactionSensitive` because main and
+    /// sensitive are different physical database files/connections — a transaction on one
+    /// never covers writes to the other (PERF-02 (audit 2026-07-12)).
+    @discardableResult
+    func transactionMain<T>(_ body: () throws -> T) throws -> T {
+        try main.transaction(body)
+    }
+
+    /// Run a batch of sensitive-DB writes (medications/symptoms) as a single transaction.
+    /// See `transactionMain` for why this is a distinct method (PERF-02 (audit 2026-07-12)).
+    @discardableResult
+    func transactionSensitive<T>(_ body: () throws -> T) throws -> T {
+        try sensitive.transaction(body)
+    }
+
     // MARK: - Medications (sensitive)
 
     func upsertRegimen(_ r: MedicationRegimen) throws {

@@ -7,6 +7,15 @@ final class MeasurementRepository {
     private let db: SQLiteConnection
     init(_ db: SQLiteConnection) { self.db = db }
 
+    /// Run a batch of writes as a single transaction instead of one implicit commit+fsync per
+    /// row. Any other main-DB repo called from inside `body` shares this same connection (and
+    /// its recursive-lock/nesting), so its writes join the same transaction (PERF-02 (audit
+    /// 2026-07-12)).
+    @discardableResult
+    func transaction<T>(_ body: () throws -> T) throws -> T {
+        try db.transaction(body)
+    }
+
     // MARK: - RawSample
 
     /// Insert-or-update by identity `(metric_id, external_id, source_id)` in a single statement

@@ -37,8 +37,12 @@ final class SeedController {
     /// and symptoms permanently empty (OPT-200).
     func seedSensitiveIfNeeded(asOf now: Date) throws {
         if try logging.allSymptoms().isEmpty == false { return }
-        try seedMedications(now: now)
-        try seedSymptoms(now: now)
+        // Batched into one sensitive-DB transaction rather than ~20 individual commit+fsyncs
+        // (PERF-02 (audit 2026-07-12)).
+        try logging.transactionSensitive {
+            try seedMedications(now: now)
+            try seedSymptoms(now: now)
+        }
     }
 
     func seed(asOf now: Date) throws {
@@ -46,23 +50,35 @@ final class SeedController {
         defer { PerformanceLog.signposter.endInterval("SeedController.seed", signpostState) }
 
         // 1. Ingest 90 days of device data (sources/devices, samples, intervals, sessions, dedup).
+        // `ingest` batches its own writes into one transaction internally (PERF-02).
         let store = FakeHealthStore(clock: clock, historyDays: 90, tz: tz)
         let range = HealthDateRange(start: now.addingTimeInterval(-90 * 86_400), end: now)
         _ = try ingestion.ingest(from: store, range: range)
 
-        // 2. User profile (height for BMI context).
-        try catalog.saveUserProfile(UserProfile(id: ULID.newID(), displayName: nil, heightMeters: 1.75,
-                                                birthYear: 1990, createdAt: now, updatedAt: now))
+        // 2+3. Main-DB seed writes (profile, workouts, nutrition, note) batched into one
+        // transaction. Medications/symptoms are excluded here — they write to the *sensitive*
+        // DB, a separate connection/file, so they get their own transaction below rather than
+        // silently running outside this one (PERF-02 (audit 2026-07-12)).
+        try logging.transactionMain {
+            // 2. User profile (height for BMI context).
+            try catalog.saveUserProfile(UserProfile(id: ULID.newID(), displayName: nil, heightMeters: 1.75,
+                                                    birthYear: 1990, createdAt: now, updatedAt: now))
 
-        // 3. Manual logs.
-        try seedMedications(now: now)
-        try seedSymptoms(now: now)
-        try seedWorkouts(now: now)
-        try seedNutrition(now: now)
-        try logging.upsertNote(NoteEntry(id: ULID.newID(),
-                                         text: "Felt a bit run down midweek; slept early to catch up.",
-                                         occurredAt: now.addingTimeInterval(-2 * 86_400), tzId: tz,
-                                         updatedAt: now, originDeviceId: deviceId))
+            // 3. Manual logs (main-DB ones).
+            try seedWorkouts(now: now)
+            try seedNutrition(now: now)
+            try logging.upsertNote(NoteEntry(id: ULID.newID(),
+                                             text: "Felt a bit run down midweek; slept early to catch up.",
+                                             occurredAt: now.addingTimeInterval(-2 * 86_400), tzId: tz,
+                                             updatedAt: now, originDeviceId: deviceId))
+        }
+
+        // 3b. Manual logs (sensitive-DB ones) — separate transaction, separate connection
+        // (PERF-02 (audit 2026-07-12)).
+        try logging.transactionSensitive {
+            try seedMedications(now: now)
+            try seedSymptoms(now: now)
+        }
 
         // 4. Derivations + insights. `generate` is a handful of narrow, indexed lookups per key
         // metric (see InsightEngine), so widening this from the prior 4 days to 14 stays cheap
