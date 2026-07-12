@@ -1,17 +1,29 @@
 import SwiftUI
 import MetricKit
 import OSLog
+import UserNotifications
 
 @main
 struct BADANApp: App {
     @State private var env = AppEnvironment.makeDefault()
     @State private var metricSubscriber = MetricKitSubscriber()
+    // Retained here because UNUserNotificationCenter holds its delegate weakly; without a strong
+    // reference foreground presentation would silently stop working.
+    @State private var notificationDelegate = NotificationForegroundDelegate()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(env)
-                .task { await env.bootstrap() }
+                .task {
+                    UNUserNotificationCenter.current().delegate = notificationDelegate
+                    await env.bootstrap()
+                    // NEW-02/UX-02: self-heal medication-reminder scheduling once per launch
+                    // (no-op unless the pref is on AND notifications are already authorized;
+                    // never prompts here — authorization is only ever requested contextually
+                    // from the Settings toggle).
+                    await env.refreshMedicationReminders()
+                }
         }
     }
 }

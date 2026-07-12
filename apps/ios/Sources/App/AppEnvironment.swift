@@ -286,6 +286,21 @@ final class AppEnvironment {
         HealthKitAdapter(anchors: ReadAnchorRepository(database.main))
     }
 
+    // MARK: - Medication reminders (NEW-02/UX-02)
+
+    /// Reschedule medication reminders from the *current* active regimens — but only if the
+    /// user has enabled the preference AND notifications are already authorized. Never prompts
+    /// (uses `isAuthorized()`, not `requestAuthorizationIfNeeded()`), so it's safe to call at
+    /// launch and after any regimen create/edit/delete. Self-heals scheduling after a reboot,
+    /// timezone change, or language change (content is re-rendered in the current language).
+    func refreshMedicationReminders() async {
+        guard profile.notifications.medicationReminders else { return }
+        guard await NotificationScheduler.shared.isAuthorized() else { return }
+        let regimens = (try? logging.regimens(activeOnly: true)) ?? []
+        await NotificationScheduler.shared.rescheduleMedicationReminders(
+            regimens: regimens, enabled: true, language: language)
+    }
+
     // MARK: - Presentation mutations (persisted)
 
     /// Apply a settings change. Updates the in-memory profile immediately for instant UI
