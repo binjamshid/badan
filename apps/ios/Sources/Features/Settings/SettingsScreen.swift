@@ -12,11 +12,13 @@ struct SettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var showPurgeConfirm = false
     @State private var showResetConfirm = false
+    @State private var iconController = AppIconController()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space6) {
                 appearanceSection
+                appIconSection
                 languageSection
                 detailSection
                 if env.depth.showsPowerDetail {
@@ -73,6 +75,57 @@ struct SettingsScreen: View {
             ) { theme in
                 withAnimation(.easeInOut(duration: 0.2)) {
                     env.update { $0.theme = theme }
+                }
+            }
+        }
+    }
+
+    // MARK: App icon
+
+    private var appIconSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(Loc.appIcon))
+            BadanCard {
+                VStack(spacing: 0) {
+                    let options = AppIconOption.allCases
+                    ForEach(Array(options.enumerated()), id: \.element) { index, option in
+                        let selected = option == iconController.current
+                        Button {
+                            Task { await iconController.select(option) }
+                        } label: {
+                            HStack(spacing: BadanSpace.space3) {
+                                Image(option.previewAsset)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 52, height: 52)
+                                    .clipShape(RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
+                                            .strokeBorder(BadanColor.separator, lineWidth: 1)
+                                    )
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                                    Text(option.title, language: env.language)
+                                        .font(BadanFont.body)
+                                        .foregroundStyle(BadanColor.textPrimary)
+                                    Text(option.subtitle, language: env.language)
+                                        .font(BadanFont.caption)
+                                        .foregroundStyle(BadanColor.textSecondary)
+                                }
+                                Spacer(minLength: BadanSpace.space2)
+                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                    .imageScale(.medium)
+                                    .foregroundStyle(selected ? BadanColor.primary : BadanColor.textSecondary)
+                                    .accessibilityHidden(true)
+                            }
+                            .frame(minHeight: BadanSpace.touchMin)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+
+                        if index < options.count - 1 { settingsDivider }
+                    }
                 }
             }
         }

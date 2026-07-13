@@ -130,6 +130,7 @@ enum Loc {
     // MARK: Settings
     static let settingsTitle = LocalizedString(en: "Settings", ar: "الإعدادات")
     static let appearance = LocalizedString(en: "Appearance", ar: "المظهر")
+    static let appIcon = LocalizedString(en: "App Icon", ar: "أيقونة التطبيق")
     static let language = LocalizedString(en: "Language", ar: "اللغة")
     static let arabicDigits = LocalizedString(en: "Arabic numerals", ar: "الأرقام العربية")
     static let depthLevel = LocalizedString(en: "Detail level", ar: "مستوى التفصيل")
