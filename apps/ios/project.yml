@@ -40,6 +40,8 @@ targets:
         # FEAT-01: HealthKitAdapter now performs real reads (previously linked but unused), so
         # the capability + entitlement are wired for real rather than left unset (COMP-01/02).
         CODE_SIGN_ENTITLEMENTS: App/BADAN.entitlements
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "NoorMono NoorQalam Mizan Hilal"
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
     info:
       path: App/Info.plist
       properties:
