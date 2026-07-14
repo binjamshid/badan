@@ -21,6 +21,7 @@ final class MetricRegistry {
     private let byId: [String: MetricDefinition]
     private let byFamily: [MetricFamily: [MetricDefinition]]
     private let foldedNameEn: [String: String]
+    private let foldedNameAr: [String: String]
     private let foldedPreciseLabel: [String: String]
 
     private struct File: Decodable { let version: String; let metrics: [MetricDefinition] }
@@ -32,10 +33,17 @@ final class MetricRegistry {
         self.baselineEligible = loaded.filter { $0.baselineEligible }
         self.byFamily = Dictionary(grouping: loaded, by: { $0.familyGroup })
         self.foldedNameEn = Dictionary(
-            loaded.map { ($0.metricId, $0.nameEn.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)) },
+            loaded.map { ($0.metricId, Self.searchFold($0.nameEn)) },
+            uniquingKeysWith: { a, _ in a })
+        // Arabic names were previously compared as exact substrings while English got case/
+        // diacritic folding (FIX-13) — a tashkeel-bearing query (e.g. typed via an IME that adds
+        // vowel marks) silently failed to match. Folding both sides with the same helper keeps
+        // the two languages' search behavior consistent.
+        self.foldedNameAr = Dictionary(
+            loaded.map { ($0.metricId, Self.searchFold($0.nameAr)) },
             uniquingKeysWith: { a, _ in a })
         self.foldedPreciseLabel = Dictionary(
-            loaded.map { ($0.metricId, $0.preciseLabel.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)) },
+            loaded.map { ($0.metricId, Self.searchFold($0.preciseLabel)) },
             uniquingKeysWith: { a, _ in a })
 
         if loaded.count < Self.minimumHealthyMetricCount {
@@ -72,13 +80,24 @@ final class MetricRegistry {
     /// Case/diacritic-insensitive search over English + Arabic names and the id. Only the
     /// (short) query is folded per call; candidate names are folded once at load time.
     func search(_ query: String) -> [MetricDefinition] {
-        let q = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let q = Self.searchFold(query)
         guard !q.isEmpty else { return all }
         return all.filter {
             (foldedNameEn[$0.metricId] ?? "").contains(q)
-                || $0.nameAr.contains(query)
+                || (foldedNameAr[$0.metricId] ?? "").contains(q)
                 || $0.metricId.contains(q)
                 || (foldedPreciseLabel[$0.metricId] ?? "").contains(q)
         }
+    }
+
+    /// Shared search normalization for names and queries. `.diacriticInsensitive` folding
+    /// handles Latin diacritics but does NOT strip Arabic harakat (fatha/damma/kasra/sukun,
+    /// U+064B–065F), superscript alef (U+0670), or tatweel (U+0640) — verified by test — so
+    /// those are removed explicitly to make tashkeel-bearing queries match plain stored names.
+    static func searchFold(_ s: String) -> String {
+        let folded = s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        return String(String.UnicodeScalarView(folded.unicodeScalars.filter { scalar in
+            !(0x064B...0x065F).contains(scalar.value) && scalar.value != 0x0670 && scalar.value != 0x0640
+        }))
     }
 }

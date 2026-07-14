@@ -12,9 +12,6 @@ private enum HomeStrings {
     static let genericLoadError = LocalizedString(
         en: "Couldn't load this right now — try again.",
         ar: "تعذّر التحميل الآن — حاول مرة أخرى.")
-    static let daysProgress = LocalizedString(en: "{n} of {total} days", ar: "{n} من {total} أيام")
-    static let calibrationProgress = LocalizedString(
-        en: "{n} of {total} metrics calibrated", ar: "{n} من {total} مؤشرات معايرة")
     static let asOf = LocalizedString(en: "As of {date}", ar: "اعتباراً من {date}")
     static let andMore = LocalizedString(en: "+ {n} more", ar: "+ {n} أخرى")
     static let someActivityMayBeMissing = LocalizedString(
@@ -51,6 +48,59 @@ private enum HomeDateFormatting {
         f.locale = Locale(identifier: language.localeIdentifier)
         f.setLocalizedDateFormatFromTemplate("EEE jm")
         return f
+    }
+
+    /// Relative freshness ("2h ago") for the power-depth key-metric grid (UX-04). Mirrors
+    /// `SourcesDateText.relative` (`Features/Body/SourcesScreen.swift`) rather than adding a
+    /// shared helper for a single-token change, matching this file's existing convention of
+    /// keeping Home's own formatting self-contained.
+    static func relative(_ date: Date, _ language: AppLanguage, now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = language.locale
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+}
+
+/// Arabic count-noun agreement (FIX-14): grammatical number depends on magnitude — 1 is
+/// singular, 2 is dual, 3–10 is plural, 11+ reverts to the indeclinable singular count form.
+/// Mirrors `TimelineAssembler.caloriesText`'s handling of the same rule. Home's two
+/// "{n} of {total} ..." progress strings (`stillLearningText`/`calibrationText` below)
+/// previously hardcoded the 3–10 plural regardless of the actual count; the noun's Arabic form
+/// must agree with `total` (the denominator being described), not `n`. Not `private` so
+/// `HomeChartFixTests` can exercise the 1/2/3–10/11+ boundaries directly.
+enum HomeArabicCount {
+    static func phrase(
+        n: Int, total: Int, language: AppLanguage, format: ValueFormatter,
+        enNoun: String, arSingular: String, arDual: String, arPlural: String, arMany: String
+    ) -> String {
+        let nText = format.integer(n)
+        let totalText = format.integer(total)
+        guard language == .ar else { return "\(nText) of \(totalText) \(enNoun)" }
+        let noun: String
+        switch total {
+        case 1: noun = arSingular
+        case 2: noun = arDual
+        case 3...10: noun = arPlural
+        default: noun = arMany
+        }
+        return "\(nText) من \(totalText) \(noun)"
+    }
+}
+
+/// Staleness bounds for Home's "latest ever recorded" fallback queries (UX-01-Home). Absent a
+/// same-window reading, `loadSleep`/`loadMetrics` fall back to the single most recent record
+/// regardless of age — unbounded, that can silently show a reading that's weeks old as if it
+/// were current. Beyond these windows the fallback is treated as no data instead. Not
+/// `private` so `HomeChartFixTests` can exercise the boundary directly.
+enum HomeStaleness {
+    /// "Last night" sleep is meaningfully stale past about two nights.
+    static let sleepFallbackMaxAge: TimeInterval = 48 * 3_600
+    /// A daily-cadence metric (steps, RHR, HRV, active energy) is meaningfully stale past a week.
+    static let keyMetricMaxAge: TimeInterval = 7 * 86_400
+
+    static func isFresh(_ recordEnd: Date, now: Date, maxAge: TimeInterval) -> Bool {
+        now.timeIntervalSince(recordEnd) <= maxAge
     }
 }
 
@@ -189,12 +239,27 @@ private struct HomeHeader: View {
                     .minimumScaleFactor(0.85)
             }
             Spacer(minLength: BadanSpace.space2)
-            DepthBadge(env.depth, language: env.language)
+            // (UX-06) The badge used to be display-only despite being styled like the app's
+            // other interactive pills — switching altitude meant a 3-tap trip through Settings.
+            // `DepthBadge` itself lives outside this fix's scope, so it's wrapped rather than
+            // changed: its visual is untouched, this just adds the tap + accessibility.
+            Button {
+                toggleDepth()
+            } label: {
+                DepthBadge(env.depth, language: env.language)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(env.s(Loc.depthLevel)): \(env.depth.displayName.resolved(env.language))")
+            .accessibilityHint(env.s(env.depth == .casual ? Loc.depthToggleHintToDetailed : Loc.depthToggleHintToSimple))
         }
     }
 
     private var dateText: String {
         HomeDateFormatting.longDate(env.language).string(from: data.date)
+    }
+
+    private func toggleDepth() {
+        env.update { $0.depthPolicy = env.depth == .casual ? .power : .casual }
     }
 }
 
@@ -209,7 +274,9 @@ private struct HomeCasualBody: View {
             // The narrative now lives inside the hero card itself (matching power mode) so the
             // "why" sentence reads as an explanation of the score above it, not a separate,
             // unlabeled aside.
-            ReadinessHeroCard(data: data)
+            if isVisible("readiness") {
+                ReadinessHeroCard(data: data)
+            }
 
             if isVisible("sleep"), let sleep = data.sleep {
                 SleepModuleCard(sleep: sleep)
@@ -230,7 +297,7 @@ private struct HomeCasualBody: View {
     }
 
     private func isVisible(_ id: String) -> Bool {
-        env.profile.module(id)?.visible ?? true
+        isHomeModuleVisible(id, in: env.profile)
     }
 }
 
@@ -249,9 +316,15 @@ private struct HomePowerBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space5) {
-            ReadinessHeroCard(data: data)
+            if isVisible("readiness") {
+                ReadinessHeroCard(data: data)
+            }
 
-            if !data.metrics.isEmpty {
+            // (FIX-04) Power previously showed the whole grid regardless of module visibility.
+            // The grid mixes two module ids (steps/active-energy -> "activity",
+            // RHR/HRV -> "heart"), so each cell is filtered by its own family's toggle rather
+            // than gating the section as a single unit.
+            if !visibleMetrics.isEmpty {
                 VStack(alignment: .leading, spacing: BadanSpace.space3) {
                     SectionHeader(env.s(Self.snapshotHeader)) {
                         NavigationLink { BodyScreen() } label: {
@@ -260,26 +333,34 @@ private struct HomePowerBody: View {
                         .foregroundStyle(BadanColor.primary)
                     }
                     LazyVGrid(columns: columns, spacing: BadanSpace.space3) {
-                        ForEach(data.metrics) { metric in
+                        ForEach(visibleMetrics) { metric in
                             MetricGridCell(metric: metric)
                         }
                     }
                 }
             }
 
-            if let sleep = data.sleep {
+            if isVisible("sleep"), let sleep = data.sleep {
                 SleepModuleCard(sleep: sleep)
             }
-            if env.profile.sensitiveModulesEnabled, data.medsActive > 0 {
+            if isVisible("meds"), env.profile.sensitiveModulesEnabled, data.medsActive > 0 {
                 MedsModuleCard(data: data)
             }
             if let insight = data.topInsight {
                 InsightCard(insight: insight)
             }
-            if !data.recentEvents.isEmpty {
+            if isVisible("timeline"), !data.recentEvents.isEmpty {
                 TimelinePreviewCard(events: data.recentEvents, partial: data.recentEventsPartial)
             }
         }
+    }
+
+    private func isVisible(_ id: String) -> Bool {
+        isHomeModuleVisible(id, in: env.profile)
+    }
+
+    private var visibleMetrics: [HomeKeyMetric] {
+        data.metrics.filter { isVisible(homeModuleId(forMetric: $0.metricId)) }
     }
 }
 
@@ -355,26 +436,32 @@ private struct ReadinessHeroCard: View {
         return "\(readiness.algorithmId) · \(readiness.algorithmVersion)"
     }
 
+    // (FIX-01) Was `data.date` — today's date, regardless of how stale the shown readiness
+    // value actually is. `data.readinessDate` is the day the matched value was actually
+    // computed for (carried out of `latestReadiness`), so this now names the right day.
     private var asOfText: String {
-        let dateText = HomeDateFormatting.longDate(env.language).string(from: data.date)
+        let dateText = HomeDateFormatting.longDate(env.language).string(from: data.readinessDate)
         return HomeStrings.asOf.filling(["date": dateText]).resolved(env.language)
     }
 
     private var stillLearningText: String {
         let base = Loc.stillLearning.resolved(env.language)
         guard let progress = data.readinessProgressDays else { return base }
-        let suffix = HomeStrings.daysProgress.filling([
-            "n": env.format.integer(progress),
-            "total": env.format.integer(BaselineEngine.minPointsForConfident),
-        ]).resolved(env.language)
+        // (FIX-14) Arabic noun agreement keyed off `total` (minPointsForConfident), not `n`.
+        let suffix = HomeArabicCount.phrase(
+            n: progress, total: BaselineEngine.minPointsForConfident,
+            language: env.language, format: env.format,
+            enNoun: "days", arSingular: "يوم", arDual: "يومان", arPlural: "أيام", arMany: "يوماً")
         return "\(base) (\(suffix))"
     }
 
     private var calibrationText: String {
-        HomeStrings.calibrationProgress.filling([
-            "n": env.format.integer(data.calibratedCount),
-            "total": env.format.integer(data.trackedCount),
-        ]).resolved(env.language)
+        // (FIX-14) Arabic noun agreement keyed off `total` (trackedCount), not `n`.
+        HomeArabicCount.phrase(
+            n: data.calibratedCount, total: data.trackedCount,
+            language: env.language, format: env.format,
+            enNoun: "metrics calibrated", arSingular: "مؤشر معاير", arDual: "مؤشران معايران",
+            arPlural: "مؤشرات معايرة", arMany: "مؤشراً معايراً")
     }
 }
 
@@ -409,7 +496,9 @@ private struct SleepModuleCard: View {
                         }
                     )
                     if env.depth.showsPowerDetail, sleep.spark.count >= 2 {
-                        MetricSparkline(values: sleep.spark)
+                        // (FIX-07) Date-spaced series init (OPT-098) so a gap in the last 14
+                        // nights renders as a visible gap instead of implying a smooth run.
+                        MetricSparkline(series: sleep.spark)
                             .frame(height: 36)
                             .accessibilityHidden(true)
                     }
@@ -515,8 +604,18 @@ private struct MetricGridCell: View {
                             .font(BadanFont.caption)
                             .foregroundStyle(BadanColor.textSecondary)
                     }
+                    if env.depth.showsPowerDetail {
+                        // (UX-04) Power depth only — casual's grid cell has no room for a
+                        // freshness caption without crowding the layout, and the question
+                        // ("how current is this?") is itself a power-user concern.
+                        Text(HomeDateFormatting.relative(metric.capturedAt, env.language, now: env.now()))
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
                     if metric.spark.count >= 2 {
-                        MetricSparkline(values: metric.spark)
+                        // (FIX-07) Date-spaced series init (OPT-098) so gaps in the 14-day
+                        // window render as gaps instead of a smoothed, evenly-spaced line.
+                        MetricSparkline(series: metric.spark)
                             .frame(height: 28)
                             .accessibilityHidden(true)
                     }
@@ -689,6 +788,26 @@ private func rangeLabel(_ position: Baseline.Position) -> LocalizedString {
     }
 }
 
+// MARK: - Shared module-visibility helper (FIX-04)
+
+/// The single check every module-mapped Home card applies, in both the casual and power
+/// bodies, so a module hidden in Settings actually disappears from every altitude instead of
+/// only some cards in one of them. "nutrition" has no Home surface (Settings' caption for it
+/// is being reworded separately) so it intentionally has no mapping here.
+private func isHomeModuleVisible(_ id: String, in profile: CustomizationProfile) -> Bool {
+    profile.module(id)?.visible ?? true
+}
+
+/// Maps a Home key-metric id to the `HomeModule` id that governs its visibility, since the
+/// power-depth grid renders all four key metrics as one section spanning two modules
+/// ("activity": steps/active energy; "heart": resting heart rate/HRV).
+private func homeModuleId(forMetric metricId: String) -> String {
+    switch metricId {
+    case MetricID.restingHeartRate, MetricID.hrv: return "heart"
+    default: return "activity"
+    }
+}
+
 // MARK: - Data model
 
 struct HomeKeyMetric: Identifiable {
@@ -698,9 +817,14 @@ struct HomeKeyMetric: Identifiable {
     var unit: String?
     var position: Baseline.Position?
     var deltaText: String?
-    var spark: [Double]
+    /// (FIX-07) Date-spaced, not index-spaced — feeds `MetricSparkline`'s `series:` init so a
+    /// gap in the window renders as a gap.
+    var spark: [(date: Date, value: Double)]
     var familySymbol: String
     var provisional: Bool
+    /// When this metric's latest value was captured — the interval record's `endAt` (UX-04),
+    /// shown as a relative "2h ago" caption at power depth.
+    var capturedAt: Date
 
     var id: String { metricId }
 }
@@ -708,7 +832,8 @@ struct HomeKeyMetric: Identifiable {
 struct HomeSleepSummary {
     var seconds: Double
     var position: Baseline.Position?
-    var spark: [Double]
+    /// (FIX-07) Date-spaced, not index-spaced — see `HomeKeyMetric.spark`.
+    var spark: [(date: Date, value: Double)]
     var provisional: Bool
 }
 
@@ -725,6 +850,11 @@ struct HomeData {
     /// How many days old the shown readiness value is (0 = today). Only meaningful when
     /// `readiness` is non-nil.
     var readinessDayOffset: Int
+    /// (FIX-01) The actual calendar day the shown readiness value belongs to — carried out of
+    /// `latestReadiness` rather than re-derived from `date`/`readinessDayOffset` at the view
+    /// layer, so the "As of {date}" caption can never drift from the value it's describing.
+    /// Only meaningful when `readiness` is non-nil (equals `date` otherwise).
+    var readinessDate: Date
     /// When `readiness == nil`: how many of the `BaselineEngine.minPointsForConfident` days
     /// needed are already banked (min across readiness's sleep/RHR inputs), so "Still learning"
     /// reads as a countdown instead of an open-ended wait.
@@ -848,7 +978,7 @@ final class HomeViewModel {
         let tz = TimeZone.current.identifier
         let now = inputs.now
         do {
-            let (readiness, dayOffset) = try latestReadiness(inputs, now: now, tz: tz)
+            let (readiness, dayOffset, readinessDay) = try latestReadiness(inputs, now: now, tz: tz)
             let readinessProgress = readiness == nil ? readinessProgressDays(inputs) : nil
             let sleep = try loadSleep(inputs, now: now, tz: tz)
             let metrics = try loadMetrics(inputs, now: now)
@@ -867,6 +997,7 @@ final class HomeViewModel {
                 date: now,
                 readiness: readiness,
                 readinessDayOffset: dayOffset,
+                readinessDate: readinessDay,
                 readinessProgressDays: readinessProgress,
                 narrative: narrative(for: readiness, sleep: sleep),
                 sleep: sleep,
@@ -889,15 +1020,22 @@ final class HomeViewModel {
 
     // MARK: Readiness
 
-    private nonisolated static func latestReadiness(_ inputs: HomeFetchInputs, now: Date, tz: String) throws -> (value: DerivedValue?, dayOffset: Int) {
+    // (DATA-11-UI) Was `now.addingTimeInterval(Double(-offset) * 86_400)` — walking back by a
+    // fixed 86,400s per day silently miscounts across a DST transition (a 23- or 25-hour local
+    // day) in `tz`. `DayAttribution.addingDays` walks calendar days instead.
+    //
+    // (FIX-01) Returns the matched day itself (not just an offset) so the caller can label the
+    // readiness value with the day it actually belongs to, rather than re-deriving it (or
+    // worse, using "now") at the view layer.
+    private nonisolated static func latestReadiness(_ inputs: HomeFetchInputs, now: Date, tz: String) throws -> (value: DerivedValue?, dayOffset: Int, day: Date) {
         for offset in 0..<4 {
-            let day = now.addingTimeInterval(Double(-offset) * 86_400)
+            let day = DayAttribution.addingDays(-offset, to: now, tz: tz)
             let key = DayAttribution.dayPeriodKey(day, tz: tz)
             if let value = try inputs.derivation.latestDerived(metricId: "readiness.score", periodKey: key) {
-                return (value, offset)
+                return (value, offset, day)
             }
         }
-        return (nil, 0)
+        return (nil, 0, now)
     }
 
     /// How many of the `minPointsForConfident` days readiness's own inputs (sleep, RHR
@@ -917,7 +1055,12 @@ final class HomeViewModel {
         var seconds: Double?
         if let session = try inputs.measurements.primarySleep(localNight: localNight) {
             seconds = session.detail.timeAsleepSeconds ?? session.durationSeconds
-        } else if let interval = try inputs.measurements.latestInterval(metricId: MetricID.timeAsleep) {
+        } else if let interval = try inputs.measurements.latestInterval(metricId: MetricID.timeAsleep),
+                  // (UX-01-Home) The fallback picks the single most recent sleep record ever
+                  // logged with no age bound — unbounded, "Last night" could silently show a
+                  // reading from a month ago. Beyond `sleepFallbackMaxAge`, fall through to nil
+                  // (the sleep card's existing no-data treatment: it simply doesn't render).
+                  HomeStaleness.isFresh(interval.endAt, now: now, maxAge: HomeStaleness.sleepFallbackMaxAge) {
             seconds = interval.value
         }
         guard let seconds else { return nil }
@@ -925,13 +1068,18 @@ final class HomeViewModel {
         let baseline = try inputs.derivation.latestBaseline(metricId: MetricID.timeAsleep)
         let position = baseline?.position(of: seconds)
 
+        // Kept as a plain 14-day window rather than routed through `DayAttribution` (DATA-11-UI
+        // scope note): it's a fixed lookback range for sparkline history, not a day-attribution
+        // boundary, and changing it would ripple into the sparkline's actual data window.
         let from = now.addingTimeInterval(-14 * 86_400)
         // Sparkline history is decorative, not primary content — a failure here should cost the
         // sparkline, not the whole Home screen (OPT-011).
         let nights = (try? inputs.measurements.sessions(kind: .sleepPrimary, from: from, to: now)) ?? []
+        // (FIX-07) Date-spaced (date, value) pairs — feeds `MetricSparkline`'s `series:` init
+        // so a missing night renders as a visible gap instead of an evenly-spaced line.
         let spark = nights
             .sorted { $0.startAt < $1.startAt }
-            .map { $0.detail.timeAsleepSeconds ?? $0.durationSeconds }
+            .map { (date: $0.startAt, value: $0.detail.timeAsleepSeconds ?? $0.durationSeconds) }
 
         return HomeSleepSummary(seconds: seconds, position: position, spark: spark, provisional: baseline?.provisional ?? true)
     }
@@ -940,16 +1088,25 @@ final class HomeViewModel {
 
     private nonisolated static func loadMetrics(_ inputs: HomeFetchInputs, now: Date) throws -> [HomeKeyMetric] {
         let ids = [MetricID.restingHeartRate, MetricID.hrv, MetricID.steps, MetricID.activeEnergy]
+        // Kept as a plain 14-day window (DATA-11-UI scope note) — a fixed sparkline lookback,
+        // not a day-attribution boundary.
         let from = now.addingTimeInterval(-14 * 86_400)
         var result: [HomeKeyMetric] = []
         for id in ids {
-            guard let latest = try inputs.measurements.latestInterval(metricId: id) else { continue }
+            guard let latest = try inputs.measurements.latestInterval(metricId: id),
+                  // (UX-01-Home) Unbounded, this fallback could show a reading weeks old as
+                  // "current." Beyond `keyMetricMaxAge`, skip the metric entirely — the grid's
+                  // existing no-data treatment for a metric with nothing to show.
+                  HomeStaleness.isFresh(latest.endAt, now: now, maxAge: HomeStaleness.keyMetricMaxAge)
+            else { continue }
             let def = inputs.registry.definitionOrFallback(id)
             let baseline = try inputs.derivation.latestBaseline(metricId: id)
             let position = baseline?.position(of: latest.value)
             // Sparkline history is decorative — isolate its failure from the primary
             // latest-value/baseline fetches above (OPT-011).
-            let spark = (try? inputs.measurements.intervalRecords(metricId: id, from: from, to: now))?.map(\.value) ?? []
+            // (FIX-07) Date-spaced (date, value) pairs, not index-spaced — see `HomeKeyMetric.spark`.
+            let spark = ((try? inputs.measurements.intervalRecords(metricId: id, from: from, to: now)) ?? [])
+                .map { (date: $0.startAt, value: $0.value) }
             let delta: String? = (inputs.depth.showsPowerDetail ? baseline : nil).map {
                 signedDelta(inputs, metricId: id, value: latest.value, center: $0.center)
             }
@@ -962,7 +1119,8 @@ final class HomeViewModel {
                 deltaText: delta,
                 spark: spark,
                 familySymbol: def.familyGroup.symbolName,
-                provisional: baseline?.provisional ?? true
+                provisional: baseline?.provisional ?? true,
+                capturedAt: latest.endAt
             ))
         }
         return result

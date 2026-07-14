@@ -1,4 +1,27 @@
 import SwiftUI
+import os
+
+/// Shared "couldn't load" copy for screens whose error state previously rendered a raw
+/// `String(describing: error)` as the user-facing title with no way to retry (BUG-14). One
+/// bilingual, wellness-safe string + retry label so every screen reads identically instead of
+/// leaking a Swift error description; the actual error goes to `LoadErrorLog` instead.
+enum LoadErrorCopy {
+    static let message = LocalizedString(
+        en: "Couldn't load this right now — try again.",
+        ar: "تعذّر التحميل الآن — حاول مرة أخرى.")
+    static let retry = LocalizedString(en: "Try again", ar: "حاول مرة أخرى")
+}
+
+/// Routes a `LoadState.error`'s raw error to the debug log (matching the `Logger`-per-file
+/// pattern already used by `MetricRegistry`/`SourcesScreen`) instead of the UI, so screens can
+/// show `LoadErrorCopy.message` to users while the real error stays inspectable in Console/Xcode.
+enum LoadErrorLog {
+    private static let logger = Logger(subsystem: "net.albayyan.badan", category: "ScreenLoad")
+
+    static func log(_ error: Error, screen: String) {
+        logger.error("\(screen, privacy: .public) load failed: \(String(describing: error), privacy: .public)")
+    }
+}
 
 /// The four states any data-backed surface can be in. Modelled explicitly so screens can't
 /// forget the empty/error paths.

@@ -130,7 +130,11 @@ final class MetricDetailViewModel {
                 state = .loaded(data)
             }
         case .failure(let error):
-            state = .error(String(describing: error))
+            // The raw error goes to the debug log, not the UI (BUG-14) — users see one calm,
+            // bilingual "couldn't load" message with a retry action instead of a Swift error
+            // description as the screen's title.
+            LoadErrorLog.log(error, screen: "MetricDetail")
+            state = .error(env.s(LoadErrorCopy.message))
         }
     }
 
@@ -143,6 +147,10 @@ final class MetricDetailViewModel {
             // Casual mode never shows more than a fixed 30-day window, so only power mode
             // needs to fetch the full period-selector range up front (PERF-038).
             let fetchDays = inputs.depth.showsPowerDetail ? metricDetailMaxPeriodDays : 30
+            // A tolerant rolling lookback window (fetch "the last N*24h", not "the last N
+            // calendar days") — intentionally not `DayAttribution` day math (DATA-11-UI): this
+            // is just a query-side overfetch bound feeding the period selector below, which
+            // itself re-filters by the same rolling-window rule in `series(within:from:)`.
             let from = inputs.now.addingTimeInterval(-Double(fetchDays) * 86_400)
 
             let intervals = try inputs.measurements.intervalRecords(metricId: inputs.metricId, from: from, to: inputs.now)
@@ -221,7 +229,11 @@ struct MetricDetailScreen: View {
 
     var body: some View {
         ScrollView {
-            StatefulContainer(vm.state) { data in
+            StatefulContainer(
+                vm.state,
+                retryTitle: env.s(LoadErrorCopy.retry),
+                onRetry: { Task { await vm.load(env, metricId: metricId) } }
+            ) { data in
                 content(data)
             }
             .padding(BadanSpace.space4)
@@ -328,21 +340,23 @@ struct MetricDetailScreen: View {
         // "still learning" — that badge should only ever imply a baseline is genuinely on its
         // way (OPT-034/035).
         let provisional = data.def.baselineEligible && (data.baseline?.provisional ?? true)
-        // A provisional baseline hasn't earned the visual authority of a shaded "trustworthy
-        // range" yet — suppress the band until it's confirmed, matching the badge/chip's own
-        // honesty (OPT-042).
-        let band = (data.baseline?.provisional == false)
-            ? data.baseline.map { (low: $0.bandLow, high: $0.bandHigh) }
-            : nil
+        let band = chartBand(data)
         BadanCard {
             VStack(alignment: .leading, spacing: BadanSpace.space3) {
                 SectionHeader(env.s(MetricDetailStrings.trend) + (env.depth.showsPowerDetail ? "" : " · " + env.s(MetricDetailStrings.last30Days))) {
                     if provisional { ProvisionalBadge(language: env.language) }
                 }
+                // Passes the env's own unit/language/digit preference (FIX-02) — without these,
+                // the chart's init defaults to English/Western-digit and no unit, which left the
+                // Y axis unitless and every Arabic-only surface (empty state, tap caption,
+                // outlier caption, VoiceOver summary, audio-graph labels) rendering in English.
                 MetricChart(
                     series: points,
                     style: data.def.chartHint == .bar ? .bar : .line,
-                    band: band)
+                    band: band,
+                    unit: env.format.unitLabel(metricId: data.def.metricId),
+                    language: env.language,
+                    arabicDigits: env.profile.arabicDigits)
                     .frame(height: 200)
                 if data.usesDerivedSeries || band != nil {
                     VStack(alignment: .leading, spacing: BadanSpace.space1) {
@@ -387,9 +401,13 @@ struct MetricDetailScreen: View {
         BadanCard {
             // Casual depth has no fallback elsewhere on the screen, so a missing/empty
             // `explainerEn` must never leave casual users with zero explanatory text
-            // (EASE-159).
-            if let explainer = data.def.explainerEn, !explainer.isEmpty {
-                Text(LocalizedString(en: explainer, ar: data.def.nameAr), language: env.language)
+            // (EASE-159). The ontology only carries an English explainer — there is no
+            // `explainerAr` field — so the previous Arabic path silently substituted the
+            // metric's own *name* as if it were a translated explainer, which just repeated
+            // the header back at the user (FIX-03). Only English gets the real explainer;
+            // Arabic always gets the honest generic fallback below.
+            if env.language == .en, let explainer = data.def.explainerEn, !explainer.isEmpty {
+                Text(explainer)
                     .font(BadanFont.body)
                     .foregroundStyle(BadanColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -600,9 +618,23 @@ struct MetricDetailScreen: View {
 
     // MARK: Helpers
 
+    // A tolerant rolling filter window (last N*24h, not "last N calendar days") — deliberately
+    // not `DayAttribution` day math (DATA-11-UI): the 7/30/90 period picker itself is a rolling
+    // window by design, not calendar-aligned, so switching this to day-boundary math would
+    // change what "7 days" means without changing the picker's own labels.
     private func series(within days: Int, from full: [(date: Date, value: Double)]) -> [(date: Date, value: Double)] {
         let cutoff = env.now().addingTimeInterval(-Double(days) * 86_400)
         return full.filter { $0.date >= cutoff }
+    }
+
+    /// The shaded personal-band, shared by the on-screen chart and the share-image render
+    /// (FIX-06) so the two can't silently drift apart. A provisional baseline hasn't earned the
+    /// visual authority of a shaded "trustworthy range" yet — suppress the band until it's
+    /// confirmed, matching the badge/chip's own honesty (OPT-042).
+    private func chartBand(_ data: MetricDetailData) -> (low: Double, high: Double)? {
+        (data.baseline?.provisional == false)
+            ? data.baseline.map { (low: $0.bandLow, high: $0.bandHigh) }
+            : nil
     }
 
     private func statusChip(_ data: MetricDetailData, value: Double) -> StatusChip? {
@@ -692,7 +724,12 @@ struct MetricDetailScreen: View {
     /// action, reusing the existing generic `ShareSheet` (FEAT-158).
     @MainActor
     private func renderShareImage(_ data: MetricDetailData) -> UIImage? {
-        let points = series(within: 30, from: data.fullSeries)
+        // Shares whatever window/band the user is actually looking at on screen (FIX-06) —
+        // this used to hardcode 30 days and skip the provisional-baseline band gate regardless
+        // of the 7/30/90 picker, so a shared image could silently disagree with the chart it
+        // was captured from.
+        let chartDays = env.depth.showsPowerDetail ? periodDays : 30
+        let points = series(within: chartDays, from: data.fullSeries)
         let latest = points.last
         let summary = VStack(alignment: .leading, spacing: BadanSpace.space3) {
             Text(data.def.label(depth: env.depth, language: env.language))
@@ -706,7 +743,10 @@ struct MetricDetailScreen: View {
             MetricChart(
                 series: points,
                 style: data.def.chartHint == .bar ? .bar : .line,
-                band: data.baseline.map { (low: $0.bandLow, high: $0.bandHigh) })
+                band: chartBand(data),
+                unit: env.format.unitLabel(metricId: data.def.metricId),
+                language: env.language,
+                arabicDigits: env.profile.arabicDigits)
                 .frame(height: 160)
         }
         .padding(BadanSpace.space4)

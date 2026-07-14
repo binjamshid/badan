@@ -122,16 +122,27 @@ enum BadanRadius {
 
 /// The type ramp. Numerals use tabular monospaced digits so values never jitter as they
 /// tick (principle: data-forward typography).
+///
+/// (BUG-08) Every token used to be a fixed-size `Font.system(size:weight:design:)`, which
+/// never responds to the user's preferred Dynamic Type size — Accessibility text sizes had no
+/// effect anywhere in the app. Each token now maps to the nearest system text style (with an
+/// explicit weight/design override to keep the mined visual hierarchy) via
+/// `Font.system(_:design:weight:)`, so the whole ramp scales with Dynamic Type. `monospacedDigit()`
+/// is preserved everywhere it was already applied. Trade-off: at the default (non-scaled) text
+/// size, each token's exact point size shifts slightly from the originally-mined value to its
+/// text-style's default anchor (e.g. `heroNumeral` was a fixed 44pt, `.largeTitle` anchors at
+/// 34pt) — the relative hierarchy (hero > numeralM > sectionTitle > body > bodyCompact >
+/// chip/caption) is unchanged.
 enum BadanFont {
-    static let heroNumeral = Font.system(size: 44, weight: .semibold, design: .rounded).monospacedDigit()
-    static let numeralM = Font.system(size: 28, weight: .medium).monospacedDigit()
-    static let sectionTitle = Font.system(size: 20, weight: .bold)
-    static let body = Font.system(size: 16, weight: .regular)
-    static let bodyCompact = Font.system(size: 15, weight: .regular)
-    static let chip = Font.system(size: 13, weight: .medium)
-    static let caption = Font.system(size: 13, weight: .regular)
+    static let heroNumeral = Font.system(.largeTitle, design: .rounded, weight: .semibold).monospacedDigit()
+    static let numeralM = Font.system(.title, weight: .medium).monospacedDigit()
+    static let sectionTitle = Font.system(.title3, weight: .bold)
+    static let body = Font.system(.callout)
+    static let bodyCompact = Font.system(.subheadline)
+    static let chip = Font.system(.footnote, weight: .medium)
+    static let caption = Font.system(.footnote)
     /// Tappable text-only actions (e.g. "See all", "Why"). Distinct from `chip`, which is
     /// reserved for passive status/pill labels — the smallest size in the ramp shouldn't also
     /// carry the app's interactive call-to-action text.
-    static let link = Font.system(size: 15, weight: .medium)
+    static let link = Font.system(.subheadline, weight: .medium)
 }

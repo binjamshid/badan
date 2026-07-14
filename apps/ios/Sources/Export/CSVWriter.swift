@@ -55,12 +55,16 @@ struct CSVWriter {
     }
 
     /// One data line, columns in contract order, each field RFC-4180 escaped. No trailing newline.
+    /// Free-text columns that can carry externally-supplied or user-entered strings are also
+    /// formula-injection-sanitized (`metric_display`, `source_app`, `source_device`,
+    /// `source_external_id`) — see `sanitizeText` (DATA-13). Numeric/enum/timestamp columns are
+    /// left untouched.
     func line(_ row: ExportRow) -> String {
         let cells: [String] = [
             row.recordId,
             row.recordKind,
             row.metricId,
-            row.metricDisplay,
+            Self.sanitizeText(row.metricDisplay),
             row.value,
             row.unit,
             row.canonicalValue,
@@ -71,10 +75,10 @@ struct CSVWriter {
             row.timestampEnd ?? "",
             row.timezone,
             row.recordedAt,
-            row.sourceApp ?? "",
-            row.sourceDevice ?? "",
+            row.sourceApp.map(Self.sanitizeText) ?? "",
+            row.sourceDevice.map(Self.sanitizeText) ?? "",
             row.ingestionPath,
-            row.sourceExternalId ?? "",
+            row.sourceExternalId.map(Self.sanitizeText) ?? "",
             row.importBatchId ?? "",
             row.qualityFlags ?? "",
             row.confidence ?? "",
@@ -128,6 +132,19 @@ struct CSVWriter {
         return field
     }
 
+    /// Neutralizes CSV formula injection: spreadsheet apps (Excel/Numbers/Sheets) treat a cell
+    /// starting with `=`, `+`, `-`, `@`, a tab, or a CR as the start of a formula/command, so a
+    /// nameable free-text value (a paired device's Bluetooth name, an imported source app name,
+    /// an upstream external id) could otherwise execute as a formula when the file is opened.
+    /// Prefixing a single quote forces the cell to be read back as literal text — applied only
+    /// to the free-text columns that can carry such strings, never to numeric/enum/timestamp
+    /// columns (DATA-13).
+    static func sanitizeText(_ field: String) -> String {
+        guard let first = field.unicodeScalars.first else { return field }
+        let triggers: Set<Unicode.Scalar> = ["=", "+", "-", "@", "\t", "\r"]
+        return triggers.contains(first) ? "'" + field : field
+    }
+
     /// A stable, locale-independent decimal string. Integer-valued doubles render without a
     /// fractional part so counts (steps) stay clean while measured values keep their precision.
     /// Values are first rounded to 6 decimal places so floating-point noise from unit conversion
@@ -140,7 +157,21 @@ struct CSVWriter {
         if rounded.rounded() == rounded && abs(rounded) < 1e15 {
             return String(Int64(rounded))
         }
-        return String(rounded)
+        return nonExponentialString(rounded)
+    }
+
+    /// Renders `value` without scientific notation regardless of magnitude — plain `String(
+    /// Double)` (and `%g`-style formatting) switches to exponential form past certain
+    /// magnitudes/precisions (≥1e15, or non-integer values ≥1e9), which is not valid CSV-numeric
+    /// input for many spreadsheet importers (DATA-14). `%f` never emits an exponent, at the cost
+    /// of fixed-width zero padding this trims back off. Uses the POSIX locale explicitly — `%f`
+    /// via `String(format:)` otherwise follows the current locale's decimal separator (e.g. a
+    /// comma on a French-locale device), which would silently corrupt the CSV contract.
+    private static func nonExponentialString(_ value: Double) -> String {
+        var text = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), value)
+        while text.contains(".") && text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text == "-0" ? "0" : text
     }
 
     /// ISO-8601 with a numeric offset, formatted in the record's own timezone so the offset is
