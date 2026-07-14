@@ -65,6 +65,19 @@ final class AppEnvironment {
     /// survive an app restart. `RootView` shows a calm warning banner while this is `true`.
     var isStorageFallback: Bool = false
 
+    /// BUG-12/13/EDGE-13: the one data-change signal every screen can key its reload off of.
+    /// Bumped after anything that can change what's on disk out from under an already-loaded
+    /// screen — a pipeline run (bootstrap's first-run seed, `connectHealthKit`'s backfill,
+    /// `syncIfStale`'s foreground re-sync), `resetDemoData`, and the sensitive-module
+    /// re-enable path in `update(_:)`. Screens fold this into their `.task(id:)` identity
+    /// (alongside `profile`) so a bump always forces a reload regardless of the screen's own
+    /// staleness guard. Log flows outside this file's scope (Workout/Nutrition/Symptom/
+    /// Medication) can't bump this yet — see the fix notes on the screens that read it for how
+    /// that gap is covered in the meantime.
+    private(set) var dataGeneration: Int = 0
+
+    func bumpDataGeneration() { dataGeneration += 1 }
+
     /// DEBUG-only staged-feature flags, separate from the persisted `CustomizationProfile`
     /// (FEAT-297).
     let featureFlags = FeatureFlags()
@@ -81,6 +94,13 @@ final class AppEnvironment {
     /// so onboarding can await its completion (bounded by a timeout) to show a real first fact
     /// without ever blocking indefinitely on backfill duration. `nil` on the demo/skip path.
     private var backfillTask: Task<Error?, Never>?
+    /// BUG-02: when the most recent foreground `syncIfStale()` last actually ran (started, not
+    /// finished) — `nil` until the first one fires. Read/written only on the main actor.
+    private var lastSyncAt: Date?
+    /// BUG-02: true from the moment `syncIfStale()` dispatches its detached task until that task
+    /// (and anything it was chained behind) finishes, so a second `.active` transition arriving
+    /// before the first sync lands is a no-op rather than a second overlapping ingest.
+    private var isSyncInFlight = false
 
     init(database: Database, clock: Clock = SystemClock()) {
         // Measures the synchronous DB-open + repository-wiring cost on the pre-first-frame
@@ -230,6 +250,10 @@ final class AppEnvironment {
         // pattern.
         if thrown == nil {
             isReady = true
+            // BUG-12/13: a first-run seed or resumed backfill just populated the store —
+            // whatever screens are already showing (unlikely this early, but a fast re-entrant
+            // launch could hit it) should treat it as fresh data.
+            bumpDataGeneration()
         }
     }
 
@@ -289,6 +313,9 @@ final class AppEnvironment {
         // reschedules from whatever regimens exist now.
         await refreshMedicationReminders()
         isReady = true
+        // BUG-12/13: the store was just wiped and reseeded (or re-backfilled) wholesale — every
+        // screen's cached read is now stale regardless of whether the reset fully succeeded.
+        bumpDataGeneration()
     }
 
     func completeOnboarding() {
@@ -357,8 +384,13 @@ final class AppEnvironment {
         // stale. Fire-and-forget: doesn't block this method's return (the backfill itself keeps
         // running independently either way), just reconciles reminders once it's done.
         Task { [weak self] in
-            _ = await task.value
+            let thrown = await task.value
             await self?.refreshMedicationReminders()
+            // BUG-12/13: the post-connect purge+backfill above just replaced the store's
+            // ingested data — only worth a reload signal if it actually landed.
+            if thrown == nil {
+                self?.bumpDataGeneration()
+            }
         }
         return true
     }
@@ -390,6 +422,49 @@ final class AppEnvironment {
 
     private func makeHealthKitAdapter() -> HealthKitAdapter {
         HealthKitAdapter(anchors: ReadAnchorRepository(database.main))
+    }
+
+    // MARK: - Foreground incremental sync (BUG-02)
+
+    /// Re-runs ingest→derive on every foreground transition once real HealthKit is connected —
+    /// without this, data goes permanently stale after the one connect-time backfill (nothing
+    /// else ever re-ingests). Anchored HealthKit queries under `ingestHealthData` make repeat
+    /// calls incremental rather than a full re-backfill. Debounced via `SyncDebounce.shouldSync`
+    /// (skip if a sync ran too recently) and skipped outright if one is already in flight; always
+    /// dispatched off the main actor via the same `pipelineTask` serialization other lifecycle
+    /// entry points use, so it can never interleave with a bootstrap/reset/connect backfill.
+    /// Failure is logged, never surfaced to the UI (BUG-02 explicitly asks for quiet failure —
+    /// the next foreground transition just tries again).
+    func syncIfStale() {
+        guard isHealthKitConnected else { return }
+        let now = clock.now()
+        guard !isSyncInFlight, SyncDebounce.shouldSync(lastSync: lastSyncAt, now: now) else { return }
+
+        isSyncInFlight = true
+        lastSyncAt = now
+        let adapter = makeHealthKitAdapter()
+        let previous = pipelineTask
+        let task = Task.detached(priority: .utility) { [seedController, clock, adapter] () -> Error? in
+            _ = await previous?.value
+            do {
+                _ = try seedController.ingestHealthData(from: adapter, historyDays: 90, asOf: clock.now())
+                try seedController.deriveAndGenerateInsights(asOf: clock.now())
+                return nil
+            } catch {
+                return error
+            }
+        }
+        pipelineTask = task
+        Task { [weak self] in
+            let thrown = await task.value
+            guard let self else { return }
+            self.isSyncInFlight = false
+            if let thrown {
+                SyncLog.logger.error("Foreground sync failed: \(String(describing: thrown), privacy: .public)")
+            } else {
+                self.bumpDataGeneration()
+            }
+        }
     }
 
     // MARK: - Medication reminders (NEW-02/UX-02)
@@ -436,6 +511,17 @@ final class AppEnvironment {
         // ever demo-seed for a disconnected (demo-mode) user.
         let connected = isHealthKitConnected
 
+        // EDGE-18: a scheduled medication reminder's rendered content is language-specific
+        // (`NotificationScheduler.rescheduleMedicationReminders` renders in `language`), but
+        // nothing previously re-fired it on a language switch — only launch and regimen edits
+        // did. Fire-and-forget; no debounce needed since a settings toggle is already a
+        // deliberate, infrequent user action.
+        if previous.language != p.language && p.notifications.medicationReminders {
+            Task { [weak self] in
+                await self?.refreshMedicationReminders()
+            }
+        }
+
         Task.detached(priority: .utility) { [weak self, profiles, seedController, clock] in
             do {
                 try profiles.save(p)
@@ -445,6 +531,10 @@ final class AppEnvironment {
             }
             if sensitiveJustEnabled && !connected {
                 try? seedController.seedSensitiveIfNeeded(asOf: clock.now())
+                // BUG-12/13: re-enabling the sensitive module can re-seed rows the sensitive-
+                // gated screens (Home's meds module, LogHub, Timeline) had already decided not
+                // to show while it was off.
+                await MainActor.run { self?.bumpDataGeneration() }
             }
         }
     }
@@ -470,4 +560,24 @@ final class AppEnvironment {
 
 private enum HealthKitConnectLog {
     static let logger = Logger(subsystem: "net.binjamshid.badan", category: "HealthKitConnect")
+}
+
+private enum SyncLog {
+    static let logger = Logger(subsystem: "net.binjamshid.badan", category: "ForegroundSync")
+}
+
+/// BUG-02: the pure debounce rule behind `AppEnvironment.syncIfStale()` — factored out so it's
+/// headlessly testable (`SyncBusFixTests`) without standing up HealthKit or a database. Not
+/// `private` so the test target can see it.
+enum SyncDebounce {
+    /// Never re-sync more often than this — a foreground transition is common (switching apps,
+    /// glancing at a notification), and HealthKit's anchored queries are cheap but not free.
+    static let minInterval: TimeInterval = 5 * 60
+
+    /// `true` when enough time has passed since the last sync (or none has ever run) to allow
+    /// another one.
+    static func shouldSync(lastSync: Date?, now: Date) -> Bool {
+        guard let lastSync else { return true }
+        return now.timeIntervalSince(lastSync) >= minInterval
+    }
 }

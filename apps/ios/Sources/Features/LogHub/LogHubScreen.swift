@@ -89,12 +89,18 @@ final class LogHubViewModel {
 
     var recentsState: RecentsState = .loading
     private var lastLoadedAt: Date?
+    /// BUG-12/13: a bumped `dataGeneration` (e.g. this screen's own water/weight quick-saves
+    /// below, or a HealthKit sync) always overrides the 30s debounce — see
+    /// `AppEnvironment.dataGeneration`.
+    private var lastLoadedGeneration: Int?
 
     /// Recent symptom/workout entries surfaced as quick "log again" chips. Debounced so
-    /// re-appearing on the Log tab within a short window doesn't re-query storage.
+    /// re-appearing on the Log tab within a short window doesn't re-query storage — unless the
+    /// data generation has moved on since the last load, which always forces a fresh read.
     func load(_ env: AppEnvironment) {
         let now = env.now()
-        if let lastLoadedAt, now.timeIntervalSince(lastLoadedAt) < 30 { return }
+        if let lastLoadedAt, let lastLoadedGeneration, lastLoadedGeneration == env.dataGeneration,
+           now.timeIntervalSince(lastLoadedAt) < 30 { return }
 
         // Only the newest few chips are ever shown, so a 7-day window is enough.
         let from = now.addingTimeInterval(-7 * 86_400)
@@ -125,6 +131,7 @@ final class LogHubViewModel {
 
         items.sort { $0.date > $1.date }
         lastLoadedAt = now
+        lastLoadedGeneration = env.dataGeneration
         // Distinguish "genuinely nothing logged yet" from a real storage failure — both used to
         // collapse to the same silent empty state.
         if items.isEmpty && hadError {
@@ -151,6 +158,10 @@ final class LogHubViewModel {
         )
         do {
             try env.logging.upsertNutrition(entry)
+            // BUG-12/13: a quick water log is exactly the kind of write the data-change bus
+            // exists for — Home's meds/timeline modules and this screen's own recents debounce
+            // both key off this.
+            env.bumpDataGeneration()
             return true
         } catch {
             return false
@@ -188,11 +199,20 @@ final class LogHubViewModel {
         )
         do {
             try env.measurements.upsertRawSample(sample)
+            // BUG-12/13: see `logWater` above — a manual weight entry is a write Body/Home
+            // should reflect without waiting on their own staleness windows.
+            env.bumpDataGeneration()
             return true
         } catch {
             return false
         }
     }
+}
+
+/// BUG-12/13: the standardized `.task(id:)` identity — see `HomeLoadKey` (`HomeScreen.swift`).
+private struct LogHubLoadKey: Equatable {
+    let profile: CustomizationProfile
+    let generation: Int
 }
 
 // MARK: - Screen
@@ -231,7 +251,7 @@ struct LogHubScreen: View {
                 WeightQuickSheet { value in vm.logWeight(displayValue: value, env: env) }
             }
         }
-        .task { vm.load(env) }
+        .task(id: LogHubLoadKey(profile: env.profile, generation: env.dataGeneration)) { vm.load(env) }
     }
 
     // MARK: Sections

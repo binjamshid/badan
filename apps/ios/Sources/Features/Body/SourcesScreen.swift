@@ -19,6 +19,20 @@ struct SourcesData {
 
 // MARK: - View model
 
+/// Everything `SourcesViewModel.fetch` needs to run off the main actor (PERF-01/EDGE-19) — the
+/// thread-safe catalog reference plus the one bit of `AppEnvironment` state the empty-copy
+/// choice depends on.
+struct SourcesFetchInputs {
+    var catalog: CatalogRepository
+    var isHealthKitConnected: Bool
+}
+
+enum SourcesFetchOutcome {
+    case loaded(SourcesData)
+    case empty(hasConnectedSource: Bool)
+    case failure(Error)
+}
+
 @Observable
 @MainActor
 final class SourcesViewModel {
@@ -40,24 +54,61 @@ final class SourcesViewModel {
         en: "Apple Health is connected. Your data will appear here shortly.",
         ar: "تم ربط صحة آبل. ستظهر بياناتك هنا قريباً.")
 
-    func load(_ env: AppEnvironment) {
+    /// (EDGE-19) Was synchronous on the main actor with an N+1 `devices(sourceId:)` query per
+    /// source. Now mirrors `BodyViewModel`/`HomeViewModel`'s pattern: a value-type snapshot in,
+    /// the actual queries on a detached task, state out, with a `Task.isCancelled` guard so a
+    /// `.task(id:)` re-firing before this finishes never clobbers state.
+    ///
+    /// (BUG-12 full) With the data-change bus in place, this screen's `.task(id:)` now also
+    /// keys on `env.dataGeneration`, so it self-corrects once the post-connect backfill lands
+    /// instead of only reacting to a manual `onConnected()` reload — see `SourcesScreen.body`.
+    func load(_ env: AppEnvironment) async {
+        let inputs = SourcesFetchInputs(catalog: env.catalog, isHealthKitConnected: env.isHealthKitConnected)
+
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Self.fetch(inputs)
+        }.value
+
+        guard !Task.isCancelled else { return }
+
+        switch outcome {
+        case .loaded(let data):
+            state = .loaded(data)
+        case .empty(let hasConnectedSource):
+            let copy = hasConnectedSource ? Self.noSourcesYetConnected : Self.noSourcesYetDisconnected
+            state = .empty(env.s(copy))
+        case .failure(let error):
+            // The raw error goes to the debug log, not the UI (BUG-14, matching every other
+            // screen this fix touches) — users see one calm, bilingual "couldn't load" message.
+            LoadErrorLog.log(error, screen: "Sources")
+            state = .error(env.s(LoadErrorCopy.message))
+        }
+    }
+
+    // MARK: Fetch core (nonisolated — runs on a detached task)
+
+    nonisolated static func fetch(_ inputs: SourcesFetchInputs) -> SourcesFetchOutcome {
         do {
-            let sources = try env.catalog.sources()
-            let infos = try sources.map { source in
-                SourcesSourceInfo(source: source, devices: try env.catalog.devices(sourceId: source.id))
+            let sources = try inputs.catalog.sources()
+            // (EDGE-19) One batched query instead of one `devices(sourceId:)` call per source —
+            // `devices(sourceId: nil)` already returns every device with its own `sourceId`, so
+            // grouping in memory is strictly cheaper than the N+1 this replaced, with no schema
+            // or `CatalogRepository` change needed.
+            let allDevices = try inputs.catalog.devices()
+            let devicesBySource = Dictionary(grouping: allDevices, by: \.sourceId)
+            let infos = sources.map { source in
+                SourcesSourceInfo(source: source, devices: devicesBySource[source.id] ?? [])
             }
-            let permissions = try env.catalog.permissions()
+            let permissions = try inputs.catalog.permissions()
             let grouped = Dictionary(grouping: permissions, by: { $0.store })
             let stores = grouped.keys.sorted()
 
             if infos.isEmpty && permissions.isEmpty {
-                let copy = env.isHealthKitConnected ? Self.noSourcesYetConnected : Self.noSourcesYetDisconnected
-                state = .empty(env.s(copy))
-            } else {
-                state = .loaded(SourcesData(sources: infos, permissionStores: stores, permissionsByStore: grouped))
+                return .empty(hasConnectedSource: inputs.isHealthKitConnected)
             }
+            return .loaded(SourcesData(sources: infos, permissionStores: stores, permissionsByStore: grouped))
         } catch {
-            state = .error(String(describing: error))
+            return .failure(error)
         }
     }
 }
@@ -91,10 +142,15 @@ struct SourcesScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space4) {
                 if !env.isHealthKitConnected {
-                    SourcesConnectCard { vm.load(env) }
+                    SourcesConnectCard { Task { await vm.load(env) } }
                 }
 
-                StatefulContainer(vm.state, emptyIcon: "antenna.radiowaves.left.and.right") { data in
+                StatefulContainer(
+                    vm.state,
+                    emptyIcon: "antenna.radiowaves.left.and.right",
+                    retryTitle: env.s(LoadErrorCopy.retry),
+                    onRetry: { Task { await vm.load(env) } }
+                ) { data in
                     VStack(alignment: .leading, spacing: BadanSpace.space4) {
                         if !data.sources.isEmpty {
                             SectionHeader(env.s(Loc.dataSources))
@@ -117,8 +173,16 @@ struct SourcesScreen: View {
         }
         .background(BadanColor.background.ignoresSafeArea())
         .navigationTitle(env.s(Loc.dataSources))
-        .task(id: env.profile) { vm.load(env) }
+        .task(id: SourcesLoadKey(profile: env.profile, generation: env.dataGeneration)) { await vm.load(env) }
     }
+}
+
+/// (BUG-12 full) The standardized `.task(id:)` identity — see `HomeLoadKey`
+/// (`HomeScreen.swift`). Folding `dataGeneration` in is what makes this screen self-correct once
+/// a post-connect backfill actually lands, on top of the existing manual `onConnected()` kick.
+private struct SourcesLoadKey: Equatable {
+    let profile: CustomizationProfile
+    let generation: Int
 }
 
 // MARK: - Connect card (FEAT-01)

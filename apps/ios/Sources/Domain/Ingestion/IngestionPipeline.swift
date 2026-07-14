@@ -37,29 +37,62 @@ final class IngestionPipeline {
     }
 
     func ingest(from port: HealthStorePort, range: HealthDateRange) throws -> IngestSummary {
-        // `measurements`, `catalog`, and `reconciliation` all share the same main-DB connection,
-        // so wrapping the whole ingest body here (rather than committing per row/session/night as
-        // before) turns what used to be hundreds of implicit WAL commit+fsyncs into one
-        // (PERF-02 (audit 2026-07-12)).
-        return try measurements.transaction {
-            try ingestUnbatched(from: port, range: range)
+        // (DATA-08) Phase 1: pull every payload from `port` BEFORE any write transaction is
+        // open. HealthKit round-trips are real synchronous I/O (each bridges a completion-
+        // handler query onto this thread via a semaphore — see `HealthKitAdapter`'s type doc);
+        // running them inside `measurements.transaction` used to hold the DB write lock for
+        // their entire duration, stalling any other read against the same connection for as
+        // long as HealthKit took to answer (part of EDGE-04). Deliberately NOT calling
+        // `port.commitPendingAnchors()` yet either — see phase 3 below for why.
+        let descriptors = port.sourceDescriptors()
+        let samples = port.readSamples(range)
+        let intervals = port.readIntervals(range)
+        let sessionDTOs = port.readSessions(range)
+        // Must run after the read* calls above for this same `range` — see
+        // `HealthStorePort.deletions(_:)`'s doc.
+        let deletions = port.deletions(range)
+
+        // Phase 2: one write transaction for every upsert/dedup/rollup decision. `measurements`,
+        // `catalog`, and `reconciliation` all share the same main-DB connection, so wrapping the
+        // whole write body here (rather than committing per row/session/night) turns what used
+        // to be hundreds of implicit WAL commit+fsyncs into one (PERF-02 (audit 2026-07-12)).
+        let summary = try measurements.transaction {
+            try applyIngest(descriptors: descriptors, samples: samples, intervals: intervals,
+                            sessionDTOs: sessionDTOs, deletions: deletions)
         }
+
+        // (DATA-08) Phase 3: only persist the port's read cursor/anchor AFTER the write
+        // transaction above has actually committed. Persisting eagerly (the old behavior) only
+        // worked because the anchor repo happened to share the ingest write's connection/
+        // transaction; once HealthKit reads run outside that transaction (phase 1), persisting
+        // early would let the cursor advance past data whose write could still fail to commit,
+        // silently dropping that data forever instead of safely retrying it on the next sync.
+        // No-ops for stores with no such cursor (e.g. `FakeHealthStore`).
+        port.commitPendingAnchors()
+        return summary
     }
 
     // MARK: - Ingest body (runs inside `measurements.transaction` above)
 
-    private func ingestUnbatched(from port: HealthStorePort, range: HealthDateRange) throws -> IngestSummary {
+    private func applyIngest(descriptors: [SourceDescriptor], samples: [SampleDTO], intervals: [IntervalDTO],
+                             sessionDTOs: [SessionDTO], deletions: HealthStoreDeletions) throws -> IngestSummary {
         let now = clock.now()
         var summary = IngestSummary()
 
         // (a) Register sources + devices and build the dedup priority map from descriptors.
-        let descriptors = port.sourceDescriptors()
         let priorityBySource = try upsertSourcesAndDevices(descriptors, now: now)
 
-        // (b) Pull raw payloads.
-        let samples = port.readSamples(range)
-        let intervals = port.readIntervals(range)
-        let sessionDTOs = port.readSessions(range)
+        // (b) Apply deletions surfaced since the last sync (BUG-10a) before writing fresh data,
+        // so a row that was both deleted and (implausibly) re-delivered in the same batch ends
+        // up live rather than stuck soft-deleted.
+        for del in deletions.samples {
+            try measurements.softDelete(table: "raw_samples", metricId: del.metricId,
+                                        externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
+        }
+        for del in deletions.intervals {
+            try measurements.softDelete(table: "interval_records", metricId: del.metricId,
+                                        externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
+        }
 
         // (c) Instant readings -> raw_samples (canonicalized, provenance stamped).
         for dto in samples {
@@ -71,7 +104,7 @@ final class IngestionPipeline {
                 tzId: dto.tz,
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                 externalId: dto.externalId, measuredAt: dto.start,
-                                                tz: dto.tz, now: now, qualityFlags: flags),
+                                                tz: dto.tz, now: now, qualityFlags: dto.qualityFlags + flags),
                 updatedAt: now, originDeviceId: deviceId)
             if try measurements.upsertRawSample(sample) { summary.samples += 1 }
         }
@@ -79,13 +112,26 @@ final class IngestionPipeline {
         // (c) Normalized aggregates -> interval_records.
         for dto in intervals {
             guard let def = registry.definition(dto.metricId) else { continue }
+            if dto.metricId == MetricID.steps, dto.value == 0 {
+                // (BUG-10b) A zero-sum step day means every contributing sample HealthKit knows
+                // about for that day summed to zero — either genuinely no steps, or (the case
+                // this exists for) every sample was deleted since the last sync. Only write it
+                // when a row already exists at this identity: that's the correction case. A
+                // fresh zero row for a day HealthKit has simply never reported anything for
+                // (e.g. before the user owned a phone/watch) would manufacture up to 90 noise
+                // rows on every first-connect backfill, which is exactly the failure mode this
+                // guard exists to avoid — see `HealthKitAdapter.readDailySteps`'s doc for why
+                // the adapter emits the zero-day DTO unconditionally and leaves this decision
+                // to the pipeline, which is the layer with DB access to make it.
+                guard try measurements.intervalRecordExists(metricId: dto.metricId, externalId: dto.externalId) else { continue }
+            }
             let (value, flags) = canonicalValue(dto.value, from: dto.unit, canonical: def.canonicalUnit)
             let record = IntervalRecord(
                 id: ULID.newID(), metricId: dto.metricId, value: value, unit: def.canonicalUnit,
                 startAt: dto.start, endAt: dto.end, tzId: dto.tz, aggregation: dto.aggregation,
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                 externalId: dto.externalId, measuredAt: dto.start,
-                                                tz: dto.tz, now: now, qualityFlags: flags),
+                                                tz: dto.tz, now: now, qualityFlags: dto.qualityFlags + flags),
                 updatedAt: now, originDeviceId: deviceId)
             if try measurements.upsertIntervalRecord(record) { summary.intervals += 1 }
         }
@@ -107,7 +153,7 @@ final class IngestionPipeline {
                                       stageSummarySeconds: stageSummary(dto.stages)),
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                externalId: dto.externalId, measuredAt: dto.start,
-                                               tz: dto.tz, now: now),
+                                               tz: dto.tz, now: now, qualityFlags: dto.qualityFlags),
                 updatedAt: now, originDeviceId: deviceId)
             let stages = dto.stages.enumerated().map { i, s in
                 SessionStage(sessionId: session.id, seq: i, stage: s.stage, startAt: s.start, endAt: s.end)

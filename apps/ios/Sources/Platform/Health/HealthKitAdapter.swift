@@ -24,6 +24,19 @@ final class HealthKitAdapter: HealthStorePort {
     /// to be, since that attributed a post-travel backfill's historical nights to today's zone.
     private let tz: String
 
+    /// Deletions collected by the most recent `readSamples`/`readIntervals` calls, drained by
+    /// `deletions(_:)` (BUG-10). Populated in-process rather than by re-running the same
+    /// anchored HealthKit queries a second time just to recover their `deletedObjects` — cheap,
+    /// and correct as long as `deletions(_:)` is called right after the read* calls for the same
+    /// range within one ingest pass, which is exactly how `IngestionPipeline.ingest` calls it.
+    private var pendingDeletions = HealthStoreDeletions()
+
+    /// Anchors advanced by the most recent read* calls, held in memory until `commitPendingAnchors()`
+    /// (DATA-08): persisting them here immediately (the old behavior) assumed the anchor write
+    /// shared a transaction with the ingest write, which stopped being true once HealthKit reads
+    /// moved outside `IngestionPipeline`'s write transaction (see `runAnchoredQuery`'s doc).
+    private var pendingAnchors: [String: HKQueryAnchor] = [:]
+
     /// The single `store` key under which every HealthKit anchor/permission-state row is filed
     /// (matches `SourcesScreen`'s `"healthkit"` permission-store label) and the sourceId used
     /// for values HealthKit only ever returns pre-merged across sources (see `readDailySteps`)
@@ -182,14 +195,22 @@ final class HealthKitAdapter: HealthStorePort {
         guard HKHealthStore.isHealthDataAvailable(),
               let type = HKObjectType.quantityType(forIdentifier: .heartRate) else { return [] }
         let bpmUnit = HKUnit.count().unitDivided(by: .minute())
-        return runAnchoredQuery(type: type, range: range, platformType: "HKQuantityTypeIdentifierHeartRate")
-            .compactMap { sample -> SampleDTO? in
-                guard let qs = sample as? HKQuantitySample else { return nil }
-                let (sourceId, deviceId) = provenanceIds(for: qs)
-                return SampleDTO(metricId: MetricID.heartRate, value: qs.quantity.doubleValue(for: bpmUnit),
-                                 unit: "bpm", start: qs.startDate, end: qs.endDate, tz: measuredTimeZone(for: qs),
-                                 sourceId: sourceId, deviceId: deviceId, externalId: qs.uuid.uuidString)
-            }
+        let result = runAnchoredQuery(type: type, range: range, platformType: "HKQuantityTypeIdentifierHeartRate")
+        let items = result.samples.compactMap { sample -> SampleDTO? in
+            guard let qs = sample as? HKQuantitySample else { return nil }
+            let (sourceId, deviceId) = provenanceIds(for: qs)
+            let (tzId, tzAssumed) = measuredTimeZone(for: qs)
+            return SampleDTO(metricId: MetricID.heartRate, value: qs.quantity.doubleValue(for: bpmUnit),
+                             unit: "bpm", start: qs.startDate, end: qs.endDate, tz: tzId,
+                             sourceId: sourceId, deviceId: deviceId, externalId: qs.uuid.uuidString,
+                             qualityFlags: tzAssumed ? [.tzAssumed] : [])
+        }
+        // (BUG-10a) A deleted heart-rate sample's UUID *is* the externalId it was ingested
+        // under, so the mapping back to a soft-deletable row is exact, not a guess.
+        pendingDeletions.samples += result.deletedUUIDs.map {
+            DeletedExternalRecord(metricId: MetricID.heartRate, externalId: $0)
+        }
+        return items
     }
 
     /// Resting heart rate (daily, mean) + steps (daily, sum) -> interval DTOs, matching
@@ -199,30 +220,105 @@ final class HealthKitAdapter: HealthStorePort {
         var out: [IntervalDTO] = []
         if let rhrType = HKObjectType.quantityType(forIdentifier: .restingHeartRate) {
             let bpmUnit = HKUnit.count().unitDivided(by: .minute())
-            out += runAnchoredQuery(type: rhrType, range: range, platformType: "HKQuantityTypeIdentifierRestingHeartRate")
-                .compactMap { sample -> IntervalDTO? in
-                    guard let qs = sample as? HKQuantitySample else { return nil }
-                    let (sourceId, deviceId) = provenanceIds(for: qs)
-                    return IntervalDTO(metricId: MetricID.restingHeartRate, value: qs.quantity.doubleValue(for: bpmUnit),
-                                       unit: "bpm", start: qs.startDate, end: qs.endDate, tz: measuredTimeZone(for: qs),
-                                       aggregation: .mean, sourceId: sourceId, deviceId: deviceId,
-                                       externalId: qs.uuid.uuidString)
-                }
+            let result = runAnchoredQuery(type: rhrType, range: range, platformType: "HKQuantityTypeIdentifierRestingHeartRate")
+            out += result.samples.compactMap { sample -> IntervalDTO? in
+                guard let qs = sample as? HKQuantitySample else { return nil }
+                let (sourceId, deviceId) = provenanceIds(for: qs)
+                let (tzId, tzAssumed) = measuredTimeZone(for: qs)
+                return IntervalDTO(metricId: MetricID.restingHeartRate, value: qs.quantity.doubleValue(for: bpmUnit),
+                                   unit: "bpm", start: qs.startDate, end: qs.endDate, tz: tzId,
+                                   aggregation: .mean, sourceId: sourceId, deviceId: deviceId,
+                                   externalId: qs.uuid.uuidString, qualityFlags: tzAssumed ? [.tzAssumed] : [])
+            }
+            // (BUG-10a) Same exact-UUID mapping as heart-rate samples above.
+            pendingDeletions.intervals += result.deletedUUIDs.map {
+                DeletedExternalRecord(metricId: MetricID.restingHeartRate, externalId: $0)
+            }
         }
         out += readDailySteps(range)
         return out
+    }
+
+    /// Deletions surfaced by the `readSamples`/`readIntervals` calls above, for this same
+    /// `range` (BUG-10). See the `pendingDeletions` property doc for why this drains an
+    /// in-process buffer instead of re-querying HealthKit.
+    func deletions(_ range: HealthDateRange) -> HealthStoreDeletions {
+        defer { pendingDeletions = HealthStoreDeletions() }
+        return pendingDeletions
+    }
+
+    /// Persists every anchor advanced by the read* calls since the last commit (DATA-08). See
+    /// the `pendingAnchors` property doc and `runAnchoredQuery`'s doc for why this is deferred
+    /// rather than persisted eagerly inside the read itself.
+    func commitPendingAnchors() {
+        for (platformType, anchor) in pendingAnchors {
+            saveAnchor(anchor, platformType: platformType)
+        }
+        pendingAnchors.removeAll()
     }
 
     /// Sleep analysis -> session DTOs with stages, matching `FakeHealthStore`'s `SessionDTO`
     /// shape. HealthKit has no first-class "session" object for sleep — Apple Watch (and most
     /// third-party apps) write one category sample per stage segment — so segments are grouped
     /// into episodes here (see `groupIntoSessions`).
+    ///
+    /// (BUG-11b) The anchored delta below is used ONLY as a signal for which local nights
+    /// changed this sync — never clustered into sessions directly. Clustering only the delta
+    /// would slice one real night's sleep into two partial sessions whenever it's delivered
+    /// across two anchored-query batches (e.g. the Watch syncs mid-morning and the phone
+    /// catches up hours later), and could flip a cluster's primary/nap classification on
+    /// redelivery without ever correcting the earlier session it should have replaced. Instead,
+    /// once an affected night is known, `sessionsForNight` re-queries HealthKit for that whole
+    /// night's COMPLETE current sample set (a cheap, bounded per-night `HKSampleQuery`) and
+    /// re-clusters from that, so every re-ingest reflects everything HealthKit has for the
+    /// night, not just what changed.
+    ///
+    /// Known limitation: if EVERY sample for a night is deleted (none remain), that night never
+    /// appears in `deltaSamples` (deletions carry no date — see `HealthStoreDeletions`'s doc —
+    /// so there is nothing to derive an affected night from), and its stale session row is not
+    /// rebuilt or removed by this path. Out of scope for BUG-11/BUG-10 as specified: the
+    /// tractable, testable fix here is night-keyed identity + full-night rebuild + the
+    /// conflict-target migration; a fully-wiped night needs a different signal HealthKit's
+    /// anchored-query API doesn't provide.
     func readSessions(_ range: HealthDateRange) -> [SessionDTO] {
         guard HKHealthStore.isHealthDataAvailable(),
               let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
-        let samples = runAnchoredQuery(type: type, range: range, platformType: "HKCategoryTypeIdentifierSleepAnalysis")
-            .compactMap { $0 as? HKCategorySample }
-        return groupIntoSessions(samples)
+        let deltaResult = runAnchoredQuery(type: type, range: range, platformType: "HKCategoryTypeIdentifierSleepAnalysis")
+        let deltaSamples = deltaResult.samples.compactMap { $0 as? HKCategorySample }
+        guard !deltaSamples.isEmpty else { return [] }
+
+        let affectedNights = Set(deltaSamples.map { sample in
+            DayAttribution.localNight(sessionEnd: sample.endDate, tz: measuredTimeZone(for: sample).tz)
+        })
+        var sessions: [SessionDTO] = []
+        for night in affectedNights.sorted() {
+            sessions += sessionsForNight(night, categoryType: type)
+        }
+        return sessions
+    }
+
+    /// Re-cluster one local night's sleep from HealthKit's COMPLETE current sample set (not
+    /// just an anchored delta) — see `readSessions`'s doc for why. The query window pads the
+    /// night's calendar day by `sleepClusterGapSeconds` on each side (sleep can start the
+    /// evening before its attributed day and, rarely, run past the day boundary the next
+    /// morning); results are then filtered back down to clusters actually attributed to THIS
+    /// night, since a wide window can also catch the tail of an adjacent night.
+    private func sessionsForNight(_ night: String, categoryType: HKCategoryType) -> [SessionDTO] {
+        guard let dayStart = DayAttribution.date(fromDayKey: night, tz: tz) else { return [] }
+        let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: tz)
+        let windowStart = dayStart.addingTimeInterval(-Self.sleepClusterGapSeconds - 12 * 3600)
+        let windowEnd = dayEnd.addingTimeInterval(Self.sleepClusterGapSeconds)
+        let predicate = HKQuery.predicateForSamples(withStart: windowStart, end: windowEnd, options: .strictStartDate)
+        let semaphore = DispatchSemaphore(value: 0)
+        var samples: [HKCategorySample] = []
+        let query = HKSampleQuery(sampleType: categoryType, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samplesOrNil, error in
+            defer { semaphore.signal() }
+            guard error == nil else { return }
+            samples = (samplesOrNil as? [HKCategorySample]) ?? []
+        }
+        store.execute(query)
+        semaphore.wait()
+        return groupIntoSessions(samples).filter { DayAttribution.localNight(sessionEnd: $0.end, tz: $0.tz) == night }
     }
 
     // MARK: - Steps (HKStatisticsCollectionQuery — no per-sample anchor)
@@ -255,22 +351,30 @@ final class HealthKitAdapter: HealthStorePort {
             defer { semaphore.signal() }
             guard error == nil, let results else { return }
             results.enumerateStatistics(from: range.start, to: range.end) { stats, _ in
-                guard let sum = stats.sumQuantity() else { return }
-                let value = sum.doubleValue(for: .count())
-                guard value > 0 else { return }
+                let value = stats.sumQuantity()?.doubleValue(for: .count()) ?? 0
                 let dayKey = DayAttribution.localDayKey(stats.startDate, tz: tz)
+                // (BUG-10b) Always emit one interval per day in range, INCLUDING zero-sum days
+                // — the old `guard value > 0 else { return }` here meant a day that went from N
+                // steps to 0 (every contributing sample deleted since the last sync) kept its
+                // stale positive total forever, since no DTO ever arrived to correct it.
+                // `IngestionPipeline` is the one that decides whether a *fresh* zero-valued day
+                // is worth writing at all (only when a row already exists for that identity —
+                // i.e. this is a correction, not the first-connect 90-day backfill discovering
+                // 90 days most of which the user never owned a phone/watch for) so emitting
+                // unconditionally here can't manufacture backfill noise on its own.
+                //
                 // (DATA-07) `stats` is a same-day cumulative sum across every contributing
                 // sample/source (see the type doc above) — HKStatisticsCollectionQuery exposes
                 // no per-contributing-sample metadata, so there is no single "the" measured
                 // timezone to read here the way `measuredTimeZone(for:)` does for individual
-                // HKSamples elsewhere in this file. `tz` (current device zone) is used as-is;
-                // this bucket is honestly an assumption on backfill-after-travel, which is
-                // exactly what `.tzAssumed` exists to flag (see `measuredTimeZone(for:)`'s doc
-                // comment for why that flag can't be threaded onto this DTO today).
+                // HKSamples elsewhere in this file. `tz` (current device zone) is used as-is, so
+                // this bucket is honestly always a `.tzAssumed` assumption (relevant on
+                // backfill-after-travel) — now that `IntervalDTO` carries a quality-flags field,
+                // that can finally be threaded through instead of just noted in a comment.
                 out.append(IntervalDTO(metricId: MetricID.steps, value: value, unit: "count",
                                        start: stats.startDate, end: stats.endDate, tz: tz,
                                        aggregation: .sum, sourceId: Self.fallbackSourceId,
-                                       externalId: "healthkit-steps-\(dayKey)"))
+                                       externalId: "healthkit-steps-\(dayKey)", qualityFlags: [.tzAssumed]))
             }
         }
         store.execute(query)
@@ -317,6 +421,7 @@ final class HealthKitAdapter: HealthStorePort {
 
     private func makeSession(from samples: [HKCategorySample], start: Date, end: Date) -> SessionDTO {
         let (sourceId, deviceId) = provenanceIds(for: samples[0])
+        let (tzId, tzAssumed) = measuredTimeZone(for: samples[0])
         var stages: [StageDTO] = []
         var asleep: TimeInterval = 0
         for sample in samples {
@@ -328,10 +433,20 @@ final class HealthKitAdapter: HealthStorePort {
         }
         let inBedSeconds = end.timeIntervalSince(start)
         let kind: SessionKind = asleep >= Self.sleepPrimaryMinSeconds ? .sleepPrimary : .sleepNap
-        return SessionDTO(kind: kind, start: start, end: end, tz: measuredTimeZone(for: samples[0]),
+        // (BUG-11a) Keyed by the NIGHT, not the cluster's absolute start instant: the old
+        // `Int(start.timeIntervalSince1970)` suffix meant a night delivered across two anchored
+        // batches clustered into two independently-keyed "sessions" that could never match each
+        // other on upsert, creating a duplicate instead of updating the first. Night-keying
+        // mirrors `FakeHealthStore`'s existing day-keyed scheme (`"watch-sleep-<dayKey>"`) and,
+        // combined with `sessionsForNight`'s full-night rebuild and the migration removing
+        // `kind` from the sessions identity index (see `Migrations.swift` v3), means a
+        // redelivered/reclassified night always upserts as exactly one row.
+        let night = DayAttribution.localNight(sessionEnd: end, tz: tzId)
+        return SessionDTO(kind: kind, start: start, end: end, tz: tzId,
                           sourceId: sourceId, deviceId: deviceId,
-                          externalId: "healthkit-sleep-\(sourceId)-\(Int(start.timeIntervalSince1970))",
-                          stages: stages, timeAsleepSeconds: asleep, timeInBedSeconds: inBedSeconds)
+                          externalId: "healthkit-sleep-\(sourceId)-\(night)",
+                          stages: stages, timeAsleepSeconds: asleep, timeInBedSeconds: inBedSeconds,
+                          qualityFlags: tzAssumed ? [.tzAssumed] : [])
     }
 
     /// HealthKit's stage vocabulary -> BADAN's `SleepStage`. `.asleep` (deprecated, generic
@@ -350,31 +465,49 @@ final class HealthKitAdapter: HealthStorePort {
 
     // MARK: - Anchored query + anchor persistence
 
+    /// One `HKAnchoredObjectQuery`'s raw result: the samples it returned, the UUIDs of anything
+    /// deleted since the last query, and the refreshed anchor (not yet persisted — see
+    /// `runAnchoredQuery`'s doc).
+    private struct AnchoredQueryResult {
+        var samples: [HKSample] = []
+        var deletedUUIDs: [String] = []
+        var anchor: HKQueryAnchor?
+    }
+
     /// Run one `HKAnchoredObjectQuery` synchronously (bridged via semaphore — see the type
     /// doc), scoped to `range` (the caller's backfill window; a fixed 90 days on first connect),
     /// resuming from whatever anchor persisted last time so a later call only returns what's new
-    /// within that same window. The refreshed anchor is persisted before returning so a query
-    /// that fails downstream (e.g. `IngestionPipeline` throwing) doesn't replay from scratch —
-    /// the upserts it feeds are idempotent by external id, so at-least-once redelivery here is
-    /// safe either way.
-    private func runAnchoredQuery(type: HKSampleType, range: HealthDateRange, platformType: String) -> [HKSample] {
+    /// within that same window.
+    ///
+    /// (DATA-08) The refreshed anchor is deliberately NOT persisted here anymore — it's stashed
+    /// in `pendingAnchors` and only written by `commitPendingAnchors()`, which
+    /// `IngestionPipeline` calls after its write transaction has actually committed. The old
+    /// comment here claimed persisting eagerly was safe "so a failed ingest doesn't replay from
+    /// scratch" — that was only true by accident, because the anchor repo happened to share the
+    /// same DB connection/transaction as the ingest write. Once HealthKit reads run outside that
+    /// transaction (this fix), persisting the anchor here would let it advance past data whose
+    /// write could still fail to commit, silently and permanently dropping that data on the next
+    /// sync instead of safely retrying it.
+    private func runAnchoredQuery(type: HKSampleType, range: HealthDateRange, platformType: String) -> AnchoredQueryResult {
         let anchor = loadAnchor(platformType: platformType)
         let predicate = HKQuery.predicateForSamples(withStart: range.start, end: range.end, options: .strictStartDate)
         let semaphore = DispatchSemaphore(value: 0)
-        var resultSamples: [HKSample] = []
-        var resultAnchor = anchor
+        var result = AnchoredQueryResult(anchor: anchor)
         let query = HKAnchoredObjectQuery(type: type, predicate: predicate, anchor: anchor,
-                                          limit: HKObjectQueryNoLimit) { _, samplesOrNil, _, newAnchor, error in
+                                          limit: HKObjectQueryNoLimit) { _, samplesOrNil, deletedObjectsOrNil, newAnchor, error in
             if error == nil {
-                resultSamples = samplesOrNil ?? []
-                resultAnchor = newAnchor ?? anchor
+                result.samples = samplesOrNil ?? []
+                result.deletedUUIDs = (deletedObjectsOrNil ?? []).map { $0.uuid.uuidString }
+                result.anchor = newAnchor ?? anchor
             }
             semaphore.signal()
         }
         store.execute(query)
         semaphore.wait()
-        saveAnchor(resultAnchor, platformType: platformType)
-        return resultSamples
+        if let toPersist = result.anchor {
+            pendingAnchors[platformType] = toPersist
+        }
+        return result
     }
 
     private func loadAnchor(platformType: String) -> HKQueryAnchor? {
@@ -422,18 +555,16 @@ final class HealthKitAdapter: HealthStorePort {
     /// `tz` (current device zone, see the `tz` property doc) only when no valid per-sample zone
     /// is present.
     ///
-    /// NOTE (DATA-07, partial fix): a sample that falls back to `tz` here should also carry the
-    /// `.tzAssumed` quality flag on its `Provenance` — the same way `.estimate` is stamped for a
-    /// failed unit conversion in `IngestionPipeline.canonicalValue`. That threading is NOT
-    /// implemented: `SampleDTO`/`IntervalDTO`/`SessionDTO` (`HealthStorePort.swift`) carry no
-    /// quality-flag field an adapter can populate, and `IngestionPipeline.platformProvenance`
-    /// (`IngestionPipeline.swift`) would need to merge an adapter-supplied flag into the
-    /// `qualityFlags` it stamps — both files are out of scope for this fix (see this task's
-    /// report for the exact change needed in each).
-    private func measuredTimeZone(for sample: HKSample) -> String {
+    /// Returns the measured zone plus whether it's a fallback (i.e. `.tzAssumed` should be
+    /// stamped): a sample that falls back to `tz` carries the `.tzAssumed` quality flag on its
+    /// `Provenance`, the same way `.estimate` is stamped for a failed unit conversion in
+    /// `IngestionPipeline.canonicalValue`. (Completes wave-1 DATA-07: `SampleDTO`/`IntervalDTO`/
+    /// `SessionDTO` now carry a `qualityFlags` field an adapter can populate, and
+    /// `IngestionPipeline.platformProvenance` merges it into the `qualityFlags` it stamps.)
+    private func measuredTimeZone(for sample: HKSample) -> (tz: String, assumed: Bool) {
         if let raw = sample.metadata?[HKMetadataKeyTimeZone] as? String, TimeZone(identifier: raw) != nil {
-            return raw
+            return (raw, false)
         }
-        return tz
+        return (tz, true)
     }
 }
