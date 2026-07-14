@@ -18,6 +18,10 @@ import HealthKit
 final class HealthKitAdapter: HealthStorePort {
     private let store = HKHealthStore()
     private let anchors: ReadAnchorRepository
+    /// Fallback measured-timezone (DATA-07): the *current* device zone at adapter construction,
+    /// used only when a sample carries no valid `HKMetadataKeyTimeZone` of its own — see
+    /// `measuredTimeZone(for:)`. No longer stamped unconditionally on every DTO the way it used
+    /// to be, since that attributed a post-travel backfill's historical nights to today's zone.
     private let tz: String
 
     /// The single `store` key under which every HealthKit anchor/permission-state row is filed
@@ -76,18 +80,96 @@ final class HealthKitAdapter: HealthStorePort {
             for source in querySources(for: sampleType) {
                 let bundleId = source.bundleIdentifier
                 guard byBundleId[bundleId] == nil else { continue }
+                // (DATA-06b) Cheapest correct point to learn this source's device: one
+                // newest-sample lookup per distinct source (deduped by the guard above), not a
+                // per-record query — see `representativeInfo(for:sampleType:)`.
+                let info = representativeInfo(for: source, sampleType: sampleType)
                 byBundleId[bundleId] = SourceDescriptor(
-                    id: bundleId, displayName: source.name, type: .healthkit,
-                    bundleId: bundleId, priority: 0) // priority inferred from name by IngestionPipeline.
+                    id: bundleId, displayName: source.name, type: .healthkit, bundleId: bundleId,
+                    deviceId: info.device?.localIdentifier ?? info.device?.name,
+                    deviceName: info.device?.name,
+                    deviceModel: info.device?.model ?? info.productType,
+                    priority: Self.sourcePriority(bundleId: bundleId, deviceModel: info.device?.model,
+                                                  deviceProductType: info.productType, displayName: source.name))
             }
         }
-        guard !byBundleId.isEmpty else { return [Self.fallbackDescriptor] }
+        // (DATA-06a) File the merged step total's source (the `fallbackSourceId` used
+        // unconditionally by `readDailySteps`) even when real per-device sources exist, so its
+        // `source_id` always resolves to a cataloged Source row instead of dangling. Dedupe by
+        // id in the unlikely case a real source ever shared this bundle id.
+        if byBundleId[Self.fallbackSourceId] == nil {
+            byBundleId[Self.fallbackSourceId] = Self.fallbackDescriptor
+        }
         return byBundleId.values.sorted { $0.id < $1.id }
     }
 
     private static let fallbackDescriptor = SourceDescriptor(
         id: fallbackSourceId, displayName: "Apple Health", type: .healthkit,
         bundleId: "com.apple.health", priority: 80)
+
+    /// The device info (and hardware `productType`) behind one real HealthKit source, learned
+    /// from its single newest sample rather than a per-record query (DATA-06b). `HKSourceQuery`
+    /// (`querySources`) returns bare `HKSource` values with no device attached, and HealthKit
+    /// has no "device for this source" lookup — a representative sample is the cheapest place
+    /// this is actually exposed. `productType` (e.g. "Watch6,1", "iPhone14,5") comes from
+    /// `HKSourceRevision`, not `HKDevice` (which only has the human-readable `model`, e.g.
+    /// "Watch") — both feed `sourcePriority` below.
+    private struct RepresentativeInfo {
+        var device: HKDevice? = nil
+        var productType: String? = nil
+    }
+
+    private func representativeInfo(for source: HKSource, sampleType: HKSampleType) -> RepresentativeInfo {
+        let predicate = HKQuery.predicateForObjects(from: source)
+        let sort = [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)]
+        let semaphore = DispatchSemaphore(value: 0)
+        var info = RepresentativeInfo()
+        let query = HKSampleQuery(sampleType: sampleType, predicate: predicate, limit: 1, sortDescriptors: sort) { _, samplesOrNil, _ in
+            let sample = samplesOrNil?.first
+            info = RepresentativeInfo(device: sample?.device, productType: sample?.sourceRevision.productType)
+            semaphore.signal()
+        }
+        store.execute(query)
+        semaphore.wait()
+        return info
+    }
+
+    /// Non-Apple wearable/wrist-class keywords, English and their Arabic equivalents (FIX-09):
+    /// mirrors `IngestionPipeline.wearableKeywords` (`IngestionPipeline.swift:243`), which is
+    /// English-only, plus "ساعة" (watch), "خاتم" (ring), "سوار" (band) so an Arabic-named
+    /// third-party source doesn't fall through to priority 0 purely because of language.
+    private static let wearableNameKeywords = [
+        "watch", "ring", "band", "oura", "whoop", "fenix", "garmin", "fitbit", "polar",
+        "ساعة", "خاتم", "سوار",
+    ]
+
+    /// Locale-independent dedup priority for a HealthKit source (FIX-09). `IngestionPipeline`'s
+    /// own `inferredPriority` (`IngestionPipeline.swift:245-251`) only recognizes English
+    /// keywords in `displayName`/`deviceName`/`deviceModel`, so a wearable with an Arabic name
+    /// ties at priority 0 against, say, a phone's longer in-bed sleep estimate — violating I4
+    /// (device wins dedup ties by source priority) and Arabic-first. Confirmed by reading
+    /// `inferredPriority`: it only derives its own value when the descriptor's `priority` is
+    /// still 0 (`if d.priority != 0 { return d.priority }`), so any nonzero value this method
+    /// returns wins outright and is never re-derived from (English-only) text — no pipeline
+    /// change needed for that to hold.
+    ///
+    /// Produces the same 0/1/2 scale the pipeline does (wearable=2, phone=1, unknown=0),
+    /// preferring, in order: (1) the `com.apple.health.*` bundle-id namespace paired with a
+    /// watch-class device/productType — the shape real Apple Watch sources take; (2) the
+    /// device model/productType string alone, independent of bundle id ("watch" -> wearable,
+    /// "iphone" -> phone); (3) name keywords, English then Arabic, as the weakest, last-resort
+    /// signal.
+    static func sourcePriority(bundleId: String, deviceModel: String?, deviceProductType: String?,
+                              displayName: String) -> Int {
+        let modelHay = ((deviceModel ?? "") + " " + (deviceProductType ?? "")).lowercased()
+        if bundleId.hasPrefix("com.apple.health"), modelHay.contains("watch") { return 2 }
+        if modelHay.contains("watch") { return 2 }
+        if modelHay.contains("iphone") { return 1 }
+        let nameHay = displayName.lowercased()
+        if Self.wearableNameKeywords.contains(where: nameHay.contains) { return 2 }
+        if nameHay.contains("phone") || displayName.contains("هاتف") { return 1 }
+        return 0
+    }
 
     // MARK: - HealthStorePort reads
 
@@ -105,7 +187,7 @@ final class HealthKitAdapter: HealthStorePort {
                 guard let qs = sample as? HKQuantitySample else { return nil }
                 let (sourceId, deviceId) = provenanceIds(for: qs)
                 return SampleDTO(metricId: MetricID.heartRate, value: qs.quantity.doubleValue(for: bpmUnit),
-                                 unit: "bpm", start: qs.startDate, end: qs.endDate, tz: tz,
+                                 unit: "bpm", start: qs.startDate, end: qs.endDate, tz: measuredTimeZone(for: qs),
                                  sourceId: sourceId, deviceId: deviceId, externalId: qs.uuid.uuidString)
             }
     }
@@ -122,7 +204,7 @@ final class HealthKitAdapter: HealthStorePort {
                     guard let qs = sample as? HKQuantitySample else { return nil }
                     let (sourceId, deviceId) = provenanceIds(for: qs)
                     return IntervalDTO(metricId: MetricID.restingHeartRate, value: qs.quantity.doubleValue(for: bpmUnit),
-                                       unit: "bpm", start: qs.startDate, end: qs.endDate, tz: tz,
+                                       unit: "bpm", start: qs.startDate, end: qs.endDate, tz: measuredTimeZone(for: qs),
                                        aggregation: .mean, sourceId: sourceId, deviceId: deviceId,
                                        externalId: qs.uuid.uuidString)
                 }
@@ -177,6 +259,14 @@ final class HealthKitAdapter: HealthStorePort {
                 let value = sum.doubleValue(for: .count())
                 guard value > 0 else { return }
                 let dayKey = DayAttribution.localDayKey(stats.startDate, tz: tz)
+                // (DATA-07) `stats` is a same-day cumulative sum across every contributing
+                // sample/source (see the type doc above) — HKStatisticsCollectionQuery exposes
+                // no per-contributing-sample metadata, so there is no single "the" measured
+                // timezone to read here the way `measuredTimeZone(for:)` does for individual
+                // HKSamples elsewhere in this file. `tz` (current device zone) is used as-is;
+                // this bucket is honestly an assumption on backfill-after-travel, which is
+                // exactly what `.tzAssumed` exists to flag (see `measuredTimeZone(for:)`'s doc
+                // comment for why that flag can't be threaded onto this DTO today).
                 out.append(IntervalDTO(metricId: MetricID.steps, value: value, unit: "count",
                                        start: stats.startDate, end: stats.endDate, tz: tz,
                                        aggregation: .sum, sourceId: Self.fallbackSourceId,
@@ -238,7 +328,8 @@ final class HealthKitAdapter: HealthStorePort {
         }
         let inBedSeconds = end.timeIntervalSince(start)
         let kind: SessionKind = asleep >= Self.sleepPrimaryMinSeconds ? .sleepPrimary : .sleepNap
-        return SessionDTO(kind: kind, start: start, end: end, tz: tz, sourceId: sourceId, deviceId: deviceId,
+        return SessionDTO(kind: kind, start: start, end: end, tz: measuredTimeZone(for: samples[0]),
+                          sourceId: sourceId, deviceId: deviceId,
                           externalId: "healthkit-sleep-\(sourceId)-\(Int(start.timeIntervalSince1970))",
                           stages: stages, timeAsleepSeconds: asleep, timeInBedSeconds: inBedSeconds)
     }
@@ -320,5 +411,29 @@ final class HealthKitAdapter: HealthStorePort {
         let sourceId = bundleId.isEmpty ? Self.fallbackSourceId : bundleId
         let deviceId = sample.device?.localIdentifier ?? sample.device?.name
         return (sourceId, deviceId)
+    }
+
+    /// The timezone a sample was actually measured in (DATA-07), not whatever zone this device
+    /// happens to be in right now: HealthKit stamps `HKMetadataKeyTimeZone` on a sample when the
+    /// recording device knew its own zone at write time (Apple Watch and most first-party
+    /// sources do), which is what `DayAttribution`'s "timezone at measurement" contract needs
+    /// for correct day/night bucketing after travel — attributing a post-trip backfill to
+    /// today's zone silently misfiles historical nights. Falls back to the adapter's captured
+    /// `tz` (current device zone, see the `tz` property doc) only when no valid per-sample zone
+    /// is present.
+    ///
+    /// NOTE (DATA-07, partial fix): a sample that falls back to `tz` here should also carry the
+    /// `.tzAssumed` quality flag on its `Provenance` — the same way `.estimate` is stamped for a
+    /// failed unit conversion in `IngestionPipeline.canonicalValue`. That threading is NOT
+    /// implemented: `SampleDTO`/`IntervalDTO`/`SessionDTO` (`HealthStorePort.swift`) carry no
+    /// quality-flag field an adapter can populate, and `IngestionPipeline.platformProvenance`
+    /// (`IngestionPipeline.swift`) would need to merge an adapter-supplied flag into the
+    /// `qualityFlags` it stamps — both files are out of scope for this fix (see this task's
+    /// report for the exact change needed in each).
+    private func measuredTimeZone(for sample: HKSample) -> String {
+        if let raw = sample.metadata?[HKMetadataKeyTimeZone] as? String, TimeZone(identifier: raw) != nil {
+            return raw
+        }
+        return tz
     }
 }
