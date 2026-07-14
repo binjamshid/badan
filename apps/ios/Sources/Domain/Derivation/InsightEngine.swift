@@ -50,12 +50,17 @@ final class InsightEngine {
                       let template = templates.template(templateId) else { continue }
 
                 let def = registry.definitionOrFallback(metricId)
-                let valueStr = Self.formatValue(record.value, unit: record.unit)
-                let baselineStr = Self.formatValue(baseline.center, unit: baseline.unit)
+                // (FIX-08) Render each language's value/baseline tokens separately — a shared
+                // Latin-only string ("7h 12m", "62 bpm") baked into `rendered_ar` regardless of
+                // language defeats the bilingual contract just as surely as leaving `ar` blank.
+                let valueEn = Self.formatValue(record.value, unit: record.unit, language: .en)
+                let valueAr = Self.formatValue(record.value, unit: record.unit, language: .ar)
+                let baselineEn = Self.formatValue(baseline.center, unit: baseline.unit, language: .en)
+                let baselineAr = Self.formatValue(baseline.center, unit: baseline.unit, language: .ar)
 
                 let rendered = LocalizedString(
-                    en: Self.fill(template.textEn, ["metric": def.nameEn, "value": valueStr, "baseline": baselineStr]),
-                    ar: Self.fill(template.textAr, ["metric": def.nameAr, "value": valueStr, "baseline": baselineStr]))
+                    en: Self.fill(template.textEn, ["metric": def.nameEn, "value": valueEn, "baseline": baselineEn]),
+                    ar: Self.fill(template.textAr, ["metric": def.nameAr, "value": valueAr, "baseline": baselineAr]))
 
                 let insight = Insight(
                     id: ULID.newID(), insightType: "statusExplanation", templateId: template.templateId,
@@ -88,17 +93,44 @@ final class InsightEngine {
 
     // MARK: - Formatting
 
-    /// Durations (canonical seconds) render as "Xh Ym"; everything else is a rounded number
-    /// plus its unit. Digits stay plain — the UI localises numerals separately.
-    static func formatValue(_ value: Double, unit: String) -> String {
-        if unit == "s" {
-            let total = Int(value.rounded())
-            let hours = total / 3600
-            let minutes = (total % 3600) / 60
-            return "\(hours)h \(minutes)m"
-        }
+    /// Durations (canonical seconds) render as "Xh Ym" (en) / "Xس Yد" (ar); everything else is
+    /// a rounded number plus its unit, translated for Arabic via `arabicUnitAbbreviation`.
+    /// Digits stay plain in both languages — the UI localises numerals separately (the
+    /// Arabic-digit preference lives in the App-layer `CustomizationProfile`, which Domain must
+    /// not depend on).
+    ///
+    /// (FIX-08) `rendered_ar` used to reuse this same function's Latin-only output verbatim
+    /// ("7h 12m", "62 bpm" baked into the Arabic string), because `formatValue` had no notion of
+    /// language at all. It now takes `language` and produces Arabic duration/unit tokens.
+    static func formatValue(_ value: Double, unit: String, language: AppLanguage) -> String {
         let rounded = Int(value.rounded())
-        return unit.isEmpty ? "\(rounded)" : "\(rounded) \(unit)"
+        if unit == "s" {
+            let hours = rounded / 3600
+            let minutes = (rounded % 3600) / 60
+            switch language {
+            case .en: return "\(hours)h \(minutes)m"
+            case .ar: return hours == 0 ? "\(minutes)د" : "\(hours)س \(minutes)د"
+            }
+        }
+        guard !unit.isEmpty else { return "\(rounded)" }
+        let label = language == .ar ? Self.arabicUnitAbbreviation(unit) : unit
+        return "\(rounded) \(label)"
+    }
+
+    /// Small Arabic unit-abbreviation map for the handful of units `keyMetrics` actually
+    /// renders insights for (sleep duration is handled directly in `formatValue` above; this
+    /// covers RHR/HRV and the ratio units baselines can carry). Kept deliberately tiny and
+    /// duplicated rather than shared: this is Domain, which must not import App-layer code, and
+    /// the fuller canonical map for display purposes lives in
+    /// `Sources/App/ValueFormatter.localizedUnit(_:)` (D-4 duplicated-logic budget — see
+    /// `Units.swift`'s header comment for the same tradeoff made elsewhere).
+    private static func arabicUnitAbbreviation(_ unit: String) -> String {
+        switch unit {
+        case "bpm": return "ن/د"
+        case "ms": return "مي.ث"
+        case "%", "percent": return "٪"
+        default: return unit
+        }
     }
 
     static func fill(_ template: String, _ values: [String: String]) -> String {

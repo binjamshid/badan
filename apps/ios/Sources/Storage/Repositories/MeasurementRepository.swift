@@ -23,6 +23,10 @@ final class MeasurementRepository {
     /// tells us which row won: on conflict the existing row's `id` is left untouched by the
     /// `DO UPDATE SET` clause, so it differs from the fresh `s.id` we attempted to insert.
     /// Returns true if a new row was created.
+    ///
+    /// The `DO UPDATE SET` clause also refreshes `measured_at`/`recorded_at` (DATA-12) —
+    /// mirroring `upsertIntervalRecord`'s OPT-170 fix — so a re-ingest with a corrected
+    /// measured/recorded timestamp isn't silently dropped.
     @discardableResult
     func upsertRawSample(_ s: RawSample) throws -> Bool {
         let wonId = try db.query("""
@@ -33,7 +37,8 @@ final class MeasurementRepository {
             ON CONFLICT(metric_id, external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
               value=excluded.value, unit=excluded.unit, original_value=excluded.original_value,
               original_unit=excluded.original_unit, start_at=excluded.start_at, end_at=excluded.end_at,
-              tz_id=excluded.tz_id, ingested_at=excluded.ingested_at, quality_flags=excluded.quality_flags,
+              tz_id=excluded.tz_id, measured_at=excluded.measured_at, recorded_at=excluded.recorded_at,
+              ingested_at=excluded.ingested_at, quality_flags=excluded.quality_flags,
               updated_at=excluded.updated_at
             RETURNING id;
             """,
@@ -107,6 +112,10 @@ final class MeasurementRepository {
     /// stored stages for that session are replaced so corrected/late-arriving stage data from a
     /// re-delivered session isn't silently dropped (OPT-169); omitting `stages:` (e.g. the dedup
     /// path) leaves existing stages untouched.
+    ///
+    /// The `DO UPDATE SET` clause also refreshes `tz_id`/`measured_at`/`measured_tz`/
+    /// `recorded_at` (DATA-12) — mirroring `upsertIntervalRecord`'s OPT-170 fix — so a
+    /// re-ingest after e.g. a corrected per-sample timezone (DATA-07) isn't silently dropped.
     @discardableResult
     func upsertSession(_ s: Session, stages: [SessionStage] = []) throws -> Bool {
         let wonId = try db.query("""
@@ -115,8 +124,11 @@ final class MeasurementRepository {
                \(Rows.provColumns), \(Rows.convColumns))
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders))
             ON CONFLICT(kind, external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
-              start_at=excluded.start_at, end_at=excluded.end_at, local_night=excluded.local_night,
-              detail=excluded.detail, ingested_at=excluded.ingested_at, updated_at=excluded.updated_at
+              start_at=excluded.start_at, end_at=excluded.end_at, tz_id=excluded.tz_id,
+              local_night=excluded.local_night, detail=excluded.detail,
+              measured_at=excluded.measured_at, measured_tz=excluded.measured_tz,
+              recorded_at=excluded.recorded_at, ingested_at=excluded.ingested_at,
+              updated_at=excluded.updated_at
             RETURNING id;
             """,
             [.text(s.id), .text(s.kind.rawValue), .string(s.subtype), .date(s.startAt), .date(s.endAt),

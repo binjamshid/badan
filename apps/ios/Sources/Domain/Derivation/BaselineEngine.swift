@@ -38,9 +38,21 @@ final class BaselineEngine {
     /// Rebuild the baseline band for one metric as of `asOf`. Gathers up to the last 14 daily
     /// values (latest record per local day) and materializes a fresh baseline row. No-op when
     /// the metric has no interval data in the window.
-    func recompute(metricId: String, asOf: Date) throws {
-        let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
-        let byDay = try latestPerDay(metricId: metricId, from: from, to: asOf)
+    ///
+    /// `tz` defaults to the device's current timezone (matching every other `TimeZone.current
+    /// .identifier`-defaulted call site in this app) since callers today don't thread a
+    /// per-record timezone through; it's used only for calendar day-stepping (DATA-11), not to
+    /// re-attribute any record's own day (each record is still keyed by its own `tzId` in
+    /// `latestPerDay` below).
+    func recompute(metricId: String, asOf: Date, tz: String = TimeZone.current.identifier) throws {
+        // (DATA-10) Exclude the evaluation day itself from the window its own baseline band is
+        // built from — otherwise today's value is judged against a band that contains today's
+        // own value. `to` is pinned to the instant just before local midnight of `asOf`'s day,
+        // so the window covers `windowDays` calendar days strictly preceding the evaluation day.
+        // (DATA-11) Day-stepping goes through `DayAttribution.addingDays` (Calendar-based,
+        // DST-safe) instead of raw `86_400`-second arithmetic.
+        let (from, to) = Self.baselineWindow(asOf: asOf, tz: tz)
+        let byDay = try latestPerDay(metricId: metricId, from: from, to: to)
         guard !byDay.isEmpty else { return }
 
         // Most recent `windowDays` distinct days, in day order.
@@ -80,7 +92,7 @@ final class BaselineEngine {
     /// `metricIds` is given, only those baseline-eligible metrics are recomputed (the
     /// composites still consider the full window, since they read across metrics); `nil`
     /// (the default) recomputes everything, preserving today's full-recompute behavior.
-    func recomputeAll(asOf: Date, metricIds: [String]? = nil) throws {
+    func recomputeAll(asOf: Date, metricIds: [String]? = nil, tz: String = TimeZone.current.identifier) throws {
         // One transaction for the whole recompute instead of a commit+fsync per baseline/derived
         // row: `derivation` is the only repo written here, so its connection covers every write
         // this method makes (PERF-02 (audit 2026-07-12)).
@@ -88,21 +100,29 @@ final class BaselineEngine {
             let eligible = metricIds.map { ids in registry.baselineEligible.filter { ids.contains($0.metricId) } }
                 ?? registry.baselineEligible
             for def in eligible {
-                try recompute(metricId: def.metricId, asOf: asOf)
+                try recompute(metricId: def.metricId, asOf: asOf, tz: tz)
             }
             // Fetched once and shared: both composites below independently need time_asleep for
-            // the same window, so this avoids querying it twice per recompute cycle.
-            let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
+            // the same window, so this avoids querying it twice per recompute cycle. Unlike the
+            // single-metric baseline window above, this one deliberately INCLUDES the evaluation
+            // day — the composites need *today's* own time_asleep/rhr values to score today
+            // against the (today-excluding) baselines just computed, not just history to compare
+            // a band. (DATA-11) still routes day-stepping through `DayAttribution.addingDays`.
+            let from = DayAttribution.addingDays(-Self.windowDays, to: asOf, tz: tz)
             let asleepByDay = try latestPerDay(metricId: MetricID.timeAsleep, from: from, to: asOf)
-            try appendSleepEfficiency(asleepByDay: asleepByDay, asOf: asOf)
-            try appendReadinessScore(asleepByDay: asleepByDay, asOf: asOf)
+            try appendSleepEfficiency(asleepByDay: asleepByDay, asOf: asOf, tz: tz)
+            try appendReadinessScore(asleepByDay: asleepByDay, asOf: asOf, tz: tz)
         }
     }
 
     /// sleep.efficiency = time_asleep / time_in_bed * 100, per local day, for every day that
     /// has both inputs. Each row carries an InputManifest referencing the two interval ids.
-    private func appendSleepEfficiency(asleepByDay: [String: IntervalRecord], asOf: Date) throws {
-        let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
+    private func appendSleepEfficiency(asleepByDay: [String: IntervalRecord], asOf: Date,
+                                       tz: String = TimeZone.current.identifier) throws {
+        // (DATA-11) Calendar-based day-stepping instead of raw `86_400`-second arithmetic.
+        // Inclusive of `asOf`'s own day like `asleepByDay`'s window in `recomputeAll` — see the
+        // comment there for why (today's composite needs today's own values).
+        let from = DayAttribution.addingDays(-Self.windowDays, to: asOf, tz: tz)
         let inBedByDay = try latestPerDay(metricId: MetricID.timeInBed, from: from, to: asOf)
 
         for day in asleepByDay.keys.sorted() {
@@ -127,8 +147,17 @@ final class BaselineEngine {
 
     /// readiness.score (0–100), per local day, from how time_asleep and rhr sit against their
     /// baselines: more sleep within/above band lifts it, higher rhr above band lowers it.
-    private func appendReadinessScore(asleepByDay: [String: IntervalRecord], asOf: Date) throws {
-        let from = asOf.addingTimeInterval(-Double(Self.windowDays) * 86_400)
+    ///
+    /// Every day in the window is scored against the SAME latest (today-anchored) baseline —
+    /// a historical day earlier in the window doesn't get its own contemporaneous band. That's
+    /// an accepted approximation for now (rebuilding a distinct per-day baseline would mean
+    /// `windowDays` separate rolling-median passes per recompute); the same simplification
+    /// applies to `InsightEngine.generate`, which also always reads `latestBaseline` regardless
+    /// of which day it's explaining.
+    private func appendReadinessScore(asleepByDay: [String: IntervalRecord], asOf: Date,
+                                      tz: String = TimeZone.current.identifier) throws {
+        // (DATA-11) Calendar-based day-stepping instead of raw `86_400`-second arithmetic.
+        let from = DayAttribution.addingDays(-Self.windowDays, to: asOf, tz: tz)
         let rhrByDay = try latestPerDay(metricId: MetricID.restingHeartRate, from: from, to: asOf)
 
         let sleepBaseline = try derivation.latestBaseline(metricId: MetricID.timeAsleep)
@@ -172,19 +201,49 @@ final class BaselineEngine {
 
     // MARK: - Helpers
 
+    /// (DATA-10 + DATA-11) The window a single metric's baseline band is built from: the
+    /// `windowDays` calendar days strictly BEFORE `asOf`'s own day, stepped via
+    /// `DayAttribution.addingDays` rather than fixed 86,400s multiples so it survives DST. `to`
+    /// sits one second before local midnight of `asOf`'s day — excluding the evaluation day
+    /// itself so a metric's value is never judged against a band that contains that same value.
+    private static func baselineWindow(asOf: Date, tz: String) -> (from: Date, to: Date) {
+        let dayStart = DayAttribution.startOfDay(asOf, tz: tz)
+        let to = dayStart.addingTimeInterval(-1)
+        let from = DayAttribution.addingDays(-Self.windowDays, to: dayStart, tz: tz)
+        return (from, to)
+    }
+
     /// Latest interval record per local day (attributed in the record's own timezone) for a
     /// metric over a window. "Latest" means most recently written (`updatedAt`), not latest
     /// start time — a corrected aggregate that supersedes an earlier-starting one must win
     /// even if its own `startAt` is earlier than the value it corrects.
+    ///
+    /// (DATA-09) Same-day ties (identical `updatedAt`, the common case within one ingest run,
+    /// since every row written in that run shares `now`) used to fall through to "whichever the
+    /// query happened to return" — effectively first-by-`start_at`, ignoring source quality
+    /// entirely. `IntervalRecord`/`Provenance` don't carry the source's dedup priority (that map
+    /// is transient — built from `SourceDescriptor`s and consumed inside
+    /// `IngestionPipeline.upsertSourcesAndDevices`/`dedup`, never persisted on the row), so a
+    /// real priority-aware tie-break isn't reachable from here without broader plumbing (out of
+    /// scope for this fix set). Falls back instead to the record's own `provenance.sourceId` as
+    /// a stable, deterministic key so the choice no longer depends on incidental query order.
     private func latestPerDay(metricId: String, from: Date, to: Date) throws -> [String: IntervalRecord] {
         let records = try measurements.intervalRecords(metricId: metricId, from: from, to: to)
         var byDay: [String: IntervalRecord] = [:]
         for r in records {
             let day = DayAttribution.localDayKey(r.startAt, tz: r.tzId)
-            if let existing = byDay[day], existing.updatedAt >= r.updatedAt { continue }
+            if let existing = byDay[day], !Self.isPreferred(r, over: existing) { continue }
             byDay[day] = r
         }
         return byDay
+    }
+
+    /// True when `candidate` should replace `incumbent` as the day's value: strictly newer
+    /// `updatedAt` wins outright; an exact tie falls back to the lexicographically smaller
+    /// `sourceId` (see `latestPerDay` doc comment — deterministic, not priority-aware).
+    private static func isPreferred(_ candidate: IntervalRecord, over incumbent: IntervalRecord) -> Bool {
+        if candidate.updatedAt != incumbent.updatedAt { return candidate.updatedAt > incumbent.updatedAt }
+        return candidate.provenance.sourceId < incumbent.provenance.sourceId
     }
 
     /// Floating-point equality with tolerance, used to decide whether a freshly-recomputed

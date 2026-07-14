@@ -192,20 +192,63 @@ final class IngestionPipeline {
     }
 
     /// Upsert one derived daily sleep interval (unit "s"), keyed idempotently by night so a
-    /// re-ingest updates in place. Provenance is derived from the winning session.
+    /// re-ingest updates in place.
+    ///
+    /// (DATA-01) The contract (`DayAttribution.localNight`) attributes a sleep session to the
+    /// morning it ENDS. But every downstream day-keying — `BaselineEngine.latestPerDay` and
+    /// `InsightEngine`'s day windowing, both via `MeasurementRepository.intervalRecords(from:to:)`
+    /// which filters on `start_at` — keys off this row's `startAt`. Storing the winner's real
+    /// bedtime there (the previous evening) silently shifted night N's sleep facts onto day
+    /// N-1. Fixed by anchoring `startAt`/`endAt` to the *stored night's* day boundaries
+    /// (`DayAttribution.date(fromDayKey:)`) instead of the session's real start/end — this row
+    /// is a daily fact, not the session record, so it doesn't need to carry the literal
+    /// bedtime/wake instants; that lineage already lives on the `Session` itself and is what
+    /// the Metric Detail provenance row shows via `provenance.measuredAt` below, which we keep
+    /// pointed at the real bedtime on purpose (verified no UI reads this row's own `startAt` as
+    /// a clock time — only as a day-bucketing key).
     private func upsertDailySleepInterval(metricId: String, seconds: Double?,
                                           winner: Session, night: String, now: Date) throws {
         guard let seconds else { return }
+        guard let dayStart = DayAttribution.date(fromDayKey: night, tz: winner.tzId) else { return }
+        let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: winner.tzId)
+        let externalId = "derived.\(metricId).\(night)"
+
+        // Provenance is derived from the winning session; `measuredAt` intentionally keeps the
+        // real bedtime (unlike `startAt` on the record itself) so lineage/provenance UI can
+        // still show when sleep actually began.
         let provenance = Provenance(
             sourceId: winner.provenance.sourceId, deviceId: winner.provenance.deviceId,
-            ingestionPath: .derived, externalId: "derived.\(metricId).\(night)",
+            ingestionPath: .derived, externalId: externalId,
             measuredAt: winner.startAt, measuredTimezone: winner.tzId,
             recordedAt: now, ingestedAt: now, algorithmVersionId: DedupLite.ruleId)
         let record = IntervalRecord(
             id: ULID.newID(), metricId: metricId, value: seconds, unit: "s",
-            startAt: winner.startAt, endAt: winner.endAt, tzId: winner.tzId,
+            startAt: dayStart, endAt: dayEnd, tzId: winner.tzId,
             aggregation: .duration, provenance: provenance, updatedAt: now, originDeviceId: deviceId)
         try measurements.upsertIntervalRecord(record)
+
+        // (DATA-05) The upsert identity is (metric_id, external_id, source_id). `externalId`
+        // above is fixed per night, but `sourceId` is the dedup winner's — so a winner flip
+        // across re-ingests (a device-priority/name change, or new data reversing last night's
+        // decision) can't match the prior row under `ON CONFLICT`, leaving a stale rollup
+        // stranded under the old source alongside the fresh one (two visible intervals for one
+        // night). Rather than inventing a synthetic source id (which would blur the real
+        // winning device's name out of the Metric Detail lineage row — verified that row reads
+        // this exact `provenance.sourceId`), find every rollup row still carrying tonight's
+        // `externalId` and suppress every one that isn't tonight's winner, un-suppressing the
+        // winner's own row in case an earlier flip had suppressed it (mirrors the session-level
+        // compensation loop in `dedup(night:...)` above).
+        let rowsForNight = try measurements.intervalRecords(metricId: metricId, from: dayStart, to: dayEnd, includeSuppressed: true)
+            .filter { $0.provenance.externalId == externalId }
+        guard let currentRow = rowsForNight.first(where: { $0.provenance.sourceId == winner.provenance.sourceId }) else { return }
+        for r in rowsForNight {
+            let shouldBeSuppressed = r.id != currentRow.id
+            if shouldBeSuppressed, r.provenance.suppressedBy != currentRow.id {
+                try measurements.setSuppressed(table: "interval_records", recordId: r.id, by: currentRow.id, updatedAt: now)
+            } else if !shouldBeSuppressed, r.provenance.suppressedBy != nil {
+                try measurements.setSuppressed(table: "interval_records", recordId: r.id, by: nil, updatedAt: now)
+            }
+        }
     }
 
     // MARK: - Sources / devices

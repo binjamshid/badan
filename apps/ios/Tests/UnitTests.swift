@@ -44,6 +44,44 @@ final class UnitTests: XCTestCase {
         XCTAssertThrowsError(try Units.convert(1, from: "kg", to: "m"))
     }
 
+    // MARK: - (DATA-02) newly-added registry-canonical units
+
+    func testSpeedConversion() throws {
+        // 1 m/s = 3.6 km/h.
+        XCTAssertEqual(try Units.convert(1, from: "m/s", to: "km/h"), 3.6, accuracy: 0.001)
+        XCTAssertEqual(try Units.convert(1, from: "mph", to: "m/s"), 0.44704, accuracy: 0.0001)
+    }
+
+    func testMilligramConversion() throws {
+        // Caffeine's canonical "mg" shares the mass dimension with "g"/"kg" rather than
+        // standing alone, so a future cross-metric conversion isn't silently unconvertible.
+        XCTAssertEqual(try Units.convert(1000, from: "mg", to: "g"), 1, accuracy: 0.0001)
+    }
+
+    func testIdentityDimensionsRoundTrip() throws {
+        // Metrics with exactly one real-world unit (BMI, VO2 max, breathing rate, 0-100
+        // scores, the clock-time family) still need a table entry so `unknownUnits` doesn't
+        // flag them — round-tripping through the same symbol must be a no-op.
+        XCTAssertEqual(try Units.convert(22.5, from: "kg/m^2", to: "kg/m^2"), 22.5, accuracy: 0.0001)
+        XCTAssertEqual(try Units.convert(42, from: "mL/kg/min", to: "mL/kg/min"), 42, accuracy: 0.0001)
+        XCTAssertEqual(try Units.convert(80, from: "score_0_100", to: "points"), 80, accuracy: 0.0001)
+        XCTAssertEqual(try Units.convert(3, from: "scale_1_5", to: "level"), 3, accuracy: 0.0001)
+        XCTAssertEqual(try Units.convert(7, from: "scale_0_10", to: "level"), 7, accuracy: 0.0001)
+    }
+
+    func testUnknownUnitsOverRegistryIsEmpty() throws {
+        // (DATA-02) `Units.unknownUnits` previously had zero callers; wired up here (and more
+        // thoroughly in `DerivationFixTests.testRegistryCanonicalAndDisplayUnitsAreAllKnown`)
+        // against every canonical + display unit the bundled registry actually declares.
+        let registry = MetricRegistry.shared
+        var allUnits = Set<String>()
+        for def in registry.all {
+            allUnits.insert(def.canonicalUnit)
+            allUnits.formUnion(def.displayUnits)
+        }
+        XCTAssertTrue(Units.unknownUnits(in: allUnits).isEmpty)
+    }
+
     // MARK: - Dedup overlap
 
     func testOverlapFullContainment() {
