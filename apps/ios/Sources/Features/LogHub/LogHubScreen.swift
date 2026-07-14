@@ -22,6 +22,40 @@ private enum LogHubStrings {
         en: "Symptoms & medications are hidden. Turn on Sensitive records in Settings to log them.",
         ar: "الأعراض والأدوية مخفية. فعّل السجلات الحساسة من الإعدادات لتسجيلها."
     )
+    // Soft, non-blocking plausibility notices — matches WorkoutLogView's kcal/distance pattern
+    // (EDGE-15). Never blocks Save; only >0 is actually enforced.
+    static let weightImplausibleNotice = LocalizedString(
+        en: "That's an unusually high weight — double check it.",
+        ar: "هذا وزن مرتفع بشكل غير معتاد — تحقّق منه."
+    )
+    static let waterImplausibleNotice = LocalizedString(
+        en: "That's a lot of water for one entry — double check it.",
+        ar: "هذه كمية كبيرة من الماء لإدخال واحد — تحقّق منها."
+    )
+}
+
+/// Stable, non-localized identity for quick-logged water entries. `NutritionEntry.description`
+/// doubles as an identity/dedupe key elsewhere (`NutritionLogViewModel.loadHistory`'s
+/// description-keyed recents/history search, and CSV/JSON exports), so a water entry's
+/// description must not change with the display language the way `env.s(Loc.logWater)`
+/// previously did (EDGE-17). `canonicalKey` is equal to `Loc.logWater.en` by construction, so
+/// legacy rows logged while the app was in English already match it with no extra mapping;
+/// only legacy Arabic-run rows need the explicit fallback below.
+enum WaterEntryIdentity {
+    static let canonicalKey = Loc.logWater.en
+
+    /// True when `description` identifies a water quick-add entry — the canonical key, or a
+    /// pre-fix legacy localized value (only Arabic needs an explicit check; English already
+    /// equals `canonicalKey`).
+    static func matches(_ description: String) -> Bool {
+        description == canonicalKey || description == Loc.logWater.ar
+    }
+
+    /// The description to actually show a user: localized for a recognized water entry,
+    /// verbatim for anything else (a real meal description someone typed).
+    static func displayDescription(_ description: String, language: AppLanguage) -> String {
+        matches(description) ? Loc.logWater.resolved(language) : description
+    }
 }
 
 /// File-local layout constants — kept here (not in the shared `DesignSystem/Tokens.swift`)
@@ -107,7 +141,7 @@ final class LogHubViewModel {
         let now = env.now()
         let entry = NutritionEntry(
             id: ULID.newID(),
-            description: env.s(Loc.logWater),
+            description: WaterEntryIdentity.canonicalKey,
             mealType: .drink,
             waterMl: milliliters,
             occurredAt: now,
@@ -450,23 +484,21 @@ private struct WaterQuickSheet: View {
     private let amounts: [Double] = [250, 500]
     @State private var customText: String = ""
     @State private var saveFailed: Bool = false
+    /// Loaded once on appear and updated after a successful save, instead of re-querying
+    /// storage on every body evaluation (i.e. every keystroke in the custom-amount field)
+    /// (EDGE-14).
+    @State private var todayTotalMl: Double = 0
+
+    private static let waterPlausibilityCeilingMl: Double = 5000
 
     private var customValue: Double? {
-        let normalized = customText
-            .replacingOccurrences(of: ",", with: ".")
-            .trimmingCharacters(in: .whitespaces)
-        guard let value = Double(normalized), value > 0 else { return nil }
+        guard let value = DecimalParsing.parse(customText), value > 0 else { return nil }
         return value
     }
 
-    /// Sum of water already logged today, for a quick "you've had X so far" readout. There is
-    /// no user-configurable daily goal anywhere in the profile model, so this shows a running
-    /// total only, not progress toward a target.
-    private var todayTotalMl: Double {
-        let now = env.now()
-        let start = Calendar.current.startOfDay(for: now)
-        guard let entries = try? env.logging.nutrition(from: start, to: now) else { return 0 }
-        return entries.reduce(0) { $0 + ($1.waterMl ?? 0) }
+    private var customValueImplausible: Bool {
+        guard let value = customValue else { return false }
+        return value > Self.waterPlausibilityCeilingMl
     }
 
     var body: some View {
@@ -516,6 +548,13 @@ private struct WaterQuickSheet: View {
                     }
                     .quickRowBackground()
 
+                    // Soft, non-blocking notice — never disables Save (EDGE-15).
+                    if customValueImplausible {
+                        Text(env.s(LogHubStrings.waterImplausibleNotice))
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.outOfBand)
+                    }
+
                     if saveFailed {
                         Text(env.s(LogHubStrings.saveFailed))
                             .font(BadanFont.caption)
@@ -535,10 +574,23 @@ private struct WaterQuickSheet: View {
             }
         }
         .presentationDetents([.height(LogHubLayout.sheetHeight), .medium])
+        .task { loadTodayTotal() }
+    }
+
+    /// Sum of water already logged today, for a quick "you've had X so far" readout. There is
+    /// no user-configurable daily goal anywhere in the profile model, so this shows a running
+    /// total only, not progress toward a target. Loaded once on appear rather than recomputed
+    /// on every body evaluation (EDGE-14).
+    private func loadTodayTotal() {
+        let now = env.now()
+        let start = Calendar.current.startOfDay(for: now)
+        guard let entries = try? env.logging.nutrition(from: start, to: now) else { return }
+        todayTotalMl = entries.reduce(0) { $0 + ($1.waterMl ?? 0) }
     }
 
     private func commit(_ ml: Double) {
         if onLog(ml) {
+            todayTotalMl += ml
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             dismiss()
         } else {
@@ -585,6 +637,13 @@ private struct WeightQuickSheet: View {
                             .foregroundStyle(BadanColor.textSecondary)
                     }
 
+                    // Soft, non-blocking notice — never disables Save (EDGE-15).
+                    if weightImplausible {
+                        Text(env.s(LogHubStrings.weightImplausibleNotice))
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.outOfBand)
+                    }
+
                     if saveFailed {
                         Text(env.s(LogHubStrings.saveFailed))
                             .font(BadanFont.caption)
@@ -620,11 +679,18 @@ private struct WeightQuickSheet: View {
     }
 
     private var parsedValue: Double? {
-        let normalized = text
-            .replacingOccurrences(of: ",", with: ".")
-            .trimmingCharacters(in: .whitespaces)
-        guard let value = Double(normalized), value > 0 else { return nil }
+        guard let value = DecimalParsing.parse(text), value > 0 else { return nil }
         return value
+    }
+
+    /// 400 kg converted into the field's own display unit (falling back to a bare 400 if the
+    /// unit isn't convertible), so the notice threshold means the same real-world mass
+    /// regardless of whether the user's display unit is kg, lb, or st (EDGE-15).
+    private var weightImplausible: Bool {
+        guard let value = parsedValue else { return false }
+        let displayUnit = env.format.displayUnit(for: env.registry.definitionOrFallback(MetricID.weight))
+        let ceiling = (try? Units.convert(400, from: "kg", to: displayUnit)) ?? 400
+        return value > ceiling
     }
 
     private var unitLabel: String {

@@ -39,6 +39,9 @@ private enum ExportCopy {
     static let dateRange = LocalizedString(en: "Date range", ar: "النطاق الزمني")
     static let customRangeStart = LocalizedString(en: "Start date", ar: "تاريخ البدء")
     static let customRangeEnd = LocalizedString(en: "End date", ar: "تاريخ الانتهاء")
+    static let customRangeInvalidNotice = LocalizedString(
+        en: "Start date must be before the end date.",
+        ar: "يجب أن يسبق تاريخ البدء تاريخ الانتهاء.")
     static let unitSource = LocalizedString(en: "Source units", ar: "وحدات المصدر")
     static let unitDisplay = LocalizedString(en: "My units", ar: "وحداتي")
     static let unitNote = LocalizedString(
@@ -76,6 +79,7 @@ private enum ExportCopy {
     static let seeAll = LocalizedString(en: "See all", ar: "عرض الكل")
     static let filesUnavailable = LocalizedString(
         en: "Files no longer available on this device.", ar: "الملفات لم تعد متوفرة على هذا الجهاز.")
+    static let exportFailedLabel = LocalizedString(en: "Failed", ar: "فشل")
 
     static let scopeRaw = LocalizedString(en: "Raw", ar: "خام")
     static let scopeDerived = LocalizedString(en: "Derived", ar: "محسوب")
@@ -147,6 +151,10 @@ final class ExportCenterViewModel {
     var errorText: String?
 
     func loadHistory(_ env: AppEnvironment) {
+        // Reconcile any job an interrupted app session left stuck `pending`/`running` — screen-
+        // load is the only hook available here (this view model can't reach into app startup)
+        // (EDGE-02a).
+        try? env.exportJobs.markStaleRunningAsFailed()
         history = Self.buildItems(from: (try? env.exportJobs.recent(limit: 20)) ?? [])
     }
 
@@ -181,6 +189,7 @@ final class ExportCenterViewModel {
         isRunning = true
         errorText = nil
         lastResults = []
+        try? env.exportJobs.markStaleRunningAsFailed()
         let exporter = env.exporter
         Task {
             do {
@@ -487,6 +496,14 @@ struct ExportCenterScreen: View {
                 }
                 .font(BadanFont.body)
                 .tint(BadanColor.primary)
+                // Non-blocking would silently export nothing; disabling Run with an explanation
+                // is the clearer UX for a picker combination that can't produce a sensible range
+                // (DATA-04).
+                if customRangeInvalid {
+                    Text(ExportCopy.customRangeInvalidNotice, language: env.language)
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.outOfBand)
+                }
             }
             if !env.depth.showsPowerDetail {
                 Text(scope.unitProfile == .display ? ExportCopy.casualUnitsDisplay : ExportCopy.casualUnitsSource,
@@ -570,16 +587,43 @@ struct ExportCenterScreen: View {
                         in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(vm.isRunning || selectedFormats.isEmpty)
+        .disabled(vm.isRunning || selectedFormats.isEmpty || customRangeInvalid)
         .opacity(vm.isRunning ? 0.75 : 1)
     }
 
+    /// True only for an unusable custom range (start after end) — the run button disables
+    /// itself instead of silently producing an empty export (DATA-04).
+    private var customRangeInvalid: Bool {
+        range == .custom && Self.isRangeInvalid(start: customStart, end: customEnd)
+    }
+
+    /// The half-open next-midnight bound for `customEnd`, so the entire final day is included
+    /// instead of silently dropping everything after whatever time-of-day the screen happened
+    /// to be open (DATA-04) — `ExportRunner`'s date filters compare against this as an upper
+    /// bound, so the instant must be at or past the last moment of `customEnd`'s calendar day.
+    private var customRangeEndBound: Date {
+        Self.endOfDayBound(for: customEnd)
+    }
+
+    /// Pure, directly testable: `start`'s calendar day falls after `end`'s (DATA-04).
+    static func isRangeInvalid(start: Date, end: Date, calendar: Calendar = .current) -> Bool {
+        calendar.startOfDay(for: start) > calendar.startOfDay(for: end)
+    }
+
+    /// Pure, directly testable: the half-open next-midnight instant after `date`'s calendar
+    /// day — the correct inclusive upper bound for a same-day-inclusive range filter (DATA-04).
+    static func endOfDayBound(for date: Date, calendar: Calendar = .current) -> Date {
+        let startOfDay = calendar.startOfDay(for: date)
+        return calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? date
+    }
+
     private func runExport() {
+        guard !customRangeInvalid else { return }
         var s = scope
         s.language = env.language
         if range == .custom {
             s.startDate = Calendar.current.startOfDay(for: customStart)
-            s.endDate = customEnd
+            s.endDate = customRangeEndBound
         } else {
             s.startDate = range.startDate(now: env.now())
             s.endDate = nil
@@ -1032,6 +1076,13 @@ private struct ExportHistoryRow: View {
                         .font(BadanFont.bodyCompact.weight(.semibold))
                         .foregroundStyle(BadanColor.textPrimary)
                     PillLabel(rowCountText)
+                    // Without this, an interrupted export (crash, force-quit) that never
+                    // reached `.completed` looked identical to a successful one in history —
+                    // missing files were the only, easy-to-miss hint (EDGE-02b).
+                    if job.status == .failed {
+                        PillLabel(env.s(ExportCopy.exportFailedLabel), systemImage: "exclamationmark.triangle",
+                                 tint: BadanColor.outOfBand)
+                    }
                 }
                 Text(scopeSummaryText)
                     .font(BadanFont.caption)

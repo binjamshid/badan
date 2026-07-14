@@ -12,40 +12,71 @@ struct InsightsScreen: View {
     @State private var vm = InsightsViewModel()
 
     var body: some View {
-        StatefulContainer(vm.state) { data in
-            ScrollView {
-                VStack(alignment: .leading, spacing: BadanSpace.space5) {
-                    if !data.weekly.isEmpty {
-                        InsightsWeeklyCard(changes: data.weekly)
-                    }
-
-                    VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                        SectionHeader(env.s(InsightsLoc.feedTitle))
-                        if data.insights.isEmpty {
-                            InsightsEmptyFeed()
-                        } else {
-                            ForEach(data.insights) { insight in
-                                InsightsFeedCard(
-                                    insight: insight,
-                                    feedbackFailed: vm.failedFeedbackIds.contains(insight.id)
-                                ) { value in
-                                    vm.toggleFeedback(env, id: insight.id, value: value)
-                                }
-                            }
-                        }
-                    }
-
-                    InsightsFooterNote()
+        Group {
+            // Rendered directly rather than through `StatefulContainer`'s generic `.empty`
+            // branch (UX-08): that branch is the same interchangeable tray icon every screen
+            // falls back to, when Insights already has a purpose-built empty surface
+            // (`InsightsEmptyFeed`, sparkles + friendly copy) it uses for the feed-only-empty
+            // case just below — this makes the whole-screen empty case use the same one.
+            if case .empty = vm.state {
+                emptyScreen
+            } else {
+                StatefulContainer(
+                    vm.state,
+                    retryTitle: env.s(LoadErrorCopy.retry),
+                    onRetry: { Task { await vm.load(env) } }
+                ) { data in
+                    loadedScreen(data)
                 }
-                .padding(.horizontal, BadanSpace.space4)
-                .padding(.vertical, BadanSpace.space4)
             }
-            .background(BadanColor.background)
         }
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.tabInsights))
         .navigationBarTitleDisplayMode(.inline)
         .task(id: env.profile) { await vm.load(env) }
+    }
+
+    private var emptyScreen: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: BadanSpace.space5) {
+                InsightsEmptyFeed()
+                InsightsFooterNote()
+            }
+            .padding(.horizontal, BadanSpace.space4)
+            .padding(.vertical, BadanSpace.space4)
+        }
+        .background(BadanColor.background)
+    }
+
+    private func loadedScreen(_ data: InsightsData) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: BadanSpace.space5) {
+                if !data.weekly.isEmpty {
+                    InsightsWeeklyCard(changes: data.weekly)
+                }
+
+                VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                    SectionHeader(env.s(InsightsLoc.feedTitle))
+                    if data.insights.isEmpty {
+                        InsightsEmptyFeed()
+                    } else {
+                        ForEach(data.insights) { insight in
+                            InsightsFeedCard(
+                                insight: insight,
+                                feedbackFailed: vm.failedFeedbackIds.contains(insight.id)
+                            ) { value in
+                                vm.toggleFeedback(env, id: insight.id, value: value)
+                            }
+                        }
+                    }
+                }
+
+                InsightsFooterNote()
+            }
+            .padding(.horizontal, BadanSpace.space4)
+            .padding(.vertical, BadanSpace.space4)
+        }
+        .background(BadanColor.background)
     }
 }
 
@@ -468,7 +499,11 @@ private final class InsightsViewModel {
         case .success(.empty):
             state = .empty(env.s(InsightsLoc.emptyTitle))
         case .failure(let error):
-            state = .error(String(describing: error))
+            // The raw error goes to the debug log, not the UI (BUG-14) — users see one calm,
+            // bilingual "couldn't load" message with a retry action instead of a Swift error
+            // description as the screen's title.
+            LoadErrorLog.log(error, screen: "Insights")
+            state = .error(env.s(LoadErrorCopy.message))
         }
     }
 
@@ -513,28 +548,38 @@ private final class InsightsViewModel {
         let tz = TimeZone.current.identifier
         var out: [WeeklyChange] = []
         if let seconds = try sleepSeconds(inputs, now: now, tz: tz) {
-            out.append(makeChange(inputs, metricId: MetricID.timeAsleep, value: seconds))
+            out.append(try makeChange(inputs, metricId: MetricID.timeAsleep, value: seconds))
         }
         if let rhr = try inputs.measurements.latestInterval(metricId: MetricID.restingHeartRate) {
-            out.append(makeChange(inputs, metricId: MetricID.restingHeartRate, value: rhr.value))
+            out.append(try makeChange(inputs, metricId: MetricID.restingHeartRate, value: rhr.value))
         }
         return out
     }
+
+    /// Beyond this age, a fallback interval reading is stale enough that presenting it as
+    /// "right now" would be misleading (UX-01-Insights) — the same 48h bound Home's own sleep
+    /// fallback uses, defined locally since this file doesn't own `HomeScreen.swift`.
+    private nonisolated static let sleepFallbackMaxAge: TimeInterval = 48 * 3_600
 
     private nonisolated static func sleepSeconds(_ inputs: InsightsFetchInputs, now: Date, tz: String) throws -> Double? {
         let localNight = DayAttribution.localNight(sessionEnd: now, tz: tz)
         if let session = try inputs.measurements.primarySleep(localNight: localNight) {
             return session.detail.timeAsleepSeconds ?? session.durationSeconds
         }
-        if let interval = try inputs.measurements.latestInterval(metricId: MetricID.timeAsleep) {
+        if let interval = try inputs.measurements.latestInterval(metricId: MetricID.timeAsleep),
+           now.timeIntervalSince(interval.endAt) <= sleepFallbackMaxAge {
             return interval.value
         }
         return nil
     }
 
-    private nonisolated static func makeChange(_ inputs: InsightsFetchInputs, metricId: String, value: Double) -> WeeklyChange {
+    /// `try?`-swallowing `latestBaseline` used to make a genuine DB error look identical to
+    /// "still learning your baseline" (FIX-11, mirroring `BodyViewModel`'s own OPT-018 fix) —
+    /// this now throws so `fetch`'s existing `do`/`catch` renders the honest friendly-error
+    /// state (BUG-14) instead.
+    private nonisolated static func makeChange(_ inputs: InsightsFetchInputs, metricId: String, value: Double) throws -> WeeklyChange {
         let def = inputs.registry.definitionOrFallback(metricId)
-        let baseline = try? inputs.derivation.latestBaseline(metricId: metricId)
+        let baseline = try inputs.derivation.latestBaseline(metricId: metricId)
         let stillLearning = baseline?.provisional ?? true
         let position = baseline?.position(of: value)
         var delta: String?
@@ -571,10 +616,13 @@ private final class InsightsViewModel {
 // MARK: - Strings (bilingual, wellness-safe)
 
 private enum InsightsLoc {
-    static let weeklyTitle = LocalizedString(en: "This week", ar: "هذا الأسبوع")
+    // FIX-05: this card reads a single latest value per metric, not an aggregated week — "This
+    // week" implied a weekly rollup that was never actually computed. Retitled to an honest
+    // point-in-time label rather than building real week aggregation.
+    static let weeklyTitle = LocalizedString(en: "Right now", ar: "الآن")
     static let weeklySubtitle = LocalizedString(
-        en: "What changed against your usual range, for sleep and resting heart rate for now.",
-        ar: "ما الذي تغيّر مقارنةً بنطاقك المعتاد، للنوم ومعدل ضربات القلب أثناء الراحة حالياً.")
+        en: "Your latest reading against your usual range, for sleep and resting heart rate for now.",
+        ar: "أحدث قراءة لديك مقارنةً بنطاقك المعتاد، للنوم ومعدل ضربات القلب أثناء الراحة حالياً.")
     static let feedTitle = LocalizedString(en: "Recent insights", ar: "أحدث الملاحظات")
     static let helpful = LocalizedString(en: "Was this helpful?", ar: "هل كان هذا مفيداً؟")
     static let thumbsUp = LocalizedString(en: "Helpful", ar: "مفيد")

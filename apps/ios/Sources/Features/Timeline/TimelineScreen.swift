@@ -28,7 +28,11 @@ final class TimelineViewModel {
         case .success(let events):
             state = events.isEmpty ? .empty(env.s(Loc.noEventsInRange)) : .loaded(events)
         case .failure(let error):
-            state = .error(String(describing: error))
+            // The raw error goes to the debug log, not the UI (BUG-14) — users see one calm,
+            // bilingual "couldn't load" message with a retry action instead of a Swift error
+            // description as the screen's title.
+            LoadErrorLog.log(error, screen: "Timeline")
+            state = .error(env.s(LoadErrorCopy.message))
         }
     }
 }
@@ -79,7 +83,11 @@ struct TimelineScreen: View {
     }
 
     var body: some View {
-        StatefulContainer(vm.state) { events in
+        StatefulContainer(
+            vm.state,
+            retryTitle: env.s(LoadErrorCopy.retry),
+            onRetry: { Task { await vm.load(env) } }
+        ) { events in
             loaded(events)
         }
         .background(BadanColor.background)
@@ -194,7 +202,48 @@ struct TimelineScreen: View {
         }
     }
 
+    /// A row is tappable when it has an obvious destination (UX-03): `.sleep`/`.measurement`
+    /// events drill into the universal metric detail, `.medication` events drill into the
+    /// medication log. Other kinds (workout, meal, symptom, note, insight) have no single clean
+    /// destination today and stay non-tappable rather than linking somewhere misleading.
+    @ViewBuilder
     private func eventRow(_ event: TimelineEvent) -> some View {
+        if let metricId = navigationMetricId(for: event) {
+            NavigationLink { MetricDetailScreen(metricId: metricId) } label: {
+                eventRowContent(event, tappable: true)
+            }
+            .buttonStyle(.plain)
+        } else if event.type == .medication {
+            NavigationLink { MedicationLogView() } label: {
+                eventRowContent(event, tappable: true)
+            }
+            .buttonStyle(.plain)
+        } else {
+            eventRowContent(event, tappable: false)
+        }
+    }
+
+    /// `TimelineEvent` itself carries no `metricId` field — only `sourceRecordId` (a record id,
+    /// not a metric id). `.measurement` events do encode their metric id as part of their own
+    /// `id` (`"measurement:<metricId>:<sampleId>"`, see `TimelineAssembler.measurementEvent`),
+    /// so it's recovered from there rather than requiring a `TimelineEvent`/`TimelineAssembler`
+    /// model change outside this file's scope. `.sleep` events don't carry a per-row metric id
+    /// at all, but every sleep event on this spine represents the same headline metric
+    /// (`MetricID.timeAsleep`), so that's a safe fixed mapping.
+    private func navigationMetricId(for event: TimelineEvent) -> String? {
+        switch event.type {
+        case .sleep:
+            return MetricID.timeAsleep
+        case .measurement:
+            let parts = event.id.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0] == "measurement" else { return nil }
+            return String(parts[1])
+        default:
+            return nil
+        }
+    }
+
+    private func eventRowContent(_ event: TimelineEvent, tappable: Bool) -> some View {
         HStack(alignment: .top, spacing: BadanSpace.space3) {
             Image(systemName: event.symbolName)
                 .font(.system(size: 16, weight: .medium))
@@ -240,9 +289,20 @@ struct TimelineScreen: View {
                     .foregroundStyle(BadanColor.textSecondary)
             }
             .multilineTextAlignment(.trailing)
+
+            // Matches the chevron affordance every other tappable row in the app already uses
+            // (BodyPillarCard, BodyToolRow, InsightsWeeklyRow, …), so a tappable Timeline row
+            // doesn't look identical to a dead-end one.
+            if tappable {
+                Image(systemName: "chevron.forward")
+                    .font(BadanFont.caption.weight(.semibold))
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .accessibilityHidden(true)
+            }
         }
         .frame(minHeight: BadanSpace.touchMin)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Filters (power only)
@@ -320,13 +380,27 @@ struct TimelineScreen: View {
 
     // MARK: - Empty & footer surfaces
 
+    /// True when the only reason the list is empty is the search text — no type filters are
+    /// active. Distinguished so the copy doesn't blame "filters" when the user never touched
+    /// any (FIX-10).
+    private var isSearchOnlyEmpty: Bool {
+        selectedTypes.isEmpty && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static let noMatchFilters = LocalizedString(
+        en: "No events match your selected filters.",
+        ar: "لا توجد أحداث مطابقة للتصفية المحددة.")
+    private static let noMatchSearch = LocalizedString(
+        en: "No events match your search.",
+        ar: "لا توجد أحداث مطابقة لبحثك.")
+
     private var filteredEmptyState: some View {
         EmptyStateView(
             icon: "line.3.horizontal.decrease.circle",
             title: env.s(Loc.noEventsInRange),
-            message: env.s(LocalizedString(
-                en: "No events match your selected filters.",
-                ar: "لا توجد أحداث مطابقة للتصفية المحددة.")),
+            message: env.s(isSearchOnlyEmpty ? Self.noMatchSearch : Self.noMatchFilters),
+            // The clear action already resets both filters and search regardless of which
+            // caused the empty result, so it stays a single shared action (FIX-10).
             actionTitle: env.s(Loc.clearFilters),
             action: {
                 selectedTypes.removeAll()

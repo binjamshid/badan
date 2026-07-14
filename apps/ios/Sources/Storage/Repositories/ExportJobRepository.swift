@@ -21,6 +21,18 @@ final class ExportJobRepository {
         try db.query("SELECT * FROM export_jobs ORDER BY created_at DESC LIMIT ?;", [.int(limit)]).map(Self.read)
     }
 
+    /// Reconciles any job stuck in `pending`/`running` to `failed`. An export interrupted by a
+    /// crash, force-quit, or memory-pressure termination never reaches its own
+    /// `.completed`/`.failed` write, so without this the row stays `running` forever — it looks
+    /// like the export silently vanished instead of failing (EDGE-02a). There's no background
+    /// task to run this on a schedule, so callers invoke it at the two points that actually
+    /// observe history: on Export Center screen-load, and again just before starting a new run.
+    func markStaleRunningAsFailed() throws {
+        try db.run("UPDATE export_jobs SET status = ? WHERE status IN (?, ?);",
+                   [.text(ExportJobStatus.failed.rawValue),
+                    .text(ExportJobStatus.pending.rawValue), .text(ExportJobStatus.running.rawValue)])
+    }
+
     static func read(_ r: SQLiteRow) -> ExportJob {
         ExportJob(id: r.requireString("id"),
                   scope: JSONCoding.decode(ExportScope.self, from: r.string("scope")) ?? .everything,

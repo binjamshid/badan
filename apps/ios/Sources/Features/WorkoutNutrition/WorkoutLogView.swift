@@ -360,7 +360,9 @@ struct WorkoutLogView: View {
 
     private func commitMinutesText() {
         guard isEditingMinutes else { return }
-        if let value = Int(minutesText) {
+        // Arabic-digit aware (BUG-15) — a device set to Arabic can produce Eastern-Arabic
+        // glyphs from this field's own `.numberPad` keyboard.
+        if let value = DecimalParsing.parseInt(minutesText) {
             minutes = min(max(value, 1), 360)
         }
         isEditingMinutes = false
@@ -589,10 +591,7 @@ struct WorkoutLogView: View {
     // MARK: - Helpers
 
     private func parseDecimal(_ text: String) -> Double? {
-        let normalized = text
-            .replacingOccurrences(of: ",", with: ".")
-            .trimmingCharacters(in: .whitespaces)
-        guard let value = Double(normalized), value > 0 else { return nil }
+        guard let value = DecimalParsing.parse(text), value > 0 else { return nil }
         return value
     }
 }

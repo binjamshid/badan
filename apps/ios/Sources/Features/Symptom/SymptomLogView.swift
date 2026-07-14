@@ -89,8 +89,9 @@ struct SymptomLogData {
     /// Distinct free-text triggers used in the last 30 days, for lightweight autocomplete
     /// alongside the fixed suggestion chips (FEAT-199).
     var recentTriggers: [String] = []
-    /// Small "your symptom trend" summary, sourced from the derived metrics registry
-    /// (`symptoms.count` / `symptoms.severity_avg`) when available (FEAT-161).
+    /// Small "your symptom trend" summary — 14-day count + average severity, computed directly
+    /// from the sensitive symptom store (see `SymptomLogViewModel.trendAggregates`), not a
+    /// derived-metrics-registry read (FEAT-161 / STUB-05).
     var trendCount: Int?
     var trendSeverityAvg: Double?
 }
@@ -125,12 +126,15 @@ final class SymptomLogViewModel {
             // Distinct past free-text triggers, for lightweight autocomplete (FEAT-199).
             let recentTriggers = Array(Set(recentEntries.flatMap(\.triggers))).sorted()
 
-            // Purpose-built derived metrics for symptom reporting, surfaced as a small trend
-            // summary (FEAT-161). Best-effort: absence just hides the card.
-            let countSeries = try? env.derivation.latestDerivedSeries(metricId: "symptoms.count")
-            let severitySeries = try? env.derivation.latestDerivedSeries(metricId: "symptoms.severity_avg")
-            let trendCount = countSeries?.max(by: { $0.computedAt < $1.computedAt }).map { Int($0.value.rounded()) }
-            let trendSeverityAvg = severitySeries?.max(by: { $0.computedAt < $1.computedAt })?.value
+            // A small "your symptom trend" summary over the last 14 days (FEAT-161), computed
+            // directly from the already-loaded 30-day `recentEntries` window rather than reading
+            // a "symptoms.count"/"symptoms.severity_avg" derived series — nothing ever produces
+            // those series, and nothing ever could: symptoms live in the sensitive DB, which the
+            // main-DB derivation engine has no handle to, so that read was permanently dead
+            // (STUB-05). Computed here instead — still entirely within the sensitive store,
+            // nothing derived is written back to the main DB.
+            let (trendCount, trendSeverityAvg) = Self.trendAggregates(
+                from: recentEntries, windowStart: now.addingTimeInterval(-14 * 86_400))
 
             let data = SymptomLogData(
                 recents: recents,
@@ -144,6 +148,17 @@ final class SymptomLogViewModel {
         } catch {
             state = .error(env.s(SymptomLogStrings.loadErrorTitle))
         }
+    }
+
+    /// Pure count + average-severity aggregation over `entries` occurring at or after
+    /// `windowStart` — factored out of `load(_:)` so it's directly testable without a database
+    /// or `AppEnvironment` (STUB-05). `nil` for both when the window has no entries, matching
+    /// the trend card's existing "hide when there's nothing to show" behavior.
+    nonisolated static func trendAggregates(from entries: [SymptomEntry], windowStart: Date) -> (count: Int?, severityAvg: Double?) {
+        let windowed = entries.filter { $0.occurredAt >= windowStart }
+        guard !windowed.isEmpty else { return (nil, nil) }
+        let avg = Double(windowed.reduce(0) { $0 + $1.severity }) / Double(windowed.count)
+        return (windowed.count, avg)
     }
 
     /// After a successful save, fold the just-logged symptom into `recents` in place instead
@@ -415,8 +430,10 @@ struct SymptomLogView: View {
         }
     }
 
-    /// A calm, at-a-glance readout of `symptoms.count` / `symptoms.severity_avg` — derived
-    /// metrics that exist in the registry but had no presentation surface until now (FEAT-161).
+    /// A calm, at-a-glance readout of the last-14-days symptom count and average severity
+    /// (FEAT-161), computed straight from the sensitive symptom store rather than a derived
+    /// series (STUB-05) — the card was previously unreachable dead code, since nothing ever
+    /// wrote to (or could write to) a `symptoms.count`/`symptoms.severity_avg` derived series.
     private func trendCard(_ data: SymptomLogData) -> some View {
         BadanCard {
             VStack(alignment: .leading, spacing: BadanSpace.space2) {

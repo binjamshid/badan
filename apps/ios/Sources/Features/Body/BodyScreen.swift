@@ -93,8 +93,11 @@ final class BodyViewModel {
             state = .loaded(data)
         case .failure(let error):
             // A genuine store failure, not "no data yet" — the try?-swallowing this replaced
-            // made every DB error render identically to an empty Body tab (OPT-015).
-            state = .error(String(describing: error))
+            // made every DB error render identically to an empty Body tab (OPT-015). The raw
+            // error goes to the debug log, not the UI (BUG-14) — the user sees one calm,
+            // bilingual "couldn't load" message with a retry action instead.
+            LoadErrorLog.log(error, screen: "Body")
+            state = .error(env.s(LoadErrorCopy.message))
         }
     }
 
@@ -145,6 +148,9 @@ final class BodyViewModel {
     /// swallowed and retried as if it were just an empty store (OPT-019).
     private nonisolated static func recentSeries(_ inputs: BodyFetchInputs, metricId: String, windowDays: Int) throws -> [(date: Date, value: Double)] {
         let now = inputs.now
+        // A tolerant rolling lookback (last N*24h), not a calendar-day boundary — intentionally
+        // not `DayAttribution` day math (DATA-11-UI): this only bounds the sparkline/headline
+        // query, and the per-day dedup below already reduces raw samples via `DayAttribution`.
         let from = now.addingTimeInterval(-Double(windowDays) * 86_400)
         let def = inputs.registry.definitionOrFallback(metricId)
 
@@ -203,7 +209,11 @@ struct BodyScreen: View {
     private static let pillarsHeader = LocalizedString(en: "Your systems", ar: "أنظمتك")
 
     var body: some View {
-        StatefulContainer(vm.state) { data in
+        StatefulContainer(
+            vm.state,
+            retryTitle: env.s(LoadErrorCopy.retry),
+            onRetry: { Task { await vm.load(env) } }
+        ) { data in
             ScrollView {
                 VStack(alignment: .leading, spacing: BadanSpace.space4) {
                     if !data.pillars.isEmpty {
@@ -428,8 +438,17 @@ struct BodyAllMetricsBrowser: View {
     @Environment(AppEnvironment.self) private var env
     /// When set, scopes the browser to a single family — used by a pillar card's "+N more" link
     /// (EASE-179) rather than dropping the user into the full unscoped ontology.
-    var initialFamily: MetricFamily? = nil
-    @State private var query = RecentMetricSearch.lastQuery
+    var initialFamily: MetricFamily?
+    @State private var query: String
+
+    /// A family-scoped browser (opened from a pillar's "+N more" link) is a different task from
+    /// the full unscoped ontology browser, so it shouldn't inherit a stale search query the user
+    /// typed the last time they opened the *other* one (BUG-20) — nor should typing here later
+    /// overwrite that unscoped session's memory (see `onChange(of: query)` below).
+    init(initialFamily: MetricFamily? = nil) {
+        self.initialFamily = initialFamily
+        _query = State(initialValue: initialFamily == nil ? RecentMetricSearch.lastQuery : "")
+    }
 
     private static let noMatches = LocalizedString(en: "No matching metrics", ar: "لا مؤشرات مطابقة")
     private static let clearSearch = LocalizedString(en: "Clear search", ar: "مسح البحث")
@@ -474,8 +493,16 @@ struct BodyAllMetricsBrowser: View {
         .scrollContentBackground(.hidden)
         .background(BadanColor.background.ignoresSafeArea())
         .searchable(text: $query, prompt: Text(Loc.search, language: env.language))
-        .onChange(of: query) { _, newValue in RecentMetricSearch.lastQuery = newValue }
-        .navigationTitle(env.s(Loc.allMetrics))
+        .onChange(of: query) { _, newValue in
+            // Only the unscoped browser's query is worth remembering session-wide; a
+            // family-scoped session shouldn't clobber that memory with its own narrower search
+            // (BUG-20).
+            guard initialFamily == nil else { return }
+            RecentMetricSearch.lastQuery = newValue
+        }
+        // A family-scoped browser is titled with that family's own name rather than the
+        // generic "All metrics" (BUG-20) — it isn't showing all metrics, just this family's.
+        .navigationTitle(env.s(initialFamily?.displayName ?? Loc.allMetrics))
         .navigationBarTitleDisplayMode(.inline)
     }
 

@@ -74,7 +74,12 @@ final class NutritionLogViewModel {
         var seen = Set<String>()
         var recents: [NutritionEntry] = []
         for entry in historyMeals {
-            let key = entry.description.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            // Legacy Arabic-run water entries and new canonical-key water entries are the same
+            // logical entry — normalize both to the same dedupe key so a language switch can't
+            // split "Water" into two separate recent chips (EDGE-17).
+            let normalizedDescription = WaterEntryIdentity.matches(entry.description)
+                ? WaterEntryIdentity.canonicalKey : entry.description
+            let key = normalizedDescription.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !key.isEmpty, !seen.contains(key) else { continue }
             seen.insert(key)
             recents.append(entry)
@@ -258,7 +263,7 @@ struct NutritionLogView: View {
                 Image(systemName: "arrow.counterclockwise")
                     .imageScale(.small)
                     .accessibilityHidden(true)
-                Text(meal.description)
+                Text(WaterEntryIdentity.displayDescription(meal.description, language: env.language))
                     .font(BadanFont.chip)
                     .lineLimit(1)
             }
@@ -581,10 +586,7 @@ struct NutritionLogView: View {
     /// (OPT-133). None of this screen's numeric fields are duration/distance-style fields
     /// where zero would be meaningless, so a single lenient rule covers all of them.
     private func parseDecimal(_ text: String) -> Double? {
-        let normalized = text
-            .replacingOccurrences(of: ",", with: ".")
-            .trimmingCharacters(in: .whitespaces)
-        guard let value = Double(normalized), value >= 0 else { return nil }
+        guard let value = DecimalParsing.parse(text), value >= 0 else { return nil }
         return value
     }
 
@@ -695,7 +697,7 @@ private struct NutritionMealRow: View {
                         .foregroundStyle(BadanColor.primary)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: BadanSpace.space1) {
-                        Text(meal.description)
+                        Text(WaterEntryIdentity.displayDescription(meal.description, language: env.language))
                             .font(BadanFont.body.weight(.medium))
                             .foregroundStyle(BadanColor.textPrimary)
                         Text(env.s(meal.mealType.displayName))

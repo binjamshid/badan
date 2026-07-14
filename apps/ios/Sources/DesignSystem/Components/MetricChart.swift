@@ -134,7 +134,12 @@ struct MetricChart: View {
                     .lineStyle(StrokeStyle(lineWidth: 1))
                     .foregroundStyle(BadanColor.inBand.opacity(0.35))
             }
-            ForEach(points) { point in
+            // (BUG-19) `Point.id` is derived from the date alone, so two points sharing a
+            // timestamp (a real possibility — e.g. a corrected/re-ingested record landing on
+            // the same instant as its predecessor) would collide and silently drop a mark from
+            // `ForEach`. Identifying by array position instead is collision-proof by
+            // construction and needs no change to `Point` or either init.
+            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
                 switch style {
                 case .line:
                     LineMark(x: .value("Date", point.date), y: .value("Value", point.value))

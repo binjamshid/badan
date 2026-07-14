@@ -185,4 +185,12 @@ enum Loc {
         default: return homeGreetingEvening
         }
     }
+
+    // MARK: Home — depth toggle (UX-06)
+    // Home's DepthBadge became tappable (casual <-> power); these are its accessibility hint,
+    // phrased per current depth so VoiceOver announces where the tap will land.
+    static let depthToggleHintToDetailed = LocalizedString(
+        en: "Double tap to switch to detailed view", ar: "اضغط مرتين للتبديل إلى العرض المفصّل")
+    static let depthToggleHintToSimple = LocalizedString(
+        en: "Double tap to switch to simple view", ar: "اضغط مرتين للتبديل إلى العرض المبسّط")
 }

@@ -160,14 +160,25 @@ struct MetricAnatomySheet: View {
         "\(env.format.integer(b.nPoints)) \(env.s(AnatomyStrings.daysUsedOf)) \(env.format.integer(b.windowDays))"
     }
 
+    /// `Baseline` carries no timezone field of its own, so the window's day math needs a tz
+    /// from elsewhere. The metric's own most-recent raw interval record is the closest honest
+    /// source (its `tzId` is where this metric's data actually lives); a composite/derived-only
+    /// metric has no raw interval to read at all, so this falls back to the device's current tz
+    /// exactly like the rest of the app already does when no measurement tz is available
+    /// (FIX-12).
+    private var windowTz: String {
+        data.intervals.last?.tzId ?? TimeZone.current.identifier
+    }
+
     /// The window BaselineEngine queried for this baseline (`validFrom` minus `windowDays`).
     /// Not necessarily the exact span of contributing data points — a sparser baseline may
     /// only have data covering part of this window — but it's the honest bound the app can
-    /// show today without a domain-model change to carry per-point dates.
+    /// show today without a domain-model change to carry per-point dates. Uses `DayAttribution`
+    /// day math in the measurement tz rather than `Calendar.current` (the device's current tz),
+    /// so a baseline computed while the user was traveling doesn't shift its window boundary.
     private func windowRangeText(_ b: Baseline) -> String {
-        guard let start = Calendar.current.date(byAdding: .day, value: -b.windowDays, to: b.validFrom) else {
-            return dateOnlyText(b.validFrom)
-        }
+        let tz = windowTz
+        let start = DayAttribution.addingDays(-b.windowDays, to: b.validFrom, tz: tz)
         return "\(dateOnlyText(start)) – \(dateOnlyText(b.validFrom))"
     }
 

@@ -259,17 +259,24 @@ final class MedicationLogViewModel {
     func logNow(_ regimen: MedicationRegimen, env: AppEnvironment) {
         let now = env.now()
         record(regimenId: regimen.id, scheduledFor: now, time: Self.canonicalTime(now, tz: tz),
-               kind: .taken, reason: nil, env: env)
+               kind: .taken, reason: nil, env: env, isAsNeeded: true)
     }
 
     private func record(regimenId: String, scheduledFor: Date, time: String,
-                        kind: AdherenceKind, reason: SkipReason?, env: AppEnvironment, reload: Bool = true) {
+                        kind: AdherenceKind, reason: SkipReason?, env: AppEnvironment, reload: Bool = true,
+                        isAsNeeded: Bool = false) {
         let now = env.now()
-        // Deterministic id per (regimen, day, slot) so changing your mind replaces the row cleanly.
+        // Scheduled slots keep a deterministic id per (regimen, day, slot) so changing your mind
+        // (take -> skip -> take) replaces the same row instead of accumulating duplicates. As-
+        // needed doses have no fixed slot to replace-on-correction — two doses logged in the same
+        // minute are two genuinely distinct events, so each gets its own ULID identity instead of
+        // colliding on the same deterministic id and silently `INSERT OR REPLACE`-ing one another
+        // away (EDGE-11).
         let dayKey = DayAttribution.localDayKey(scheduledFor, tz: tz)
         let slotId = "\(regimenId)|\(time)"
+        let eventId = isAsNeeded ? ULID.newID() : "adh-\(regimenId)-\(dayKey)-\(time)"
         let event = AdherenceEvent(
-            id: "adh-\(regimenId)-\(dayKey)-\(time)",
+            id: eventId,
             regimenId: regimenId,
             kind: kind,
             scheduledFor: scheduledFor,

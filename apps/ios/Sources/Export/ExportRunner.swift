@@ -40,6 +40,11 @@ final class ExportRunner {
     // MARK: - Entry point
 
     func run(scope: ExportScope, format: ExportFormat) throws -> ExportResult {
+        // Best-effort housekeeping for folders orphaned by a past interrupted export (a crash
+        // or force-quit mid-run never reaches the cleanup below) — never blocks this run
+        // (EDGE-02c).
+        sweepOrphanedExportFolders()
+
         let startedAt = clock.now()
         let exportId = ULID.newID()
         let folder = FileManager.default.temporaryDirectory
@@ -55,66 +60,133 @@ final class ExportRunner {
         try exportJobs.insert(runningJob)
 
         do {
-            // Measurement + derived chain (shared by both formats).
             let ids = metricIdsInScope(scope)
+            let rangeStart = scope.startDate ?? Date(timeIntervalSince1970: 0)
+            let rangeEnd = scope.endDate ?? startedAt
+            let wantRaw = scope.includeRaw
 
-            var rawSamples: [RawSample] = []
-            var intervalRecords: [IntervalRecord] = []
-            if scope.includeRaw {
-                for id in ids where metricAllowed(id, scope) {
-                    rawSamples += try measurements
-                        .rawSamples(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                        .filter { sourceAllowed($0.provenance, scope) }
-                    intervalRecords += try measurements
-                        .intervalRecords(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                        .filter { sourceAllowed($0.provenance, scope) }
-                }
-            }
-
-            var sessions: [Session] = []
-            if scope.includeRaw {
-                sessions = try measurements
-                    .sessions(kind: nil, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                    .filter { sessionInScope($0, scope) && sourceAllowed($0.provenance, scope) }
-            }
-
-            // Rows whose period key couldn't be parsed as a `day:` key are still included
-            // (best-effort) when a date range was requested, but counted so the manifest can
-            // disclose that they weren't actually range-verified (OPT-143).
-            var derivedValues: [DerivedValue] = []
-            var baselines: [Baseline] = []
-            var derivedRangeFallbackCount = 0
-            if scope.includeDerived {
-                for id in ids where metricAllowed(id, scope) {
-                    for v in try derivation.latestDerivedSeries(metricId: id) where derivedInRange(v, scope) {
-                        derivedValues.append(v)
-                        if derivedIncludedByRangeFallback(v, scope) { derivedRangeFallbackCount += 1 }
-                    }
-                    if registry.definition(id)?.baselineEligible == true,
-                       let baseline = try derivation.latestBaseline(metricId: id) {
-                        baselines.append(baseline)
+            // Snapshot-isolate the whole gather phase against a concurrent ingest (EDGE-03).
+            // `measurements` and `derivation` share the same main-DB `SQLiteConnection` (see
+            // `AppEnvironment` init), and `SQLiteConnection.transaction` joins a same-thread
+            // nested call onto the same transaction rather than starting a second one, so
+            // wrapping every main-DB read in one `measurements.transaction { ... }` block gives
+            // all of raw/derived/workouts/nutrition one consistent snapshot. Symptom/adherence
+            // reads go through `LoggingRepository`'s separate `sensitive` connection/file — a
+            // pre-existing, documented architectural split (see
+            // `LoggingRepository.transactionMain`/`transactionSensitive`) that a single
+            // in-process transaction can't span, so those two reads stay outside this block.
+            let gathered = try measurements.transaction { () -> GatheredMainDB in
+                var rawSamples: [RawSample] = []
+                var intervalRecords: [IntervalRecord] = []
+                if scope.includeRaw {
+                    for id in ids where metricAllowed(id, scope) {
+                        rawSamples += try measurements
+                            .rawSamples(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
+                            .filter { sourceAllowed($0.provenance, scope) }
+                        intervalRecords += try measurements
+                            .intervalRecords(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
+                            .filter { sourceAllowed($0.provenance, scope) }
                     }
                 }
+
+                var sessions: [Session] = []
+                if scope.includeRaw {
+                    sessions = try measurements
+                        .sessions(kind: nil, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
+                        .filter { sessionInScope($0, scope) && sourceAllowed($0.provenance, scope) }
+                }
+
+                // Rows whose period key couldn't be parsed as a `day:` key are still included
+                // (best-effort) when a date range was requested, but counted so the manifest can
+                // disclose that they weren't actually range-verified (OPT-143).
+                var derivedValues: [DerivedValue] = []
+                var baselines: [Baseline] = []
+                var derivedRangeFallbackCount = 0
+                if scope.includeDerived {
+                    for id in ids where metricAllowed(id, scope) {
+                        for v in try derivation.latestDerivedSeries(metricId: id) where derivedInRange(v, scope) {
+                            derivedValues.append(v)
+                            if derivedIncludedByRangeFallback(v, scope) { derivedRangeFallbackCount += 1 }
+                        }
+                        if registry.definition(id)?.baselineEligible == true,
+                           let baseline = try derivation.latestBaseline(metricId: id) {
+                            baselines.append(baseline)
+                        }
+                    }
+                }
+
+                // Structured logs kept in the main DB (workouts/nutrition are normal-class).
+                let workouts = (wantRaw && logFamilyIncluded("activity", scope))
+                    ? try logging.workouts(from: rangeStart, to: rangeEnd) : []
+                let nutrition = (wantRaw && logFamilyIncluded("nutrition", scope))
+                    ? try logging.nutrition(from: rangeStart, to: rangeEnd) : []
+
+                return GatheredMainDB(rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
+                                      derivedValues: derivedValues, baselines: baselines,
+                                      derivedRangeFallbackCount: derivedRangeFallbackCount,
+                                      workouts: workouts, nutrition: nutrition)
             }
+
+            // Sensitive-class logs (medications/symptoms) — separate `sensitive` DB connection,
+            // additionally gated by `includeSensitive` (matches the JSON bundle's existing gate).
+            let symptoms = (wantRaw && scope.includeSensitive && logFamilyIncluded("symptoms", scope))
+                ? try logging.symptoms(from: rangeStart, to: rangeEnd) : []
+            let adherence = (wantRaw && scope.includeSensitive && logFamilyIncluded("medications", scope))
+                ? try logging.adherence(from: rangeStart, to: rangeEnd) : []
 
             switch format {
             case .csv:
                 return try runCSV(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
-                                  rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
-                                  derivedValues: derivedValues, baselines: baselines,
-                                  derivedRangeFallbackCount: derivedRangeFallbackCount)
+                                  rawSamples: gathered.rawSamples, intervalRecords: gathered.intervalRecords,
+                                  sessions: gathered.sessions, derivedValues: gathered.derivedValues,
+                                  baselines: gathered.baselines,
+                                  derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
+                                  symptoms: symptoms, adherence: adherence,
+                                  workouts: gathered.workouts, nutrition: gathered.nutrition)
             case .json:
                 return try runJSON(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
-                                   rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
-                                   derivedValues: derivedValues, baselines: baselines,
-                                   derivedRangeFallbackCount: derivedRangeFallbackCount)
+                                   rawSamples: gathered.rawSamples, intervalRecords: gathered.intervalRecords,
+                                   sessions: gathered.sessions, derivedValues: gathered.derivedValues,
+                                   baselines: gathered.baselines,
+                                   derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
+                                   symptoms: symptoms, adherence: adherence,
+                                   workouts: gathered.workouts, nutrition: gathered.nutrition)
             }
         } catch {
             let failedJob = ExportJob(id: exportId, scope: scope, format: format, status: .failed,
                                       outputPath: folder.path, startedAt: startedAt,
                                       finishedAt: clock.now(), createdAt: startedAt)
             try? exportJobs.insert(failedJob)
+            // Nothing left behind from a failed run (EDGE-02c).
+            try? FileManager.default.removeItem(at: folder)
             throw error
+        }
+    }
+
+    /// The main-DB portion of one run's gathered records — everything read inside the single
+    /// `measurements.transaction { ... }` snapshot in `run(scope:format:)` (EDGE-03).
+    private struct GatheredMainDB {
+        let rawSamples: [RawSample]
+        let intervalRecords: [IntervalRecord]
+        let sessions: [Session]
+        let derivedValues: [DerivedValue]
+        let baselines: [Baseline]
+        let derivedRangeFallbackCount: Int
+        let workouts: [WorkoutEntry]
+        let nutrition: [NutritionEntry]
+    }
+
+    /// Deletes `badan-export-*` temp folders older than `days` — orphaned by an interrupted
+    /// export whose own cleanup never ran (app killed, crash). Best-effort and silent: a
+    /// failure here must never block the export this call is part of (EDGE-02c).
+    private func sweepOrphanedExportFolders(olderThan days: Int = 7) {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        guard let items = try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let cutoff = clock.now().addingTimeInterval(-Double(days) * 86_400)
+        for url in items where url.lastPathComponent.hasPrefix("badan-export-") {
+            guard let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else { continue }
+            if modDate < cutoff { try? fm.removeItem(at: url) }
         }
     }
 
@@ -123,33 +195,46 @@ final class ExportRunner {
     private func runCSV(scope: ExportScope, exportId: String, folder: URL, startedAt: Date,
                         rawSamples: [RawSample], intervalRecords: [IntervalRecord], sessions: [Session],
                         derivedValues: [DerivedValue], baselines: [Baseline],
-                        derivedRangeFallbackCount: Int) throws -> ExportResult {
+                        derivedRangeFallbackCount: Int, symptoms: [SymptomEntry], adherence: [AdherenceEvent],
+                        workouts: [WorkoutEntry], nutrition: [NutritionEntry]) throws -> ExportResult {
         let generatedAt = clock.now()
         let writer = CSVWriter()
 
-        // Route measured rows to raw.csv, engine-computed rows to derived.csv.
+        // Route measured rows to raw.csv, engine-computed rows to derived.csv, and structured
+        // logs (medications/symptoms/workouts/nutrition) to their own events.csv — the CSV
+        // export previously omitted logs entirely even though the Sensitive toggle's own copy
+        // promises them (DATA-03); JSON already carried them in its `logs` section.
         let rawRows = rawSamples.map { rowFor(sample: $0, scope) }
             + intervalRecords.map { rowFor(interval: $0, scope) }
             + sessions.map { rowFor(session: $0, scope) }
         let derivedRows = derivedValues.map { rowFor(derived: $0, scope) }
             + baselines.map { rowFor(baseline: $0, scope) }
+        let regimenNames = Self.regimenNameLookup(adherence: adherence, logging: logging)
+        let eventRows = symptoms.map { rowForEvent(symptom: $0, scope) }
+            + adherence.map { rowForEvent(adherence: $0, regimenNames: regimenNames, scope) }
+            + workouts.map { rowForEvent(workout: $0, scope) }
+            + nutrition.map { rowForEvent(nutrition: $0, scope) }
 
         // Written and hashed directly, chunk by chunk, so the full CSV is never simultaneously
         // resident as a `String` and a second `Data` copy, and doesn't need a separate
         // whole-buffer hashing pass afterward (PERF-168/170).
         let rawURL = folder.appendingPathComponent("raw.csv")
         let derivedURL = folder.appendingPathComponent("derived.csv")
+        let eventsURL = folder.appendingPathComponent("events.csv")
         let rawChecksum = try Self.streamWrite(rawRows, using: writer, to: rawURL)
         let derivedChecksum = try Self.streamWrite(derivedRows, using: writer, to: derivedURL)
+        let eventsChecksum = try Self.streamWrite(eventRows, using: writer, to: eventsURL)
 
         let checksums = [
             "raw.csv": rawChecksum,
-            "derived.csv": derivedChecksum
+            "derived.csv": derivedChecksum,
+            "events.csv": eventsChecksum
         ]
         var counts: [String: Int] = [:]
         addCounts(rawRows.map { $0.metricId }, into: &counts)
         addCounts(derivedRows.map { $0.metricId }, into: &counts)
-        let rowCount = rawRows.count + derivedRows.count
+        addCounts(eventRows.map { $0.metricId }, into: &counts)
+        let rowCount = rawRows.count + derivedRows.count + eventRows.count
 
         let manifest = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
                                     checksums: checksums, perMetricRowCounts: counts,
@@ -161,7 +246,7 @@ final class ExportRunner {
                             manifest: manifest, outputPath: folder.path, rowCount: rowCount,
                             startedAt: startedAt, finishedAt: generatedAt, createdAt: startedAt)
         try exportJobs.insert(job)
-        return ExportResult(job: job, fileURLs: [rawURL, derivedURL, manifestURL], rowCount: rowCount)
+        return ExportResult(job: job, fileURLs: [rawURL, derivedURL, eventsURL, manifestURL], rowCount: rowCount)
     }
 
     // MARK: - JSON
@@ -169,22 +254,9 @@ final class ExportRunner {
     private func runJSON(scope: ExportScope, exportId: String, folder: URL, startedAt: Date,
                          rawSamples: [RawSample], intervalRecords: [IntervalRecord], sessions: [Session],
                          derivedValues: [DerivedValue], baselines: [Baseline],
-                         derivedRangeFallbackCount: Int) throws -> ExportResult {
+                         derivedRangeFallbackCount: Int, symptoms: [SymptomEntry], adherence: [AdherenceEvent],
+                         workouts: [WorkoutEntry], nutrition: [NutritionEntry]) throws -> ExportResult {
         let generatedAt = clock.now()
-
-        // Structured logs travel only in the JSON bundle's dedicated logs section. Symptoms and
-        // adherence are sensitive-class and additionally gated by includeSensitive.
-        let rangeStart = scope.startDate ?? Date(timeIntervalSince1970: 0)
-        let rangeEnd = scope.endDate ?? generatedAt
-        let wantRaw = scope.includeRaw
-        let symptoms = (wantRaw && scope.includeSensitive && logFamilyIncluded("symptoms", scope))
-            ? try logging.symptoms(from: rangeStart, to: rangeEnd) : []
-        let adherence = (wantRaw && scope.includeSensitive && logFamilyIncluded("medications", scope))
-            ? try logging.adherence(from: rangeStart, to: rangeEnd) : []
-        let workouts = (wantRaw && logFamilyIncluded("activity", scope))
-            ? try logging.workouts(from: rangeStart, to: rangeEnd) : []
-        let nutrition = (wantRaw && logFamilyIncluded("nutrition", scope))
-            ? try logging.nutrition(from: rangeStart, to: rangeEnd) : []
 
         var counts: [String: Int] = [:]
         addCounts(rawSamples.map { $0.metricId }, into: &counts)
@@ -411,6 +483,140 @@ final class ExportRunner {
             algorithmId: "baseline.\(b.method.rawValue)",
             algorithmVersion: b.algorithmVersion
         )
+    }
+
+    // MARK: - Events (structured logs projected onto the CSV contract, DATA-03)
+
+    /// `record_kind = "event"` rows for the four structured-log types, mapped onto the same
+    /// 24-column contract used by samples/intervals/sessions/derived/baselines. Mapping choices
+    /// (documented per type below) favor a defensible, always-populated `value`/`unit` over
+    /// perfect fidelity — richer detail (triggers, notes, all six macros) already lives in the
+    /// JSON bundle's `logs` section; this file exists so a CSV-only export isn't missing the
+    /// records its own Sensitive-toggle copy promises.
+
+    /// Symptom entries: `value` is the 0–10 severity (the one number a symptom entry always
+    /// has); `metric_display` is the symptom's own bilingual name (or the free-text custom
+    /// label). No physical unit applies, so `unit`/`canonical_unit` use "level" — an ordinal
+    /// scale token, distinct from "score" (reserved for derived/baseline scores elsewhere in
+    /// this contract).
+    private func rowForEvent(symptom s: SymptomEntry, _ scope: ExportScope) -> ExportRow {
+        let display = SymptomDictionary.shared.displayName(forId: s.symptomId, customLabel: s.customLabel)
+            .resolved(scope.language)
+        return ExportRow(
+            recordId: s.id,
+            recordKind: "event",
+            metricId: "symptoms.entry",
+            metricDisplay: display,
+            value: CSVWriter.decimal(Double(s.severity)),
+            unit: "level",
+            canonicalValue: CSVWriter.decimal(Double(s.severity)),
+            canonicalUnit: "level",
+            valueType: "raw",
+            isDerived: false,
+            timestampStart: CSVWriter.iso8601(s.occurredAt, tzId: s.tzId),
+            timezone: s.tzId,
+            recordedAt: CSVWriter.iso8601(s.updatedAt, tzId: s.tzId),
+            sourceDevice: s.originDeviceId,
+            ingestionPath: IngestionPath.manual.rawValue
+        )
+    }
+
+    /// Adherence events: `value` is 1 for a taken/late dose, 0 for a skip — "was this dose
+    /// taken" is the one boolean every adherence event answers unambiguously. The actual status
+    /// (and skip reason, if any) is preserved in `quality_flags` rather than discarded, since
+    /// the contract has no dedicated status column for events. `metric_display` resolves the
+    /// regimen's name via `regimenNames` (looked up once per run, not per row).
+    private func rowForEvent(adherence e: AdherenceEvent, regimenNames: [String: String], _ scope: ExportScope) -> ExportRow {
+        let display = regimenNames[e.regimenId] ?? e.regimenId
+        let taken = e.kind == .taken || e.kind == .late
+        var flags = e.kind.rawValue
+        if let reason = e.skipReason { flags += ";skip_reason:\(reason.rawValue)" }
+        return ExportRow(
+            recordId: e.id,
+            recordKind: "event",
+            metricId: "medications.adherence",
+            metricDisplay: display,
+            value: CSVWriter.decimal(taken ? 1 : 0),
+            unit: "bool",
+            canonicalValue: CSVWriter.decimal(taken ? 1 : 0),
+            canonicalUnit: "bool",
+            valueType: "raw",
+            isDerived: false,
+            timestampStart: CSVWriter.iso8601(e.scheduledFor ?? e.occurredAt, tzId: e.tzId),
+            timezone: e.tzId,
+            recordedAt: CSVWriter.iso8601(e.occurredAt, tzId: e.tzId),
+            sourceDevice: e.originDeviceId,
+            ingestionPath: IngestionPath.manual.rawValue,
+            qualityFlags: flags
+        )
+    }
+
+    /// Workouts: `value` is the session duration in seconds — the one measurement every workout
+    /// always has (kcal/distance are optional). Unlike sleep/HealthKit sessions (already routed
+    /// to raw.csv's "session" rows via `MeasurementRepository.sessions`), manually-logged
+    /// `WorkoutEntry` rows were never represented in CSV at all before this fix, so there's no
+    /// duplication risk in choosing the same duration-based shape here. Optional kcal/distance
+    /// are preserved in `quality_flags` rather than silently dropped.
+    private func rowForEvent(workout w: WorkoutEntry, _ scope: ExportScope) -> ExportRow {
+        var flags: [String] = []
+        if let kcal = w.energyKcal { flags.append("kcal:\(CSVWriter.decimal(kcal))") }
+        if let distance = w.distanceM { flags.append("distance_m:\(CSVWriter.decimal(distance))") }
+        return ExportRow(
+            recordId: w.id,
+            recordKind: "event",
+            metricId: "activity.workout",
+            metricDisplay: WorkoutActivity.label(forStored: w.activityType).resolved(scope.language),
+            value: CSVWriter.decimal(w.durationSeconds),
+            unit: "s",
+            canonicalValue: CSVWriter.decimal(w.durationSeconds),
+            canonicalUnit: "s",
+            valueType: "raw",
+            isDerived: false,
+            timestampStart: CSVWriter.iso8601(w.startAt, tzId: w.tzId),
+            timestampEnd: CSVWriter.iso8601(w.endAt, tzId: w.tzId),
+            timezone: w.tzId,
+            recordedAt: CSVWriter.iso8601(w.updatedAt, tzId: w.tzId),
+            sourceDevice: w.originDeviceId,
+            ingestionPath: w.ingestionPath.rawValue,
+            qualityFlags: flags.isEmpty ? nil : flags.joined(separator: ";")
+        )
+    }
+
+    /// Nutrition entries: `value` is kcal (0 when not entered — the meal was still logged, just
+    /// without an energy estimate; `low_detail` in `quality_flags` distinguishes that from a
+    /// confirmed zero). `metric_display` is the entry's own description, mapped through
+    /// `WaterEntryIdentity` so a quick-logged water entry reads as "Water"/"ماء" in the export's
+    /// own `scope.language` rather than whatever language it happened to be logged in (EDGE-17).
+    private func rowForEvent(nutrition n: NutritionEntry, _ scope: ExportScope) -> ExportRow {
+        var flags: [String] = ["meal:\(n.mealType.rawValue)"]
+        if n.lowDetail { flags.append("low_detail") }
+        return ExportRow(
+            recordId: n.id,
+            recordKind: "event",
+            metricId: "nutrition.entry",
+            metricDisplay: WaterEntryIdentity.displayDescription(n.description, language: scope.language),
+            value: CSVWriter.decimal(n.energyKcal ?? 0),
+            unit: "kcal",
+            canonicalValue: CSVWriter.decimal(n.energyKcal ?? 0),
+            canonicalUnit: "kcal",
+            valueType: "raw",
+            isDerived: false,
+            timestampStart: CSVWriter.iso8601(n.occurredAt, tzId: n.tzId),
+            timezone: n.tzId,
+            recordedAt: CSVWriter.iso8601(n.updatedAt, tzId: n.tzId),
+            sourceDevice: n.originDeviceId,
+            ingestionPath: IngestionPath.manual.rawValue,
+            qualityFlags: flags.joined(separator: ";")
+        )
+    }
+
+    /// Regimen id -> name, resolved once per run instead of once per adherence row. Best-effort:
+    /// a lookup failure (or a since-deleted regimen) falls back to the bare regimen id rather
+    /// than failing the export.
+    private static func regimenNameLookup(adherence: [AdherenceEvent], logging: LoggingRepository) -> [String: String] {
+        guard !adherence.isEmpty else { return [:] }
+        let regimens = (try? logging.regimens(activeOnly: false)) ?? []
+        return Dictionary(uniqueKeysWithValues: regimens.map { ($0.id, $0.name) })
     }
 
     // MARK: - Unit profile & display
