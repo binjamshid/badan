@@ -43,7 +43,7 @@ also links you there.
 
 - Workouts and nutrition
 - Notes
-- Sensitive health records — **medications, symptoms, and conditions**
+- Sensitive health records — **medications and symptoms**
 
 You choose what to enter. Nothing is required.
 
@@ -60,8 +60,8 @@ databases inside the app's private container:
 
 - A **main database** for readings, sources, summaries, workouts, nutrition, and
   notes.
-- A **separate, sensitive database** used exclusively for medications, symptoms,
-  and conditions. Keeping these in their own store lets you turn them off and
+- A **separate, sensitive database** used exclusively for medications and
+  symptoms. Keeping these in their own store lets you turn them off and
   erase them independently of everything else.
 
 Both databases are:
@@ -101,7 +101,7 @@ In this version, BADAN:
   permanently deletes everything on the device across both databases, including
   anything you logged yourself. This cannot be undone.
 - **Erase sensitive records separately.** Turning off "Sensitive records" in
-  Settings permanently removes all medication, symptom, and condition records
+  Settings permanently removes all medication and symptom records
   from the device — independently of the rest of your data. Re-enabling later does
   not restore anything that was removed.
 - **Revoke Apple Health access** anytime in iOS Settings → Health.

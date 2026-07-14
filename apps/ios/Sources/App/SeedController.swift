@@ -29,6 +29,15 @@ final class SeedController {
     /// never at risk from that path.
     static let demoSeedActiveKey = "badan.demoSeedActive"
 
+    /// STUB-01/COMP-06: whether the app is currently showing the bootstrap sample dataset rather
+    /// than a connected user's own data — i.e. `demoSeedActiveKey` is set and hasn't yet been
+    /// cleared by a real connect (`AppEnvironment.connectHealthKit()`) or by `markStartEmpty()`.
+    /// A bare `UserDefaults` read, not an `@Observable` property, since this lives outside
+    /// `AppEnvironment` by design (see `RootView`, which re-reads it reactively instead).
+    static var isDemoDataActive: Bool {
+        UserDefaults.standard.bool(forKey: demoSeedActiveKey)
+    }
+
     init(catalog: CatalogRepository, ingestion: IngestionPipeline, logging: LoggingRepository,
          measurements: MeasurementRepository, baselines: BaselineEngine, insightEngine: InsightEngine,
          registry: MetricRegistry, clock: Clock, deviceId: String) {
@@ -55,6 +64,30 @@ final class SeedController {
     func seedIfNeeded(asOf now: Date) throws {
         if UserDefaults.standard.bool(forKey: Self.seedCompletedKey) { return }
         try seed(asOf: now)
+    }
+
+    /// STUB-01/COMP-06 (ONB "Start empty"): the honest alternative to the bootstrap demo seed —
+    /// purge whatever demo content `AppEnvironment.bootstrap()` already wrote before onboarding
+    /// even reached the connect screen (bootstrap demo-seeds unconditionally for a disconnected
+    /// user), then mark onboarding's data state as "done, deliberately empty" rather than
+    /// "not yet seeded." Static and takes `database` as a parameter — mirroring
+    /// `ingestHealthData(from:...)` taking its `HealthStorePort` collaborator as a parameter —
+    /// rather than a stored property, so this doesn't require changing `SeedController`'s
+    /// constructor (and every existing call site, notably `AppEnvironment.init`).
+    ///
+    /// Sets `seedCompletedKey` so `seedIfNeeded` never demo-seeds later, and clears
+    /// `demoSeedActiveKey` so `SeedController.isDemoDataActive` (and the sample-data banner it
+    /// drives) immediately reads false. Reuses the exact three wave-1 purge primitives
+    /// (`Database.purgeIngestedData`/`purgeDemoManualLogs`/`purgeSensitiveNamespace`) that
+    /// `AppEnvironment.connectHealthKit()` already relies on for the same "clear the demo seed"
+    /// job, so a device that starts empty and one that starts empty via a real connect end up in
+    /// the identical, verified-empty state.
+    static func markStartEmpty(database: Database) throws {
+        try database.purgeIngestedData()
+        try database.purgeDemoManualLogs()
+        try database.purgeSensitiveNamespace()
+        UserDefaults.standard.set(true, forKey: seedCompletedKey)
+        UserDefaults.standard.removeObject(forKey: demoSeedActiveKey)
     }
 
     /// Whether a connected user's real backfill needs to (re)run — i.e. `sources` is still

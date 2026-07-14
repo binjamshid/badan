@@ -5,6 +5,18 @@ import SwiftUI
 /// language or theme change re-skins (and re-mirrors for RTL) instantly.
 struct RootView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// STUB-01/COMP-06: whether sample (bootstrap demo) data is currently active, driving the
+    /// global `SampleDataBanner`. `SeedController.isDemoDataActive` is a bare `UserDefaults`
+    /// flag living outside `AppEnvironment` on purpose (see `SeedController`), so it isn't
+    /// `@Observable` — this re-reads it explicitly rather than relying on SwiftUI to notice a
+    /// change on its own. Refreshed: once on first appearance; on every scene-phase change
+    /// (foreground/background — cheap, covers anything that changed while suspended); and on
+    /// every `onboardingComplete` flip, which is exactly the moment `OnboardingView`'s "Explore
+    /// with sample data" / "Start empty" / real connect choices land — the one transition that
+    /// happens *within* the same session and so wouldn't otherwise trigger a re-check.
+    @State private var isSampleDataActive = SeedController.isDemoDataActive
 
     var body: some View {
         Group {
@@ -15,12 +27,15 @@ struct RootView: View {
                 OnboardingView()
                     .transition(.opacity)
             } else {
-                MainTabView()
+                MainTabView(showSampleDataBanner: isSampleDataActive)
                     .transition(.opacity)
             }
         }
         .animation(.easeInOut, value: env.isReady)
         .animation(.easeInOut, value: env.onboardingComplete)
+        .task { isSampleDataActive = SeedController.isDemoDataActive }
+        .onChange(of: scenePhase) { _, _ in isSampleDataActive = SeedController.isDemoDataActive }
+        .onChange(of: env.onboardingComplete) { _, _ in isSampleDataActive = SeedController.isDemoDataActive }
         // EDGE-05: a calm, always-visible warning whenever `AppEnvironment.makeDefault()` had to
         // fall back to ephemeral (scratch temp dir or true in-memory) storage — previously this
         // was either silent or a hard crash, with no way for the user to know a session's data
@@ -66,6 +81,11 @@ private struct StorageFallbackBanner: View {
 struct MainTabView: View {
     @Environment(AppEnvironment.self) private var env
 
+    /// STUB-01/COMP-06: whether `RootView` determined sample data is currently active — see
+    /// `SampleDataBanner`. Defaults `false` so existing callers/previews that construct
+    /// `MainTabView()` bare keep compiling unchanged.
+    var showSampleDataBanner: Bool = false
+
     var body: some View {
         // Stable accessibilityIdentifiers on the five tabs anchor future UI tests to the
         // primary navigation without depending on (localized) visible labels. FEAT-300.
@@ -89,6 +109,15 @@ struct MainTabView: View {
             NavigationStack { SettingsScreen() }
                 .tabItem { Label(env.s(Loc.tabSettings), systemImage: "gearshape.fill") }
                 .accessibilityIdentifier("tab.settings")
+        }
+        // STUB-01/COMP-06: `safeAreaInset` on the `TabView` itself places the banner directly
+        // above the tab bar (each tab's own content gets the matching bottom inset reserved
+        // automatically) rather than floating over it — chosen over a plain `.overlay` so it
+        // never has to guess the tab bar's height across devices/Dynamic Type sizes.
+        .safeAreaInset(edge: .bottom) {
+            if showSampleDataBanner {
+                SampleDataBanner(language: env.language)
+            }
         }
     }
 }
@@ -120,8 +149,20 @@ struct SplashView: View {
                     .font(.system(size: 56))
                     .foregroundStyle(BadanColor.primary)
                     .accessibilityHidden(true)
-                Text("BADAN").font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(BadanColor.textPrimary)
+                // FIX-15: the app calls itself بدن everywhere in Arabic, but the splash
+                // wordmark used to be Latin-only ("BADAN") even in Arabic mode. "BADAN" stays
+                // the primary mark in both languages (it's the brand/App Store name); in Arabic
+                // it now carries a secondary بدن caption underneath rather than replacing it, so
+                // the reading is: this app, in your language, is بدن.
+                VStack(spacing: BadanSpace.space1) {
+                    Text("BADAN").font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(BadanColor.textPrimary)
+                    if env.language == .ar {
+                        Text("بدن")
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
+                }
                 ProgressView().tint(BadanColor.primary)
                 LText(caption)
                     .font(.footnote)

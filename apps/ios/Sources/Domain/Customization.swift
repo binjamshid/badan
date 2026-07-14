@@ -53,10 +53,28 @@ public struct NotificationPreference: Codable, Hashable, Sendable {
     public var medicationReminders: Bool
     public var dataPausedAlerts: Bool
 
-    public init(morningNarrative: Bool = true, weeklyDigest: Bool = true,
-                medicationReminders: Bool = false, dataPausedAlerts: Bool = true) {
+    // STUB-12: `morningNarrative`/`weeklyDigest`/`dataPausedAlerts` used to default `true` —
+    // pre-consenting every user to notification categories that have no delivery mechanism at
+    // all (`SettingsScreen` hides their toggles for exactly this reason — see NEW-02/UX-02).
+    // All four now default `false`; only an explicit, working toggle should ever flip one on.
+    public init(morningNarrative: Bool = false, weeklyDigest: Bool = false,
+                medicationReminders: Bool = false, dataPausedAlerts: Bool = false) {
         self.morningNarrative = morningNarrative; self.weeklyDigest = weeklyDigest
         self.medicationReminders = medicationReminders; self.dataPausedAlerts = dataPausedAlerts
+    }
+
+    // STUB-12: tolerant decode — any of these four fields missing from a persisted profile
+    // (an older install, or a preference added after that profile was last saved) decodes to
+    // `false`, matching the new default above, instead of the synthesized all-or-nothing
+    // `Decodable` failing the whole `NotificationPreference` decode — which would fail the
+    // enclosing `CustomizationProfile` decode in turn, and `ProfileRepository.load()` treats any
+    // decode failure as "no saved profile," silently resetting every other preference too.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        morningNarrative = try c.decodeIfPresent(Bool.self, forKey: .morningNarrative) ?? false
+        weeklyDigest = try c.decodeIfPresent(Bool.self, forKey: .weeklyDigest) ?? false
+        medicationReminders = try c.decodeIfPresent(Bool.self, forKey: .medicationReminders) ?? false
+        dataPausedAlerts = try c.decodeIfPresent(Bool.self, forKey: .dataPausedAlerts) ?? false
     }
 }
 

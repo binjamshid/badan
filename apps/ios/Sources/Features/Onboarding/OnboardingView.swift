@@ -9,8 +9,9 @@ import SwiftUI
 ///   2. A short "why BADAN" value set (your data is yours · works offline) — welcome already
 ///      covers "private" so the value set doesn't restate it (EASE-110).
 ///   3. A depth preset choice — "Keep it simple" (.casual) vs "Show me detail" (.power).
-///   4. A connect step — a primary connect action and a secondary "continue without connecting",
-///      both of which complete onboarding.
+///   4. A connect step — a primary connect action, a secondary "Explore with sample data" (the
+///      bundled demo dataset, honestly labeled — see `SampleDataBanner`), and a quiet "Start
+///      empty" action that purges the demo seed instead. All three complete onboarding.
 struct OnboardingView: View {
     @Environment(AppEnvironment.self) private var env
 
@@ -20,6 +21,9 @@ struct OnboardingView: View {
     /// persisted — only `env.isHealthKitConnected`/`env.onboardingComplete` survive past this
     /// screen.
     @State private var connectState: ConnectState = .idle
+    /// STUB-01/COMP-06 (ONB "Start empty"): true while the purge kicked off by "Start empty" is
+    /// in flight, so a second tap can't race it.
+    @State private var startingEmpty = false
 
     private enum ConnectState: Equatable {
         case idle
@@ -72,6 +76,15 @@ struct OnboardingView: View {
             // No special-casing needed now that DepthPolicy only has casual/power (UX-03) —
             // the profile default (.casual) simply preselects Casual, same as an explicit choice.
             selectedDepth = env.depth
+            // ONB-01: a mid-flow relaunch (app killed/backgrounded while onboarding is still in
+            // progress) used to always restart at page 0, discarding whatever step the user had
+            // already reached. Restore it here; `0` (never persisted, or persisted as 0) is
+            // indistinguishable from — and behaves identically to — the existing default.
+            let savedStep = UserDefaults.standard.integer(forKey: Self.stepKey)
+            if (0...lastStep).contains(savedStep) { step = savedStep }
+        }
+        .onChange(of: step) { _, newValue in
+            UserDefaults.standard.set(newValue, forKey: Self.stepKey)
         }
     }
 
@@ -104,7 +117,7 @@ struct OnboardingView: View {
                     // UIUX-198: Skip exits the whole flow (a more consequential action than
                     // stepping back one page), so it reads a notch quieter than Back rather
                     // than sharing identical visual weight.
-                    Button { env.completeOnboarding() } label: {
+                    Button { finishOnboarding() } label: {
                         Text(env.s(Loc.skip))
                             .font(BadanFont.caption)
                             .foregroundStyle(BadanColor.textSecondary.opacity(0.75))
@@ -360,7 +373,7 @@ struct OnboardingView: View {
                                 .foregroundStyle(BadanColor.textSecondary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, BadanSpace.space2)
-                            primaryButton(Loc.done) { env.completeOnboarding() }
+                            primaryButton(Loc.done) { finishOnboarding() }
 
                         // NEW-01: the backfill is still deriving — a calm progress state, never
                         // a blocking one. "Continue" always works and skips straight into the
@@ -368,7 +381,7 @@ struct OnboardingView: View {
                         // since nothing is confirmed yet).
                         case .awaitingFirstFact:
                             firstFactProgress
-                            Button { env.completeOnboarding() } label: {
+                            Button { finishOnboarding() } label: {
                                 Text(env.s(Self.continueLabel))
                                     .font(BadanFont.body)
                                     .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
@@ -378,7 +391,7 @@ struct OnboardingView: View {
 
                         case .factReady(let fact):
                             firstFactCard(fact)
-                            primaryButton(Loc.done) { env.completeOnboarding() }
+                            primaryButton(Loc.done) { finishOnboarding() }
 
                         case .factUnavailable:
                             Text(env.s(Self.firstFactFallback))
@@ -386,7 +399,7 @@ struct OnboardingView: View {
                                 .foregroundStyle(BadanColor.textSecondary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, BadanSpace.space2)
-                            primaryButton(Loc.done) { env.completeOnboarding() }
+                            primaryButton(Loc.done) { finishOnboarding() }
 
                         case .idle, .connecting:
                             primaryButton(connectState == .connecting ? Self.connecting : Self.connectPrimary) {
@@ -394,14 +407,47 @@ struct OnboardingView: View {
                             }
                             .disabled(connectState == .connecting)
                             .opacity(connectState == .connecting ? 0.7 : 1)
-                            Button { env.completeOnboarding() } label: {
-                                Text(env.s(Loc.continueWithoutConnecting))
-                                    .font(BadanFont.body)
-                                    .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+
+                            // STUB-01/COMP-06: honest framing for the "don't connect now" path —
+                            // this used to read "Continue without connecting" with no mention
+                            // that doing so leaves the bundled sample dataset in place
+                            // (indefinitely, since bootstrap seeds it before onboarding even
+                            // starts). The caption underneath says so; the label itself no
+                            // longer implies "continue with nothing."
+                            VStack(spacing: BadanSpace.space1) {
+                                Button { finishOnboarding() } label: {
+                                    Text(env.s(Self.exploreWithSampleData))
+                                        .font(BadanFont.body)
+                                        .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                                        .foregroundStyle(BadanColor.textSecondary)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(connectState == .connecting)
+
+                                Text(env.s(Self.sampleDataCaption))
+                                    .font(BadanFont.caption)
                                     .foregroundStyle(BadanColor.textSecondary)
+                                    .multilineTextAlignment(.center)
+                            }
+
+                            // STUB-01/COMP-06: the honest third option — no sample data at all,
+                            // ever. Purges whatever bootstrap already demo-seeded before
+                            // onboarding reached this screen and boots straight to real empty
+                            // states. Deliberately the quietest of the three actions (plain
+                            // caption-weight text, no button chrome) since it's the least common
+                            // path, not a discouraged one.
+                            Button { startEmpty() } label: {
+                                if startingEmpty {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text(env.s(Self.startEmpty))
+                                        .font(BadanFont.caption)
+                                        .foregroundStyle(BadanColor.textSecondary.opacity(0.75))
+                                }
                             }
                             .buttonStyle(.plain)
-                            .disabled(connectState == .connecting)
+                            .frame(minHeight: BadanSpace.touchMin)
+                            .disabled(connectState == .connecting || startingEmpty)
                         }
                     }
                 }
@@ -416,22 +462,23 @@ struct OnboardingView: View {
 
     @ViewBuilder private var footer: some View {
         if step < lastStep {
-            let disabled = (step == 2 && selectedDepth == nil)
             VStack(spacing: BadanSpace.space2) {
                 // EASE-106: repeat the "this choice is reversible" reassurance right next to
-                // the decision itself, not only in the page subtitle above the cards, since a
-                // disabled-until-chosen step is exactly where hesitant users need it most.
+                // the decision itself, not only in the page subtitle above the cards.
                 if step == 2 {
                     Text(env.s(Self.depthReassurance))
                         .font(BadanFont.caption)
                         .foregroundStyle(BadanColor.textSecondary)
                         .multilineTextAlignment(.center)
                 }
+                // ONB-02: this used to be `.disabled(step == 2 && selectedDepth == nil)` —
+                // dead code, since `selectedDepth` is preselected from `env.depth` in `onAppear`
+                // (never nil; `DepthPolicy` has no nil case and defaults to `.casual`), so the
+                // guard could never actually trigger. Removed rather than left as
+                // never-true-but-still-evaluated logic.
                 primaryButton(Loc.next) {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { step += 1 }
                 }
-                .disabled(disabled)
-                .opacity(disabled ? 0.45 : 1)
             }
             .padding(.horizontal, BadanSpace.space5)
             .padding(.top, BadanSpace.space3)
@@ -468,6 +515,32 @@ struct OnboardingView: View {
 
     private func setConnectState(_ newValue: ConnectState) {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { connectState = newValue }
+    }
+
+    /// ONB-01: every path off this screen goes through here so the persisted step (see the
+    /// `onAppear`/`onChange(of: step)` pair above) never survives past a completed onboarding —
+    /// otherwise a relaunch after finishing onboarding once could, in principle, seed a stale
+    /// step number for a *future* re-onboarding (e.g. after "Delete all data").
+    private func finishOnboarding() {
+        UserDefaults.standard.removeObject(forKey: Self.stepKey)
+        env.completeOnboarding()
+    }
+
+    /// STUB-01/COMP-06: "Start empty" — purge whatever bootstrap already demo-seeded and mark
+    /// onboarding's data state as deliberately, honestly empty (see `SeedController.
+    /// markStartEmpty`), then finish onboarding the same way every other path does. Runs the
+    /// purge off the main actor (it drops/deletes and `VACUUM`s two on-disk databases) and
+    /// guards against a double-tap with `startingEmpty`; failures are non-fatal — onboarding
+    /// still completes, since staying stuck on this screen over a purge failure would be a worse
+    /// outcome than the user starting with whatever data is left.
+    private func startEmpty() {
+        guard !startingEmpty else { return }
+        startingEmpty = true
+        let database = env.database
+        Task.detached(priority: .userInitiated) {
+            try? SeedController.markStartEmpty(database: database)
+            await MainActor.run { finishOnboarding() }
+        }
     }
 
     /// NEW-01: "Looking at your last few weeks…" — shown while the connect path's
@@ -550,6 +623,10 @@ struct OnboardingView: View {
     /// without ever reading as a stall.
     private static let firstFactTimeout: Double = 12
 
+    /// ONB-01: persists the in-progress step across a relaunch; cleared by `finishOnboarding()`
+    /// so a *future* re-onboarding (e.g. after "Delete all data") never inherits a stale step.
+    private static let stepKey = "badan.onboarding.step"
+
     // MARK: - Strings (bilingual; wellness-safe)
 
     private static let languageHint = LocalizedString(
@@ -614,6 +691,20 @@ struct OnboardingView: View {
     private static let connectUnavailableNotice = LocalizedString(
         en: "We couldn't connect right now. You can connect later from Sources.",
         ar: "تعذّر الاتصال الآن. يمكنك الاتصال لاحقاً من صفحة المصادر.")
+
+    // MARK: - Strings — STUB-01/COMP-06 sample-data honesty
+    //
+    // Replaces `Loc.continueWithoutConnecting` ("Continue without connecting") here: that label
+    // never said what "continuing" actually means — the bundled 90-day sample dataset stays in
+    // place, indefinitely, looking exactly like the user's own data on Home/Body/Sources/
+    // Insights. These three strings + `startEmpty` below make that explicit and offer a real
+    // alternative that has no sample data in it at all.
+    private static let exploreWithSampleData = LocalizedString(
+        en: "Explore with sample data", ar: "استكشاف باستخدام بيانات تجريبية")
+    private static let sampleDataCaption = LocalizedString(
+        en: "BADAN is pre-filled with sample data until you connect your own.",
+        ar: "بدن معبأ ببيانات تجريبية إلى أن تربط بياناتك الخاصة.")
+    private static let startEmpty = LocalizedString(en: "Start empty", ar: "البدء بلا بيانات")
 
     // MARK: - Strings — NEW-01 first-fact payoff
 

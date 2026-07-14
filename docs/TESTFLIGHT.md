@@ -18,28 +18,32 @@ config-ready**; the remaining steps require your Apple credentials and must be d
 - **HealthKit** — real reads are wired (`HealthKitAdapter`), the `com.apple.developer.healthkit`
   entitlement is enabled (`apps/ios/App/BADAN.entitlements`), and the purpose string in
   Info.plist names exactly what's read. See the HealthKit note below.
-- **Signing** — set to **Automatic**; `DEVELOPMENT_TEAM` is intentionally blank for you to fill.
+- **Signing** — set to **Automatic**; `DEVELOPMENT_TEAM` is set to `54T3MDUR7H` in
+  `apps/ios/project.yml` (previously intentionally blank). `scripts/archive_ios.sh` still takes a
+  `<TEAM_ID>` argument and overrides it on the `xcodebuild` command line, so you can archive under
+  a different team without editing `project.yml` — but for the team above, the project already
+  builds and signs without any extra setup.
 - **Archive tooling** — `scripts/archive_ios.sh <TEAM_ID>` + `apps/ios/ExportOptions.plist`.
-- Verified: Debug + Release both compile; 29 unit tests pass; icon compiles into the bundle.
+- Verified: Debug + Release both compile; the full unit test suite passes (130+ tests as of this
+  writing — see `apps/ios/Tests/` for the current count); icon compiles into the bundle.
 
 ## What only you can do (credential / account gated)
 
 1. **Apple Developer Program** — enroll ($99/yr) if not already: <https://developer.apple.com/programs/>.
-2. **Register the bundle ID** `net.binjamshid.badan` (Certificates, Identifiers & Profiles ▸ Identifiers).
+2. **Register the bundle ID** `net.binjamshid.badan` (Certificates, Identifiers & Profiles ▸ Identifiers)
+   under team `54T3MDUR7H` (or your own team, passing it to `scripts/archive_ios.sh` instead).
    - Enable the **HealthKit** capability on it — the app entitlement now requests it (see note below).
 3. **Create the app record** in App Store Connect (<https://appstoreconnect.apple.com>):
    - Platform iOS, name "BADAN", bundle ID `net.binjamshid.badan`, SKU (any unique string).
 4. **Sign in to Xcode** with an account on that team: Xcode ▸ Settings ▸ Accounts. This lets
    Automatic signing fetch a Distribution provisioning profile — no manual certs needed.
-5. **Find your Team ID** — the 10-character string in the Apple Developer portal (Membership),
-   e.g. `ABCDE12345`.
 
 ## Build & upload
 
 From the repo root, once signed into Xcode with your team:
 
 ```bash
-scripts/archive_ios.sh ABCDE12345        # ← your Team ID
+scripts/archive_ios.sh 54T3MDUR7H        # ← or your own Team ID, to override project.yml's
 ```
 
 This archives Release, signs with your distribution profile, and exports

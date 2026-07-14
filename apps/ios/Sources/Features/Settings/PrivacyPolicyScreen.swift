@@ -119,10 +119,10 @@ private enum PrivacyPolicyStrings {
                         + "وقت من إعدادات iOS."),
                 LocalizedString(
                     en: "What you log yourself: workouts, nutrition, and notes — and sensitive health "
-                        + "records: medications, symptoms, and conditions. You choose what to enter; "
+                        + "records: medications and symptoms. You choose what to enter; "
                         + "nothing is required.",
                     ar: "وما تسجّله بنفسك: التمارين والتغذية والملاحظات — والسجلات الصحية الحساسة: "
-                        + "الأدوية والأعراض والحالات. أنت تختار ما تُدخله؛ ولا شيء إلزامي."),
+                        + "الأدوية والأعراض. أنت تختار ما تُدخله؛ ولا شيء إلزامي."),
                 LocalizedString(
                     en: "BADAN does not access your contacts, location, photos, microphone, camera, "
                         + "calendar, or advertising identifier.",
@@ -135,13 +135,11 @@ private enum PrivacyPolicyStrings {
                 LocalizedString(
                     en: "All of your data is stored on your device only, in two local databases: a "
                         + "main database for readings, sources, summaries, workouts, nutrition, and "
-                        + "notes; and a separate, sensitive database used only for medications, "
-                        + "symptoms, and conditions — so you can turn those off and erase them on "
-                        + "their own.",
+                        + "notes; and a separate, sensitive database used only for medications and "
+                        + "symptoms — so you can turn those off and erase them on their own.",
                     ar: "تُحفظ كل بياناتك على جهازك فقط، في قاعدتَي بيانات محليتين: قاعدة رئيسية "
                         + "للقراءات والمصادر والملخّصات والتمارين والتغذية والملاحظات؛ وقاعدة منفصلة "
-                        + "حساسة تُستخدم فقط للأدوية والأعراض والحالات — لتتمكّن من إيقافها ومحوها "
-                        + "وحدها."),
+                        + "حساسة تُستخدم فقط للأدوية والأعراض — لتتمكّن من إيقافها ومحوها وحدها."),
                 LocalizedString(
                     en: "Both databases are excluded from iCloud and device backups, and are "
                         + "protected with iOS file protection (encrypted at rest). There is no cloud "
@@ -187,10 +185,10 @@ private enum PrivacyPolicyStrings {
                         + "الجهاز في القاعدتين، بما في ذلك كل ما سجّلته بنفسك. ولا يمكن التراجع عنه."),
                 LocalizedString(
                     en: "Erase sensitive records separately: turning off Sensitive records "
-                        + "permanently removes all medication, symptom, and condition records on "
-                        + "their own. And you can revoke Apple Health access anytime in iOS Settings.",
+                        + "permanently removes all medication and symptom records on their own. "
+                        + "And you can revoke Apple Health access anytime in iOS Settings.",
                     ar: "محو السجلات الحساسة وحدها: إيقاف «السجلات الحساسة» يزيل نهائياً جميع سجلات "
-                        + "الأدوية والأعراض والحالات وحدها. ويمكنك سحب إذن صحة آبل في أي وقت من "
+                        + "الأدوية والأعراض وحدها. ويمكنك سحب إذن صحة آبل في أي وقت من "
                         + "إعدادات iOS."),
             ]),
         Section(
