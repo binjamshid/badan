@@ -141,13 +141,28 @@ struct SettingsScreen: View {
     private var appIconSection: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(Loc.appIcon))
+            // EDGE-16: on a device/runtime that can't switch icons at all, say so once here
+            // rather than leaving every alternate row a silent, tappable no-op below.
+            if !iconController.supportsAlternateIcons {
+                Text(env.s(SettingsStrings.iconUnsupportedNotice))
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+            }
             BadanCard {
                 VStack(spacing: 0) {
                     let options = AppIconOption.allCases
                     ForEach(Array(options.enumerated()), id: \.element) { index, option in
                         let selected = option == iconController.current
+                        // EDGE-16: the primary icon (`alternateIconName == nil`) is always
+                        // selectable — it's the app's own icon, not a switch. Only the
+                        // alternates need `supportsAlternateIcons`.
+                        let isAlternate = option.alternateIconName != nil
+                        let disabled = isAlternate && !iconController.supportsAlternateIcons
                         Button {
-                            Task { await iconController.select(option) }
+                            Task {
+                                let succeeded = await iconController.select(option)
+                                if !succeeded { showTransientNotice(SettingsStrings.iconSwitchFailedNotice) }
+                            }
                         } label: {
                             HStack(spacing: BadanSpace.space3) {
                                 Image(option.previewAsset)
@@ -178,6 +193,8 @@ struct SettingsScreen: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(disabled)
+                        .opacity(disabled ? 0.45 : 1)
                         .accessibilityAddTraits(selected ? .isSelected : [])
 
                         if index < options.count - 1 { settingsDivider }
@@ -960,6 +977,14 @@ private enum SettingsStrings {
             + "العرض (إن كنت تفضّل الكيلومتر) فيعرض 10 كم بدلاً منها.")
 
     static let privacyPolicyTitle = LocalizedString(en: "Privacy Policy", ar: "سياسة الخصوصية")
+
+    // EDGE-16: app-icon switch failure/unsupported-device messaging.
+    static let iconUnsupportedNotice = LocalizedString(
+        en: "Alternate icons aren't available on this device.",
+        ar: "الأيقونات البديلة غير متاحة على هذا الجهاز.")
+    static let iconSwitchFailedNotice = LocalizedString(
+        en: "Couldn't switch the app icon. Your icon hasn't changed.",
+        ar: "تعذّر تبديل أيقونة التطبيق. لم تتغيّر أيقونتك.")
 
     static let resourcesHeader = LocalizedString(en: "Resources", ar: "الموارد")
     static let whatsNewTitle = LocalizedString(en: "What's new", ar: "ما الجديد")

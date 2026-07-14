@@ -97,7 +97,11 @@ private enum ExportCopy {
 
 /// The offered windows. Maps to `ExportScope.startDate`/`endDate`; "all time" leaves both open,
 /// "custom" reads two user-picked dates instead of a fixed offset.
-private enum ExportRange: CaseIterable, Hashable {
+///
+/// Not `private` — `String` raw values make this the round-trip type for the remembered-range
+/// side of STUB-06b (`sessionPreferences.lastExportRange`), and `SessionExportMemory`'s mapping
+/// helper needs to be directly testable from `SessionPrefsFixTests`.
+enum ExportRange: String, CaseIterable, Hashable {
     case last30, last90, all, custom
 
     func startDate(now: Date) -> Date? {
@@ -121,6 +125,23 @@ private enum ExportRange: CaseIterable, Hashable {
         case .custom:
             return LocalizedString(en: "Custom", ar: "مخصص")
         }
+    }
+}
+
+/// Read side of the export session memory (STUB-06b) — `CustomizationProfile.sessionPreferences`
+/// stores `lastExportFormat`/`lastExportRange` as raw strings (so the model doesn't need to know
+/// about this screen's own enums), so both mappings tolerate a `nil`, unrecognized, or
+/// since-removed raw value by falling back to the caller-supplied current default rather than
+/// crashing or silently producing a wrong format/range.
+enum SessionExportMemory {
+    static func rememberedFormat(_ raw: String?, fallback: ExportFormat) -> ExportFormat {
+        guard let raw, let format = ExportFormat(rawValue: raw) else { return fallback }
+        return format
+    }
+
+    static func rememberedRange(_ raw: String?, fallback: ExportRange) -> ExportRange {
+        guard let raw, let range = ExportRange(rawValue: raw) else { return fallback }
+        return range
     }
 }
 
@@ -276,6 +297,12 @@ struct ExportCenterScreen: View {
             // A user who set "my display units" globally in Settings shouldn't see Export
             // silently revert to canonical/SI every time they open it (EASE-204/OPT-156).
             scope.unitProfile = env.profile.unitProfile
+            // Seeds the format/range pickers from last time (STUB-06b) instead of always
+            // resetting to CSV/last-30 on every visit — `sessionPreferences` was already
+            // modeled for this but nothing ever read or wrote it.
+            let prefs = env.profile.sessionPreferences
+            selectedFormats = [SessionExportMemory.rememberedFormat(prefs.lastExportFormat, fallback: .csv)]
+            range = SessionExportMemory.rememberedRange(prefs.lastExportRange, fallback: .last30)
         }
         .onChange(of: vm.lastResults.last?.result.job.id) { _, newValue in
             guard newValue != nil else { return }
@@ -292,6 +319,11 @@ struct ExportCenterScreen: View {
         }
         .sheet(item: $inspectingItem) { item in
             historyDetailSheet(item)
+        }
+        // Write-back side of STUB-06b — the range picker has no other single mutation point
+        // (unlike `toggleFormat`, which writes back inline), so it's captured here instead.
+        .onChange(of: range) { _, newValue in
+            env.update { $0.sessionPreferences.lastExportRange = newValue.rawValue }
         }
     }
 
@@ -348,6 +380,9 @@ struct ExportCenterScreen: View {
             selectedFormats.insert(format)
         }
         UISelectionFeedbackGenerator().selectionChanged()
+        // Write-back side of STUB-06b: remembers the format most recently touched so the next
+        // visit seeds from it instead of always starting over at CSV.
+        env.update { $0.sessionPreferences.lastExportFormat = format.rawValue }
     }
 
     // MARK: Scope

@@ -36,6 +36,10 @@ private enum MetricDetailStrings {
     static let vsYourMedian = LocalizedString(en: "vs your median", ar: "مقارنة بمتوسطك")
     /// Single-letter day-count suffix for the period picker segments (UIUX-035).
     static let daySuffix = LocalizedString(en: "d", ar: "ي")
+    /// Casual's quiet route into the same anatomy sheet power opens via `howWorkedOut` above
+    /// (UX-02) — phrased as an inviting question rather than power's declarative label, since
+    /// casual has never been shown this exists at all before now.
+    static let howIsThisWorkedOutCasual = LocalizedString(en: "How is this worked out?", ar: "كيف يتم حساب هذا؟")
 
     /// Plain-language gloss for each algorithm id, shown alongside (not instead of) the raw
     /// `algorithmId@version` token so power users get comprehension, not just a traceable
@@ -57,6 +61,19 @@ private enum MetricDetailStrings {
 /// the two can't silently drift apart (OPT-033).
 private let metricDetailPeriodOptions = [7, 30, 90]
 private let metricDetailMaxPeriodDays = metricDetailPeriodOptions.max() ?? 90
+
+/// The period-memory read side (STUB-06a), factored out to a pure static function so it's
+/// directly testable without standing up the view: `sessionPreferences.lastMetricPeriodDays`
+/// was already modeled on `CustomizationProfile` but nothing ever read or wrote it, so the
+/// period picker silently reset to 30 on every push instead of remembering the metric's last
+/// viewed window.
+enum SessionPeriodMemory {
+    static let defaultPeriodDays = 30
+
+    static func rememberedPeriod(for metricId: String, in map: [String: Int]) -> Int {
+        map[metricId] ?? defaultPeriodDays
+    }
+}
 
 // MARK: - Loaded data
 
@@ -267,6 +284,12 @@ struct MetricDetailScreen: View {
         // Reload on any profile change (language/units/depth), not just first appearance, so
         // the most data-dense screen in the app never shows stale-language content (OPT-040).
         .task(id: env.profile) { await vm.load(env, metricId: metricId) }
+        // Seeds the power period picker from this metric's remembered window (STUB-06a) instead
+        // of always starting at the 30-day default on every push.
+        .onAppear {
+            periodDays = SessionPeriodMemory.rememberedPeriod(
+                for: metricId, in: env.profile.sessionPreferences.lastMetricPeriodDays)
+        }
     }
 
     // MARK: Body composition
@@ -293,10 +316,22 @@ struct MetricDetailScreen: View {
                 methodCard(data)
                 siblingMetricsRow(data)
             } else {
+                // Same anatomy sheet power opens, just a quiet text link instead of the boxed
+                // affordance — casual previously had zero route to "how was this worked out"
+                // even though the sheet's own language is casual-safe (UX-02). Shown wherever
+                // the sheet has content, mirroring power's own (unconditional) gate: every
+                // branch of `MetricAnatomySheet` renders something — a real baseline/manifest
+                // or an honest fallback line — so there's no loaded-data case where it's empty.
+                casualAnatomyLink
                 explainerCard(data)
             }
         }
-        .onChange(of: periodDays) { _, _ in visibleValuesCount = MetricDetailScreen.valuesPageSize }
+        .onChange(of: periodDays) { _, newValue in
+            visibleValuesCount = MetricDetailScreen.valuesPageSize
+            // Write-back side of STUB-06a: remembers this metric's last-viewed window so the
+            // next visit seeds from it instead of always starting over at 30.
+            env.update { $0.sessionPreferences.lastMetricPeriodDays[metricId] = newValue }
+        }
     }
 
     // MARK: Header
@@ -552,6 +587,22 @@ struct MetricDetailScreen: View {
                 .foregroundStyle(BadanColor.textPrimary)
                 .multilineTextAlignment(.trailing)
         }
+    }
+
+    // MARK: Casual — anatomy link
+
+    /// Casual's minimal mirror of `anatomyButton` below — same `showAnatomy = true` action and
+    /// the same sheet, just a quiet text link instead of a full card affordance (UX-02).
+    private var casualAnatomyLink: some View {
+        Button {
+            showAnatomy = true
+        } label: {
+            Text(env.s(MetricDetailStrings.howIsThisWorkedOutCasual))
+                .font(BadanFont.link)
+                .foregroundStyle(BadanColor.primary)
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: BadanSpace.touchMin, alignment: .leading)
     }
 
     // MARK: Power — anatomy button

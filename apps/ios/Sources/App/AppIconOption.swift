@@ -73,21 +73,34 @@ enum AppIconOption: String, CaseIterable, Identifiable {
 final class AppIconController {
     private(set) var current: AppIconOption
 
+    /// EDGE-16: whether this device/runtime can switch icons at all — some simulators and
+    /// contexts report `false`. `SettingsScreen` uses this to disable the alternate-icon rows
+    /// (with reduced opacity) instead of leaving them tappable no-ops.
+    var supportsAlternateIcons: Bool { UIApplication.shared.supportsAlternateIcons }
+
     init() {
         current = AppIconOption.from(alternateIconName: UIApplication.shared.alternateIconName)
     }
 
-    /// Switches to `option`'s icon. No-ops if it's already current (avoids a redundant system
-    /// alert) or if the platform doesn't support alternate icons. Failures are swallowed —
-    /// an icon switch is a cosmetic action and must never crash the app.
-    func select(_ option: AppIconOption) async {
-        guard UIApplication.shared.supportsAlternateIcons else { return }
-        guard option != current else { return }
+    /// Switches to `option`'s icon. Returns `true` on success — including the already-current
+    /// no-op case, since nothing needed to change and nothing failed — and `false` if the
+    /// platform doesn't support alternate icons or the underlying `setAlternateIconName` call
+    /// itself failed.
+    ///
+    /// EDGE-16: every failure used to be swallowed silently, so a rejected icon switch (or a tap
+    /// on a device that can't switch icons at all) looked identical to a successful one. An icon
+    /// switch still can't crash the app — the failure is reported, not thrown — but the caller
+    /// can now tell the difference and say so (see `SettingsScreen.showTransientNotice`).
+    @discardableResult
+    func select(_ option: AppIconOption) async -> Bool {
+        guard UIApplication.shared.supportsAlternateIcons else { return false }
+        guard option != current else { return true }
         do {
             try await UIApplication.shared.setAlternateIconName(option.alternateIconName)
             current = option
+            return true
         } catch {
-            // Ignore: the user simply keeps the icon they had before the attempt.
+            return false
         }
     }
 }
