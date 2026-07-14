@@ -12,11 +12,14 @@ final class Database {
     static let mainFilename = "badan.db"
     static let sensitiveFilename = "badan_sensitive.db"
 
-    init(directory: URL) throws {
+    /// Designated init: opens both connections at explicit paths, migrates, and (only when
+    /// `hardenDirectory` is set) applies the backup/protection hardening below. Factored out of
+    /// `init(directory:)` so `inMemoryFallback()` (EDGE-05) can share the open+migrate logic
+    /// without a real on-disk directory to create or protect.
+    private init(mainPath: String, sensitivePath: String, directory: URL, hardenDirectory: Bool) throws {
         self.directory = directory
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        main = try SQLiteConnection(path: directory.appendingPathComponent(Self.mainFilename).path)
-        sensitive = try SQLiteConnection(path: directory.appendingPathComponent(Self.sensitiveFilename).path)
+        main = try SQLiteConnection(path: mainPath)
+        sensitive = try SQLiteConnection(path: sensitivePath)
         // Only takes effect on a database with no tables yet (i.e. first-ever creation, before
         // `migrate` below runs); a harmless no-op on an already-migrated database (PERF-113).
         // Already-shipped installs with existing data need a separate one-time VACUUM-based
@@ -25,7 +28,25 @@ final class Database {
         try sensitive.execute("PRAGMA auto_vacuum = INCREMENTAL;")
         try Self.migrate(main, Schema.mainMigrations)
         try Self.migrate(sensitive, Schema.sensitiveMigrations)
-        Self.applyHardening(to: directory)
+        if hardenDirectory { Self.applyHardening(to: directory) }
+    }
+
+    convenience init(directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try self.init(mainPath: directory.appendingPathComponent(Self.mainFilename).path,
+                     sensitivePath: directory.appendingPathComponent(Self.sensitiveFilename).path,
+                     directory: directory, hardenDirectory: true)
+    }
+
+    /// EDGE-05: last-resort fallback for `AppEnvironment.makeDefault()` when even a scratch temp
+    /// directory can't be opened — an in-memory SQLite database has no filesystem dependency at
+    /// all, so the app can still boot (with a visible warning — see `AppEnvironment.
+    /// isStorageFallback`) instead of crashing via `try!`. `directory` is a label only here;
+    /// nothing is ever written under it, and nothing survives process exit.
+    static func inMemoryFallback() throws -> Database {
+        try Database(mainPath: ":memory:", sensitivePath: ":memory:",
+                    directory: FileManager.default.temporaryDirectory.appendingPathComponent("BADAN-inmemory"),
+                    hardenDirectory: false)
     }
 
     /// Best-effort, non-fatal hardening applied after the databases exist (COMP-05): exclude the
@@ -97,19 +118,38 @@ final class Database {
     /// keep working after the purge — otherwise sensitive logging would silently break.
     func purgeSensitiveNamespace() throws {
         sensitive.closeHandle()
-        for suffix in ["", "-wal", "-shm"] {
+        let mainURL = directory.appendingPathComponent(Self.sensitiveFilename)
+        // EDGE-01: a failed delete of the *main* sensitive file must not be swallowed — the
+        // whole point of this method is "medications/symptoms are gone from this device," and
+        // `try?` here used to let that claim be false with no trace. Missing `-wal`/`-shm`
+        // siblings are still tolerated (very common — nothing to check in) via `try?` below.
+        var removeError: Error?
+        if FileManager.default.fileExists(atPath: mainURL.path) {
+            do { try FileManager.default.removeItem(at: mainURL) } catch { removeError = error }
+        }
+        for suffix in ["-wal", "-shm"] {
             let url = directory.appendingPathComponent(Self.sensitiveFilename + suffix)
             try? FileManager.default.removeItem(at: url)
         }
+        // Reopen (and re-migrate) regardless of whether the delete above succeeded, so the
+        // connection — and every repository already holding a reference to it — stays usable
+        // either way; a failed purge must not also leave sensitive logging broken for the rest
+        // of the session. If the file wasn't actually removed, `migrate` just sees its existing
+        // (already up to date) schema and no-ops.
         try sensitive.reopen()
         // The reopened file is brand new, so it needs the same first-creation pragma `init`
         // sets (PERF-113) — otherwise every purge would silently revert this db to auto_vacuum=NONE.
         try sensitive.execute("PRAGMA auto_vacuum = INCREMENTAL;")
         try Self.migrate(sensitive, Schema.sensitiveMigrations)
+        if let removeError { throw removeError }
     }
 
     /// Developer reset: wipe both databases and recreate empty schemas. Used by the
     /// "reset demo data" affordance and the reset script.
+    ///
+    /// EDGE-08: no `PRAGMA foreign_keys = OFF/ON` around the drops — SQLite ignores toggling
+    /// that pragma mid-transaction anyway, and this schema has zero foreign keys to begin with,
+    /// so the old pair of statements was a no-op either way.
     func resetAll() throws {
         try purgeSensitiveNamespace()
         // Recreate main by dropping every user table then re-migrating. This intentionally
@@ -118,19 +158,62 @@ final class Database {
         // forward-only migration versions, replaying all of them from scratch is safe (OPT-189).
         let tables = try main.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
         try main.transaction {
-            try main.execute("PRAGMA foreign_keys = OFF;")
             for row in tables { if let name = row.string("name") { try main.execute("DROP TABLE IF EXISTS \"\(name)\";") } }
-            try main.execute("PRAGMA foreign_keys = ON;")
+            // BUG-03: `PRAGMA user_version` writes are transactional in SQLite, so resetting it
+            // *inside* the same transaction as the drops means a crash between the two can never
+            // happen — either both land, or (on rollback) neither does. Previously this ran as a
+            // separate statement after `COMMIT`, so a crash in between left a permanently
+            // schema-less database whose stale nonzero `user_version` made `migrate`'s PERF-111
+            // fast path wrongly skip recreating the schema that was just dropped.
+            try main.execute("PRAGMA user_version = 0;")
         }
-        // `PRAGMA user_version` lives in the file header, not a table, so dropping every table
-        // above does NOT reset it — without this, migrate()'s PERF-111 fast path would see the
-        // stale version number and wrongly skip recreating the schema we just dropped.
-        try main.execute("PRAGMA user_version = 0;")
         try Self.migrate(main, Schema.mainMigrations)
         // Reclaim the physical space freed by the drops above so repeated dev/QA resets don't
         // silently bloat the file (PERF-114); safe here since resetAll always runs outside any
         // caller-held transaction and the DB is momentarily near-empty.
         try main.execute("VACUUM;")
+    }
+
+    /// Delete only *ingested* measurement data — sources/devices, raw samples, interval
+    /// records, sleep sessions, derived values, baselines, insights, and dedup bookkeeping —
+    /// leaving every manual-log table (workouts/nutrition/notes), `customization_profile`,
+    /// `goals`, `metric_pins`, `export_jobs`, and the whole sensitive DB untouched (BUG-01).
+    ///
+    /// Used by `AppEnvironment.connectHealthKit()`'s post-authorization backfill in place of
+    /// `resetAll()`, which used to wipe *both* databases — deleting a user's own logged
+    /// medications, symptoms, workouts, nutrition, and notes just because they connected Apple
+    /// Health. This purges exactly the tables a real backfill needs to start clean from (a
+    /// stale `read_anchors` row would otherwise make `HealthKitAdapter`'s incremental resume
+    /// silently skip history) and nothing else.
+    ///
+    /// Same ordering discipline as `resetAll` (BUG-03): a single transaction, no interstitial
+    /// pragma to reset (there's no schema drop/re-migrate here, just row deletes).
+    func purgeIngestedData() throws {
+        let tables = ["dedup_decisions", "insights", "baselines", "input_manifests", "derived_values",
+                     "session_stages", "sessions", "interval_records", "raw_samples", "read_anchors",
+                     "source_devices", "sources"]
+        try main.transaction {
+            for table in tables { try main.execute("DELETE FROM \"\(table)\";") }
+        }
+        // Reclaim space freed by the deletes above (PERF-114's rationale applies equally here).
+        try main.execute("VACUUM;")
+    }
+
+    /// Delete the main-DB manual-log tables (workouts/nutrition/notes) — used *only* once, the
+    /// first time `connectHealthKit()` runs after a bootstrap demo-seed, per the `demoSeedActive`
+    /// flag `SeedController.seed()` sets (BUG-01's documented exception: a connected user's
+    /// *first* connect also clears whatever demo manual logs bootstrap seeded before onboarding
+    /// even reached the connect screen). Medications/symptoms are cleared via
+    /// `purgeSensitiveNamespace()` alongside this, not here — they live in the sensitive DB.
+    ///
+    /// Never called once `demoSeedActive` is cleared, so a connected user's own manual logs
+    /// (entered after that point) are never at risk from this path.
+    func purgeDemoManualLogs() throws {
+        try main.transaction {
+            for table in ["workout_entries", "nutrition_entries", "note_entries"] {
+                try main.execute("DELETE FROM \"\(table)\";")
+            }
+        }
     }
 
     // MARK: - Maintenance (PERF-112, PERF-113, PERF-121, PERF-122, PERF-198, PERF-199)

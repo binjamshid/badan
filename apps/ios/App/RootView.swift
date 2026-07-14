@@ -21,7 +21,43 @@ struct RootView: View {
         }
         .animation(.easeInOut, value: env.isReady)
         .animation(.easeInOut, value: env.onboardingComplete)
+        // EDGE-05: a calm, always-visible warning whenever `AppEnvironment.makeDefault()` had to
+        // fall back to ephemeral (scratch temp dir or true in-memory) storage — previously this
+        // was either silent or a hard crash, with no way for the user to know a session's data
+        // won't survive closing the app.
+        .overlay(alignment: .top) {
+            if env.isStorageFallback {
+                StorageFallbackBanner()
+            }
+        }
         .badanChrome(env)
+    }
+}
+
+/// EDGE-05: see `RootView`'s overlay above. Factual, wellness-safe, no alarm language — this is
+/// a storage-mode notice, not an error the user needs to act on.
+private struct StorageFallbackBanner: View {
+    @Environment(AppEnvironment.self) private var env
+
+    private static let message = LocalizedString(
+        en: "Running in temporary mode — data entered now won't be saved after closing the app.",
+        ar: "وضع مؤقت قيد التشغيل — لن تُحفظ البيانات المُدخلة الآن بعد إغلاق التطبيق.")
+
+    var body: some View {
+        HStack(alignment: .top, spacing: BadanSpace.space2) {
+            Image(systemName: "exclamationmark.triangle")
+                .imageScale(.small)
+                .foregroundStyle(BadanColor.outOfBand)
+                .accessibilityHidden(true)
+            LText(Self.message)
+                .font(.footnote)
+                .foregroundStyle(BadanColor.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, BadanSpace.space4)
+        .padding(.vertical, BadanSpace.space3)
+        .background(BadanColor.surfaceElevated)
     }
 }
 
@@ -59,7 +95,9 @@ struct MainTabView: View {
 
 /// Shown while `AppEnvironment.bootstrap()` seeds/loads. On a slow first run this is the
 /// longest wait in the app, so it carries a calm status caption instead of a bare spinner
-/// (EASE-135, OPT-073, UIUX-069), and offers a way forward if the seed stalls (OPT-071).
+/// (EASE-135, OPT-073, UIUX-069), offers a way forward if the seed stalls (OPT-071), and —
+/// since `bootstrap()` now holds `isReady` at `false` while `bootstrapError` is set (BUG-17) —
+/// shows the same "continue anyway" way forward for a genuine setup failure.
 struct SplashView: View {
     @Environment(AppEnvironment.self) private var env
 
@@ -67,6 +105,11 @@ struct SplashView: View {
         en: "Setting up your data…", ar: "جارٍ إعداد بياناتك…")
     private static let stalledCaption = LocalizedString(
         en: "This is taking longer than usual.", ar: "هذا يستغرق وقتًا أطول من المعتاد.")
+    // BUG-17: calm, wellness-safe wording — nothing about the user's health data was lost; the
+    // one-time setup step itself hit a problem.
+    private static let errorCaption = LocalizedString(
+        en: "Setup ran into a problem. Your device is fine — you can continue.",
+        ar: "واجه الإعداد مشكلة. جهازك بخير — يمكنك المتابعة.")
     private static let continueAction = LocalizedString(en: "Continue anyway", ar: "المتابعة على أي حال")
 
     var body: some View {
@@ -80,10 +123,11 @@ struct SplashView: View {
                 Text("BADAN").font(.system(size: 28, weight: .bold))
                     .foregroundStyle(BadanColor.textPrimary)
                 ProgressView().tint(BadanColor.primary)
-                LText(env.bootstrapStalled ? Self.stalledCaption : Self.statusCaption)
+                LText(caption)
                     .font(.footnote)
                     .foregroundStyle(BadanColor.textSecondary)
-                if env.bootstrapStalled {
+                    .multilineTextAlignment(.center)
+                if env.bootstrapStalled || env.bootstrapError != nil {
                     Button {
                         env.dismissBootstrapStall()
                     } label: {
@@ -93,6 +137,13 @@ struct SplashView: View {
                     .padding(.top, BadanSpace.space2)
                 }
             }
+            .padding(.horizontal, BadanSpace.space4)
         }
+    }
+
+    private var caption: LocalizedString {
+        if env.bootstrapError != nil { return Self.errorCaption }
+        if env.bootstrapStalled { return Self.stalledCaption }
+        return Self.statusCaption
     }
 }

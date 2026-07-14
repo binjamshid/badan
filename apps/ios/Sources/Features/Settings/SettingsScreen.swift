@@ -82,8 +82,18 @@ struct SettingsScreen: View {
             titleVisibility: .visible
         ) {
             Button(env.s(SettingsStrings.purgeConfirmAction), role: .destructive) {
-                env.update { $0.sensitiveModulesEnabled = false }
-                try? env.database.purgeSensitiveNamespace()
+                // EDGE-01: `purgeSensitiveNamespace()` now throws on a genuine delete failure
+                // instead of silently swallowing it — on that path, keep the toggle on (nothing
+                // was actually removed) and say so, rather than claiming success either way.
+                do {
+                    try env.database.purgeSensitiveNamespace()
+                    env.update { $0.sensitiveModulesEnabled = false }
+                    // BUG-05: every medication regimen just vanished with the sensitive DB —
+                    // cancel/reconcile any reminders still scheduled against them.
+                    Task { await env.refreshMedicationReminders() }
+                } catch {
+                    showTransientNotice(SettingsStrings.purgeFailedNotice)
+                }
             }
             Button(env.s(Loc.cancel), role: .cancel) { }
         } message: {
@@ -100,6 +110,11 @@ struct SettingsScreen: View {
             Button(env.s(Loc.cancel), role: .cancel) { }
         } message: {
             Text(env.s(SettingsStrings.resetConfirmMessage))
+        }
+        // BUG-17: `resetError` used to be set with no UI ever reading it — a failed/partial
+        // "Delete all data" looked identical to a successful one.
+        .onChange(of: env.resetError == nil) { _, isNil in
+            if !isNil { showTransientNotice(SettingsStrings.resetFailedNotice) }
         }
     }
 
@@ -887,6 +902,11 @@ private enum SettingsStrings {
         en: "This permanently removes every medication and symptom record from this device.",
         ar: "يزيل هذا نهائياً كل سجلات الأدوية والأعراض من هذا الجهاز.")
     static let purgeConfirmAction = LocalizedString(en: "Turn off & remove", ar: "إيقاف وإزالة")
+    // EDGE-01: shown when the underlying file delete genuinely failed — the toggle stays on in
+    // that case (see the confirmation button above), so this explains why nothing changed.
+    static let purgeFailedNotice = LocalizedString(
+        en: "Couldn't remove sensitive records — sensitive records are still on. Please try again.",
+        ar: "تعذّرت إزالة السجلات الحساسة — ما زالت السجلات الحساسة مفعّلة. حاول مرة أخرى.")
 
     // COMP-09: this used to read "Reset demo data?" / "This restores the sample data set,"
     // which read as if only bundled demo content was affected. `resetAll()` actually drops
@@ -899,6 +919,10 @@ private enum SettingsStrings {
             + "logged yourself — and replaces it with the bundled sample data set. This can't be undone.",
         ar: "يؤدي هذا إلى حذف كل شيء على هذا الجهاز نهائياً — بما في ذلك كل ما سجّلته بنفسك — "
             + "واستبداله بمجموعة البيانات التجريبية المرفقة. لا يمكن التراجع عن هذا.")
+    // BUG-17: `AppEnvironment.resetError` used to be set with nothing ever reading it.
+    static let resetFailedNotice = LocalizedString(
+        en: "Something went wrong while resetting your data. Some of it may be incomplete — try again.",
+        ar: "حدث خطأ أثناء إعادة تعيين بياناتك. قد يكون بعضها غير مكتمل — حاول مرة أخرى.")
 
     static let dataManagementHeader = LocalizedString(en: "Data management", ar: "إدارة البيانات")
 
@@ -917,8 +941,11 @@ private enum SettingsStrings {
         en: "Applied — you'll see the change on Home and other screens.",
         ar: "تم التطبيق — سترى التغيير في الرئيسية وشاشات أخرى.")
 
+    // FIX-04: previously claimed the list order matched Home's screen order — there is no
+    // reorder UI here (and Home's own visibility-honoring is being done by another change in
+    // parallel), so this only ever claimed something true about visibility, never order.
     static let modulesOrderCaption = LocalizedString(
-        en: "Shown in Home screen order.", ar: "تظهر بترتيب الشاشة الرئيسية.")
+        en: "Choose what appears on Home.", ar: "اختر ما يظهر في الشاشة الرئيسية.")
 
     static let unitsInfoAccessibilityLabel = LocalizedString(en: "About units", ar: "حول الوحدات")
     static let unitsExplainerIntro = LocalizedString(
