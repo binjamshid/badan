@@ -10,6 +10,11 @@ import SwiftUI
 struct InsightsScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var vm = InsightsViewModel()
+    /// UX-07: when set (Home's insight-card "Why?" link passes the insight that was actually
+    /// tapped), the feed lands on / visually distinguishes that specific insight instead of
+    /// just opening at the top of the generic feed. `nil` — every other entry point (the tab
+    /// bar itself) — keeps today's behavior unchanged.
+    var focusInsightId: String? = nil
 
     var body: some View {
         Group {
@@ -33,7 +38,7 @@ struct InsightsScreen: View {
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.tabInsights))
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: env.profile) { await vm.load(env) }
+        .task(id: InsightsLoadKey(profile: env.profile, generation: env.dataGeneration)) { await vm.load(env) }
     }
 
     private var emptyScreen: some View {
@@ -49,35 +54,60 @@ struct InsightsScreen: View {
     }
 
     private func loadedScreen(_ data: InsightsData) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: BadanSpace.space5) {
-                if !data.weekly.isEmpty {
-                    InsightsWeeklyCard(changes: data.weekly)
-                }
+        // UX-07: `ScrollViewReader` so a `focusInsightId` passed in from Home can actually land
+        // on that row rather than just opening at the top of the feed.
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: BadanSpace.space5) {
+                    if !data.weekly.isEmpty {
+                        InsightsWeeklyCard(changes: data.weekly)
+                    }
 
-                VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                    SectionHeader(env.s(InsightsLoc.feedTitle))
-                    if data.insights.isEmpty {
-                        InsightsEmptyFeed()
-                    } else {
-                        ForEach(data.insights) { insight in
-                            InsightsFeedCard(
-                                insight: insight,
-                                feedbackFailed: vm.failedFeedbackIds.contains(insight.id)
-                            ) { value in
-                                vm.toggleFeedback(env, id: insight.id, value: value)
+                    VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                        SectionHeader(env.s(InsightsLoc.feedTitle))
+                        if data.insights.isEmpty {
+                            InsightsEmptyFeed()
+                        } else {
+                            ForEach(data.insights) { insight in
+                                InsightsFeedCard(
+                                    insight: insight,
+                                    feedbackFailed: vm.failedFeedbackIds.contains(insight.id),
+                                    isFocused: insight.id == focusInsightId
+                                ) { value in
+                                    vm.toggleFeedback(env, id: insight.id, value: value)
+                                }
+                                .id(insight.id)
                             }
                         }
                     }
-                }
 
-                InsightsFooterNote()
+                    InsightsFooterNote()
+                }
+                .padding(.horizontal, BadanSpace.space4)
+                .padding(.vertical, BadanSpace.space4)
             }
-            .padding(.horizontal, BadanSpace.space4)
-            .padding(.vertical, BadanSpace.space4)
+            .background(BadanColor.background)
+            .onAppear { scrollToFocusedInsight(proxy) }
         }
-        .background(BadanColor.background)
     }
+
+    /// Best-effort — deferred a beat so the just-appeared `ScrollView`'s layout has settled
+    /// before asking it to scroll (an immediate `scrollTo` on first appear is a well-known
+    /// SwiftUI no-op/partial-scroll pitfall). Not finding the row (e.g. it aged out of the
+    /// feed's own limit) is silently a no-op — landing on top of the ordinary feed is still a
+    /// reasonable fallback, never an error state.
+    private func scrollToFocusedInsight(_ proxy: ScrollViewProxy) {
+        guard let focusInsightId else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation { proxy.scrollTo(focusInsightId, anchor: .center) }
+        }
+    }
+}
+
+/// BUG-12/13: the standardized `.task(id:)` identity — see `HomeLoadKey` (`HomeScreen.swift`).
+private struct InsightsLoadKey: Equatable {
+    let profile: CustomizationProfile
+    let generation: Int
 }
 
 // MARK: - Weekly summary ("what changed")
@@ -182,6 +212,10 @@ private struct InsightsFeedCard: View {
     @Environment(AppEnvironment.self) private var env
     let insight: Insight
     let feedbackFailed: Bool
+    /// UX-07: true when this is the specific insight Home's "Why?" link was tapped for. Draws a
+    /// quiet highlight (mirrors `SourcesPriorityNote`'s tinted-border treatment for "this card is
+    /// special") and, at power depth, opens `InsightsWhyDisclosure` pre-expanded.
+    var isFocused: Bool = false
     let onFeedback: (Int) -> Void
 
     var body: some View {
@@ -198,12 +232,16 @@ private struct InsightsFeedCard: View {
                         .foregroundStyle(BadanColor.textSecondary)
                 }
                 if env.depth.showsPowerDetail {
-                    InsightsWhyDisclosure(insight: insight)
+                    InsightsWhyDisclosure(insight: insight, initiallyExpanded: isFocused)
                 } else {
                     InsightsCasualWhyNote(insight: insight)
                 }
             }
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
+                .strokeBorder(isFocused ? BadanColor.primary.opacity(0.5) : .clear, lineWidth: 1.5)
+        )
     }
 
     // The localized interpretation, tappable through to the metric it concerns.
@@ -283,7 +321,15 @@ private struct InsightsFeedCard: View {
 private struct InsightsWhyDisclosure: View {
     @Environment(AppEnvironment.self) private var env
     let insight: Insight
-    @State private var expanded = false
+    @State private var expanded: Bool
+
+    /// UX-07: `initiallyExpanded` lets `InsightsFeedCard` open this pre-expanded for the one
+    /// insight Home's "Why?" link actually pointed at, without changing this view's own
+    /// collapsed-by-default behavior for every other card.
+    init(insight: Insight, initiallyExpanded: Bool = false) {
+        self.insight = insight
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space2) {

@@ -232,6 +232,11 @@ final class FakeHealthStore: HealthStorePort {
         allSessions.filter { $0.end >= range.start && $0.end <= range.end }
     }
 
+    // `deletions(_:)` and `commitPendingAnchors()` are intentionally not overridden: this store
+    // is a fully-regenerated deterministic snapshot with no incremental read cursor and no
+    // delete signal, so `HealthStorePort`'s default no-op/empty implementations (BUG-10,
+    // DATA-08) are already exactly correct here.
+
     // MARK: Deterministic generation helpers
 
     /// Contiguous stage segments tiling [bedtime, wake] with a realistic cycle pattern; the

@@ -199,6 +199,23 @@ enum Schema {
             "CREATE INDEX idx_raw_metric_measured_live ON raw_samples(metric_id, measured_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
             "CREATE INDEX idx_interval_metric_span_live ON interval_records(metric_id, start_at, end_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
             "CREATE INDEX idx_session_kind_start_live ON sessions(kind, start_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
+        ]),
+        // Version 3 (BUG-11c): a sleep session's `kind` (primary vs. nap, a 3-hour asleep-time
+        // threshold) can legitimately flip between two re-ingests of the SAME night once more
+        // of it has synced from HealthKit — see `HealthKitAdapter`'s night-rebuild seam, which
+        // recomputes `kind` from the full current sample set every time a night is touched.
+        // With `kind` inside the sessions identity index, that reclassification's INSERT can't
+        // match the existing row (its stored `kind` differs) and lands as a brand-new duplicate
+        // row instead of updating in place. Forward-only (D-policy: no down-migrations): SQLite
+        // has no `ALTER INDEX`, so this drops the old (kind, external_id, source_id) unique
+        // index and replaces it with one keyed by (external_id, source_id) alone. Every session
+        // still carries `kind` as an ordinary column — only the conflict IDENTITY changes.
+        // `MeasurementRepository.upsertSession`'s `ON CONFLICT` target is updated to match this
+        // exactly (SQLite requires an ON CONFLICT target to exactly match a real unique index,
+        // including its partial predicate).
+        Migration(version: 3, statements: [
+            "DROP INDEX IF EXISTS idx_session_identity;",
+            "CREATE UNIQUE INDEX idx_session_identity ON sessions(external_id, source_id) WHERE external_id IS NOT NULL;",
         ])]
     }
 

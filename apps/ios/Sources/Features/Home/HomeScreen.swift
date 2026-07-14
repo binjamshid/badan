@@ -145,8 +145,17 @@ struct HomeScreen: View {
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.today))
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: env.profile) { await vm.load(env) }
+        .task(id: HomeLoadKey(profile: env.profile, generation: env.dataGeneration)) { await vm.load(env) }
     }
+}
+
+/// BUG-12/13: the standardized `.task(id:)` identity every screen this fix touches uses —
+/// `profile` alone (the old key) misses every write that doesn't also change a settings field
+/// (a HealthKit backfill, a foreground sync, a quick water/weight log). Folding `dataGeneration`
+/// in means any bump forces a reload regardless of what else did or didn't change.
+private struct HomeLoadKey: Equatable {
+    let profile: CustomizationProfile
+    let generation: Int
 }
 
 // MARK: - Empty / loading surfaces (Home-specific, bypassing StatefulContainer's generic ones)
@@ -704,7 +713,11 @@ private struct InsightCard: View {
                     .font(BadanFont.body)
                     .foregroundStyle(BadanColor.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
-                NavigationLink { InsightsScreen() } label: {
+                // UX-07: "Why?" used to push the whole (root-tab) InsightsScreen, landing on a
+                // generic feed rather than the insight the user actually tapped through from.
+                // Passing this insight's id lets Insights scroll to / distinguish that one row
+                // instead.
+                NavigationLink { InsightsScreen(focusInsightId: insight.id) } label: {
                     HStack(spacing: BadanSpace.space1) {
                         Text(Loc.why, language: env.language)
                         Image(systemName: "chevron.forward").imageScale(.small)
@@ -924,6 +937,9 @@ final class HomeViewModel {
     /// reloads immediately since `.task(id: env.profile)` re-invokes `load` with a new task.
     private var lastLoadedAt: Date?
     private var lastLoadedProfile: CustomizationProfile?
+    /// BUG-12/13: a bumped `dataGeneration` always forces a reload even when `profile` hasn't
+    /// changed and the 5s window hasn't elapsed — see `AppEnvironment.dataGeneration`.
+    private var lastLoadedGeneration: Int?
     private static let staleThreshold: TimeInterval = 5
 
     /// Evaluates the staleness guard on the main actor, then (PERF-01) runs the actual queries
@@ -933,12 +949,14 @@ final class HomeViewModel {
     func load(_ env: AppEnvironment) async {
         if case .loaded = state,
            let lastLoadedAt, let lastLoadedProfile, lastLoadedProfile == env.profile,
+           let lastLoadedGeneration, lastLoadedGeneration == env.dataGeneration,
            env.now().timeIntervalSince(lastLoadedAt) < Self.staleThreshold {
             return
         }
 
         let now = env.now()
         let profileSnapshot = env.profile
+        let generationSnapshot = env.dataGeneration
         let inputs = HomeFetchInputs(
             measurements: env.measurements, derivation: env.derivation, catalog: env.catalog,
             logging: env.logging, insightsRepo: env.insightsRepo, registry: env.registry,
@@ -957,6 +975,7 @@ final class HomeViewModel {
         case .loaded(let data):
             lastLoadedAt = now
             lastLoadedProfile = profileSnapshot
+            lastLoadedGeneration = generationSnapshot
             state = .loaded(data)
         case .empty(let hasConnectedSource):
             emptyHasConnectedSource = hasConnectedSource
@@ -1147,16 +1166,18 @@ final class HomeViewModel {
 
         let dayStart = DayAttribution.startOfDay(now, tz: tz)
         let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: tz)
-        let handledByRegimen = Dictionary(
-            grouping: try inputs.logging.adherence(from: dayStart, to: dayEnd), by: \.regimenId
-        ).mapValues(\.count)
+        let handledByRegimen = Dictionary(grouping: try inputs.logging.adherence(from: dayStart, to: dayEnd), by: \.regimenId)
 
         var due = 0
         var firstDueName: String?
         for regimen in active.sorted(by: { $0.name < $1.name }) {
             let scheduled = regimen.schedule.dueTimes(onWeekday: weekday).count
             guard scheduled > 0 else { continue }
-            let handled = handledByRegimen[regimen.id] ?? 0
+            // (EDGE-20) Was `.count` over every raw event for the regimen today — a duplicate
+            // "taken" row for the same slot (e.g. legacy data from before scheduled adherence
+            // ids became deterministic) inflated the handled count past `scheduled`, silently
+            // suppressing a genuinely-due later dose. Count distinct handled *slots* instead.
+            let handled = distinctHandledSlotCount(handledByRegimen[regimen.id] ?? [])
             let regimenDue = max(0, scheduled - handled)
             due += regimenDue
             if regimenDue > 0, firstDueName == nil {
@@ -1164,6 +1185,29 @@ final class HomeViewModel {
             }
         }
         return (due, active.count, firstDueName)
+    }
+
+    /// (EDGE-20) How many distinct scheduled slots a day's adherence events for one regimen
+    /// actually resolve, deduping same-slot duplicates so they can't over-count against
+    /// `dueTimes().count`. Scheduled events (see `MedicationLogView.record`) carry a
+    /// deterministic id of the form `"adh-<regimenId>-<yyyy-MM-dd>-<HH:mm>"` — the trailing
+    /// `-`-delimited component is exactly that slot's canonical "HH:mm" time (the id's other
+    /// dash-delimited pieces are the ULID regimen id, which never itself contains a dash, and
+    /// the day key's own dashes), so parsing it is cheaper and just as correct as re-deriving a
+    /// nearest-slot match the way the medication screen does for display. An id that doesn't
+    /// match that shape (an as-needed dose's ULID) can't collide with a scheduled slot, so it
+    /// counts as its own distinct occurrence via its full id. Kept `internal` (not `private`) so
+    /// `SyncBusFixTests` can exercise it directly as a pure function.
+    nonisolated static func distinctHandledSlotCount(_ events: [AdherenceEvent]) -> Int {
+        var slotKeys = Set<String>()
+        for event in events {
+            if event.id.hasPrefix("adh-"), let time = event.id.split(separator: "-").last {
+                slotKeys.insert(String(time))
+            } else {
+                slotKeys.insert(event.id)
+            }
+        }
+        return slotKeys.count
     }
 
     private nonisolated static func mondayBasedWeekday(_ date: Date, tz: String) -> Int {

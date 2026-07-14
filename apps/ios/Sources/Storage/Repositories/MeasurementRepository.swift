@@ -103,6 +103,14 @@ final class MeasurementRepository {
                      [.text(metricId)]).first.map(Self.readIntervalRecord)
     }
 
+    /// Whether ANY row (including soft-deleted/suppressed) exists at this identity — used to
+    /// distinguish a genuine correction from backfill noise (BUG-10b: a freshly-computed
+    /// zero-valued steps day is only worth writing if a row already exists to correct).
+    func intervalRecordExists(metricId: String, externalId: String) throws -> Bool {
+        try db.query("SELECT 1 FROM interval_records WHERE metric_id = ? AND external_id = ? LIMIT 1;",
+                     [.text(metricId), .text(externalId)]).first != nil
+    }
+
     // MARK: - Session
 
     /// Insert-or-update by identity in a single statement (PERF-127). Stage rows are keyed off
@@ -116,6 +124,20 @@ final class MeasurementRepository {
     /// The `DO UPDATE SET` clause also refreshes `tz_id`/`measured_at`/`measured_tz`/
     /// `recorded_at` (DATA-12) — mirroring `upsertIntervalRecord`'s OPT-170 fix — so a
     /// re-ingest after e.g. a corrected per-sample timezone (DATA-07) isn't silently dropped.
+    ///
+    /// (BUG-11c) The conflict target is `(external_id, source_id)` — deliberately NOT
+    /// `(kind, external_id, source_id)` the way it used to be. `kind` (primary vs. nap, a
+    /// 3-hour asleep-time threshold — see `HealthKitAdapter.sleepPrimaryMinSeconds`) can
+    /// legitimately flip between two re-ingests of the SAME night once more of it has synced
+    /// (`HealthKitAdapter`'s night-rebuild seam recomputes `kind` from the full current sample
+    /// set every time). With `kind` inside the identity, that flip's INSERT couldn't match the
+    /// existing row (its stored `kind` differs from the fresh one) and landed as a brand-new
+    /// duplicate row instead of updating in place — this is the fix. `kind` and `subtype` are
+    /// now in the `DO UPDATE SET` list so a flip actually overwrites the stored value. This
+    /// target MUST match `Migrations.swift`'s `idx_session_identity` (v3) column-for-column,
+    /// including the partial-index predicate — SQLite requires an exact match between an
+    /// `ON CONFLICT` target and a real unique index/constraint, mirroring the exact-match
+    /// requirement already noted on this table's other partial indexes.
     @discardableResult
     func upsertSession(_ s: Session, stages: [SessionStage] = []) throws -> Bool {
         let wonId = try db.query("""
@@ -123,7 +145,8 @@ final class MeasurementRepository {
               (id, kind, subtype, start_at, end_at, tz_id, local_night, detail,
                \(Rows.provColumns), \(Rows.convColumns))
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, \(Rows.provPlaceholders), \(Rows.convPlaceholders))
-            ON CONFLICT(kind, external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
+            ON CONFLICT(external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
+              kind=excluded.kind, subtype=excluded.subtype,
               start_at=excluded.start_at, end_at=excluded.end_at, tz_id=excluded.tz_id,
               local_night=excluded.local_night, detail=excluded.detail,
               measured_at=excluded.measured_at, measured_tz=excluded.measured_tz,
@@ -208,6 +231,29 @@ final class MeasurementRepository {
     func setSuppressed(table: String, recordId: String, by winnerId: String?, updatedAt: Date) throws {
         try db.run("UPDATE \(table) SET suppressed_by = ?, updated_at = ? WHERE id = ?;",
                    [.string(winnerId), .date(updatedAt), .text(recordId)])
+    }
+
+    /// Soft-delete (INVARIANT I3: never hard-delete, mirrors `setSuppressed` above) the row
+    /// matching this upstream identity (BUG-10). `metricId`/`sourceId` are both optional because
+    /// a deletion signal doesn't always carry them — `HKDeletedObject` exposes only the deleted
+    /// sample's own UUID, no metric or source info — but `externalId` alone (a HealthKit-
+    /// generated UUID, globally unique regardless of source) is enough to disambiguate the row
+    /// without them. Idempotent: re-applying the same deletion twice is a no-op (`deleted_at IS
+    /// NULL` in the WHERE clause), matching every other write in this repository.
+    @discardableResult
+    func softDelete(table: String, metricId: String?, externalId: String, sourceId: String?, updatedAt: Date) throws -> Bool {
+        var sql = "UPDATE \(table) SET deleted_at = ?, updated_at = ? WHERE external_id = ? AND deleted_at IS NULL"
+        var params: [SQLValue] = [.date(updatedAt), .date(updatedAt), .text(externalId)]
+        if let metricId {
+            sql += " AND metric_id = ?"
+            params.append(.text(metricId))
+        }
+        if let sourceId {
+            sql += " AND source_id = ?"
+            params.append(.text(sourceId))
+        }
+        sql += ";"
+        return try db.run(sql, params) > 0
     }
 
     func session(id: String) throws -> Session? {

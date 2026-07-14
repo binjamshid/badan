@@ -66,6 +66,11 @@ struct TimelineScreen: View {
         let depthPolicy: DepthPolicy
         let sensitiveModulesEnabled: Bool
         let nutritionEnabled: Bool
+        /// BUG-12/13: folded into this screen's `.task(id:)` key alongside the profile fields
+        /// above — a bumped `dataGeneration` forces the 7-store reassemble to re-run even when
+        /// none of those settings changed (a HealthKit sync, a quick log elsewhere, etc). See
+        /// `AppEnvironment.dataGeneration`.
+        let dataGeneration: Int
     }
 
     private var relevantProfileState: RelevantProfileState {
@@ -75,7 +80,8 @@ struct TimelineScreen: View {
             unitProfile: env.profile.unitProfile,
             depthPolicy: env.profile.depthPolicy,
             sensitiveModulesEnabled: env.profile.sensitiveModulesEnabled,
-            nutritionEnabled: env.profile.nutritionEnabled)
+            nutritionEnabled: env.profile.nutritionEnabled,
+            dataGeneration: env.dataGeneration)
     }
 
     private var searchPrompt: LocalizedString {

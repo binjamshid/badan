@@ -10,6 +10,7 @@ struct BADANApp: App {
     // Retained here because UNUserNotificationCenter holds its delegate weakly; without a strong
     // reference foreground presentation would silently stop working.
     @State private var notificationDelegate = NotificationForegroundDelegate()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -24,6 +25,31 @@ struct BADANApp: App {
                     // from the Settings toggle).
                     await env.refreshMedicationReminders()
                 }
+        }
+        // BUG-02: without this, data goes permanently stale after the one connect-time
+        // backfill — nothing else ever re-ingests. Every return to the foreground (not just
+        // cold launch) is a chance to catch up incrementally. `syncIfStale()` already guards
+        // `isHealthKitConnected` (and the debounce/in-flight check) itself, so the check below
+        // is a cheap redundant short-circuit, not the only thing standing between this and a
+        // needless call — safe either way.
+        //
+        // EDGE-10: `Database.performBackgroundMaintenance()` (WAL checkpoint + PRAGMA optimize)
+        // had no caller — do it opportunistically whenever the app is backgrounded, fire-and-
+        // forget, off the main actor, and never blocking the transition itself.
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .active:
+                if env.isHealthKitConnected {
+                    env.syncIfStale()
+                }
+            case .background:
+                let database = env.database
+                Task.detached(priority: .utility) {
+                    database.performBackgroundMaintenance()
+                }
+            default:
+                break
+            }
         }
     }
 }

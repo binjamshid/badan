@@ -63,6 +63,9 @@ final class BodyViewModel {
     /// re-invokes `load` with a new task.
     private var lastLoadedAt: Date?
     private var lastLoadedProfile: CustomizationProfile?
+    /// BUG-12/13: a bumped `dataGeneration` always forces a reload even when `profile` hasn't
+    /// changed and the 5s window hasn't elapsed — see `AppEnvironment.dataGeneration`.
+    private var lastLoadedGeneration: Int?
     private static let staleThreshold: TimeInterval = 5
 
     /// Evaluates the staleness guard on the main actor, then (PERF-01) runs the actual queries
@@ -71,12 +74,14 @@ final class BodyViewModel {
     func load(_ env: AppEnvironment) async {
         if case .loaded = state,
            let lastLoadedAt, let lastLoadedProfile, lastLoadedProfile == env.profile,
+           let lastLoadedGeneration, lastLoadedGeneration == env.dataGeneration,
            env.now().timeIntervalSince(lastLoadedAt) < Self.staleThreshold {
             return
         }
 
         let now = env.now()
         let profileSnapshot = env.profile
+        let generationSnapshot = env.dataGeneration
         let inputs = BodyFetchInputs(
             registry: env.registry, derivation: env.derivation, measurements: env.measurements, now: now)
 
@@ -90,6 +95,7 @@ final class BodyViewModel {
         case .success(let data):
             lastLoadedAt = now
             lastLoadedProfile = profileSnapshot
+            lastLoadedGeneration = generationSnapshot
             state = .loaded(data)
         case .failure(let error):
             // A genuine store failure, not "no data yet" — the try?-swallowing this replaced
@@ -244,8 +250,16 @@ struct BodyScreen: View {
                 .accessibilityLabel(Text(Loc.search, language: env.language))
             }
         }
-        .task(id: env.profile) { await vm.load(env) }
+        .task(id: BodyLoadKey(profile: env.profile, generation: env.dataGeneration)) { await vm.load(env) }
     }
+}
+
+/// BUG-12/13: the standardized `.task(id:)` identity — see `HomeLoadKey` (`HomeScreen.swift`)
+/// for the rationale; kept as its own file-local type (not shared) since Home and Body don't
+/// otherwise depend on each other.
+private struct BodyLoadKey: Equatable {
+    let profile: CustomizationProfile
+    let generation: Int
 }
 
 // MARK: - Pillar card

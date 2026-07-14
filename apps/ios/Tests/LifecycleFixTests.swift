@@ -120,7 +120,8 @@ final class LifecycleFixTests: XCTestCase {
         // schema not actually recreated (the BUG-03 failure mode).
         XCTAssertNoThrow(try CatalogRepository(db.main).sources())
         let version = try db.main.query("PRAGMA user_version;").first?.int("user_version")
-        XCTAssertEqual(version, 2, "user_version should reflect the fully re-applied schema")
+        let expected = Schema.mainMigrations.map(\.version).max().map(Int64.init)
+        XCTAssertEqual(version, expected, "user_version should reflect the fully re-applied schema")
     }
 
     // MARK: - BUG-04 / profile survives a reset
