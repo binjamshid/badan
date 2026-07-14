@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The single presentation/preferences record (dual-altitude switch, units, language, theme,
 /// dashboard layout) plus metric pins and goals. Stored as a JSON singleton so preference
@@ -10,10 +11,15 @@ final class ProfileRepository {
     // PERF-135: the JSON singleton only ever changes via `save(_:)` in this same process, so
     // once loaded/saved it's safe to serve subsequent `load()` calls (e.g. `resetDemoData`)
     // from memory instead of a guaranteed disk + decode round trip.
-    private var cached: CustomizationProfile?
+    //
+    // BUG-09: `cached` is read from the main actor (e.g. `AppEnvironment.init`'s synchronous
+    // `load()`) and written from `Task.detached` bodies (`AppEnvironment.update`'s background
+    // save, `resetDemoData`'s post-reset save) with no synchronization — a data race on every
+    // settings change. `OSAllocatedUnfairLock` guards every read/write below.
+    private let cachedLock = OSAllocatedUnfairLock<CustomizationProfile?>(initialState: nil)
 
     func load() throws -> CustomizationProfile {
-        if let cached { return cached }
+        if let cached = cachedLock.withLock({ $0 }) { return cached }
         // OPT-155: distinguish "no profile row yet" (expected on first launch) from "a row
         // exists but failed to decode" (e.g. a future incompatible field-type change) — both
         // used to fall through to the same silent full reset with no trace of which happened.
@@ -23,7 +29,7 @@ final class ProfileRepository {
             return fresh
         }
         if let profile = JSONCoding.decode(CustomizationProfile.self, from: row.string("json")) {
-            cached = profile
+            cachedLock.withLock { $0 = profile }
             return profile
         }
         StorageErrorLog.record(SQLiteError.decodeFailed(entity: "CustomizationProfile", reason: "stored row present but failed to decode; resetting to defaults"),
@@ -36,7 +42,7 @@ final class ProfileRepository {
     func save(_ profile: CustomizationProfile) throws {
         try db.run("INSERT OR REPLACE INTO customization_profile (id, json) VALUES (1, ?);",
                    [.text(try JSONCoding.encodeOrThrow(profile))])
-        cached = profile
+        cachedLock.withLock { $0 = profile }
     }
 
     // MARK: - Metric pins

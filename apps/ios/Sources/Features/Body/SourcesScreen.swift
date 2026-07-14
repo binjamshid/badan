@@ -29,9 +29,16 @@ final class SourcesViewModel {
     /// (EASE-196). FEAT-01: previously pointed users to "Settings," which had no connect
     /// control and looped back here — now points at the Connect card this screen itself renders
     /// (`SourcesConnectCard`, shown above the `StatefulContainer` content in every load state).
-    private static let noSourcesYet = LocalizedString(
+    private static let noSourcesYetDisconnected = LocalizedString(
         en: "No sources connected yet. Connect Apple Health above to see your data here.",
         ar: "لا مصادر متصلة بعد. اربط صحة آبل أعلاه لرؤية بياناتك هنا.")
+    /// BUG-12 (partial): the Connect card disappears entirely once `env.isHealthKitConnected`
+    /// flips — "Connect Apple Health above" is simply false at that point (there's nothing
+    /// above to connect), e.g. right after connecting while the backfill is still catching up,
+    /// or for a connected user who genuinely has no HealthKit history yet.
+    private static let noSourcesYetConnected = LocalizedString(
+        en: "Apple Health is connected. Your data will appear here shortly.",
+        ar: "تم ربط صحة آبل. ستظهر بياناتك هنا قريباً.")
 
     func load(_ env: AppEnvironment) {
         do {
@@ -44,7 +51,8 @@ final class SourcesViewModel {
             let stores = grouped.keys.sorted()
 
             if infos.isEmpty && permissions.isEmpty {
-                state = .empty(env.s(Self.noSourcesYet))
+                let copy = env.isHealthKitConnected ? Self.noSourcesYetConnected : Self.noSourcesYetDisconnected
+                state = .empty(env.s(copy))
             } else {
                 state = .loaded(SourcesData(sources: infos, permissionStores: stores, permissionsByStore: grouped))
             }
@@ -187,10 +195,18 @@ private struct SourcesConnectCard: View {
         showUnavailableNotice = false
         Task {
             let granted = await env.connectHealthKit()
-            isConnecting = false
             if granted {
+                // BUG-12 (partial): `connectHealthKit()` returns as soon as authorization is
+                // granted — the actual wipe+backfill keeps running detached. Reloading
+                // immediately used to race that, so this screen almost always redrew while the
+                // backfill was still mid-flight (typically still showing empty). Stay in the
+                // "Connecting…" state until the backfill actually lands (bounded by
+                // `awaitBackfillCompletion`'s own timeout either way) before reloading.
+                _ = await env.awaitBackfillCompletion()
+                isConnecting = false
                 onConnected()
             } else {
+                isConnecting = false
                 showUnavailableNotice = true
             }
         }
