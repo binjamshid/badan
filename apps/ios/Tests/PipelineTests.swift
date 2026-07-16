@@ -31,6 +31,10 @@ final class PipelineTests: XCTestCase {
         HealthDateRange(start: clock.now().addingTimeInterval(-90 * 86_400), end: clock.now())
     }
 
+    private func count(_ table: String) throws -> Int {
+        Int(try db.main.query("SELECT COUNT(*) AS c FROM \(table);").first?.int("c") ?? 0)
+    }
+
     // MARK: - Ingestion + dedup
 
     func testIngestionCreatesSourcesAndSessions() throws {
@@ -85,6 +89,53 @@ final class PipelineTests: XCTestCase {
     }
 
     // MARK: - Derivation
+
+    // MARK: - P2: bounded write batches
+
+    /// `applyIngestBatched` slices every write list with this, so an off-by-one here would drop
+    /// or duplicate rows on a real backfill.
+    func testChunkingCoversEveryElementExactlyOnceAtBoundaries() {
+        for count in [0, 1, 999, 1000, 1001, 2000, 2001] {
+            let input = Array(0..<count)
+            let chunks = input.badanChunked(1000)
+            XCTAssertEqual(chunks.flatMap { $0 }, input,
+                           "chunking \(count) elements must preserve every element and their order")
+            for chunk in chunks {
+                XCTAssertLessThanOrEqual(chunk.count, 1000, "no batch may exceed the bound")
+            }
+        }
+    }
+
+    func testChunkingAnEmptyListProducesNoBatches() {
+        XCTAssertTrue([Int]().badanChunked(1000).isEmpty,
+                      "an empty ingest must open no write transactions at all")
+    }
+
+    /// A zero/negative bound would otherwise loop forever or crash `stride`; ingest must degrade
+    /// to one transaction rather than hang.
+    func testChunkingWithANonPositiveSizeFallsBackToASingleBatch() {
+        XCTAssertEqual([1, 2, 3].badanChunked(0).count, 1)
+        XCTAssertEqual([1, 2, 3].badanChunked(0).flatMap { $0 }, [1, 2, 3])
+    }
+
+    /// The batched write phase must produce exactly what the single-transaction one did: same
+    /// rows, same dedup outcome, and still idempotent on replay (which is what makes an
+    /// interrupted backfill safe — see `IngestionPipeline.ingest`).
+    func testBatchedIngestIsStillIdempotentAcrossManyBatches() throws {
+        let pipeline = makeIngestion()
+        let store = FakeHealthStore(clock: clock, historyDays: 90)
+
+        let first = try pipeline.ingest(from: store, range: range)
+        XCTAssertGreaterThan(first.samples, 0, "sanity: the fixture wrote rows")
+        let sampleCount = try count("raw_samples")
+
+        let second = try pipeline.ingest(from: store, range: range)
+
+        XCTAssertEqual(second.samples, 0, "a replayed batch must upsert, not insert")
+        XCTAssertEqual(try count("raw_samples"), sampleCount,
+                       "P2: re-running an interrupted backfill must not duplicate rows — this is "
+                           + "the property that lets anchors commit only after every batch")
+    }
 
     func testBaselinesComputed() throws {
         let pipeline = makeIngestion()

@@ -52,14 +52,26 @@ final class IngestionPipeline {
         // `HealthStorePort.deletions(_:)`'s doc.
         let deletions = port.deletions(range)
 
-        // Phase 2: one write transaction for every upsert/dedup/rollup decision. `measurements`,
-        // `catalog`, and `reconciliation` all share the same main-DB connection, so wrapping the
-        // whole write body here (rather than committing per row/session/night) turns what used
-        // to be hundreds of implicit WAL commit+fsyncs into one (PERF-02 (audit 2026-07-12)).
-        let summary = try measurements.transaction {
-            try applyIngest(descriptors: descriptors, samples: samples, intervals: intervals,
-                            sessionDTOs: sessionDTOs, deletions: deletions)
-        }
+        // Phase 2: the write transactions. `measurements`, `catalog` and `reconciliation` all
+        // share the same main-DB connection, so batching upserts into a transaction (rather than
+        // committing per row) turns what used to be hundreds of implicit WAL commit+fsyncs into a
+        // handful (PERF-02, audit 2026-07-12).
+        //
+        // (P2) Batched rather than ONE transaction spanning the whole ingest. That single
+        // transaction held the connection's lock for the entire write — and on a first connect
+        // that is 90 days of a dense Apple Watch history, which is where the audit's multi-second
+        // UI stalls came from: `SQLiteConnection` serialises everything through one lock, so
+        // every main-thread read (Home, LogHub, Settings) waited for the whole backfill to
+        // finish. Batching bounds each lock hold to `writeBatchSize` rows while keeping the
+        // commit count small — the middle ground PERF-02 was reaching for.
+        //
+        // Anchors still commit once, after ALL batches (phase 3), which is what makes this safe
+        // to interrupt: a crash between batches leaves the cursor unadvanced, so the next sync
+        // replays the whole range and every upsert is idempotent by upstream identity. Partial
+        // progress is never mistaken for complete progress.
+        let summary = try applyIngestBatched(descriptors: descriptors, samples: samples,
+                                             intervals: intervals, sessionDTOs: sessionDTOs,
+                                             deletions: deletions)
 
         // (DATA-08) Phase 3: only persist the port's read cursor/anchor AFTER the write
         // transaction above has actually committed. Persisting eagerly (the old behavior) only
@@ -74,27 +86,80 @@ final class IngestionPipeline {
 
     // MARK: - Ingest body (runs inside `measurements.transaction` above)
 
-    private func applyIngest(descriptors: [SourceDescriptor], samples: [SampleDTO], intervals: [IntervalDTO],
-                             sessionDTOs: [SessionDTO], deletions: HealthStoreDeletions) throws -> IngestSummary {
+    /// Rows per write transaction (P2).
+    ///
+    /// Large enough that the commit count stays small on a 90-day backfill (PERF-02's concern),
+    /// small enough that no single lock hold is long enough to stall a main-thread read for a
+    /// user-perceptible time. A round number rather than a tuned one — the win here is bounding
+    /// the hold at all, not the exact bound; profile on a real dense history before tuning.
+    private static let writeBatchSize = 2_000
+
+    /// Phase 2, in bounded transactions. See `ingest`'s comment for why this isn't one
+    /// transaction, and for why interrupting it between batches is safe.
+    private func applyIngestBatched(descriptors: [SourceDescriptor], samples: [SampleDTO],
+                                    intervals: [IntervalDTO], sessionDTOs: [SessionDTO],
+                                    deletions: HealthStoreDeletions) throws -> IngestSummary {
         let now = clock.now()
         var summary = IngestSummary()
 
-        // (a) Register sources + devices and build the dedup priority map from descriptors.
-        let priorityBySource = try upsertSourcesAndDevices(descriptors, now: now)
-
-        // (b) Apply deletions surfaced since the last sync (BUG-10a) before writing fresh data,
-        // so a row that was both deleted and (implausibly) re-delivered in the same batch ends
-        // up live rather than stuck soft-deleted.
-        for del in deletions.samples {
-            try measurements.softDelete(table: "raw_samples", metricId: del.metricId,
-                                        externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
+        // (a)+(b) Sources/devices and deletions: bounded by the number of real sources and by
+        // what changed since the last sync, so they stay one small transaction. Deletions are
+        // applied before any fresh write (BUG-10a), so a row both deleted and (implausibly)
+        // re-delivered in the same batch ends up live rather than stuck soft-deleted.
+        let priorityBySource = try measurements.transaction { () -> [String: Int] in
+            let priorities = try upsertSourcesAndDevices(descriptors, now: now)
+            for del in deletions.samples {
+                try measurements.softDelete(table: "raw_samples", metricId: del.metricId,
+                                            externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
+            }
+            for del in deletions.intervals {
+                try measurements.softDelete(table: "interval_records", metricId: del.metricId,
+                                            externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
+            }
+            return priorities
         }
-        for del in deletions.intervals {
-            try measurements.softDelete(table: "interval_records", metricId: del.metricId,
-                                        externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
+
+        // (c) The big one on a first connect: a dense watch history is overwhelmingly raw samples.
+        for batch in samples.badanChunked(Self.writeBatchSize) {
+            try measurements.transaction { summary.samples += try writeSamples(batch, now: now) }
         }
 
-        // (c) Instant readings -> raw_samples (canonicalized, provenance stamped).
+        // (c) Interval aggregates — at most a few per metric per day, but batched on the same
+        // rule so a wide backfill can't grow an unbounded transaction here either.
+        for batch in intervals.badanChunked(Self.writeBatchSize) {
+            try measurements.transaction { summary.intervals += try writeIntervals(batch, now: now) }
+        }
+
+        // (d) Episodes -> sessions (+ stages). Record which nights this run touched.
+        // Invariant this scoping relies on: `range` must be a superset of any night whose
+        // dedup state could need re-evaluation. True today (a fixed 90-day re-ingest always
+        // re-covers every prior night), but re-verify before incremental/delta sync ships,
+        // since a partial-range sync could otherwise skip re-dedup for an untouched night.
+        var affectedNights = Set<String>()
+        for batch in sessionDTOs.badanChunked(Self.writeBatchSize) {
+            try measurements.transaction {
+                let (nights, written) = try writeSessions(batch, now: now)
+                affectedNights.formUnion(nights)
+                summary.sessions += written
+            }
+        }
+
+        // (e)+(f) Dedup each affected night, then rebuild its daily sleep rollups. One
+        // transaction per night: already naturally bounded (one night's sessions), and keeping
+        // each night atomic means a night is never left half-reconciled.
+        let batchId = ULID.newID()
+        for night in affectedNights.sorted() {
+            summary.suppressed += try measurements.transaction {
+                try dedup(night: night, priorityBySource: priorityBySource, batchId: batchId, now: now)
+            }
+        }
+
+        return summary
+    }
+
+    /// (c) Instant readings -> raw_samples (canonicalized, provenance stamped).
+    private func writeSamples(_ samples: ArraySlice<SampleDTO>, now: Date) throws -> Int {
+        var written = 0
         for dto in samples {
             guard let def = registry.definition(dto.metricId) else { continue }
             let (value, flags) = canonicalValue(dto.value, from: dto.unit, canonical: def.canonicalUnit)
@@ -106,10 +171,14 @@ final class IngestionPipeline {
                                                 externalId: dto.externalId, measuredAt: dto.start,
                                                 tz: dto.tz, now: now, qualityFlags: dto.qualityFlags + flags),
                 updatedAt: now, originDeviceId: deviceId)
-            if try measurements.upsertRawSample(sample) { summary.samples += 1 }
+            if try measurements.upsertRawSample(sample) { written += 1 }
         }
+        return written
+    }
 
-        // (c) Normalized aggregates -> interval_records.
+    /// (c) Normalized aggregates -> interval_records.
+    private func writeIntervals(_ intervals: ArraySlice<IntervalDTO>, now: Date) throws -> Int {
+        var written = 0
         for dto in intervals {
             guard let def = registry.definition(dto.metricId) else { continue }
             if dto.metricId == MetricID.steps, dto.value == 0 {
@@ -133,15 +202,17 @@ final class IngestionPipeline {
                                                 externalId: dto.externalId, measuredAt: dto.start,
                                                 tz: dto.tz, now: now, qualityFlags: dto.qualityFlags + flags),
                 updatedAt: now, originDeviceId: deviceId)
-            if try measurements.upsertIntervalRecord(record) { summary.intervals += 1 }
+            if try measurements.upsertIntervalRecord(record) { written += 1 }
         }
+        return written
+    }
 
-        // (d) Episodes -> sessions (+ stages). Record which nights this run touched.
-        // Invariant this scoping relies on: `range` must be a superset of any night whose
-        // dedup state could need re-evaluation. True today (a fixed 90-day re-ingest always
-        // re-covers every prior night), but re-verify before incremental/delta sync ships,
-        // since a partial-range sync could otherwise skip re-dedup for an untouched night.
+    /// (d) Episodes -> sessions (+ stages). Returns the nights this batch touched, so the caller
+    /// can reconcile each of them once after every session has landed.
+    private func writeSessions(_ sessionDTOs: ArraySlice<SessionDTO>,
+                               now: Date) throws -> (nights: Set<String>, written: Int) {
         var affectedNights = Set<String>()
+        var written = 0
         for dto in sessionDTOs {
             let night = DayAttribution.localNight(sessionEnd: dto.end, tz: dto.tz)
             affectedNights.insert(night)
@@ -158,17 +229,9 @@ final class IngestionPipeline {
             let stages = dto.stages.enumerated().map { i, s in
                 SessionStage(sessionId: session.id, seq: i, stage: s.stage, startAt: s.start, endAt: s.end)
             }
-            if try measurements.upsertSession(session, stages: stages) { summary.sessions += 1 }
+            if try measurements.upsertSession(session, stages: stages) { written += 1 }
         }
-
-        // (e)+(f) Dedup each affected night, then rebuild its daily sleep rollups.
-        let batchId = ULID.newID()
-        for night in affectedNights.sorted() {
-            summary.suppressed += try dedup(night: night, priorityBySource: priorityBySource,
-                                            batchId: batchId, now: now)
-        }
-
-        return summary
+        return (affectedNights, written)
     }
 
     // MARK: - Dedup + derived rollups
@@ -365,5 +428,23 @@ final class IngestionPipeline {
             summary[s.stage.rawValue, default: 0] += s.end.timeIntervalSince(s.start)
         }
         return summary
+    }
+}
+
+// MARK: - Batching
+
+extension Array {
+    /// Split into consecutive slices of at most `size` elements, preserving order.
+    ///
+    /// (P2) Used to bound how many rows a single ingest write transaction holds the DB lock for.
+    /// Slices rather than copies: a first-connect backfill can be hundreds of thousands of
+    /// samples, and re-allocating each batch would add avoidable memory pressure to the exact
+    /// path this exists to make lighter. Prefixed `badan` to make clear at the call site that
+    /// this is ours and not a stdlib member.
+    func badanChunked(_ size: Int) -> [ArraySlice<Element>] {
+        guard size > 0, !isEmpty else { return isEmpty ? [] : [self[...]] }
+        return stride(from: 0, to: count, by: size).map { start in
+            self[start..<Swift.min(start + size, count)]
+        }
     }
 }
