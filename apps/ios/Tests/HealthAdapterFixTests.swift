@@ -145,4 +145,104 @@ final class HealthAdapterFixTests: XCTestCase {
                                                 deviceProductType: nil, displayName: "Some Health App")
         XCTAssertEqual(p, 0)
     }
+
+    // MARK: - F1: two clusters in one night must not share an identity
+
+    /// A night-keyed `externalId` plus migration v3's `(external_id, source_id)` identity index
+    /// meant a nap and the night's primary sleep — same source, same night — upserted onto each
+    /// other, so the second cluster written silently replaced the first. Apple Watch tracks naps
+    /// by default, so this destroyed real users' sleep data.
+    private func sleepSession(night: String, startOffsetHours: Double, durationHours: Double,
+                              kind: SessionKind = .sleepPrimary,
+                              sourceId: String = "watch-1") -> SessionDTO {
+        // Night key "2023-11-14" -> that day's 00:00 UTC, so offsets read as hours around it.
+        let nightStart = Date(timeIntervalSince1970: 1_699_920_000)
+        let start = nightStart.addingTimeInterval(startOffsetHours * 3600)
+        return SessionDTO(kind: kind, start: start,
+                          end: start.addingTimeInterval(durationHours * 3600), tz: "UTC",
+                          sourceId: sourceId, externalId: "healthkit-sleep-\(sourceId)-\(night)",
+                          stages: [], timeAsleepSeconds: durationHours * 3600,
+                          timeInBedSeconds: durationHours * 3600)
+    }
+
+    func testTwoClustersInOneNightGetDistinctExternalIds() {
+        let primary = sleepSession(night: "2023-11-14", startOffsetHours: -1, durationHours: 7)
+        let nap = sleepSession(night: "2023-11-14", startOffsetHours: 14, durationHours: 1, kind: .sleepNap)
+
+        let out = HealthKitAdapter.disambiguateWithinNight([primary, nap])
+
+        XCTAssertEqual(Set(out.map(\.externalId)).count, 2,
+                       "F1: a nap and the night's primary sleep must not collide on one identity")
+        XCTAssertEqual(out.count, 2, "no cluster may be dropped by disambiguation")
+    }
+
+    func testFirstClusterKeepsBareNightKeyedIdSoExistingRowsStillUpsert() {
+        let primary = sleepSession(night: "2023-11-14", startOffsetHours: -1, durationHours: 7)
+        let nap = sleepSession(night: "2023-11-14", startOffsetHours: 14, durationHours: 1, kind: .sleepNap)
+
+        let out = HealthKitAdapter.disambiguateWithinNight([nap, primary])
+        let byStart = out.sorted { $0.start < $1.start }
+
+        XCTAssertEqual(byStart[0].externalId, "healthkit-sleep-watch-1-2023-11-14",
+                       "F1: the earliest cluster keeps the legacy bare id so sessions written by "
+                           + "earlier builds keep upserting in place instead of being orphaned")
+        XCTAssertEqual(byStart[1].externalId, "healthkit-sleep-watch-1-2023-11-14-1",
+                       "F1: later clusters are suffixed by their ordinal within the night")
+    }
+
+    func testDisambiguationIsStableAcrossRebuildsRegardlessOfInputOrder() {
+        let primary = sleepSession(night: "2023-11-14", startOffsetHours: -1, durationHours: 7)
+        let napA = sleepSession(night: "2023-11-14", startOffsetHours: 13, durationHours: 1, kind: .sleepNap)
+        let napB = sleepSession(night: "2023-11-14", startOffsetHours: 16, durationHours: 1, kind: .sleepNap)
+
+        func ids(_ sessions: [SessionDTO]) -> [String] {
+            HealthKitAdapter.disambiguateWithinNight(sessions)
+                .sorted { $0.start < $1.start }.map(\.externalId)
+        }
+
+        // `sessionsForNight` re-clusters the whole night every rebuild; HealthKit hands back
+        // samples unsorted, so identity must not depend on the order they arrive in.
+        XCTAssertEqual(ids([primary, napA, napB]), ids([napB, primary, napA]),
+                       "F1: ordinals must depend only on cluster start, not on input order")
+    }
+
+    func testClustersFromDifferentSourcesOnOneNightAreNotOrdinalled() {
+        let watch = sleepSession(night: "2023-11-14", startOffsetHours: -1, durationHours: 7,
+                                 sourceId: "watch-1")
+        let phone = sleepSession(night: "2023-11-14", startOffsetHours: -1, durationHours: 7,
+                                 sourceId: "phone-1")
+
+        let out = HealthKitAdapter.disambiguateWithinNight([watch, phone])
+
+        // Different sources already differ in both `source_id` and the id's embedded source, so
+        // they never collided; suffixing them would gratuitously orphan their existing rows.
+        XCTAssertEqual(Set(out.map(\.externalId)),
+                       ["healthkit-sleep-watch-1-2023-11-14", "healthkit-sleep-phone-1-2023-11-14"],
+                       "F1: two sources reporting the same night must both keep their bare ids")
+    }
+
+    /// The end-to-end shape of the bug: two clusters, one night, one source, written through the
+    /// real repository must leave two rows — not one silently overwritten by the other.
+    func testTwoClustersInOneNightPersistAsTwoSessionRows() throws {
+        let repo = MeasurementRepository(db.main)
+        let dtos = HealthKitAdapter.disambiguateWithinNight([
+            sleepSession(night: "2023-11-14", startOffsetHours: -1, durationHours: 7),
+            sleepSession(night: "2023-11-14", startOffsetHours: 14, durationHours: 1, kind: .sleepNap),
+        ])
+
+        for dto in dtos {
+            _ = try repo.upsertSession(
+                Session(id: ULID.newID(), kind: dto.kind, startAt: dto.start, endAt: dto.end,
+                        tzId: dto.tz, localNight: "2023-11-14",
+                        provenance: Provenance(sourceId: dto.sourceId, ingestionPath: .platformStore,
+                                               externalId: dto.externalId, measuredAt: dto.start,
+                                               measuredTimezone: dto.tz, recordedAt: dto.start,
+                                               ingestedAt: dto.start),
+                        updatedAt: dto.start, originDeviceId: deviceId))
+        }
+
+        let stored = try repo.sessions(kind: .sleepPrimary) + repo.sessions(kind: .sleepNap)
+        XCTAssertEqual(stored.count, 2,
+                       "F1: the nap must not overwrite the night's primary sleep via ON CONFLICT")
+    }
 }

@@ -223,13 +223,9 @@ private enum PrivacyPolicyStrings {
                         + "inside the app.",
                     ar: "إن تغيّر سلوك التطبيق بما يؤثّر في خصوصيتك، فسيُحدَّث هذا النص والتاريخ أعلاه. "
                         + "وتُشحَن السياسة الحالية دائماً داخل التطبيق."),
-                // Placeholder contact — the owner fills in a real address before public release
-                // (mirrors the [CONTACT] line in docs/PRIVACY_POLICY.md). Kept identical in both
-                // languages so it's unmistakably a placeholder, not a real address.
                 LocalizedString(
-                    en: "Contact: the app owner will provide a support email or address here before "
-                        + "public release.",
-                    ar: "التواصل: سيوفّر مالك التطبيق هنا بريد أو عنوان دعم قبل الإصدار العام."),
+                    en: "Contact: support@binjamshid.com",
+                    ar: "التواصل: support@binjamshid.com"),
             ]),
     ]
 }

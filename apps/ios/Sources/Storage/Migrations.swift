@@ -213,7 +213,46 @@ enum Schema {
         // `MeasurementRepository.upsertSession`'s `ON CONFLICT` target is updated to match this
         // exactly (SQLite requires an ON CONFLICT target to exactly match a real unique index,
         // including its partial predicate).
+        //
+        // (F3) The two DELETEs run BEFORE the index and are not optional. `CREATE UNIQUE INDEX`
+        // fails outright if the data already violates it, and the rows it would reject are
+        // exactly the ones this migration exists to stop producing: a v2 install that
+        // reclassified a night (nap <-> primary) holds two sessions sharing
+        // `(external_id, source_id)` and differing only in `kind`. Without the dedup, migration
+        // throws -> `Database.init` throws -> `AppEnvironment` falls back to an ephemeral scratch
+        // DB (`AppEnvironment.makeDefault`), so the users MOST affected by the duplicate bug are
+        // the ones whose real database silently stops being opened, with their data stranded on
+        // disk behind a "temporary mode" banner. The upgrade has to repair the data it's
+        // tightening the constraint on.
+        //
+        // The survivor is the freshest row by `updated_at` (rowid breaking ties, so the choice is
+        // deterministic rather than dependent on scan order): every duplicate describes the SAME
+        // night from the same source, so the newest write is the one carrying the latest
+        // classification and stage set — and any next sync of that night rewrites it in place
+        // anyway now that the identity is stable. Stages are deleted first and scoped by
+        // `session_id`, since `session_stages` has no identity of its own to dedup by and would
+        // otherwise be orphaned.
         Migration(version: 3, statements: [
+            """
+            DELETE FROM session_stages WHERE session_id IN (
+              SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                  PARTITION BY external_id, source_id ORDER BY updated_at DESC, rowid DESC
+                ) AS rn
+                FROM sessions WHERE external_id IS NOT NULL
+              ) WHERE rn > 1
+            );
+            """,
+            """
+            DELETE FROM sessions WHERE id IN (
+              SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                  PARTITION BY external_id, source_id ORDER BY updated_at DESC, rowid DESC
+                ) AS rn
+                FROM sessions WHERE external_id IS NOT NULL
+              ) WHERE rn > 1
+            );
+            """,
             "DROP INDEX IF EXISTS idx_session_identity;",
             "CREATE UNIQUE INDEX idx_session_identity ON sessions(external_id, source_id) WHERE external_id IS NOT NULL;",
         ])]

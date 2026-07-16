@@ -88,7 +88,11 @@ final class Database {
         return try Database(directory: base.appendingPathComponent("BADAN", isDirectory: true))
     }
 
-    private static func migrate(_ conn: SQLiteConnection, _ migrations: [Migration]) throws {
+    /// Internal rather than private (F3) so migration tests can drive a connection to an OLD
+    /// schema version — pass a truncated `migrations` list, write the era-appropriate rows, then
+    /// run the full list to exercise the real upgrade. There is no other way to build a
+    /// dirty-old-database fixture: `init` always migrates straight to the newest version.
+    static func migrate(_ conn: SQLiteConnection, _ migrations: [Migration]) throws {
         let targetVersion = Int64(migrations.map(\.version).max() ?? 0)
         // Fast path (PERF-111): `PRAGMA user_version` is a single integer read from the file
         // header, free compared to a table-existence check + `SELECT MAX(version)` — when it
@@ -188,12 +192,45 @@ final class Database {
     ///
     /// Same ordering discipline as `resetAll` (BUG-03): a single transaction, no interstitial
     /// pragma to reset (there's no schema drop/re-migrate here, just row deletes).
+    ///
+    /// (F2) The three *measurement* tables are purged by `ingestion_path`, not wholesale. They
+    /// hold user-entered rows as well as ingested ones — a quick-logged weight is a `RawSample`
+    /// with `ingestionPath: .manual` in `raw_samples` (`LogHubScreen.logWeight`), not a row in
+    /// some manual-only table — so the old unconditional `DELETE FROM raw_samples` deleted the
+    /// user's own logged weight history the moment they connected Apple Health. That is the exact
+    /// class of loss BUG-01 set out to stop; it just missed that "manual log" and "manual-log
+    /// table" aren't the same set. `.manual` is the only path a human types in
+    /// (`IngestionPath`), so excluding it keeps every ingested/demo/derived row in scope while
+    /// leaving anything the user entered by hand alone.
+    ///
+    /// Both callers want this: `connectHealthKit()` must not charge the user their own logs for
+    /// connecting, and `SeedController.markStartEmpty` only needs the *demo seed* gone — which is
+    /// written through `FakeHealthStore`/`IngestionPipeline` as `.platformStore`, so no demo row
+    /// is `.manual` and none survives the predicate.
     func purgeIngestedData() throws {
-        let tables = ["dedup_decisions", "insights", "baselines", "input_manifests", "derived_values",
-                     "session_stages", "sessions", "interval_records", "raw_samples", "read_anchors",
-                     "source_devices", "sources"]
+        // Tables with no `ingestion_path` column: bookkeeping, catalogs, and BADAN-derived rows,
+        // none of which a user can enter by hand. All are rebuilt by the backfill/derive chain.
+        let ingestedOnlyTables = ["dedup_decisions", "insights", "baselines", "input_manifests",
+                                  "derived_values", "read_anchors", "source_devices", "sources"]
+        // Tables carrying `provenanceCols` (see `Schema`), which mix ingested and manual rows.
+        let measurementTables = ["sessions", "interval_records", "raw_samples"]
+        let manualPath = IngestionPath.manual.rawValue
         try main.transaction {
-            for table in tables { try main.execute("DELETE FROM \"\(table)\";") }
+            for table in ingestedOnlyTables { try main.execute("DELETE FROM \"\(table)\";") }
+            // Ahead of `sessions`, and scoped to the sessions actually being deleted: this table
+            // has no `ingestion_path` of its own, so wiping it wholesale would strip the stages
+            // off any session the predicate below preserves. Nothing writes a `.manual` session
+            // today, which makes this a no-op in practice — but a stage-less orphan session is
+            // the kind of silent corruption that only shows up long after the change that caused
+            // it, so the delete follows the sessions it belongs to rather than assuming.
+            try main.execute("""
+                DELETE FROM session_stages WHERE session_id IN (
+                  SELECT id FROM sessions WHERE ingestion_path != '\(manualPath)'
+                );
+                """)
+            for table in measurementTables {
+                try main.execute("DELETE FROM \"\(table)\" WHERE ingestion_path != '\(manualPath)';")
+            }
         }
         // Reclaim space freed by the deletes above (PERF-114's rationale applies equally here).
         try main.execute("VACUUM;")
