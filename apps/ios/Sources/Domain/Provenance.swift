@@ -28,6 +28,20 @@ public enum QualityFlag: String, Codable, Hashable, Sendable, CaseIterable {
     case estimate
     case tzAssumed
     case lowCoverage
+    /// This row was fabricated by `FakeHealthStore` for the "explore with sample data" mode —
+    /// nobody measured it.
+    ///
+    /// A flag rather than a UI-only banner, because the fabrication has to be legible wherever
+    /// the row travels. Sample rows were exported into a checksummed CSV/JSON bundle attributed
+    /// to a real-looking Apple Watch, with nothing in the file, the manifest, or the database
+    /// saying otherwise — so an export of invented readings was indistinguishable from a
+    /// measured one the moment it left the app, which is precisely where "raw data is not
+    /// paywalled, provenance is preserved" has to hold hardest.
+    ///
+    /// Stamped at the only place fabrication happens (`FakeHealthStore`), so it rides the
+    /// existing `quality_flags` plumbing into the DB, the CSV column, the JSON bundle, the
+    /// manifest's disclosure, and the power-mode chips without any path needing to remember.
+    case sampleData
 }
 
 /// Provenance is embedded, denormalized structure on every health datum's own row

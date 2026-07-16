@@ -55,17 +55,25 @@ public struct ExportManifest: Codable, Hashable, Sendable {
     public var perMetricRowCounts: [String: Int]
     public var checksums: [String: String]
     public var dataQualityNote: String
+    /// How many rows in THIS export were fabricated by sample mode (`QualityFlag.sampleData`).
+    ///
+    /// Counted from the exported rows rather than read off a "demo mode" flag, so it stays true
+    /// for the mixed case — a user who explored with sample data and then connected Apple Health
+    /// has both kinds in one file, and "the app is in demo mode" would answer the wrong question.
+    /// Zero on a purely real export. Defaulted in the initializer so older manifests decode.
+    public var sampleDataRowCount: Int
 
     public init(exportId: String, schemaVersion: String, appVersion: String, platform: String,
                 generatedAt: Date, scope: ExportScope, dateRange: String, displayLanguage: String,
                 unitProfile: String, timezonePolicy: String, dedupPolicy: String,
-                perMetricRowCounts: [String: Int], checksums: [String: String], dataQualityNote: String) {
+                perMetricRowCounts: [String: Int], checksums: [String: String], dataQualityNote: String,
+                sampleDataRowCount: Int = 0) {
         self.exportId = exportId; self.schemaVersion = schemaVersion; self.appVersion = appVersion
         self.platform = platform; self.generatedAt = generatedAt; self.scope = scope
         self.dateRange = dateRange; self.displayLanguage = displayLanguage; self.unitProfile = unitProfile
         self.timezonePolicy = timezonePolicy; self.dedupPolicy = dedupPolicy
         self.perMetricRowCounts = perMetricRowCounts; self.checksums = checksums
-        self.dataQualityNote = dataQualityNote
+        self.dataQualityNote = dataQualityNote; self.sampleDataRowCount = sampleDataRowCount
     }
 }
 
