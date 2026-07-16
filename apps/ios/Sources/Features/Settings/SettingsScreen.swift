@@ -377,6 +377,21 @@ struct SettingsScreen: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    // (F6) iOS caps an app at 64 pending notifications and drops the rest with no
+                    // error, so without this the user's later reminders simply never arrive and
+                    // nothing says why. Only shown when it actually bites.
+                    if env.remindersTruncatedCount > 0 {
+                        HStack(alignment: .top, spacing: BadanSpace.space2) {
+                            Image(systemName: "exclamationmark.circle")
+                                .imageScale(.small)
+                                .foregroundStyle(BadanColor.outOfBand)
+                                .accessibilityHidden(true)
+                            LText(SettingsStrings.remindersCappedNote(env.remindersTruncatedCount))
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
         }
@@ -1022,6 +1037,18 @@ private enum SettingsStrings {
     // every table in both databases first — any medications, symptoms, workouts, nutrition
     // logs or notes the user has entered are gone — and only afterward re-seeds the sample
     // data set, so the copy says both things plainly.
+    /// (F6) Shown only when the OS ceiling actually pushed reminders out of the plan. Says what
+    /// is scheduled and what isn't, without alarm — the nearest reminders do fire, and each
+    /// reschedule rolls the window forward, so this is a real limit rather than a failure.
+    static func remindersCappedNote(_ dropped: Int) -> LocalizedString {
+        LocalizedString(
+            en: "iOS schedules at most \(MedicationReminderPlan.systemPendingLimit) reminders at a "
+                + "time. Your soonest ones are set; \(dropped) further reminder(s) will be "
+                + "scheduled as they come closer.",
+            ar: "يجدول iOS \(MedicationReminderPlan.systemPendingLimit) تذكيراً كحدّ أقصى في المرة "
+                + "الواحدة. أقربها مضبوط الآن، وستُجدوَل \(dropped) تذكيرات أخرى كلما اقترب موعدها.")
+    }
+
     // (EU5) Says the search found nothing — and, crucially, offers the way out. The old blank
     // screen left the query in the field with no visible reason for the emptiness.
     static let searchNoResultsTitle = LocalizedString(en: "No settings match", ar: "لا إعدادات مطابقة")

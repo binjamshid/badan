@@ -285,16 +285,51 @@ final class HealthKitAdapter: HealthStorePort {
               let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
         let deltaResult = runAnchoredQuery(type: type, range: range, platformType: "HKCategoryTypeIdentifierSleepAnalysis")
         let deltaSamples = deltaResult.samples.compactMap { $0 as? HKCategorySample }
-        guard !deltaSamples.isEmpty else { return [] }
 
-        let affectedNights = Set(deltaSamples.map { sample in
+        var affectedNights = Set(deltaSamples.map { sample in
             DayAttribution.localNight(sessionEnd: sample.endDate, tz: measuredTimeZone(for: sample).tz)
         })
+
+        // (F4) A sync can carry deletions and no samples — trim a sleep segment in Health, or
+        // delete a nap outright, and nothing is re-added. The old `guard !deltaSamples.isEmpty`
+        // returned early on exactly that sync, so the stale session survived indefinitely: BADAN
+        // kept showing sleep the user had already removed from Health, which is both wrong and
+        // the opposite of the deletion promise.
+        //
+        // Deletions carry no date (see `HealthStoreDeletions`), so there is no night to derive
+        // from them — that is the limitation documented above. But their COUNT is a signal: if
+        // sleep rows were deleted, rebuild the recent nights and let the full-night re-cluster
+        // notice what is gone. Bounded to `deletionRebuildNights` so this stays a handful of
+        // cheap per-night queries rather than a 90-day rescan, and clamped to the caller's range
+        // so a narrow sync doesn't reach outside it.
+        if !deltaResult.deletedUUIDs.isEmpty {
+            affectedNights.formUnion(recentNights(in: range, count: Self.deletionRebuildNights))
+        }
+
+        guard !affectedNights.isEmpty else { return [] }
+
         var sessions: [SessionDTO] = []
         for night in affectedNights.sorted() {
             sessions += sessionsForNight(night, categoryType: type)
         }
         return sessions
+    }
+
+    /// How many recent nights a deletion-only sleep sync rebuilds (F4). Sleep is edited close to
+    /// when it happened — a week covers retroactive trimming and nap deletion without turning
+    /// every deletion into a full-history rescan.
+    private static let deletionRebuildNights = 7
+
+    /// The last `count` local night keys ending at `range.end`, never starting before
+    /// `range.start`.
+    private func recentNights(in range: HealthDateRange, count: Int) -> Set<String> {
+        var nights: Set<String> = []
+        for offset in 0..<count {
+            let day = DayAttribution.addingDays(-offset, to: range.end, tz: tz)
+            guard day >= range.start else { break }
+            nights.insert(DayAttribution.localDayKey(day, tz: tz))
+        }
+        return nights
     }
 
     /// Re-cluster one local night's sleep from HealthKit's COMPLETE current sample set (not

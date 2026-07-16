@@ -483,12 +483,19 @@ final class AppEnvironment {
         guard profile.notifications.medicationReminders,
               await NotificationScheduler.shared.isAuthorized() else {
             await NotificationScheduler.shared.cancelAllMedicationReminders()
+            remindersTruncatedCount = 0
             return
         }
         let regimens = (try? logging.regimens(activeOnly: true)) ?? []
-        await NotificationScheduler.shared.rescheduleMedicationReminders(
-            regimens: regimens, enabled: true, language: language)
+        remindersTruncatedCount = await NotificationScheduler.shared.rescheduleMedicationReminders(
+            regimens: regimens, enabled: true, language: language, now: now())
     }
+
+    /// (F6) How many medication reminders iOS's 64-pending ceiling pushed out of the current
+    /// plan; 0 in the ordinary case. Surfaced in Settings — the OS drops the overflow with no
+    /// error, so without this the user simply stops being reminded about some of their
+    /// medication and is never told. See `MedicationReminderPlan.capped`.
+    private(set) var remindersTruncatedCount: Int = 0
 
     // MARK: - Presentation mutations (persisted)
 
