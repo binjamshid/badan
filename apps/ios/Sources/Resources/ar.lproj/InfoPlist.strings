@@ -1,0 +1,14 @@
+/* (C9) The Arabic HealthKit permission sheet.
+ *
+ * Without this file the app declared CFBundleLocalizations [en, ar] and translated every string
+ * it draws itself, while the one dialog it does NOT draw — the system's "allow BADAN to read
+ * your health data?" sheet — stayed English. That is the single most trust-sensitive moment in
+ * an app whose whole promise is that your health data stays yours, and an Arabic-first user met
+ * it in a language the rest of the app had already agreed not to use.
+ *
+ * Mirrors the English text exactly, naming the same four read types the code requests
+ * (sleep, heart rate, resting heart rate, steps) and making the same "nothing leaves your phone"
+ * promise — a usage description that over- or under-states the read set is an App Store review
+ * problem as well as an honesty one (COMP-08).
+ */
+"NSHealthShareUsageDescription" = "يقرأ بدن بيانات نومك ونبض قلبك ونبضك أثناء الراحة وخطواتك على جهازك لبناء سجلّك الصحي الشخصي والخاص. ولا يغادر أي شيء هاتفك.";

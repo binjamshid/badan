@@ -1,0 +1,10 @@
+/* (C9) The English baseline for the system HealthKit permission sheet.
+ *
+ * Present alongside ar.lproj even though project.yml's NSHealthShareUsageDescription already
+ * carries this text: once an ar.lproj/InfoPlist.strings exists, the en.lproj counterpart is what
+ * keeps English an explicitly-authored localization rather than an unlocalized fallback that
+ * happens to work. Both files must stay in step with the plist value and with each other —
+ * changing the read set means changing all three, and the App Store review record depends on
+ * this string naming exactly the four types the code actually requests (COMP-08).
+ */
+"NSHealthShareUsageDescription" = "BADAN reads your sleep, heart rate, resting heart rate, and step data on your device to build your personal, private health repository. Nothing leaves your phone.";

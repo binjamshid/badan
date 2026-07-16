@@ -583,7 +583,7 @@ struct OnboardingView: View {
             Text(env.s(label))
                 .font(BadanFont.body.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
-                .foregroundStyle(Self.onPrimary)
+                .foregroundStyle(BadanColor.onPrimary)
                 .background(BadanColor.primary,
                            in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
         }
@@ -609,7 +609,6 @@ struct OnboardingView: View {
 
     /// Foreground for filled primary buttons: white on the light-theme teal, near-black on the
     /// light dark-theme teal — legible in both, since there is no dedicated on-primary token.
-    private static let onPrimary = Color(light: "#FFFFFF", dark: "#08201D")
 
     // UIUX-195: named, onboarding-scoped diameters instead of bare `84`/`44` literals at each
     // call site — onboarding is the app's most visually bespoke screen and the least

@@ -62,6 +62,20 @@ enum BadanColor {
     static let textSecondary = Color(light: "#5C636D", dark: "#9AA1AB")
     static let separator = Color(light: "#E5E5E0", dark: "#252A31")
 
+    /// Label/icon colour ON a `primary` fill — for save buttons, selected chips, and anything
+    /// else tinted `primary`.
+    ///
+    /// (DS1) Not `.white`: `primary`'s dark-mode value is a light teal, so white-on-primary
+    /// measures ~2.07:1 there — well under WCAG AA, and on exactly the controls that commit a
+    /// health record. The dark value is a near-black teal that keeps the brand relationship
+    /// while passing AA.
+    ///
+    /// Android promoted this to a token first (`Tokens.kt`'s `onPrimary`, UIUX-223) while iOS
+    /// kept re-deriving it: the same constant was pasted privately into three screens, a fourth
+    /// carried a slightly different dark value, and six controls still used plain `.white`. This
+    /// is the port of Android's decision — one token, so "what goes on primary?" has one answer.
+    static let onPrimary = Color(light: "#FFFFFF", dark: "#08201D")
+
     // Status — never moralize state. Out-of-band above OR below share ONE amber; direction
     // is carried by icon + text, never by hue alone.
     static let inBand = Color(light: "#2E9E63", dark: "#57C785")

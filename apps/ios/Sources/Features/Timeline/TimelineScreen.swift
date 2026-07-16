@@ -365,7 +365,7 @@ struct TimelineScreen: View {
                 Text("\(type.displayName.resolved(env.language)) (\(env.format.integer(count)))")
                     .font(BadanFont.chip)
             }
-            .foregroundStyle(isOn ? Self.selectedChipForeground : BadanColor.textSecondary)
+            .foregroundStyle(isOn ? BadanColor.onPrimary : BadanColor.textSecondary)
             .padding(.horizontal, BadanSpace.space3)
             .padding(.vertical, BadanSpace.space2)
             .background(
@@ -378,11 +378,6 @@ struct TimelineScreen: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
-
-    /// A hardcoded `.white` selected-chip label fails WCAG AA (~2.07:1) against
-    /// `BadanColor.primary`'s dark-mode fill. Defined locally (rather than as a new
-    /// design-system token) since this file doesn't own `DesignSystem/Tokens.swift`.
-    private static let selectedChipForeground = Color(light: "#FFFFFF", dark: "#0C0E11")
 
     // MARK: - Empty & footer surfaces
 

@@ -211,7 +211,6 @@ private struct SourcesConnectCard: View {
     /// Legible white/near-black on the primary teal in both themes (no shared design-system
     /// token for this yet — every screen with a filled primary button defines its own, matching
     /// `OnboardingView`/`MedicationLogView`).
-    private static let onPrimary = Color(light: "#FFFFFF", dark: "#08201D")
 
     var body: some View {
         BadanCard {
@@ -243,7 +242,7 @@ private struct SourcesConnectCard: View {
                     Text(env.s(isConnecting ? Self.connecting : Self.action))
                         .font(BadanFont.body.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
-                        .foregroundStyle(Self.onPrimary)
+                        .foregroundStyle(BadanColor.onPrimary)
                         .background(BadanColor.primary,
                                    in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
                 }

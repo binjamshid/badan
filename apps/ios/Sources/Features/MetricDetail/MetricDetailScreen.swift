@@ -221,6 +221,13 @@ final class MetricDetailViewModel {
 
 // MARK: - Screen
 
+/// (F5) This screen's `.task(id:)` identity — the same shape as `HomeLoadKey`/`BodyLoadKey`/
+/// `InsightsLoadKey`. See `AppEnvironment.dataGeneration`.
+private struct MetricDetailLoadKey: Equatable {
+    let profile: CustomizationProfile
+    let generation: Int
+}
+
 /// The universal metric detail — one grammar for every metric. Casual shows a hero value, a
 /// status word, a calm chart and a plain explainer; power adds a period selector, a values
 /// table, provenance lineage, a method note and the "how this was worked out" anatomy sheet.
@@ -283,7 +290,15 @@ struct MetricDetailScreen: View {
         }
         // Reload on any profile change (language/units/depth), not just first appearance, so
         // the most data-dense screen in the app never shows stale-language content (OPT-040).
-        .task(id: env.profile) { await vm.load(env, metricId: metricId) }
+        //
+        // (F5) `generation` alongside `profile`, matching HomeLoadKey/BodyLoadKey/
+        // InsightsLoadKey. Keying on `profile` alone missed every write that doesn't touch a
+        // settings field — so a foreground sync landing while a chart was open, or a weight
+        // logged from LogHub, left this screen showing pre-sync data indefinitely. The most
+        // data-dense screen in the app was the last one still not subscribed to the bus.
+        .task(id: MetricDetailLoadKey(profile: env.profile, generation: env.dataGeneration)) {
+            await vm.load(env, metricId: metricId)
+        }
         // Seeds the power period picker from this metric's remembered window (STUB-06a) instead
         // of always starting at the 30-day default on every push.
         .onAppear {
