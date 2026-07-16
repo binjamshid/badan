@@ -2,9 +2,8 @@ package net.albayyan.badan.features.export
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.os.StrictMode
 import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -287,7 +286,11 @@ fun ExportScreen() {
         coroutineScope.launch {
             val outcome = withContext(Dispatchers.IO) {
                 runCatching {
-                    val base = context.externalCacheDir ?: context.cacheDir
+                    // (M3) Internal cache, not external: exports contain the user's health
+                    // records, and on Android 8-10 external cache is readable by any app holding
+                    // READ_EXTERNAL_STORAGE. It is also what `file_paths.xml` scopes the
+                    // FileProvider to, so sharing works precisely because the files are private.
+                    val base = context.cacheDir
                     // Best-effort housekeeping: repeated exports would otherwise accumulate on-disk
                     // folders forever. Never let a pruning failure block the export itself.
                     runCatching {
@@ -1193,18 +1196,33 @@ private fun availableFiles(job: ExportJob): List<File> {
 }
 
 /**
- * Share the export files through the system chooser. This build declares no `FileProvider` (adding
- * one requires manifest/resource changes outside this screen's scope), so the offline export is
- * written under external cache and attached as `file://` uris; the VM policy is relaxed so the
- * targetSdk-36 file-uri-exposure guard doesn't fault a purely on-device share.
+ * Share the export files through the system chooser, as `content://` uris from BADAN's
+ * [androidx.core.content.FileProvider].
+ *
+ * This used to attach `file://` uris and reset the app's global StrictMode VM policy to stop the
+ * resulting `FileUriExposedException`. That silenced the crash without fixing anything: passing a
+ * `file://` uri to another app has not worked since Android 7, so on a real device the chooser
+ * opened, the user picked Gmail or Drive, and nothing arrived — the flagship "your data is yours,
+ * take it with you" feature failed silently, which is the worst way for a trust feature to fail.
+ * The policy reset was also global: one share disabled StrictMode's disk/leak detection for the
+ * whole process, well beyond this screen.
+ *
+ * `FLAG_GRANT_READ_URI_PERMISSION` is what actually gives the target app read access, scoped to
+ * these uris and this share.
  */
 private fun shareFiles(context: Context, files: List<File>) {
     val existing = files.filter { it.exists() }
     if (existing.isEmpty()) return
 
-    StrictMode.setVmPolicy(StrictMode.VmPolicy.Builder().build())
-
-    val uris = ArrayList(existing.map { Uri.fromFile(it) })
+    val authority = "${context.packageName}.fileprovider"
+    val uris = ArrayList(
+        existing.mapNotNull { file ->
+            // A file outside the provider's declared paths throws rather than returning null;
+            // failing one attachment must not take down the whole share.
+            runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull()
+        },
+    )
+    if (uris.isEmpty()) return
     val send = if (uris.size == 1) {
         Intent(Intent.ACTION_SEND).apply {
             type = mimeTypeFor(existing.first())

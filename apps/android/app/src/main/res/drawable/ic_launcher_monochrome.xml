@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed-icon (Android 13+) variant. The system tints this with the user's wallpaper palette and
+  ignores its colours, so the mark is drawn in a single flat colour — the two-tone cream/amber of
+  the full-colour foreground would otherwise collapse into an indistinct blob once retinted.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108"
+    android:tint="#FFFFFF">
+    <path
+        android:pathData="M27.7,33.6 Q54,47.8 80.3,33.6"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4.05"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,54 m-5.1,0 a5.1,5.1 0 1,0 10.2,0 a5.1,5.1 0 1,0 -10.2,0"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4.2" />
+    <path
+        android:pathData="M30.2,66.5 Q54,98.5 77.9,66.5"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4.05"
+        android:strokeLineCap="round" />
+</vector>

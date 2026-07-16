@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher label. Previously `android:label="BADAN"` was hardcoded in the manifest, so the
+  name under the icon could never be localized. The app's own UI is bilingual by construction, and
+  the brand transliterates to a real Arabic word — leaving the home screen English-only was the
+  one surface an Arabic-first product couldn't reach.
+-->
+<resources>
+    <string name="app_name" translatable="true">BADAN</string>
+</resources>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the export FileProvider is allowed to share.
+
+  Scoped to `badan-exports/` inside the app's INTERNAL cache — deliberately not external cache,
+  and deliberately not the whole cache root. Exports contain the user's health records, and on
+  Android 8-10 external cache is readable by any app holding READ_EXTERNAL_STORAGE, so writing
+  them there put a health export on disk for other apps to read. Internal cache is private to
+  BADAN; the provider is the only thing that can hand a reader out, one share at a time.
+-->
+<paths>
+    <cache-path name="badan-exports" path="badan-exports/" />
+</paths>

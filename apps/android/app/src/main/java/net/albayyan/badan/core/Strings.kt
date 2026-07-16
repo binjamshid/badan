@@ -33,7 +33,10 @@ object Loc {
 
     // Home
     val homeGreetingMorning = LocalizedString(en = "Good morning", ar = "صباح الخير")
-    val homeGreetingAfternoon = LocalizedString(en = "Good afternoon", ar = "مساء الخير")
+    // (C4) Afternoon and evening both read "مساء الخير" here, so an Arabic user was greeted
+    // identically from noon to midnight while the English build changed at each. Aligned to iOS's
+    // wording — one of the drifts that comes with hand-porting a string catalog.
+    val homeGreetingAfternoon = LocalizedString(en = "Good afternoon", ar = "طاب مساؤك")
     val homeGreetingEvening = LocalizedString(en = "Good evening", ar = "مساء الخير")
     val readiness = LocalizedString(en = "Readiness", ar = "الجاهزية")
     val lastNight = LocalizedString(en = "Last night", ar = "الليلة الماضية")
