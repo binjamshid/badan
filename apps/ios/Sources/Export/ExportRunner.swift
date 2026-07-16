@@ -238,7 +238,10 @@ final class ExportRunner {
 
         let manifest = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
                                     checksums: checksums, perMetricRowCounts: counts,
-                                    derivedRangeFallbackCount: derivedRangeFallbackCount)
+                                    derivedRangeFallbackCount: derivedRangeFallbackCount,
+                                    sampleDataRowCount: Self.sampleDataRowCount(
+                                        rawSamples: rawSamples, intervalRecords: intervalRecords,
+                                        sessions: sessions))
         let manifestURL = folder.appendingPathComponent("manifest.json")
         try JSONCoding.encoder.encode(manifest).write(to: manifestURL)
 
@@ -272,11 +275,15 @@ final class ExportRunner {
             + derivedValues.count + baselines.count
             + symptoms.count + adherence.count + workouts.count + nutrition.count
 
+        let sampleRows = Self.sampleDataRowCount(rawSamples: rawSamples,
+                                                 intervalRecords: intervalRecords, sessions: sessions)
+
         // A single self-contained file cannot checksum itself, so the embedded manifest carries
         // no checksums; the file-level SHA is recorded on the persisted job below.
         let embedded = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
                                     checksums: [:], perMetricRowCounts: counts,
-                                    derivedRangeFallbackCount: derivedRangeFallbackCount)
+                                    derivedRangeFallbackCount: derivedRangeFallbackCount,
+                                    sampleDataRowCount: sampleRows)
         let bundleData = try JSONBundleWriter().data(
             manifest: embedded, rawSamples: rawSamples, intervalRecords: intervalRecords,
             sessions: sessions, derivedValues: derivedValues, baselines: baselines,
@@ -287,7 +294,8 @@ final class ExportRunner {
         let checksums = ["bundle.json": Self.sha256Hex(bundleData)]
         let persisted = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
                                      checksums: checksums, perMetricRowCounts: counts,
-                                     derivedRangeFallbackCount: derivedRangeFallbackCount)
+                                     derivedRangeFallbackCount: derivedRangeFallbackCount,
+                                     sampleDataRowCount: sampleRows)
         let job = ExportJob(id: exportId, scope: scope, format: .json, status: .completed,
                             manifest: persisted, outputPath: folder.path, rowCount: rowCount,
                             startedAt: startedAt, finishedAt: generatedAt, createdAt: startedAt)
@@ -299,7 +307,8 @@ final class ExportRunner {
 
     private func makeManifest(exportId: String, scope: ExportScope, generatedAt: Date,
                               checksums: [String: String], perMetricRowCounts: [String: Int],
-                              derivedRangeFallbackCount: Int = 0) -> ExportManifest {
+                              derivedRangeFallbackCount: Int = 0,
+                              sampleDataRowCount: Int = 0) -> ExportManifest {
         ExportManifest(
             exportId: exportId,
             schemaVersion: "0.1.0",
@@ -314,8 +323,23 @@ final class ExportRunner {
             dedupPolicy: dedupPolicyNote(scope),
             perMetricRowCounts: perMetricRowCounts,
             checksums: checksums,
-            dataQualityNote: dataQualityNote(derivedRangeFallbackCount: derivedRangeFallbackCount)
+            dataQualityNote: dataQualityNote(derivedRangeFallbackCount: derivedRangeFallbackCount,
+                                             sampleDataRowCount: sampleDataRowCount),
+            sampleDataRowCount: sampleDataRowCount
         )
+    }
+
+    /// How many of the rows about to be written were fabricated by sample mode.
+    ///
+    /// Read off each row's own `.sampleData` quality flag rather than off an app-level demo flag,
+    /// so the manifest describes the FILE rather than the app's current mode — the two disagree
+    /// for anyone who explored with sample data before connecting a real source.
+    private static func sampleDataRowCount(rawSamples: [RawSample], intervalRecords: [IntervalRecord],
+                                           sessions: [Session]) -> Int {
+        func isSample(_ provenance: Provenance) -> Bool { provenance.qualityFlags.contains(.sampleData) }
+        return rawSamples.filter { isSample($0.provenance) }.count
+            + intervalRecords.filter { isSample($0.provenance) }.count
+            + sessions.filter { isSample($0.provenance) }.count
     }
 
     private static let dataQualityNote =
@@ -327,11 +351,25 @@ final class ExportRunner {
     /// export were included via best-effort period-key matching rather than a confirmed in-range
     /// check (OPT-143) — today only reachable if a non-`day:`-keyed derived value is ever
     /// produced, since every derived value currently uses `day:` period keys.
-    private func dataQualityNote(derivedRangeFallbackCount: Int) -> String {
-        guard derivedRangeFallbackCount > 0 else { return Self.dataQualityNote }
-        return Self.dataQualityNote
-            + " \(derivedRangeFallbackCount) derived row(s) were included without date-range "
-            + "verification because their period key could not be parsed as a calendar day."
+    ///
+    /// The sample-data sentence leads when present: a reader who takes one thing from this file
+    /// must take away that some of it was never measured. The count is also machine-readable as
+    /// `sampleDataRowCount`; this is the human-readable half.
+    private func dataQualityNote(derivedRangeFallbackCount: Int, sampleDataRowCount: Int = 0) -> String {
+        var note = ""
+        if sampleDataRowCount > 0 {
+            note += "SAMPLE DATA: \(sampleDataRowCount) row(s) in this export were generated by "
+                + "BADAN's sample/demo mode and were never measured from a real person or device. "
+                + "They are attributed to simulated sources (\"Sample watch (simulated)\" / "
+                + "\"Sample phone (simulated)\") and each carries the quality flag 'sampleData'. "
+                + "Do not treat them as health measurements. "
+        }
+        note += Self.dataQualityNote
+        if derivedRangeFallbackCount > 0 {
+            note += " \(derivedRangeFallbackCount) derived row(s) were included without date-range "
+                + "verification because their period key could not be parsed as a calendar day."
+        }
+        return note
     }
 
     private func dedupPolicyNote(_ scope: ExportScope) -> String {

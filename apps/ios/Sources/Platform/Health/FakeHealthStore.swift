@@ -15,6 +15,9 @@ final class FakeHealthStore: HealthStorePort {
     private static let watchDevice = "watch-0001"
     private static let phoneSource = "src_iphone"
     private static let phoneDevice = "iphone-0001"
+    /// Bundle id for both simulated sources — BADAN's own namespace, never Apple's. See
+    /// `sourceDescriptors`.
+    static let sampleBundleId = "com.badan.sampledata"
 
     // Full history generated once at init; reads just filter by the requested range.
     private let allSessions: [SessionDTO]
@@ -194,6 +197,15 @@ final class FakeHealthStore: HealthStorePort {
             }
         }
 
+        // Every row this type produces is invented, so every row says so (`.sampleData`).
+        // Stamped once here — the single point where fabrication finishes — rather than at the
+        // seven construction sites above, so a metric added to the generator later cannot
+        // silently ship unflagged. Doing it before the cache write means the early-return cache
+        // path is covered too.
+        for i in sessions.indices { sessions[i].qualityFlags.append(.sampleData) }
+        for i in intervals.indices { intervals[i].qualityFlags.append(.sampleData) }
+        for i in samples.indices { samples[i].qualityFlags.append(.sampleData) }
+
         self.allSessions = sessions
         self.allIntervals = intervals
         self.allSamples = samples
@@ -208,14 +220,28 @@ final class FakeHealthStore: HealthStorePort {
 
     func availability() -> HealthAvailability { .available }
 
+    /// The simulated devices behind the sample data.
+    ///
+    /// These deliberately do NOT claim `com.apple.health`, and they say "sample" in the name
+    /// users and exports actually see. They used to be branded plain "Apple Watch"/"iPhone" under
+    /// Apple's real bundle id, which put a fabricated but entirely credible Apple Health
+    /// attribution on every sample row — visible in the provenance sheet, and carried into
+    /// exported CSV/JSON as `source_app`. The in-app banner made the *screen* honest while the
+    /// *data* still claimed a measurement that never happened.
+    ///
+    /// The watch/phone shape (and the priority gap between them) is kept: it's what exercises the
+    /// pipeline's real wearable-beats-phone dedup path, which is the reason two overlapping sleep
+    /// sources exist here at all.
     func sourceDescriptors() -> [SourceDescriptor] {
         [
-            SourceDescriptor(id: Self.watchSource, displayName: "Apple Watch", type: .healthkit,
-                             bundleId: "com.apple.health", deviceId: Self.watchDevice,
-                             deviceName: "Apple Watch", deviceModel: "Watch7,1", priority: 100),
-            SourceDescriptor(id: Self.phoneSource, displayName: "iPhone", type: .healthkit,
-                             bundleId: "com.apple.health", deviceId: Self.phoneDevice,
-                             deviceName: "iPhone", deviceModel: "iPhone16,1", priority: 50),
+            SourceDescriptor(id: Self.watchSource, displayName: "Sample watch (simulated)",
+                             type: .healthkit, bundleId: Self.sampleBundleId, deviceId: Self.watchDevice,
+                             deviceName: "Sample watch (simulated)", deviceModel: "BADAN sample data",
+                             priority: 100),
+            SourceDescriptor(id: Self.phoneSource, displayName: "Sample phone (simulated)",
+                             type: .healthkit, bundleId: Self.sampleBundleId, deviceId: Self.phoneDevice,
+                             deviceName: "Sample phone (simulated)", deviceModel: "BADAN sample data",
+                             priority: 50),
         ]
     }
 
