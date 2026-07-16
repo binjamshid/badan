@@ -54,6 +54,14 @@ final class LifecycleFixTests: XCTestCase {
         Int(try conn.query("SELECT COUNT(*) AS c FROM \(table);").first?.int("c") ?? 0)
     }
 
+    /// Rows in a measurement table that did NOT come from the user's own typing — the set
+    /// `purgeIngestedData` is allowed to delete (F2).
+    private func countIngested(_ table: String, in conn: SQLiteConnection) throws -> Int {
+        Int(try conn.query(
+            "SELECT COUNT(*) AS c FROM \(table) WHERE ingestion_path != '\(IngestionPath.manual.rawValue)';"
+        ).first?.int("c") ?? 0)
+    }
+
     @MainActor
     private func makeEnvironment() -> AppEnvironment {
         AppEnvironment(database: db, clock: clock)
@@ -80,10 +88,18 @@ final class LifecycleFixTests: XCTestCase {
 
         try db.purgeIngestedData()
 
-        // Ingested/derived data is gone.
-        for table in ["sources", "source_devices", "raw_samples", "interval_records", "sessions",
-                      "derived_values", "baselines", "insights", "dedup_decisions", "read_anchors"] {
+        // Ingested/derived data is gone. (F2) `raw_samples`/`interval_records`/`sessions` are
+        // deliberately NOT in this list: they mix ingested rows with the user's own manual ones,
+        // so "empty afterwards" is the wrong assertion for them — see the F2 test below. The
+        // seed writes no manual rows, so their ingested contents still go to zero here; that's
+        // asserted per-path rather than per-table.
+        for table in ["sources", "source_devices", "derived_values", "baselines", "insights",
+                      "dedup_decisions", "read_anchors"] {
             XCTAssertEqual(try count(table, in: db.main), 0, "\(table) should be empty after purgeIngestedData")
+        }
+        for table in ["raw_samples", "interval_records", "sessions"] {
+            XCTAssertEqual(try countIngested(table, in: db.main), 0,
+                           "\(table)'s ingested rows should be gone after purgeIngestedData")
         }
         // Manual logs, the profile, and the sensitive DB are untouched (BUG-01's whole point).
         XCTAssertGreaterThan(try count("workout_entries", in: db.main), 0)
@@ -91,6 +107,56 @@ final class LifecycleFixTests: XCTestCase {
         XCTAssertGreaterThan(try count("note_entries", in: db.main), 0)
         XCTAssertGreaterThan(try count("customization_profile", in: db.main), 0)
         XCTAssertGreaterThan(try count("medication_regimens", in: db.sensitive), 0)
+    }
+
+    // MARK: - F2: a manually logged weight must survive connecting Apple Health
+
+    /// Builds the row `LogHubScreen.logWeight` writes: a `raw_samples` row whose only marker of
+    /// being the user's own is `ingestion_path = 'manual'`.
+    private func manualWeightSample(at measuredAt: Date) -> RawSample {
+        RawSample(id: ULID.newID(), metricId: MetricID.weight, value: 80, unit: "kg",
+                  originalValue: 80, originalUnit: "kg", startAt: measuredAt, tzId: "UTC",
+                  provenance: Provenance(sourceId: deviceId, deviceId: deviceId,
+                                         ingestionPath: .manual, measuredAt: measuredAt,
+                                         measuredTimezone: "UTC", recordedAt: measuredAt,
+                                         ingestedAt: measuredAt),
+                  updatedAt: measuredAt, originDeviceId: deviceId)
+    }
+
+    func testPurgeIngestedDataPreservesManuallyLoggedWeight() throws {
+        let seed = makeSeedController()
+        try seed.seed(asOf: clock.now())
+        _ = try MeasurementRepository(db.main).upsertRawSample(manualWeightSample(at: clock.now()))
+
+        XCTAssertGreaterThan(try countIngested("raw_samples", in: db.main), 0,
+                             "sanity: the seed wrote ingested samples for the purge to remove")
+
+        try db.purgeIngestedData()
+
+        let weights = try MeasurementRepository(db.main).rawSamples(metricId: MetricID.weight)
+        XCTAssertEqual(weights.count, 1,
+                       "F2: quick-logged weight is a raw_sample with ingestion_path 'manual' — "
+                           + "connecting Apple Health must not delete the user's own log")
+        XCTAssertEqual(weights.first?.provenance.ingestionPath, .manual)
+        XCTAssertEqual(try countIngested("raw_samples", in: db.main), 0,
+                       "F2: ingested samples must still be purged — the predicate narrows the "
+                           + "delete, it doesn't skip it")
+    }
+
+    /// The "Start empty" onboarding fork shares this primitive, and its contract is that the demo
+    /// seed is gone. Nothing the seed writes is `.manual` (it goes through `FakeHealthStore` ->
+    /// `IngestionPipeline` as `.platformStore`), so F2's predicate must not leave demo rows behind.
+    func testMarkStartEmptyStillRemovesEveryDemoSeededMeasurement() throws {
+        let seed = makeSeedController()
+        try seed.seed(asOf: clock.now())
+
+        try SeedController.markStartEmpty(database: db)
+
+        for table in ["raw_samples", "interval_records", "sessions"] {
+            XCTAssertEqual(try count(table, in: db.main), 0,
+                           "\(table): no demo-seeded row is manual, so 'start empty' must be "
+                               + "literally empty")
+        }
     }
 
     func testPurgeDemoManualLogsClearsOnlyMainDBManualLogTables() throws {

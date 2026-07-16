@@ -318,7 +318,57 @@ final class HealthKitAdapter: HealthStorePort {
         }
         store.execute(query)
         semaphore.wait()
-        return groupIntoSessions(samples).filter { DayAttribution.localNight(sessionEnd: $0.end, tz: $0.tz) == night }
+        let forThisNight = groupIntoSessions(samples)
+            .filter { DayAttribution.localNight(sessionEnd: $0.end, tz: $0.tz) == night }
+        return Self.disambiguateWithinNight(forThisNight)
+    }
+
+    /// (F1) Give every cluster beyond the first in a given (source, night) a distinct
+    /// `externalId`.
+    ///
+    /// `makeSession` keys identity by night alone, which is right for the redelivery case
+    /// BUG-11a fixed but wrong the moment one source reports more than one cluster for the same
+    /// night — exactly what `groupIntoSessions` is built to emit (naps, or sleep broken by a
+    /// wake gap longer than `sleepClusterGapSeconds`). Since migration v3 dropped `kind` from
+    /// the sessions identity index, those clusters collided on `(external_id, source_id)` and
+    /// the last one written silently overwrote the earlier ones via `ON CONFLICT DO UPDATE` —
+    /// a nap could erase the night's primary sleep. Apple Watch tracks naps by default, so this
+    /// reached ordinary users.
+    ///
+    /// The disambiguator is the cluster's ordinal by start within the night rather than its
+    /// start instant: a cluster's start moves earlier as more of a night syncs (the case
+    /// BUG-11a's comment describes), which would make an instant-keyed id insert a duplicate
+    /// instead of updating in place, whereas the ordinal is stable because `sessionsForNight`
+    /// always re-clusters the night's COMPLETE current sample set. It is assigned here — after
+    /// the caller's night filter — and not inside `groupIntoSessions`, because that query window
+    /// deliberately over-fetches adjacent nights; counting clusters that are about to be
+    /// filtered out would make the ordinals depend on neighbouring nights' data.
+    ///
+    /// The first cluster keeps the bare night-keyed id it has always had, so sessions already
+    /// stored by earlier builds keep upserting in place instead of being orphaned next to a
+    /// newly-suffixed row. If a night's cluster ordering later changes (HealthKit delivers an
+    /// earlier nap), rows re-shuffle across ids but no cluster is lost: the full-night rebuild
+    /// rewrites all of them together.
+    ///
+    /// Kept a static pure function (and internal rather than private) for the same reason
+    /// `sourcePriority` is: everything around it needs a live `HKHealthStore`, so this is the
+    /// only seam at which the clustering identity rule can be unit-tested at all.
+    static func disambiguateWithinNight(_ sessions: [SessionDTO]) -> [SessionDTO] {
+        var out: [SessionDTO] = []
+        for (_, group) in Dictionary(grouping: sessions, by: { $0.externalId }) {
+            // Ties broken by end then stage count so the ordering is total and deterministic
+            // across rebuilds; two clusters from one source can't really share a start instant,
+            // but an unstable sort here would silently churn identities if they did.
+            let ordered = group.sorted {
+                ($0.start, $0.end, $0.stages.count) < ($1.start, $1.end, $1.stages.count)
+            }
+            for (ordinal, session) in ordered.enumerated() {
+                var session = session
+                if ordinal > 0 { session.externalId += "-\(ordinal)" }
+                out.append(session)
+            }
+        }
+        return out
     }
 
     // MARK: - Steps (HKStatisticsCollectionQuery — no per-sample anchor)
@@ -440,7 +490,13 @@ final class HealthKitAdapter: HealthStorePort {
         // mirrors `FakeHealthStore`'s existing day-keyed scheme (`"watch-sleep-<dayKey>"`) and,
         // combined with `sessionsForNight`'s full-night rebuild and the migration removing
         // `kind` from the sessions identity index (see `Migrations.swift` v3), means a
-        // redelivered/reclassified night always upserts as exactly one row.
+        // redelivered/reclassified cluster always upserts in place rather than duplicating.
+        //
+        // (F1) This id is the night-level BASE only, and is deliberately not unique on its own:
+        // one source can report several clusters for one night (naps). `sessionsForNight` runs
+        // every cluster through `disambiguateWithinNight`, which suffixes all but the first, so
+        // nothing reaches `MeasurementRepository.upsertSession` sharing an identity. Do not
+        // treat the value built here as final.
         let night = DayAttribution.localNight(sessionEnd: end, tz: tzId)
         return SessionDTO(kind: kind, start: start, end: end, tz: tzId,
                           sourceId: sourceId, deviceId: deviceId,
