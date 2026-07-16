@@ -73,9 +73,11 @@ import net.albayyan.badan.domain.UnitProfileMode
  * re-skins the whole app instantly (language flips RTL, theme flips the colour scheme, depth
  * reveals/hides power affordances). Same one model, presented at two altitudes. Faithful port of
  * the iOS `SettingsScreen`: appearance, language + Arabic numerals, detail level, units (power
- * only), home modules, notifications, the sensitive-records gate (turning it off routes through an
- * honest confirm + a real file purge), the data & privacy note with links to Sources and Export,
- * and a reset. A tab screen that owns its own header (there is no shared top bar for tabs).
+ * only), home modules, the sensitive-records gate (turning it off routes through an honest
+ * confirm + a real file purge), the data & privacy note with links to Sources and Export, and
+ * "Delete all data". A tab screen that owns its own header (there is no shared top bar for tabs).
+ *
+ * Notifications are absent by design until delivery exists — see [NotificationsSection].
  */
 @Composable
 fun SettingsScreen() {
@@ -108,7 +110,7 @@ fun SettingsScreen() {
             UnitsSection()
         }
         ModulesSection()
-        NotificationsSection()
+        // Notifications are deliberately not shown on Android — see [NotificationsSection].
         SensitiveSection(onRequestPurge = { showPurgeConfirm = true })
         PrivacySection()
         DataManagementSection(onRequestReset = { showResetConfirm = true })
@@ -131,8 +133,8 @@ fun SettingsScreen() {
     if (showResetConfirm) {
         ConfirmDialog(
             title = env.s(SettingsStrings.resetConfirmTitle),
-            message = env.s(SettingsStrings.resetConfirmMessage),
-            confirmLabel = env.s(Loc.resetDemo),
+            message = env.s(SettingsStrings.resetConfirmMessage(env.isHealthConnected)),
+            confirmLabel = env.s(Loc.deleteAllData),
             onConfirm = {
                 showResetConfirm = false
                 scope.launch { env.resetDemoData() }
@@ -238,6 +240,23 @@ private fun ModulesSection() {
 
 // MARK: - Notifications
 
+/**
+ * Not called today — see the call site in [SettingsScreen].
+ *
+ * All four of these toggles were wired to nothing. Android has no notification delivery
+ * whatsoever: no scheduler, no channel, no `POST_NOTIFICATIONS` permission, no receiver — a
+ * repo-wide search for any of them returns nothing. Each switch persisted a boolean no code
+ * reads, under a hint promising "nudges at the times you've scheduled". A user could enable
+ * medication reminders, believe their medication would be remembered for them, and never be
+ * told otherwise. That is the most harmful shape a dead control can take in a health app.
+ *
+ * Hidden rather than deleted, following the pattern iOS's `notificationsSection` already
+ * demonstrates for its own three unbuilt toggles: the profile fields stay, the UI makes no
+ * promise the app cannot keep, and this composable is ready for the day a real scheduler exists.
+ * Unhide it only alongside actual delivery — starting with medication reminders, which is the
+ * one iOS ships.
+ */
+@Suppress("UnusedPrivateMember")
 @Composable
 private fun NotificationsSection() {
     val env = LocalAppEnvironment.current
@@ -394,7 +413,7 @@ private fun DataManagementSection(onRequestReset: () -> Unit) {
                     modifier = Modifier.size(22.dp),
                 )
                 Text(
-                    text = env.s(Loc.resetDemo),
+                    text = env.s(Loc.deleteAllData),
                     style = BadanType.body,
                     color = colors.textPrimary,
                     modifier = Modifier.weight(1f),
@@ -703,11 +722,37 @@ private object SettingsStrings {
     )
     val purgeConfirmAction = LocalizedString(en = "Turn off & remove", ar = "إيقاف وإزالة")
 
-    val resetConfirmTitle = LocalizedString(en = "Reset demo data?", ar = "إعادة تعيين بيانات العرض؟")
-    val resetConfirmMessage = LocalizedString(
-        en = "This restores the sample data set on this device.",
-        ar = "يعيد هذا مجموعة البيانات التجريبية على هذا الجهاز.",
-    )
+    // (C1) This read "Reset demo data?" / "This restores the sample data set on this device." —
+    // which told the user nothing of theirs was at stake. `AppEnvironment.resetDemoData` calls
+    // `Database.resetAll()`, which drops every table in BOTH databases first: any medications,
+    // symptoms, workouts, nutrition entries or notes they logged are permanently gone, and only
+    // afterwards is the sample set re-seeded. A user reading the old copy had every reason to tap
+    // it, believing it only touched demo content. iOS renamed this in COMP-09; Android kept the
+    // pre-fix wording. This is that port, plus iOS's connected-user branch (C3).
+    val resetConfirmTitle = LocalizedString(en = "Delete all data?", ar = "حذف جميع البيانات؟")
+
+    fun resetConfirmMessage(connected: Boolean): LocalizedString {
+        val deletes = LocalizedString(
+            en = "This permanently deletes everything on this device — including anything you've " +
+                "logged yourself.",
+            ar = "يؤدي هذا إلى حذف كل شيء على هذا الجهاز نهائياً — بما في ذلك كل ما سجّلته بنفسك.",
+        )
+        val after = if (connected) {
+            LocalizedString(
+                en = " Your measurements are then read again from Health Connect. Anything Health " +
+                    "Connect doesn't have — your own logs — won't come back.",
+                ar = " ثم تُقرأ قياساتك مجدداً من Health Connect. أما ما ليس لديه — أي سجلاتك " +
+                    "الخاصة — فلن يعود.",
+            )
+        } else {
+            LocalizedString(
+                en = " It's then replaced with the bundled sample data set.",
+                ar = " ثم يُستبدل بمجموعة البيانات التجريبية المرفقة.",
+            )
+        }
+        val undo = LocalizedString(en = " This can't be undone.", ar = " لا يمكن التراجع عن هذا.")
+        return LocalizedString(en = deletes.en + after.en + undo.en, ar = deletes.ar + after.ar + undo.ar)
+    }
     val resetHint = LocalizedString(
         en = "Replaces current data on this device with the sample set.",
         ar = "يستبدل البيانات الحالية على هذا الجهاز بمجموعة البيانات التجريبية.",

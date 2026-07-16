@@ -40,7 +40,19 @@ enum class QualityFlag(val code: String) {
     @SerialName("provisionalBaseline") PROVISIONAL_BASELINE("provisionalBaseline"),
     @SerialName("estimate") ESTIMATE("estimate"),
     @SerialName("tzAssumed") TZ_ASSUMED("tzAssumed"),
-    @SerialName("lowCoverage") LOW_COVERAGE("lowCoverage");
+    @SerialName("lowCoverage") LOW_COVERAGE("lowCoverage"),
+
+    /**
+     * This row was fabricated by [net.albayyan.badan.platform.health.FakeHealthStore] for sample
+     * mode — nobody measured it.
+     *
+     * A flag rather than a UI-only banner, because the fabrication has to be legible wherever the
+     * row travels: the database, the CSV column, the JSON bundle, the export manifest, and the
+     * power-mode provenance chips. Mirrors iOS's `QualityFlag.sampleData`, and the wire code
+     * ("sampleData") must stay identical to it — the two apps share one export contract, and a
+     * row that reads as sample data on one platform must not read as a measurement on the other.
+     */
+    @SerialName("sampleData") SAMPLE_DATA("sampleData");
 
     companion object {
         fun fromCode(code: String?): QualityFlag = entries.firstOrNull { it.code == code } ?: ESTIMATE

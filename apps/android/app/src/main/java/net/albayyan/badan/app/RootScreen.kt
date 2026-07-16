@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import net.albayyan.badan.core.Loc
 import net.albayyan.badan.designsystem.BadanTheme
+import net.albayyan.badan.designsystem.components.SampleDataBanner
 import net.albayyan.badan.features.body.BodyScreen
 import net.albayyan.badan.features.body.SourcesScreen
 import net.albayyan.badan.features.export.ExportScreen
@@ -95,20 +96,28 @@ private fun MainShell() {
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { index, tab ->
-                    val selected = detail == null && nav.selectedTab == index
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = { nav.detailStack.clear(); nav.selectTab(index) },
-                        icon = {
-                            Icon(
-                                if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                contentDescription = env.s(tab.label),
-                            )
-                        },
-                        label = { Text(env.s(tab.label)) },
-                    )
+            // The banner sits directly above the navigation bar, inside `bottomBar`, so the
+            // Scaffold reserves space for it and it never floats over tab content — the same
+            // placement decision iOS makes with `safeAreaInset(edge: .bottom)` on its TabView.
+            // Column so it applies to every tab at once: sample data is a fact about the whole
+            // app's state, not about one screen.
+            Column {
+                if (env.isDemoDataActive) SampleDataBanner(language = env.language)
+                NavigationBar {
+                    tabs.forEachIndexed { index, tab ->
+                        val selected = detail == null && nav.selectedTab == index
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = { nav.detailStack.clear(); nav.selectTab(index) },
+                            icon = {
+                                Icon(
+                                    if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                    contentDescription = env.s(tab.label),
+                                )
+                            },
+                            label = { Text(env.s(tab.label)) },
+                        )
+                    }
                 }
             }
         }
