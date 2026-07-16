@@ -26,7 +26,8 @@ private enum SettingsSearchKeywords {
                                    "meds", "nutrition", "timeline", "وحدات الشاشة"]
     static let notifications = ["notifications", "reminders", "digest", "morning", "إشعارات", "تذكيرات"]
     static let sensitive = ["sensitive", "medication", "symptom", "حساسة", "أدوية", "أعراض"]
-    static let privacy = ["privacy", "policy", "export", "sources", "خصوصية", "سياسة", "تصدير", "مصادر"]
+    static let privacy = ["privacy", "policy", "export", "sources", "diagnostics", "support", "debug",
+                          "خصوصية", "سياسة", "تصدير", "مصادر", "تشخيص", "دعم"]
     static let dataManagement = ["reset", "delete", "demo", "data management", "إعادة تعيين", "حذف", "إدارة البيانات"]
     static let resources = ["about", "version", "what's new", "resources", "حول", "الإصدار", "الموارد"]
 
@@ -521,6 +522,14 @@ struct SettingsScreen: View {
                     NavigationLink { PrivacyPolicyScreen() } label: {
                         SettingsNavRowLabel(icon: "lock.doc",
                                             title: SettingsStrings.privacyPolicyTitle)
+                    }
+                    .buttonStyle(.plain)
+                    settingsDivider
+                    // (G2) The support surface a local-first app needs: no crash SDK means no
+                    // other way to learn anything about a beta user's install.
+                    NavigationLink { DiagnosticsScreen() } label: {
+                        SettingsNavRowLabel(icon: "stethoscope",
+                                            title: SettingsStrings.diagnosticsTitle)
                     }
                     .buttonStyle(.plain)
                 }
@@ -1051,6 +1060,7 @@ private enum SettingsStrings {
 
     // (EU5) Says the search found nothing — and, crucially, offers the way out. The old blank
     // screen left the query in the field with no visible reason for the emptiness.
+    static let diagnosticsTitle = LocalizedString(en: "Diagnostics", ar: "التشخيص")
     static let searchNoResultsTitle = LocalizedString(en: "No settings match", ar: "لا إعدادات مطابقة")
     static let searchNoResultsBody = LocalizedString(
         en: "Try a different word, or clear the search to see everything.",

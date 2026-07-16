@@ -96,7 +96,11 @@ final class AppEnvironment {
     private var backfillTask: Task<Error?, Never>?
     /// BUG-02: when the most recent foreground `syncIfStale()` last actually ran (started, not
     /// finished) — `nil` until the first one fires. Read/written only on the main actor.
-    private var lastSyncAt: Date?
+    ///
+    /// Readable (not private) so Diagnostics can show it: "when did this app last try to sync?"
+    /// is the first question any support conversation starts with, and until now nothing in the
+    /// app could answer it.
+    private(set) var lastSyncAt: Date?
     /// BUG-02: true from the moment `syncIfStale()` dispatches its detached task until that task
     /// (and anything it was chained behind) finishes, so a second `.active` transition arriving
     /// before the first sync lands is a no-op rather than a second overlapping ingest.
