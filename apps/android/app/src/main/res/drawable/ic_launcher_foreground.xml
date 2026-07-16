@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Noor mark: two cream arcs around a ring of light — the same symbol as the iOS default app
+  icon (`AppIcon.appiconset`), redrawn as a vector for Android's adaptive icon.
+
+  Geometry is the iOS artwork's proportions scaled into the adaptive-icon safe zone: launchers
+  mask this to a circle, squircle or rounded square of their choosing, and only the central 72dp
+  of the 108dp canvas is guaranteed to survive every mask. The art is inset to ~80% so no arc tip
+  is clipped on a circular launcher.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Upper arc -->
+    <path
+        android:pathData="M27.7,33.6 Q54,47.8 80.3,33.6"
+        android:strokeColor="#F7F1DE"
+        android:strokeWidth="4.05"
+        android:strokeLineCap="round" />
+
+    <!-- Ring of light: a stroked circle, so the teal background shows through the centre exactly
+         as it does on iOS. -->
+    <path
+        android:pathData="M54,54 m-5.1,0 a5.1,5.1 0 1,0 10.2,0 a5.1,5.1 0 1,0 -10.2,0"
+        android:strokeColor="#F2D9A0"
+        android:strokeWidth="4.2" />
+
+    <!-- Lower arc -->
+    <path
+        android:pathData="M30.2,66.5 Q54,98.5 77.9,66.5"
+        android:strokeColor="#F7F1DE"
+        android:strokeWidth="4.05"
+        android:strokeLineCap="round" />
+</vector>

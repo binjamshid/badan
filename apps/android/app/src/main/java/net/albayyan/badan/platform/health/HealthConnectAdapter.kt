@@ -1,6 +1,7 @@
 package net.albayyan.badan.platform.health
 
 import android.content.Context
+import android.os.Build
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
@@ -50,10 +51,27 @@ class HealthConnectAdapter(private val context: Context) : HealthStorePort {
 
     private val tz: String get() = TimeZone.getDefault().id
 
+    /**
+     * Map Health Connect's SDK status onto BADAN's three states.
+     *
+     * `SDK_UNAVAILABLE` used to fall into `else -> unsupported`, which told a large share of real
+     * users their phone couldn't do this at all. It usually means the opposite: below Android 14
+     * Health Connect is a separate Play app, so "unavailable" is simply "not installed yet" — one
+     * install away, and the UI already has a `notInstalled` branch that offers exactly that. Only
+     * on Android 14+, where Health Connect ships as part of the platform, does `SDK_UNAVAILABLE`
+     * genuinely mean this device cannot support it (e.g. an Android Go or otherwise stripped
+     * build), and there is nothing to install.
+     */
     override fun availability(): HealthAvailability =
         when (HealthConnectClient.getSdkStatus(context)) {
             HealthConnectClient.SDK_AVAILABLE -> HealthAvailability.available
             HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> HealthAvailability.notInstalled
+            HealthConnectClient.SDK_UNAVAILABLE ->
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    HealthAvailability.notInstalled
+                } else {
+                    HealthAvailability.unsupported
+                }
             else -> HealthAvailability.unsupported
         }
 

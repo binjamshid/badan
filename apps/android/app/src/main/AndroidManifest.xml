@@ -22,14 +22,16 @@
 
     <application
         android:allowBackup="false"
-        android:label="BADAN"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.BADAN">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="BADAN"
+            android:label="@string/app_name"
             android:theme="@style/Theme.BADAN">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -40,6 +42,24 @@
                 <action android:name="androidx.health.connect.action.SHOW_PERMISSIONS_RATIONALE" />
             </intent-filter>
         </activity>
+
+        <!--
+          Exports are shared as content:// uris through this provider. Previously they were
+          written to external cache and attached as file:// uris, with the app's global StrictMode
+          VM policy reset to stop the resulting FileUriExposedException — which merely silenced
+          the crash: most share targets on Android 11+ still receive a uri they cannot read, so
+          the chooser opened and then silently delivered nothing. `grantUriPermissions` is what
+          actually hands the receiving app read access, scoped to the one share.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Health Connect permissions rationale (Android 14+). -->
         <activity-alias
