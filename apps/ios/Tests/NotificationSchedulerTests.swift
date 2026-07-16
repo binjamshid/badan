@@ -127,4 +127,76 @@ final class NotificationSchedulerTests: XCTestCase {
             XCTAssertFalse(text.contains("}"))
         }
     }
+
+    // MARK: - F6: the 64-pending ceiling
+
+    /// iOS keeps at most 64 pending requests and silently drops the rest — in insertion order,
+    /// not by time — so a user with several regimens could stop being reminded about their
+    /// evening medication with nothing anywhere saying so.
+    private func manyRegimens(count: Int, timesPerDay: Int) -> [MedicationRegimen] {
+        (0..<count).map { i in
+            let times = (0..<timesPerDay).map { t in String(format: "%02d:00", (t * 2) % 24) }
+            return regimen(id: "r\(i)", schedule: .daily(times: times))
+        }
+    }
+
+    func testPlanUnderTheLimitIsNotTruncated() {
+        let plan = MedicationReminderPlan.build(regimens: manyRegimens(count: 2, timesPerDay: 3),
+                                                enabled: true, language: .en)
+        let (kept, dropped) = MedicationReminderPlan.capped(plan, now: now, calendar: .current)
+        XCTAssertEqual(dropped, 0)
+        XCTAssertEqual(kept.count, plan.count, "a plan within the ceiling must pass through untouched")
+    }
+
+    func testPlanOverTheLimitIsCappedToTheSystemLimit() {
+        // 5 regimens x 3 times x 7 weekly slots is the audit's example; daily times are enough to
+        // exceed 64 here.
+        let regimens = (0..<10).map { i in
+            regimen(id: "r\(i)", schedule: .weekly(days: [1, 2, 3, 4, 5, 6, 7], times: ["08:00", "20:00"]))
+        }
+        let plan = MedicationReminderPlan.build(regimens: regimens, enabled: true, language: .en)
+        XCTAssertGreaterThan(plan.count, MedicationReminderPlan.systemPendingLimit,
+                             "sanity: this fixture must actually exceed the ceiling")
+
+        let (kept, dropped) = MedicationReminderPlan.capped(plan, now: now, calendar: .current)
+
+        XCTAssertEqual(kept.count, MedicationReminderPlan.systemPendingLimit,
+                       "F6: never schedule more than the OS will hold")
+        XCTAssertEqual(dropped, plan.count - MedicationReminderPlan.systemPendingLimit,
+                       "F6: the caller must be told how many were dropped, so the user can be")
+    }
+
+    func testCapKeepsTheSoonestRemindersNotArbitraryOnes() {
+        let calendar = Calendar.current
+        let regimens = (0..<10).map { i in
+            regimen(id: "r\(i)", schedule: .weekly(days: [1, 2, 3, 4, 5, 6, 7], times: ["08:00", "20:00"]))
+        }
+        let plan = MedicationReminderPlan.build(regimens: regimens, enabled: true, language: .en)
+        let (kept, _) = MedicationReminderPlan.capped(plan, now: now, calendar: calendar)
+
+        let keptIds = Set(kept.map(\.identifier))
+        let droppedItems = plan.filter { !keptIds.contains($0.identifier) }
+        let latestKept = kept.compactMap {
+            MedicationReminderPlan.nextFireDate(for: $0, after: now, calendar: calendar)
+        }.max()
+        let earliestDropped = droppedItems.compactMap {
+            MedicationReminderPlan.nextFireDate(for: $0, after: now, calendar: calendar)
+        }.min()
+
+        if let latestKept, let earliestDropped {
+            XCTAssertLessThanOrEqual(latestKept, earliestDropped,
+                                     "F6: every kept reminder must fire no later than every "
+                                         + "dropped one — the truncation is by time, not by luck")
+        }
+    }
+
+    func testCappedPlanStaysSortedByIdentifier() {
+        let regimens = (0..<10).map { i in
+            regimen(id: "r\(i)", schedule: .weekly(days: [1, 2, 3, 4, 5, 6, 7], times: ["08:00", "20:00"]))
+        }
+        let plan = MedicationReminderPlan.build(regimens: regimens, enabled: true, language: .en)
+        let (kept, _) = MedicationReminderPlan.capped(plan, now: now, calendar: .current)
+        XCTAssertEqual(kept.map(\.identifier), kept.map(\.identifier).sorted(),
+                       "the capped plan must keep build()'s stable ordering contract")
+    }
 }
