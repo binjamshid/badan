@@ -17,6 +17,11 @@ private enum NutritionLogStrings {
     static let noneYet = LocalizedString(en: "Nothing logged today yet.", ar: "لم تُسجَّل وجبات اليوم بعد.")
     static let quickTag = LocalizedString(en: "Quick", ar: "سريع")
     static let savedManually = LocalizedString(en: "Saved as your own entry", ar: "يُحفَظ كإدخال منك")
+    /// (A3/DS5) Nutrition had no success feedback at all — no toast, no haptic; the form just
+    /// cleared. Sighted users could at least infer the save from the emptied fields and the meal
+    /// appearing in today's list; VoiceOver users got nothing to distinguish a save from a
+    /// discard.
+    static let savedConfirmation = LocalizedString(en: "Meal saved", ar: "تم حفظ الوجبة")
     static let kcal = LocalizedString(en: "kcal", ar: "سعرة")
     static let grams = LocalizedString(en: "g", ar: "جم")
     static let mg = LocalizedString(en: "mg", ar: "ملغ")
@@ -132,6 +137,9 @@ final class NutritionLogViewModel {
             updatedAt: now,
             originDeviceId: env.deviceId)
         try env.logging.upsertNutrition(entry)
+        // (F5) See `WorkoutLogView.save` — the local `meals` mutation below keeps THIS screen
+        // current; the bump is what tells Timeline/Home/LogHub recents that disk changed.
+        env.bumpDataGeneration()
 
         let start = DayAttribution.startOfDay(now, tz: tz)
         if occurredAt >= start && occurredAt <= now {
@@ -344,7 +352,7 @@ struct NutritionLogView: View {
                         .lineLimit(1)
                 }
             }
-            .foregroundStyle(selected ? Color.white : BadanColor.textPrimary)
+            .foregroundStyle(selected ? BadanColor.onPrimary : BadanColor.textPrimary) // (DS1)
             .padding(.horizontal, BadanSpace.space3)
             .frame(minHeight: BadanSpace.touchMin)
             .background(
@@ -492,14 +500,16 @@ struct NutritionLogView: View {
                 fiberText = ""
                 caffeineText = ""
                 occurredAt = env.now()
+                Announce.status(env.s(NutritionLogStrings.savedConfirmation)) // (A3/DS5)
             } catch {
                 saveError = env.s(NutritionLogStrings.saveErrorTitle)
+                Announce.failure(env.s(NutritionLogStrings.saveErrorTitle)) // (A3)
             }
             isSaving = false
         } label: {
             Text(env.s(Loc.save))
                 .font(BadanFont.body.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(BadanColor.onPrimary) // (DS1)
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: BadanSpace.touchMin)
                 // UIUX-161: 0.6 (not 0.4) keeps the white label legible against the diluted

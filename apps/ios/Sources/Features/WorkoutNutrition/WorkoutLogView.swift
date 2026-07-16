@@ -134,6 +134,10 @@ final class WorkoutLogViewModel {
             updatedAt: env.now(),
             originDeviceId: env.deviceId)
         try env.logging.upsertWorkout(entry)
+        // (F5) A saved workout changes Timeline and Home's activity module, not just this
+        // screen's own list — `load(env)` below only refreshes this view. Without the bump those
+        // screens keep showing pre-save data until something else happens to invalidate them.
+        env.bumpDataGeneration()
         load(env)
     }
 }
@@ -302,7 +306,7 @@ struct WorkoutLogView: View {
                         .accessibilityHidden(true)
                 }
             }
-            .foregroundStyle(selected ? Color.white : BadanColor.textPrimary)
+            .foregroundStyle(selected ? BadanColor.onPrimary : BadanColor.textPrimary) // (DS1)
             .padding(.horizontal, BadanSpace.space3)
             .frame(minHeight: BadanSpace.touchMin)
             .background(
@@ -493,7 +497,7 @@ struct WorkoutLogView: View {
             } label: {
                 Text(env.s(Loc.save))
                     .font(BadanFont.body.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(BadanColor.onPrimary) // (DS1)
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: BadanSpace.touchMin)
                     .background(BadanColor.primary, in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
@@ -556,6 +560,7 @@ struct WorkoutLogView: View {
             // and tell the user so they know to retry (OPT-129).
             isSaving = false
             saveErrorText = env.s(WorkoutLogStrings.saveErrorTitle)
+            Announce.failure(env.s(WorkoutLogStrings.saveErrorTitle)) // (A3)
             return
         }
 
@@ -566,6 +571,7 @@ struct WorkoutLogView: View {
         loggedAt = env.now()
         maxDate = env.now()
         savedTick += 1 // light haptic confirmation (UIUX-143)
+        Announce.status(env.s(WorkoutLogStrings.savedConfirmation)) // (A3) haptic + toast are both non-verbal
         showSavedToast = true
         Task {
             try? await Task.sleep(for: .seconds(1.6))

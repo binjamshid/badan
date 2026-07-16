@@ -706,7 +706,7 @@ struct SymptomLogView: View {
             } label: {
                 Text(env.s(Loc.save))
                     .font(BadanFont.body.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(BadanColor.onPrimary) // (DS1)
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: BadanSpace.touchMin)
                     .background(BadanColor.primary, in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
@@ -746,7 +746,7 @@ struct SymptomLogView: View {
                     .font(BadanFont.chip)
                     .lineLimit(1)
             }
-            .foregroundStyle(selected ? Color.white : BadanColor.textPrimary)
+            .foregroundStyle(selected ? BadanColor.onPrimary : BadanColor.textPrimary) // (DS1)
             .padding(.horizontal, BadanSpace.space3)
             .frame(minHeight: BadanSpace.touchMin)
             .background(
@@ -887,16 +887,24 @@ struct SymptomLogView: View {
 
         do {
             try env.logging.insertSymptom(entry)
+            // (F5) Bumped only on the success path — the catch below leaves disk unchanged, so
+            // there is nothing for other screens to reload.
+            env.bumpDataGeneration()
         } catch {
             // Stay calm and non-destructive; keep the form intact so nothing entered is lost,
             // and tell the user so they know to retry (OPT-106 / UIUX-113).
             isSaving = false
             saveError = env.s(SymptomLogStrings.saveErrorTitle)
+            // (A3) The error renders inline, which VoiceOver doesn't announce on its own.
+            Announce.failure(env.s(SymptomLogStrings.saveErrorTitle))
             return
         }
 
         isSaving = false
         savedTick += 1 // light haptic confirmation (UIUX-119)
+        // (A3) The haptic and the toast below are both non-verbal, and on the `addAnother` path
+        // the only other feedback is the form clearing — silence, to VoiceOver.
+        Announce.status(env.s(SymptomLogStrings.savedConfirmation))
 
         if addAnother {
             vm.prependRecent(choice) // PERF-066: no full 30-day re-fetch between entries

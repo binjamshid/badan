@@ -8,6 +8,34 @@ import UserNotifications
 /// re-skins the whole app instantly (language flips RTL, theme flips colour scheme, depth
 /// reveals/hides power affordances). Same one model, presented at two altitudes.
 ///
+
+/// (EU5) The search keywords for every Settings section, in one place.
+///
+/// Extracted from the inline `matchesSearch([...])` literals so `noSearchResults` can ask "did
+/// ANY section match?" against the same arrays the sections themselves are gated on. Kept
+/// together with `always` directly below them: a new section that forgets to join the list would
+/// make the no-results state lie, and that is much easier to notice here than at a call site
+/// hundreds of lines away.
+private enum SettingsSearchKeywords {
+    static let appearance = ["appearance", "theme", "dark", "light", "مظهر"]
+    static let appIcon = ["icon", "app icon", "أيقونة", "رمز", "نور", "ميزان", "هلال"]
+    static let language = ["language", "arabic", "digits", "لغة", "أرقام"]
+    static let detail = ["depth", "detail", "simple", "power", "تفصيل", "مستوى"]
+    static let units = ["units", "canonical", "display", "وحدات"]
+    static let modules = ["modules", "home", "readiness", "sleep", "activity", "heart",
+                                   "meds", "nutrition", "timeline", "وحدات الشاشة"]
+    static let notifications = ["notifications", "reminders", "digest", "morning", "إشعارات", "تذكيرات"]
+    static let sensitive = ["sensitive", "medication", "symptom", "حساسة", "أدوية", "أعراض"]
+    static let privacy = ["privacy", "policy", "export", "sources", "خصوصية", "سياسة", "تصدير", "مصادر"]
+    static let dataManagement = ["reset", "delete", "demo", "data management", "إعادة تعيين", "حذف", "إدارة البيانات"]
+    static let resources = ["about", "version", "what's new", "resources", "حول", "الإصدار", "الموارد"]
+
+    /// Every group that is always eligible to render. `units` is excluded — it is depth-gated at
+    /// its call site, so `noSearchResults` adds it only when power detail is on.
+    static let always: [[String]] = [appearance, appIcon, language, detail, modules,
+                                     notifications, sensitive, privacy, dataManagement, resources]
+}
+
 /// Pushed/tab screen: it relies on a parent `NavigationStack` supplied by the app shell.
 struct SettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
@@ -27,41 +55,45 @@ struct SettingsScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space6) {
-                if matchesSearch(["appearance", "theme", "dark", "light", "مظهر"]) {
+                if matchesSearch(SettingsSearchKeywords.appearance) {
                     appearanceSection
                 }
-                if matchesSearch(["icon", "app icon", "أيقونة", "رمز", "نور", "ميزان", "هلال"]) {
+                if matchesSearch(SettingsSearchKeywords.appIcon) {
                     appIconSection
                 }
-                if matchesSearch(["language", "arabic", "digits", "لغة", "أرقام"]) {
+                if matchesSearch(SettingsSearchKeywords.language) {
                     languageSection
                 }
-                if matchesSearch(["depth", "detail", "simple", "power", "تفصيل", "مستوى"]) {
+                if matchesSearch(SettingsSearchKeywords.detail) {
                     detailSection
                 }
-                if env.depth.showsPowerDetail, matchesSearch(["units", "canonical", "display", "وحدات"]) {
+                if env.depth.showsPowerDetail, matchesSearch(SettingsSearchKeywords.units) {
                     unitsSection
                 }
-                if matchesSearch(["modules", "home", "readiness", "sleep", "activity", "heart",
-                                   "meds", "nutrition", "timeline", "وحدات الشاشة"]) {
+                if matchesSearch(SettingsSearchKeywords.modules) {
                     modulesSection
                         .padding(.top, BadanSpace.space3)
                 }
-                if matchesSearch(["notifications", "reminders", "digest", "morning", "إشعارات", "تذكيرات"]) {
+                if matchesSearch(SettingsSearchKeywords.notifications) {
                     notificationsSection
                 }
-                if matchesSearch(["sensitive", "medication", "symptom", "حساسة", "أدوية", "أعراض"]) {
+                if matchesSearch(SettingsSearchKeywords.sensitive) {
                     sensitiveSection
                         .padding(.top, BadanSpace.space3)
                 }
-                if matchesSearch(["privacy", "policy", "export", "sources", "خصوصية", "سياسة", "تصدير", "مصادر"]) {
+                if matchesSearch(SettingsSearchKeywords.privacy) {
                     privacySection
                 }
-                if matchesSearch(["reset", "delete", "demo", "data management", "إعادة تعيين", "حذف", "إدارة البيانات"]) {
+                if matchesSearch(SettingsSearchKeywords.dataManagement) {
                     dataManagementSection
                 }
-                if matchesSearch(["about", "version", "what's new", "resources", "حول", "الإصدار", "الموارد"]) {
+                if matchesSearch(SettingsSearchKeywords.resources) {
                     resourcesSection
+                }
+                // (EU5) A search matching nothing used to render an entirely blank screen —
+                // indistinguishable from the setting not existing, or from the app breaking.
+                if noSearchResults {
+                    searchEmptyState
                 }
             }
             .padding(BadanSpace.space4)
@@ -109,7 +141,7 @@ struct SettingsScreen: View {
             }
             Button(env.s(Loc.cancel), role: .cancel) { }
         } message: {
-            Text(env.s(SettingsStrings.resetConfirmMessage))
+            Text(env.s(SettingsStrings.resetConfirmMessage(connected: env.isHealthKitConnected)))
         }
         // BUG-17: `resetError` used to be set with no UI ever reading it — a failed/partial
         // "Delete all data" looked identical to a successful one.
@@ -541,16 +573,76 @@ struct SettingsScreen: View {
     }
 
     /// Only search when there's a live query — every section is visible by default.
+    /// (EU5) Matches per WORD, and in both directions.
+    ///
+    /// The old `keyword.contains(query)` failed the most ordinary thing a user can do: type what
+    /// they see. "app icons" never matched the keyword "app icon" (a keyword can't contain a
+    /// longer string), and any two-word query like "dark theme" missed every single-word keyword.
+    /// The result was a blank screen — see `noSearchResults` — which reads as "your app doesn't
+    /// have this setting" rather than "your search didn't parse".
+    ///
+    /// Each word must match some keyword, so extra words narrow rather than widen; direction is
+    /// checked both ways so a plural or a longer typed phrase still hits its shorter keyword.
     private func matchesSearch(_ keywords: [String]) -> Bool {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return true }
-        return keywords.contains { $0.localizedCaseInsensitiveContains(query) }
+        let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return true }
+        return words.allSatisfy { word in
+            keywords.contains { keyword in
+                keyword.localizedCaseInsensitiveContains(word) || word.localizedCaseInsensitiveContains(keyword)
+            }
+        }
+    }
+
+    /// True when a non-empty query matches no section that could actually be shown.
+    ///
+    /// Depth-gated groups are consulted through the same `env.depth` check the body uses, so
+    /// searching "units" in casual mode reports no results rather than promising a section that
+    /// then doesn't render.
+    private var noSearchResults: Bool {
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        var groups = SettingsSearchKeywords.always
+        if env.depth.showsPowerDetail { groups.append(SettingsSearchKeywords.units) }
+        return !groups.contains { matchesSearch($0) }
+    }
+
+    private var searchEmptyState: some View {
+        VStack(spacing: BadanSpace.space2) {
+            Text(SettingsStrings.searchNoResultsTitle, language: env.language)
+                .font(BadanFont.body.weight(.semibold))
+                .foregroundStyle(BadanColor.textPrimary)
+            Text(SettingsStrings.searchNoResultsBody, language: env.language)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                searchQuery = ""
+            } label: {
+                Text(SettingsStrings.searchClear, language: env.language)
+                    .font(BadanFont.body.weight(.medium))
+                    .foregroundStyle(BadanColor.primary)
+                    .frame(minHeight: BadanSpace.touchMin)
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, BadanSpace.space6)
+        .accessibilityElement(children: .contain)
     }
 
     /// Shows a brief, self-dismissing note near the bottom of the screen — for actions whose
     /// effect isn't visible on Settings itself (see EASE-169, EASE-228).
+    ///
+    /// (A3) Announced as well as shown. This one function is every transient notice Settings
+    /// raises — including `purgeFailedNotice`, i.e. "the sensitive data you asked to be gone is
+    /// still here". It appears far from the control that triggered it and vanishes after three
+    /// seconds, so a VoiceOver user had no way to learn it happened: the app's most
+    /// consequential failure message was also its most silent.
     private func showTransientNotice(_ notice: LocalizedString) {
         transientNotice = notice
+        Announce.failure(env.s(notice))
         Task {
             try? await Task.sleep(for: .seconds(3))
             if transientNotice == notice { transientNotice = nil }
@@ -930,12 +1022,40 @@ private enum SettingsStrings {
     // every table in both databases first — any medications, symptoms, workouts, nutrition
     // logs or notes the user has entered are gone — and only afterward re-seeds the sample
     // data set, so the copy says both things plainly.
+    // (EU5) Says the search found nothing — and, crucially, offers the way out. The old blank
+    // screen left the query in the field with no visible reason for the emptiness.
+    static let searchNoResultsTitle = LocalizedString(en: "No settings match", ar: "لا إعدادات مطابقة")
+    static let searchNoResultsBody = LocalizedString(
+        en: "Try a different word, or clear the search to see everything.",
+        ar: "جرّب كلمة أخرى، أو امسح البحث لعرض كل شيء.")
+    static let searchClear = LocalizedString(en: "Clear search", ar: "مسح البحث")
+
     static let resetConfirmTitle = LocalizedString(en: "Delete all data?", ar: "حذف جميع البيانات؟")
-    static let resetConfirmMessage = LocalizedString(
-        en: "This permanently deletes everything on this device — including anything you've "
-            + "logged yourself — and replaces it with the bundled sample data set. This can't be undone.",
-        ar: "يؤدي هذا إلى حذف كل شيء على هذا الجهاز نهائياً — بما في ذلك كل ما سجّلته بنفسك — "
-            + "واستبداله بمجموعة البيانات التجريبية المرفقة. لا يمكن التراجع عن هذا.")
+
+    /// (C3) What happens after the wipe depends on whether a real source is connected —
+    /// `AppEnvironment.resetDemoData()` re-ingests from HealthKit when it is, and only
+    /// demo-seeds when it isn't. A single message promising "the bundled sample data set" was
+    /// therefore wrong for exactly the users with real data to lose: it told them their own
+    /// history would be replaced by fabricated readings, which would make anyone abandon the
+    /// action or, worse, distrust what came back.
+    static func resetConfirmMessage(connected: Bool) -> LocalizedString {
+        let deletes = LocalizedString(
+            en: "This permanently deletes everything on this device — including anything you've "
+                + "logged yourself.",
+            ar: "يؤدي هذا إلى حذف كل شيء على هذا الجهاز نهائياً — بما في ذلك كل ما سجّلته بنفسك.")
+        let after = connected
+            ? LocalizedString(
+                en: " Your measurements are then read again from Apple Health. Anything Apple "
+                    + "Health doesn't have — your own logs — won't come back.",
+                ar: " ثم تُقرأ قياساتك مجدداً من صحة آبل. أما ما ليس لدى صحة آبل — أي سجلاتك "
+                    + "الخاصة — فلن يعود.")
+            : LocalizedString(
+                en: " It's then replaced with the bundled sample data set.",
+                ar: " ثم يُستبدل بمجموعة البيانات التجريبية المرفقة.")
+        let undo = LocalizedString(en: " This can't be undone.", ar: " لا يمكن التراجع عن هذا.")
+        return LocalizedString(en: deletes.en + after.en + undo.en,
+                               ar: deletes.ar + after.ar + undo.ar)
+    }
     // BUG-17: `AppEnvironment.resetError` used to be set with nothing ever reading it.
     static let resetFailedNotice = LocalizedString(
         en: "Something went wrong while resetting your data. Some of it may be incomplete — try again.",

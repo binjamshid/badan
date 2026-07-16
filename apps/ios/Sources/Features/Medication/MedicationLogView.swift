@@ -229,7 +229,12 @@ final class MedicationLogViewModel {
             )
             state = .loaded(data)
         } catch {
-            state = .error(String(describing: error))
+            // (C2) The raw error goes to the debug log, not the UI (BUG-14) — this screen was
+            // missed by that sweep and still put a Swift error description on screen: English-only
+            // in an Arabic-first app, robotic, and leaking internals to whoever is holding the
+            // phone. Same two lines every other data-backed screen already uses.
+            LoadErrorLog.log(error, screen: "Medication")
+            state = .error(env.s(LoadErrorCopy.message))
         }
     }
 
@@ -289,6 +294,9 @@ final class MedicationLogViewModel {
         do {
             try env.logging.insertAdherence(event)
             errorSlotIds.remove(slotId)
+            // (F5) Home's medications module counts what's still due — a take/skip here changes
+            // that count, so it has to invalidate beyond this screen.
+            env.bumpDataGeneration()
         } catch {
             // Surfaced via `errorSlotIds` instead of swallowed: `load(env)` below will re-derive
             // this slot's status from the DB (i.e. it reverts to pending), so without this the
@@ -312,6 +320,8 @@ final class MedicationLogViewModel {
         )
         do {
             try env.logging.upsertRegimen(regimen)
+            // (F5) A new regimen adds due slots to Home's medications module.
+            env.bumpDataGeneration()
             load(env)
             // NEW-02/UX-02: a new regimen changes what's due, so refresh scheduled reminders.
             // No-op unless the pref is on and notifications are authorized; never prompts.
@@ -592,7 +602,7 @@ struct MedicationLogView: View {
                 Text(env.s(MedStrings.takeAction))
                     .font(BadanFont.body.weight(.semibold))
                     .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
-                    .foregroundStyle(Self.onPrimary)
+                    .foregroundStyle(BadanColor.onPrimary)
                     .background(BadanColor.primary,
                                 in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
             }
@@ -833,7 +843,6 @@ struct MedicationLogView: View {
     }
 
     /// Foreground for filled primary buttons: legible white/near-black in both themes.
-    private static let onPrimary = Color(light: "#FFFFFF", dark: "#08201D")
 }
 
 // MARK: - Adherence dot
