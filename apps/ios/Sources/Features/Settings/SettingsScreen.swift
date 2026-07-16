@@ -3,93 +3,32 @@ import UserNotifications
 
 // MARK: - Screen
 
-/// The configuration tree. Every control edits the single `CustomizationProfile` through
-/// `env.update { ... }`, which persists and — because `AppEnvironment` is `@Observable`
-/// re-skins the whole app instantly (language flips RTL, theme flips colour scheme, depth
-/// reveals/hides power affordances). Same one model, presented at two altitudes.
+/// Settings' root: seven categories, plus search.
 ///
-
-/// (EU5) The search keywords for every Settings section, in one place.
+/// This was one flat scroll of eleven sections — every control in the app stacked on one page, so
+/// reaching Home modules meant scrolling past appearance, icons, language, depth and units. It
+/// also had nowhere to put anything new: goals and backup/restore had existed as schema and
+/// export for months with no home. Categories give each area a page and room to grow.
 ///
-/// Extracted from the inline `matchesSearch([...])` literals so `noSearchResults` can ask "did
-/// ANY section match?" against the same arrays the sections themselves are gated on. Kept
-/// together with `always` directly below them: a new section that forgets to join the list would
-/// make the no-results state lie, and that is much easier to notice here than at a call site
-/// hundreds of lines away.
-private enum SettingsSearchKeywords {
-    static let appearance = ["appearance", "theme", "dark", "light", "مظهر"]
-    static let appIcon = ["icon", "app icon", "أيقونة", "رمز", "نور", "ميزان", "هلال"]
-    static let language = ["language", "arabic", "digits", "لغة", "أرقام"]
-    static let detail = ["depth", "detail", "simple", "power", "تفصيل", "مستوى"]
-    static let units = ["units", "canonical", "display", "وحدات"]
-    static let modules = ["modules", "home", "readiness", "sleep", "activity", "heart",
-                                   "meds", "nutrition", "timeline", "وحدات الشاشة"]
-    static let notifications = ["notifications", "reminders", "digest", "morning", "إشعارات", "تذكيرات"]
-    static let sensitive = ["sensitive", "medication", "symptom", "حساسة", "أدوية", "أعراض"]
-    static let privacy = ["privacy", "policy", "export", "sources", "diagnostics", "support", "debug",
-                          "خصوصية", "سياسة", "تصدير", "مصادر", "تشخيص", "دعم"]
-    static let dataManagement = ["reset", "delete", "demo", "data management", "إعادة تعيين", "حذف", "إدارة البيانات"]
-    static let resources = ["about", "version", "what's new", "resources", "حول", "الإصدار", "الموارد"]
-
-    /// Every group that is always eligible to render. `units` is excluded — it is depth-gated at
-    /// its call site, so `noSearchResults` adds it only when power detail is on.
-    static let always: [[String]] = [appearance, appIcon, language, detail, modules,
-                                     notifications, sensitive, privacy, dataManagement, resources]
-}
-
-/// Pushed/tab screen: it relies on a parent `NavigationStack` supplied by the app shell.
+/// Search is now MORE important, not less, because every control moved a level deeper — so it
+/// searches the LEAVES (`SettingsCategory.keywords`), not the category names. A user typing
+/// "dark" wants the theme control and has no reason to know it lives under Personalization; the
+/// matching category is filtered in, and its subtitle says what's inside.
 struct SettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
-    @State private var showPurgeConfirm = false
-    @State private var showResetConfirm = false
-    @State private var showUnitsInfo = false
-    @State private var showWhatsNew = false
-    @State private var showAbout = false
     @State private var searchQuery = ""
-    @State private var sortedHomeModules: [HomeModule] = []
-    @State private var notificationsDeniedAtSystemLevel = false
-    /// A brief, self-dismissing note surfaced after an action whose effect isn't visible on
-    /// this screen (e.g. depth changes, re-enabling sensitive records) — see `showTransientNotice`.
-    @State private var transientNotice: LocalizedString?
-    @State private var iconController = AppIconController()
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: BadanSpace.space6) {
-                if matchesSearch(SettingsSearchKeywords.appearance) {
-                    appearanceSection
-                }
-                if matchesSearch(SettingsSearchKeywords.appIcon) {
-                    appIconSection
-                }
-                if matchesSearch(SettingsSearchKeywords.language) {
-                    languageSection
-                }
-                if matchesSearch(SettingsSearchKeywords.detail) {
-                    detailSection
-                }
-                if env.depth.showsPowerDetail, matchesSearch(SettingsSearchKeywords.units) {
-                    unitsSection
-                }
-                if matchesSearch(SettingsSearchKeywords.modules) {
-                    modulesSection
-                        .padding(.top, BadanSpace.space3)
-                }
-                if matchesSearch(SettingsSearchKeywords.notifications) {
-                    notificationsSection
-                }
-                if matchesSearch(SettingsSearchKeywords.sensitive) {
-                    sensitiveSection
-                        .padding(.top, BadanSpace.space3)
-                }
-                if matchesSearch(SettingsSearchKeywords.privacy) {
-                    privacySection
-                }
-                if matchesSearch(SettingsSearchKeywords.dataManagement) {
-                    dataManagementSection
-                }
-                if matchesSearch(SettingsSearchKeywords.resources) {
-                    resourcesSection
+            VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                BadanCard {
+                    VStack(spacing: 0) {
+                        ForEach(Array(visibleCategories.enumerated()), id: \.element.id) { index, category in
+                            NavigationLink { destination(category) } label: { categoryRow(category) }
+                                .buttonStyle(.plain)
+                            if index < visibleCategories.count - 1 { settingsDivider }
+                        }
+                    }
                 }
                 // (EU5) A search matching nothing used to render an entirely blank screen —
                 // indistinguishable from the setting not existing, or from the app breaking.
@@ -102,508 +41,61 @@ struct SettingsScreen: View {
         .searchable(text: $searchQuery, prompt: Text(Loc.search, language: env.language))
         .background(BadanColor.background.ignoresSafeArea())
         .navigationTitle(env.s(Loc.settingsTitle))
-        .overlay(alignment: .bottom) {
-            if let notice = transientNotice {
-                transientNoticeView(notice)
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: transientNotice)
-        // Purge is a real file deletion (the sensitive store is a separate DB) — confirm honestly.
-        .confirmationDialog(
-            env.s(SettingsStrings.purgeConfirmTitle),
-            isPresented: $showPurgeConfirm,
-            titleVisibility: .visible
-        ) {
-            Button(env.s(SettingsStrings.purgeConfirmAction), role: .destructive) {
-                // EDGE-01: `purgeSensitiveNamespace()` now throws on a genuine delete failure
-                // instead of silently swallowing it — on that path, keep the toggle on (nothing
-                // was actually removed) and say so, rather than claiming success either way.
-                do {
-                    try env.database.purgeSensitiveNamespace()
-                    env.update { $0.sensitiveModulesEnabled = false }
-                    // BUG-05: every medication regimen just vanished with the sensitive DB —
-                    // cancel/reconcile any reminders still scheduled against them.
-                    Task { await env.refreshMedicationReminders() }
-                } catch {
-                    showTransientNotice(SettingsStrings.purgeFailedNotice)
-                }
-            }
-            Button(env.s(Loc.cancel), role: .cancel) { }
-        } message: {
-            Text(env.s(SettingsStrings.purgeConfirmMessage))
-        }
-        .confirmationDialog(
-            env.s(SettingsStrings.resetConfirmTitle),
-            isPresented: $showResetConfirm,
-            titleVisibility: .visible
-        ) {
-            Button(env.s(Loc.deleteAllData), role: .destructive) {
-                Task { await env.resetDemoData() }
-            }
-            Button(env.s(Loc.cancel), role: .cancel) { }
-        } message: {
-            Text(env.s(SettingsStrings.resetConfirmMessage(connected: env.isHealthKitConnected)))
-        }
-        // BUG-17: `resetError` used to be set with no UI ever reading it — a failed/partial
-        // "Delete all data" looked identical to a successful one.
-        .onChange(of: env.resetError == nil) { _, isNil in
-            if !isNil { showTransientNotice(SettingsStrings.resetFailedNotice) }
+    }
+
+    // MARK: Routing
+
+    @ViewBuilder
+    private func destination(_ category: SettingsCategory) -> some View {
+        switch category {
+        case .account: AccountSettingsScreen()
+        case .goals: GoalsSettingsScreen()
+        case .notifications: NotificationsSettingsScreen()
+        case .privacy: PrivacySecuritySettingsScreen()
+        case .personalization: PersonalizationSettingsScreen()
+        case .backup: BackupRestoreSettingsScreen()
+        case .support: SupportSettingsScreen()
         }
     }
 
-    // MARK: Appearance
-
-    private var appearanceSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.appearance))
-            SettingsRadioGroup(
-                options: AppTheme.allCases,
-                title: { $0.displayName.resolved(env.language) },
-                subtitle: { SettingsStrings.themeSubtitle($0).resolved(env.language) },
-                isOn: { $0 == env.profile.theme }
-            ) { theme in
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    env.update { $0.theme = theme }
-                }
-            }
-        }
-    }
-
-    // MARK: App icon
-
-    private var appIconSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.appIcon))
-            // EDGE-16: on a device/runtime that can't switch icons at all, say so once here
-            // rather than leaving every alternate row a silent, tappable no-op below.
-            if !iconController.supportsAlternateIcons {
-                Text(env.s(SettingsStrings.iconUnsupportedNotice))
+    private func categoryRow(_ category: SettingsCategory) -> some View {
+        HStack(spacing: BadanSpace.space3) {
+            Image(systemName: category.icon)
+                .foregroundStyle(BadanColor.primary)
+                .frame(width: 26)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                LText(category.title)
+                    .font(BadanFont.body)
+                    .foregroundStyle(BadanColor.textPrimary)
+                LText(category.subtitle)
                     .font(BadanFont.caption)
                     .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            BadanCard {
-                VStack(spacing: 0) {
-                    let options = AppIconOption.allCases
-                    ForEach(Array(options.enumerated()), id: \.element) { index, option in
-                        let selected = option == iconController.current
-                        // EDGE-16: the primary icon (`alternateIconName == nil`) is always
-                        // selectable — it's the app's own icon, not a switch. Only the
-                        // alternates need `supportsAlternateIcons`.
-                        let isAlternate = option.alternateIconName != nil
-                        let disabled = isAlternate && !iconController.supportsAlternateIcons
-                        Button {
-                            Task {
-                                let succeeded = await iconController.select(option)
-                                if !succeeded { showTransientNotice(SettingsStrings.iconSwitchFailedNotice) }
-                            }
-                        } label: {
-                            HStack(spacing: BadanSpace.space3) {
-                                Image(option.previewAsset)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: 52, height: 52)
-                                    .clipShape(RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
-                                            .strokeBorder(BadanColor.separator, lineWidth: 1)
-                                    )
-                                    .accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: BadanSpace.space1) {
-                                    Text(option.title, language: env.language)
-                                        .font(BadanFont.body)
-                                        .foregroundStyle(BadanColor.textPrimary)
-                                    Text(option.subtitle, language: env.language)
-                                        .font(BadanFont.caption)
-                                        .foregroundStyle(BadanColor.textSecondary)
-                                }
-                                Spacer(minLength: BadanSpace.space2)
-                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                                    .imageScale(.medium)
-                                    .foregroundStyle(selected ? BadanColor.primary : BadanColor.textSecondary)
-                                    .accessibilityHidden(true)
-                            }
-                            .frame(minHeight: BadanSpace.touchMin)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(disabled)
-                        .opacity(disabled ? 0.45 : 1)
-                        .accessibilityAddTraits(selected ? .isSelected : [])
-
-                        if index < options.count - 1 { settingsDivider }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: Language
-
-    private var languageSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.language))
-            // Arabic digits only makes sense in the context of the language choice, so it lives
-            // as a trailing row in the same card rather than a visually detached second card.
-            BadanCard {
-                VStack(spacing: 0) {
-                    SettingsRadioRows(
-                        options: AppLanguage.allCases,
-                        title: { $0.displayName },
-                        subtitle: { SettingsStrings.languageSubtitle($0).resolved(env.language) },
-                        isOn: { $0 == env.language },
-                        onSelect: { lang in
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                env.update { $0.language = lang }
-                            }
-                        },
-                        trailingDivider: true
-                    )
-                    SettingsToggleRow(
-                        title: Loc.arabicDigits,
-                        subtitle: arabicDigitsSubtitle,
-                        isOn: binding(\.arabicDigits)
-                    )
-                }
-            }
-        }
-    }
-
-    /// Notes that the toggle only takes visible effect once Arabic is selected, rather than
-    /// reading as broken while the interface language is still English.
-    private var arabicDigitsSubtitle: LocalizedString {
-        env.language == .en ? SettingsStrings.arabicDigitsHintPrimed : SettingsStrings.arabicDigitsHint
-    }
-
-    // MARK: Detail level (depth)
-
-    private var detailSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            // No trailing DepthBadge here — the radio group's own checkmark one row below
-            // already communicates the current selection without redundant header chrome.
-            SectionHeader(env.s(Loc.depthLevel))
-            SettingsRadioGroup(
-                options: DepthPolicy.allCases,
-                title: { $0.displayName.resolved(env.language) },
-                subtitle: { SettingsStrings.depthSubtitle($0).resolved(env.language) },
-                isOn: { $0 == env.depth }
-            ) { depth in
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    env.update { $0.depthPolicy = depth }
-                }
-                // The whole value of this choice is visible on Home/Body/MetricDetail, not here.
-                showTransientNotice(SettingsStrings.depthChangeNotice)
-            }
-        }
-    }
-
-    // MARK: Units (power only)
-
-    private var unitsSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.units)) {
-                Button { showUnitsInfo = true } label: {
-                    Image(systemName: "info.circle")
-                        .imageScale(.medium)
-                        .foregroundStyle(BadanColor.textSecondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(env.s(SettingsStrings.unitsInfoAccessibilityLabel))
-            }
-            SettingsRadioGroup(
-                options: [UnitProfileMode.display, UnitProfileMode.canonical],
-                title: { SettingsStrings.unitModeTitle($0).resolved(env.language) },
-                subtitle: { SettingsStrings.unitModeSubtitle($0).resolved(env.language) },
-                isOn: { $0 == env.profile.unitProfile }
-            ) { mode in
-                env.update { $0.unitProfile = mode }
-            }
-        }
-        .sheet(isPresented: $showUnitsInfo) { UnitsExplainerSheet() }
-    }
-
-    // MARK: Home modules
-
-    private var modulesSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.modules))
-            Text(env.s(SettingsStrings.modulesOrderCaption))
-                .font(BadanFont.caption)
+            Spacer(minLength: BadanSpace.space2)
+            // `chevron.forward` rather than `.right` so it mirrors itself in Arabic.
+            Image(systemName: "chevron.forward")
+                .imageScale(.small)
                 .foregroundStyle(BadanColor.textSecondary)
-            BadanCard {
-                VStack(spacing: 0) {
-                    ForEach(Array(sortedHomeModules.enumerated()), id: \.element.id) { index, module in
-                        SettingsToggleRow(
-                            title: homeModuleLabel(module.id),
-                            subtitle: nil,
-                            isOn: Binding(
-                                get: { env.profile.module(module.id)?.visible ?? module.visible },
-                                set: { newValue in setModuleVisible(module.id, newValue) }
-                            )
-                        )
-                        if index < sortedHomeModules.count - 1 { settingsDivider }
-                    }
-                }
-            }
+                .accessibilityHidden(true)
         }
-        .onAppear { sortedHomeModules = env.profile.homeModules.sorted { $0.order < $1.order } }
-        .onChange(of: env.profile.homeModules) { _, newValue in
-            sortedHomeModules = newValue.sorted { $0.order < $1.order }
-        }
+        .frame(minHeight: BadanSpace.touchMin)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 
-    // MARK: Notifications
+    // MARK: Search
 
-    // Only medication reminders actually schedule and deliver notifications today. The other
-    // three toggles (morning summary, weekly digest, data-paused alerts) persisted a preference
-    // but had no delivery mechanism at all — a toggle that silently does nothing — so they're
-    // hidden until those features exist (NEW-02/UX-02). Their profile fields are kept.
-    private var notificationsSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.notifications))
-            BadanCard {
-                VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                    SettingsToggleRow(title: SettingsStrings.notifMeds, subtitle: SettingsStrings.notifMedsSubtitle,
-                                      isOn: medicationRemindersBinding)
-                    // A toggle that's on here but blocked at the OS level would otherwise fail
-                    // silently, with no way for the user to tell why from this screen.
-                    if notificationsDeniedAtSystemLevel && env.profile.notifications.medicationReminders {
-                        HStack(alignment: .top, spacing: BadanSpace.space2) {
-                            Image(systemName: "bell.slash")
-                                .imageScale(.small)
-                                .foregroundStyle(BadanColor.outOfBand)
-                                .accessibilityHidden(true)
-                            LText(SettingsStrings.systemNotificationsOffNote)
-                                .font(BadanFont.caption)
-                                .foregroundStyle(BadanColor.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    // (F6) iOS caps an app at 64 pending notifications and drops the rest with no
-                    // error, so without this the user's later reminders simply never arrive and
-                    // nothing says why. Only shown when it actually bites.
-                    if env.remindersTruncatedCount > 0 {
-                        HStack(alignment: .top, spacing: BadanSpace.space2) {
-                            Image(systemName: "exclamationmark.circle")
-                                .imageScale(.small)
-                                .foregroundStyle(BadanColor.outOfBand)
-                                .accessibilityHidden(true)
-                            LText(SettingsStrings.remindersCappedNote(env.remindersTruncatedCount))
-                                .font(BadanFont.caption)
-                                .foregroundStyle(BadanColor.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-            }
-        }
-        .task { await refreshSystemNotificationAuthorization() }
+    private var visibleCategories: [SettingsCategory] {
+        SettingsCategory.allCases.filter { matchesSearch($0.keywords + [$0.title.en, $0.title.ar]) }
     }
 
-    /// The medication-reminders toggle. Turning ON requests notification authorization
-    /// contextually (never at launch): only on a real grant do we persist the preference and
-    /// schedule from current regimens; on denial the preference stays off (the toggle reverts,
-    /// since its `get` reads the persisted value) and we surface the honest status. Turning OFF
-    /// persists and cancels every scheduled reminder.
-    private var medicationRemindersBinding: Binding<Bool> {
-        Binding(
-            get: { env.profile.notifications.medicationReminders },
-            set: { newValue in
-                if newValue {
-                    Task {
-                        let granted = await NotificationScheduler.shared.requestAuthorizationIfNeeded()
-                        await refreshSystemNotificationAuthorization()
-                        if granted {
-                            env.update { $0.notifications.medicationReminders = true }
-                            let regimens = (try? env.logging.regimens(activeOnly: true)) ?? []
-                            await NotificationScheduler.shared.rescheduleMedicationReminders(
-                                regimens: regimens, enabled: true, language: env.language)
-                        } else {
-                            // Keep the preference off (the toggle visibly reverts) and say why.
-                            env.update { $0.notifications.medicationReminders = false }
-                            showTransientNotice(SettingsStrings.notifPermissionDenied)
-                        }
-                    }
-                } else {
-                    env.update { $0.notifications.medicationReminders = false }
-                    Task { await NotificationScheduler.shared.cancelAllMedicationReminders() }
-                }
-            }
-        )
-    }
-
-    private func refreshSystemNotificationAuthorization() async {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
-        notificationsDeniedAtSystemLevel = settings.authorizationStatus == .denied
-    }
-
-    // MARK: Sensitive records (meds & symptoms)
-
-    private var sensitiveSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(SettingsStrings.sensitiveHeader))
-            BadanCard {
-                VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                    SettingsToggleRow(
-                        title: Loc.includeSensitive,
-                        subtitle: SettingsStrings.sensitiveSubtitle,
-                        // Turning ON is immediate; turning OFF routes through a confirm + purge.
-                        isOn: Binding(
-                            get: { env.profile.sensitiveModulesEnabled },
-                            set: { newValue in
-                                if newValue {
-                                    env.update { $0.sensitiveModulesEnabled = true }
-                                    // Re-enabling never restores a prior purge — say so once, plainly.
-                                    showTransientNotice(SettingsStrings.sensitiveReenableNotice)
-                                } else {
-                                    showPurgeConfirm = true
-                                }
-                            }
-                        )
-                    )
-                    // Only relevant while the toggle is actually on — otherwise it's a warning
-                    // about an action that isn't currently available.
-                    if env.profile.sensitiveModulesEnabled {
-                        HStack(alignment: .top, spacing: BadanSpace.space2) {
-                            Image(systemName: "exclamationmark.triangle")
-                                .imageScale(.small)
-                                .foregroundStyle(BadanColor.outOfBand)
-                                .accessibilityHidden(true)
-                            LText(SettingsStrings.sensitivePurgeNote)
-                                .font(BadanFont.caption)
-                                .foregroundStyle(BadanColor.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: Data & privacy
-
-    private var privacySection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.privacy))
-            BadanCard {
-                HStack(alignment: .top, spacing: BadanSpace.space3) {
-                    Image(systemName: "lock.shield")
-                        .imageScale(.large)
-                        .foregroundStyle(BadanColor.primary)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                        LText(Loc.deviceOnly)
-                            .font(BadanFont.body.weight(.semibold))
-                            .foregroundStyle(BadanColor.textPrimary)
-                        LText(Loc.localFirstNote)
-                            .font(BadanFont.bodyCompact)
-                            .foregroundStyle(BadanColor.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-
-            BadanCard {
-                VStack(spacing: 0) {
-                    NavigationLink { SourcesScreen() } label: {
-                        SettingsNavRowLabel(icon: "antenna.radiowaves.left.and.right",
-                                            title: Loc.dataSources)
-                    }
-                    .buttonStyle(.plain)
-                    settingsDivider
-                    NavigationLink { ExportCenterScreen() } label: {
-                        SettingsNavRowLabel(icon: "square.and.arrow.up",
-                                            title: Loc.exportTitle)
-                    }
-                    .buttonStyle(.plain)
-                    settingsDivider
-                    // COMP-04: the full policy, rendered in-app and bilingually (no hosted URL —
-                    // the app is offline-first). Hosting it and entering that URL in App Store
-                    // Connect is a documented owner step before public submission (docs/TESTFLIGHT.md).
-                    NavigationLink { PrivacyPolicyScreen() } label: {
-                        SettingsNavRowLabel(icon: "lock.doc",
-                                            title: SettingsStrings.privacyPolicyTitle)
-                    }
-                    .buttonStyle(.plain)
-                    settingsDivider
-                    // (G2) The support surface a local-first app needs: no crash SDK means no
-                    // other way to learn anything about a beta user's install.
-                    NavigationLink { DiagnosticsScreen() } label: {
-                        SettingsNavRowLabel(icon: "stethoscope",
-                                            title: SettingsStrings.diagnosticsTitle)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    // MARK: Data management (reset)
-
-    private var dataManagementSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(SettingsStrings.dataManagementHeader))
-            BadanCard {
-                Button { showResetConfirm = true } label: {
-                    HStack(spacing: BadanSpace.space3) {
-                        Image(systemName: "trash")
-                            .imageScale(.medium)
-                            // Warning-toned, not the same neutral tint as a harmless toggle —
-                            // this is a destructive, confirm-gated action.
-                            .foregroundStyle(BadanColor.outOfBand)
-                            .accessibilityHidden(true)
-                        LText(Loc.deleteAllData)
-                            .font(BadanFont.body)
-                            .foregroundStyle(BadanColor.textPrimary)
-                        Spacer(minLength: BadanSpace.space2)
-                    }
-                    .frame(minHeight: BadanSpace.touchMin)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    // MARK: Resources (what's new / about)
-
-    private var resourcesSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(SettingsStrings.resourcesHeader))
-            BadanCard {
-                VStack(spacing: 0) {
-                    Button { showWhatsNew = true } label: {
-                        SettingsNavRowLabel(icon: "sparkles", title: SettingsStrings.whatsNewTitle)
-                    }
-                    .buttonStyle(.plain)
-                    settingsDivider
-                    Button { showAbout = true } label: {
-                        SettingsNavRowLabel(icon: "info.circle", title: SettingsStrings.aboutTitle)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .sheet(isPresented: $showWhatsNew) { WhatsNewSheet() }
-        .sheet(isPresented: $showAbout) { AboutSheet() }
-    }
-
-    // MARK: - Local helpers
-
-    private var settingsDivider: some View {
-        Rectangle()
-            .fill(BadanColor.separator)
-            .frame(height: 1)
-            .padding(.vertical, BadanSpace.space1)
-    }
-
-    /// Only search when there's a live query — every section is visible by default.
     /// (EU5) Matches per WORD, and in both directions.
     ///
     /// The old `keyword.contains(query)` failed the most ordinary thing a user can do: type what
     /// they see. "app icons" never matched the keyword "app icon" (a keyword can't contain a
     /// longer string), and any two-word query like "dark theme" missed every single-word keyword.
-    /// The result was a blank screen — see `noSearchResults` — which reads as "your app doesn't
-    /// have this setting" rather than "your search didn't parse".
     ///
     /// Each word must match some keyword, so extra words narrow rather than widen; direction is
     /// checked both ways so a plural or a longer typed phrase still hits its shorter keyword.
@@ -619,16 +111,9 @@ struct SettingsScreen: View {
         }
     }
 
-    /// True when a non-empty query matches no section that could actually be shown.
-    ///
-    /// Depth-gated groups are consulted through the same `env.depth` check the body uses, so
-    /// searching "units" in casual mode reports no results rather than promising a section that
-    /// then doesn't render.
     private var noSearchResults: Bool {
         guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        var groups = SettingsSearchKeywords.always
-        if env.depth.showsPowerDetail { groups.append(SettingsSearchKeywords.units) }
-        return !groups.contains { matchesSearch($0) }
+        return visibleCategories.isEmpty
     }
 
     private var searchEmptyState: some View {
@@ -656,76 +141,15 @@ struct SettingsScreen: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// Shows a brief, self-dismissing note near the bottom of the screen — for actions whose
-    /// effect isn't visible on Settings itself (see EASE-169, EASE-228).
-    ///
-    /// (A3) Announced as well as shown. This one function is every transient notice Settings
-    /// raises — including `purgeFailedNotice`, i.e. "the sensitive data you asked to be gone is
-    /// still here". It appears far from the control that triggered it and vanishes after three
-    /// seconds, so a VoiceOver user had no way to learn it happened: the app's most
-    /// consequential failure message was also its most silent.
-    private func showTransientNotice(_ notice: LocalizedString) {
-        transientNotice = notice
-        Announce.failure(env.s(notice))
-        Task {
-            try? await Task.sleep(for: .seconds(3))
-            if transientNotice == notice { transientNotice = nil }
-        }
-    }
-
-    private func transientNoticeView(_ notice: LocalizedString) -> some View {
-        Text(notice, language: env.language)
-            .font(BadanFont.bodyCompact)
-            .foregroundStyle(BadanColor.textPrimary)
-            .multilineTextAlignment(.leading)
-            .padding(.horizontal, BadanSpace.space4)
-            .padding(.vertical, BadanSpace.space3)
-            .background(BadanColor.surfaceElevated)
-            .clipShape(RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
-            .badanElevation()
-            .padding(.horizontal, BadanSpace.space4)
-            .padding(.bottom, BadanSpace.space4)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-
-    /// A persisted binding onto a scalar field of the profile.
-    private func binding(_ keyPath: WritableKeyPath<CustomizationProfile, Bool>) -> Binding<Bool> {
-        Binding(
-            get: { env.profile[keyPath: keyPath] },
-            set: { newValue in env.update { $0[keyPath: keyPath] = newValue } }
-        )
-    }
-
-    private func setModuleVisible(_ id: String, _ visible: Bool) {
-        env.update { profile in
-            if let index = profile.homeModules.firstIndex(where: { $0.id == id }) {
-                profile.homeModules[index].visible = visible
-            }
-        }
-    }
-
-    private func homeModuleLabel(_ id: String) -> LocalizedString {
-        switch id {
-        case "readiness": return Loc.readiness
-        case "sleep": return LocalizedString(en: "Sleep", ar: "النوم")
-        case "activity": return LocalizedString(en: "Activity", ar: "النشاط")
-        case "heart": return LocalizedString(en: "Heart", ar: "القلب")
-        case "meds": return Loc.logMedication
-        case "nutrition": return LocalizedString(en: "Nutrition", ar: "التغذية")
-        case "timeline": return Loc.timeline
-        // A raw, un-translated id would leak English/id text into the Arabic UI; capitalizing
-        // both sides keeps the fallback at least presentable in either language.
-        default: return LocalizedString(en: id.capitalized, ar: id.capitalized)
-        }
-    }
 }
+
 
 // MARK: - Reusable single-select rows (no card — for embedding inside a shared card)
 
 /// The bare rows of a mutually-exclusive choice list, without the enclosing `BadanCard` —
 /// factored out of `SettingsRadioGroup` so a caller (e.g. `languageSection`) can place a
 /// related, non-radio row inside the *same* card as the options themselves.
-private struct SettingsRadioRows<Option: Hashable>: View {
+struct SettingsRadioRows<Option: Hashable>: View {
     let options: [Option]
     let title: (Option) -> String
     let subtitle: ((Option) -> String)?
@@ -789,7 +213,7 @@ private struct SettingsRadioRows<Option: Hashable>: View {
 
 /// A calm list of mutually-exclusive choices. Uses a checkmark, never colour alone, and reads
 /// correctly in both LTR and RTL because it relies on leading/trailing layout.
-private struct SettingsRadioGroup<Option: Hashable>: View {
+struct SettingsRadioGroup<Option: Hashable>: View {
     let options: [Option]
     let title: (Option) -> String
     let subtitle: ((Option) -> String)?
@@ -809,7 +233,7 @@ private struct SettingsRadioGroup<Option: Hashable>: View {
 
 // MARK: - Reusable toggle row
 
-private struct SettingsToggleRow: View {
+struct SettingsToggleRow: View {
     @Environment(AppEnvironment.self) private var env
     let title: LocalizedString
     let subtitle: LocalizedString?
@@ -836,7 +260,7 @@ private struct SettingsToggleRow: View {
 
 // MARK: - Navigation row label
 
-private struct SettingsNavRowLabel: View {
+struct SettingsNavRowLabel: View {
     @Environment(AppEnvironment.self) private var env
     let icon: String
     let title: LocalizedString
@@ -865,7 +289,7 @@ private struct SettingsNavRowLabel: View {
 
 /// A single worked example distinguishing canonical (source-faithful) from display (converted)
 /// units — reachable via the info button next to the Units section header.
-private struct UnitsExplainerSheet: View {
+struct UnitsExplainerSheet: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
 
@@ -904,7 +328,7 @@ private struct UnitsExplainerSheet: View {
 
 /// A minimal, locally-bundled release-notes surface (FEAT-226) — a static, bilingual list, no
 /// network or new resource file required, consistent with ADR-0002.
-private struct WhatsNewSheet: View {
+struct WhatsNewSheet: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
 
@@ -957,7 +381,7 @@ private struct WhatsNewSheet: View {
 /// A simple, always-available diagnostic panel (FEAT-298) — app version and build number only;
 /// contract/schema version strings aren't exposed by `MetricRegistry`/`InsightTemplateStore`
 /// today, so surfacing those is left for a follow-up that adds that accessor.
-private struct AboutSheet: View {
+struct AboutSheet: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
 
@@ -1009,7 +433,7 @@ private struct AboutSheet: View {
 
 // MARK: - Strings (screen-local, always bilingual)
 
-private enum SettingsStrings {
+enum SettingsStrings {
     static let arabicDigitsHint = LocalizedString(
         en: "Show numbers using Arabic-Indic digits.",
         ar: "عرض الأرقام بالصيغة العربية الهندية.")
@@ -1061,6 +485,10 @@ private enum SettingsStrings {
     // (EU5) Says the search found nothing — and, crucially, offers the way out. The old blank
     // screen left the query in the field with no visible reason for the emptiness.
     static let diagnosticsTitle = LocalizedString(en: "Diagnostics", ar: "التشخيص")
+    static let diagnosticsBlurb = LocalizedString(
+        en: "Technical details about this install, for when something looks wrong and you want to "
+            + "describe it accurately.",
+        ar: "تفاصيل تقنية عن هذا التثبيت، لحين بدا شيء غير صحيح وأردت وصفه بدقة.")
     static let searchNoResultsTitle = LocalizedString(en: "No settings match", ar: "لا إعدادات مطابقة")
     static let searchNoResultsBody = LocalizedString(
         en: "Try a different word, or clear the search to see everything.",
