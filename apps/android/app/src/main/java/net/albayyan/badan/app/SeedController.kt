@@ -1,5 +1,6 @@
 package net.albayyan.badan.app
 
+import android.content.SharedPreferences
 import net.albayyan.badan.core.Clock
 import net.albayyan.badan.core.MILLIS_PER_DAY
 import net.albayyan.badan.core.Ulid
@@ -20,6 +21,7 @@ import net.albayyan.badan.domain.ingestion.IngestionPipeline
 import net.albayyan.badan.ontology.MetricRegistry
 import net.albayyan.badan.platform.health.FakeHealthStore
 import net.albayyan.badan.platform.health.HealthDateRange
+import net.albayyan.badan.storage.Database
 import net.albayyan.badan.storage.repositories.CatalogRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
@@ -29,8 +31,12 @@ import java.util.TimeZone
  * Makes BADAN runnable and inspectable immediately: on first launch it ingests a deterministic
  * 90-day health history from the [FakeHealthStore] (exercising the real ingestion + dedup path),
  * seeds a handful of manual logs, and computes baselines + insights. Idempotent by presence of
- * sources; `Settings -> Reset demo data` calls [seed] after a wipe. Faithful port of the iOS
+ * sources; Settings' "Delete all data" calls [seed] after a wipe. Faithful port of the iOS
  * `SeedController`. Timestamps are epoch millis; iOS second-offsets are multiplied to millis.
+ *
+ * Everything it writes is fabricated, so it owns the flag that says so ([isDemoDataActive]) and
+ * the two ways that flag is cleared: a real connect (see `AppEnvironment.connectHealthConnect`)
+ * and [markStartEmpty].
  */
 class SeedController(
     private val catalog: CatalogRepository,
@@ -42,13 +48,38 @@ class SeedController(
     private val registry: MetricRegistry,
     private val clock: Clock,
     private val deviceId: String,
+    /**
+     * Where the sample-data lifecycle flags live. Needed because "is the user currently looking
+     * at fabricated data?" cannot be answered from the database: a seeded row and a real row are
+     * the same shape, and `sources` being non-empty says only that SOMETHING was ingested.
+     */
+    private val prefs: SharedPreferences,
 ) {
     fun seedIfNeeded(nowMillis: Long) {
         if (catalog.sources().isNotEmpty()) return
         seed(nowMillis)
     }
 
+    /**
+     * True while the bundled sample dataset is what the user is looking at — drives
+     * `SampleDataBanner` and the Export Center's sample notice.
+     *
+     * Mirrors iOS's `SeedController.isDemoDataActive`. Android had no such signal at all, which
+     * is the root of its honesty gap: with no way to ask the question, every screen presented
+     * fabricated readings exactly as it would present the user's own.
+     */
+    val isDemoDataActive: Boolean
+        get() = prefs.getBoolean(DEMO_SEED_ACTIVE_KEY, false)
+
     fun seed(nowMillis: Long) {
+        // Set FIRST, so a crash midway through a long seed still leaves the banner on: the
+        // failure mode to avoid is unlabelled fabricated data, and a partial seed is still
+        // fabricated data.
+        prefs.edit().putBoolean(DEMO_SEED_ACTIVE_KEY, true).apply()
+        seedInternal(nowMillis)
+    }
+
+    private fun seedInternal(nowMillis: Long) {
         // Resolved fresh on every call (not cached at construction) so a device timezone change
         // before "Settings -> Reset demo data" is honored rather than reseeding under a stale zone.
         val tz = TimeZone.getDefault().id
@@ -222,4 +253,28 @@ class SeedController(
         val protein: Double,
         val hoursAgo: Int,
     )
+
+    companion object {
+        /**
+         * Set while the bundled sample dataset is live; cleared by a real connect or
+         * [markStartEmpty]. Mirrors iOS's `demoSeedActiveKey`.
+         */
+        const val DEMO_SEED_ACTIVE_KEY = "badan.demoSeedActive"
+
+        /**
+         * The "Start empty" onboarding fork: throw away whatever bootstrap already seeded before
+         * onboarding could ask, and record that the user's store is deliberately empty rather
+         * than not-yet-seeded.
+         *
+         * Uses the same purge primitives the real-connect path uses, so a device that starts
+         * empty and one that starts empty via a connect end up in the identical state. Mirror of
+         * iOS's `SeedController.markStartEmpty`.
+         */
+        fun markStartEmpty(database: Database, prefs: SharedPreferences) {
+            database.purgeIngestedData()
+            database.purgeDemoManualLogs()
+            database.purgeSensitiveNamespace()
+            prefs.edit().putBoolean(DEMO_SEED_ACTIVE_KEY, false).apply()
+        }
+    }
 }

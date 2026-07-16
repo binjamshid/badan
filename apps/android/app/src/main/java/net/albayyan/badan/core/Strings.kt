@@ -149,7 +149,14 @@ object Loc {
     val notifications = LocalizedString(en = "Notifications", ar = "الإشعارات")
     val privacy = LocalizedString(en = "Data & privacy", ar = "البيانات والخصوصية")
     val deviceOnly = LocalizedString(en = "On this device only", ar = "على هذا الجهاز فقط")
-    val resetDemo = LocalizedString(en = "Reset demo data", ar = "إعادة تعيين بيانات العرض")
+    /**
+     * (C1) Was `resetDemo` = "Reset demo data". The action wipes both databases — every
+     * medication, symptom, workout, meal and note the user ever logged — before re-seeding, so
+     * the old name described the least important thing it does and hid the destructive part.
+     * Renamed to match iOS's `Loc.deleteAllData` (COMP-09); the key is replaced rather than
+     * kept alongside, so no call site can reach for the misleading wording again.
+     */
+    val deleteAllData = LocalizedString(en = "Delete all data", ar = "حذف جميع البيانات")
     val localFirstNote = LocalizedString(
         en = "Everything stays on your device. BADAN makes no network calls in this version.",
         ar = "كل شيء يبقى على جهازك. لا يجري بدن أي اتصال بالشبكة في هذا الإصدار."

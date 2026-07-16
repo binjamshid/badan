@@ -1,6 +1,7 @@
 package net.albayyan.badan.storage
 
 import android.os.Trace
+import net.albayyan.badan.domain.IngestionPath
 import net.albayyan.badan.storage.sqlite.SqliteConnection
 import java.io.File
 
@@ -32,6 +33,58 @@ class Database(val directory: File) {
         }
         sensitive.reopen()
         migrate(sensitive, Schema.sensitiveMigrations)
+    }
+
+    /**
+     * Delete only *ingested* measurement data — sources/devices, samples, intervals, sessions,
+     * derived values, baselines, insights and dedup bookkeeping — leaving every manual log
+     * (workouts/nutrition/notes), the customization profile, goals, pins, export jobs and the
+     * whole sensitive database untouched. Mirror of iOS's `Database.purgeIngestedData`.
+     *
+     * Android had no such primitive, which is why connecting Health Connect ingested real
+     * readings ON TOP of the fabricated seed and left the two mixed together permanently: the
+     * only tool available was [resetAll], which also destroys the user's own logs, so the connect
+     * path understandably called neither. This is the missing middle.
+     *
+     * Purges the three measurement tables by `ingestion_path` rather than wholesale (iOS F2):
+     * they hold user-entered rows as well as ingested ones, and `manual` is the only path a human
+     * types in. No seeded row is manual (the seed goes through `FakeHealthStore` /
+     * `IngestionPipeline` as `platformStore`), so nothing fabricated survives the predicate.
+     */
+    fun purgeIngestedData() {
+        // Tables with no `ingestion_path` column: bookkeeping, catalogs and BADAN-derived rows,
+        // none of which a user can enter by hand. All are rebuilt by the ingest/derive chain.
+        val ingestedOnly = listOf(
+            "dedup_decisions", "insights", "baselines", "input_manifests", "derived_values",
+            "read_anchors", "source_devices", "sources",
+        )
+        val manual = IngestionPath.MANUAL.code
+        main.transaction {
+            for (name in ingestedOnly) main.execute("DELETE FROM ${quoteIdent(name)};")
+            // Scoped to the sessions actually being deleted: session_stages has no
+            // ingestion_path of its own, so a wholesale wipe would strip the stages off any
+            // session the predicate preserves.
+            main.execute(
+                "DELETE FROM session_stages WHERE session_id IN " +
+                    "(SELECT id FROM sessions WHERE ingestion_path != '$manual');",
+            )
+            for (name in listOf("sessions", "interval_records", "raw_samples")) {
+                main.execute("DELETE FROM ${quoteIdent(name)} WHERE ingestion_path != '$manual';")
+            }
+        }
+    }
+
+    /**
+     * Delete the main-DB manual-log tables. Used only for clearing a demo seed's manual logs on
+     * the first real connect — see `AppEnvironment.connectHealthConnect`. Mirror of iOS's
+     * `Database.purgeDemoManualLogs`.
+     */
+    fun purgeDemoManualLogs() {
+        main.transaction {
+            for (name in listOf("workout_entries", "nutrition_entries", "note_entries")) {
+                main.execute("DELETE FROM ${quoteIdent(name)};")
+            }
+        }
     }
 
     fun resetAll() {

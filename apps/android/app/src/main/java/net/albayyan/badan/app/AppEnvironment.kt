@@ -84,7 +84,31 @@ class AppEnvironment(context: Context) {
         ExportRunner(measurements, derivation, logging, exportJobs, registry, clock, appVersion, deviceId)
 
     private val seedController: SeedController =
-        SeedController(catalog, ingestion, logging, measurements, baselines, insightEngine, registry, clock, deviceId)
+        SeedController(catalog, ingestion, logging, measurements, baselines, insightEngine, registry,
+            clock, deviceId, prefs)
+
+    /** Whether the user is currently looking at the bundled sample dataset rather than their own
+     *  data — drives the sample banner and the Export Center's notice. Compose-observable so
+     *  clearing it (a real connect, or "Start empty") removes the banner immediately. */
+    var isDemoDataActive by mutableStateOf(seedController.isDemoDataActive)
+        private set
+
+    /**
+     * Whether Health Connect has actually granted BADAN at least some of the data it asked for —
+     * i.e. whether real measurements can arrive at all.
+     *
+     * Derived from the persisted permission state rather than tracked separately, so it survives
+     * process death and cannot drift from what the system actually granted. Compose-observable;
+     * refreshed by [recordHealthConnectPermissions] and at bootstrap.
+     */
+    var isHealthConnected by mutableStateOf(false)
+        private set
+
+    private fun readHealthConnectedFromDisk(): Boolean =
+        runCatching {
+            catalog.permissions("healthConnect")
+                .any { it.status == PermissionStatus.GRANTED || it.status == PermissionStatus.PARTIAL }
+        }.getOrDefault(false)
 
     /** The real Health Connect integration boundary (lazy: safe even when no provider is present). */
     val healthConnect: HealthConnectAdapter by lazy { HealthConnectAdapter(appContext) }
@@ -97,6 +121,13 @@ class AppEnvironment(context: Context) {
     suspend fun syncHealthConnect(): IngestionPipeline.IngestSummary? = withContext(Dispatchers.IO) {
         val now = clock.now()
         val range = HealthDateRange(now - 90L * MILLIS_PER_DAY, now)
+        // The user's real data must never land on top of the fabricated seed. Without this, a
+        // connected Android user's Home screen mixed 90 days of invented readings with their own
+        // and presented the blend as theirs — permanently, since nothing ever removed the seed.
+        // iOS has done this at `connectHealthKit` from the start; Android had no purge primitive
+        // to call. Runs once, gated on the same flag the banner reads, so it can never touch the
+        // data of a user who is already connected.
+        purgeDemoSeedIfActive()
         // Batch the ingest + baseline recompute in one transaction (mirrors the seed path) so this
         // recurring sync doesn't pay a commit-per-row cost across up to 90 days of history.
         val summary = runCatching {
@@ -113,6 +144,32 @@ class AppEnvironment(context: Context) {
         summary
     }
 
+    /**
+     * Clear the sample seed the first time real data is about to arrive, then lower the flag.
+     *
+     * Mirrors iOS's `connectHealthKit` purge seam, including its documented tradeoff: a manual
+     * log the user entered while exploring with sample data cannot be told apart from a seeded
+     * one by content, so the first connect clears both. It happens exactly once — `demoSeedActive`
+     * is cleared here — so a connected user's own logs are never at risk afterwards.
+     *
+     * `purgeIngestedData` alone would not be enough: the seed also writes workouts/nutrition/notes
+     * (main DB) and medications/symptoms (sensitive DB), which are the fabricated rows most likely
+     * to be mistaken for the user's own.
+     */
+    private fun purgeDemoSeedIfActive() {
+        if (!seedController.isDemoDataActive) return
+        runCatching {
+            database.purgeIngestedData()
+            database.purgeDemoManualLogs()
+            database.purgeSensitiveNamespace()
+            prefs.edit().putBoolean(SeedController.DEMO_SEED_ACTIVE_KEY, false).apply()
+        }
+        // Reflect the cleared flag in the UI even if a step above failed: on a partial failure the
+        // banner staying up is the safe direction, so re-read rather than assume.
+        val stillDemo = seedController.isDemoDataActive
+        CoroutineScope(Dispatchers.Main.immediate).launch { isDemoDataActive = stillDemo }
+    }
+
     /** Persist an honest granted / partial / denied Health Connect permission state for the UI. */
     fun recordHealthConnectPermissions(granted: Set<String>) {
         val required = HealthConnectAdapter.permissions
@@ -122,6 +179,7 @@ class AppEnvironment(context: Context) {
             else -> PermissionStatus.DENIED
         }
         runCatching { catalog.upsertPermission(PermissionState("healthConnect", "health", status, clock.now())) }
+        isHealthConnected = readHealthConnectedFromDisk()
     }
 
     // Live presentation state (Compose-observable). `profile` starts at the default and is
@@ -154,16 +212,42 @@ class AppEnvironment(context: Context) {
             p
         }
         profile = loaded
+        isDemoDataActive = seedController.isDemoDataActive
+        isHealthConnected = readHealthConnectedFromDisk()
         isReady = true
     }
 
+    /**
+     * The "Start empty" onboarding fork: no sample data, no connect — just an empty store the
+     * user fills themselves.
+     *
+     * Android's onboarding offered no such choice; bootstrap seeded unconditionally and every
+     * path led to fabricated data.
+     */
+    suspend fun startEmpty() {
+        isReady = false
+        withContext(Dispatchers.IO) {
+            runCatching { SeedController.markStartEmpty(database, prefs) }
+        }
+        isDemoDataActive = seedController.isDemoDataActive
+        isReady = true
+    }
+
+    /**
+     * Delete everything on this device, then restore whatever the user's actual situation is: a
+     * connected user's data is re-read from Health Connect, an unconnected user gets the sample
+     * set back. Surfaced as "Delete all data" — see [Strings.deleteAllData].
+     */
     suspend fun resetDemoData() {
         isReady = false
         withContext(Dispatchers.IO) {
             runCatching { database.resetAll() }
+            // Re-seeding restores fabricated data, so the flag must go back up — `seed()` sets
+            // it. Previously nothing tracked this at all.
             runCatching { seedController.seed(clock.now()) }
         }
         profile = profiles.load()
+        isDemoDataActive = seedController.isDemoDataActive
         isReady = true
     }
 

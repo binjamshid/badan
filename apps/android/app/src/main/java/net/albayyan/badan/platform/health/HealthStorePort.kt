@@ -1,6 +1,7 @@
 package net.albayyan.badan.platform.health
 
 import net.albayyan.badan.domain.Aggregation
+import net.albayyan.badan.domain.QualityFlag
 import net.albayyan.badan.domain.SessionKind
 import net.albayyan.badan.domain.SleepStage
 import net.albayyan.badan.domain.SourceType
@@ -39,6 +40,13 @@ data class SampleDto(
     val sourceId: String,
     val deviceId: String? = null,
     val externalId: String,
+    /**
+     * Honest annotations travelling with this reading — notably [QualityFlag.SAMPLE_DATA], which
+     * marks a row nobody measured. Mirrors iOS's DTO `qualityFlags`; Android's DTOs carried no
+     * flags field at all, so a fabricated row had no way to say so between the store that
+     * invented it and the database it landed in.
+     */
+    val qualityFlags: List<QualityFlag> = emptyList(),
 )
 
 data class IntervalDto(
@@ -52,6 +60,13 @@ data class IntervalDto(
     val sourceId: String,
     val deviceId: String? = null,
     val externalId: String,
+    /**
+     * Honest annotations travelling with this reading — notably [QualityFlag.SAMPLE_DATA], which
+     * marks a row nobody measured. Mirrors iOS's DTO `qualityFlags`; Android's DTOs carried no
+     * flags field at all, so a fabricated row had no way to say so between the store that
+     * invented it and the database it landed in.
+     */
+    val qualityFlags: List<QualityFlag> = emptyList(),
 )
 
 data class StageDto(
@@ -72,6 +87,13 @@ data class SessionDto(
     val stages: List<StageDto> = emptyList(),
     val timeAsleepSeconds: Double? = null,
     val timeInBedSeconds: Double? = null,
+    /**
+     * Honest annotations travelling with this reading — notably [QualityFlag.SAMPLE_DATA], which
+     * marks a row nobody measured. Mirrors iOS's DTO `qualityFlags`; Android's DTOs carried no
+     * flags field at all, so a fabricated row had no way to say so between the store that
+     * invented it and the database it landed in.
+     */
+    val qualityFlags: List<QualityFlag> = emptyList(),
 )
 
 interface HealthStorePort {

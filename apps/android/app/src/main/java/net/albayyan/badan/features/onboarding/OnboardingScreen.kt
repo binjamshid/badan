@@ -63,6 +63,9 @@ import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.BadanType
 import net.albayyan.badan.designsystem.components.BadanCard
 import net.albayyan.badan.domain.DepthPolicy
+import net.albayyan.badan.platform.health.HealthAvailability
+import net.albayyan.badan.platform.health.HealthConnectAdapter
+import androidx.activity.compose.rememberLauncherForActivityResult
 
 /**
  * The pre-shell welcome flow (mirror of the iOS `OnboardingView`). The root gates the tab UI on
@@ -109,7 +112,12 @@ fun OnboardingScreen() {
                 lastStep = lastStep,
                 pageCount = pageCount,
                 onBack = { scope.launch { pagerState.animateScrollToPage(step - 1) } },
-                onSkip = { env.completeOnboarding() },
+                // Skip jumps to the connect step rather than straight into the app. It used to
+                // call `completeOnboarding()`, which dropped the user into 90 days of fabricated
+                // data having never been shown the sentence explaining that's what it is —
+                // skipping the intro is a reasonable thing to want; being quietly handed invented
+                // health data as a result is not. They still skip everything they meant to skip.
+                onSkip = { scope.launch { pagerState.animateScrollToPage(lastStep) } },
                 s = env::s,
             )
 
@@ -529,7 +537,58 @@ private fun ConnectPage(
     onComplete: () -> Unit,
     s: (LocalizedString) -> String,
 ) {
+    val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
+    val scope = rememberCoroutineScope()
+    var connecting by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var connectError by remember { mutableStateOf<LocalizedString?>(null) }
+
+    // Same contract the Sources screen uses — onboarding now runs the real permission flow
+    // rather than a button that looked like it did.
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = HealthConnectAdapter.requestPermissionsContract(),
+    ) { grantedSet ->
+        scope.launch {
+            env.recordHealthConnectPermissions(grantedSet)
+            val anyGranted = grantedSet.any { it in HealthConnectAdapter.permissions }
+            if (anyGranted) {
+                // Purges the sample seed before ingesting, so a connected user never ends up with
+                // their data blended into fabricated readings.
+                env.syncHealthConnect()
+                connecting = false
+                env.completeOnboarding()
+            } else {
+                // Denial is not a dead end and not a scolding: stay on the page, say so calmly,
+                // and leave the other two ways forward available.
+                connecting = false
+                connectError = connectDeniedNotice
+            }
+        }
+    }
+
+    val onConnect: () -> Unit = {
+        connectError = null
+        if (env.healthConnect.availability() == HealthAvailability.available) {
+            connecting = true
+            permissionLauncher.launch(HealthConnectAdapter.permissions)
+        } else {
+            connectError = connectUnavailableNotice
+        }
+    }
+    val onExploreSample: () -> Unit = {
+        // Nothing to do but proceed: bootstrap already seeded, and the flag it set keeps the
+        // sample banner up for as long as that data is what's on screen.
+        env.completeOnboarding()
+    }
+    val onStartEmpty: () -> Unit = {
+        busy = true
+        scope.launch {
+            env.startEmpty()
+            busy = false
+            env.completeOnboarding()
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -558,22 +617,60 @@ private fun ConnectPage(
 
         Spacer(modifier = Modifier.weight(1f))
 
+        // The three honest ways to start, mirroring iOS. Every one of these did the same thing
+        // before: "Connect health data" was wired to `onComplete` exactly like "Continue without
+        // connecting", so the primary button on the most important screen in onboarding was a
+        // no-op that silently left the user in fabricated data while implying their real data had
+        // been connected. The real flow existed only on the Sources screen, one tap deeper.
+        if (connectError != null) {
+            Text(
+                text = s(connectError!!),
+                style = BadanType.caption,
+                color = colors.textSecondary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = BadanSpace.s3),
+            )
+        }
         PrimaryButton(
-            label = s(connectPrimary),
-            enabled = true,
-            onClick = onComplete,
+            label = if (connecting) s(connectingLabel) else s(connectPrimary),
+            enabled = !connecting && !busy,
+            onClick = onConnect,
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(modifier = Modifier.size(BadanSpace.s3))
+
+        // Sample data is offered plainly, and says what it is right here — the caption is the
+        // difference between "explore the app" and "here is some health data".
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = BadanSpace.touchMin)
-                .clickable(onClick = onComplete),
+                .clickable(enabled = !busy, onClick = onExploreSample),
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = s(Loc.continueWithoutConnecting),
+                text = s(exploreSampleLabel),
+                style = BadanType.body,
+                color = colors.primary,
+            )
+        }
+        Text(
+            text = s(exploreSampleCaption),
+            style = BadanType.caption,
+            color = colors.textSecondary,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.size(BadanSpace.s3))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BadanSpace.touchMin)
+                .clickable(enabled = !busy, onClick = onStartEmpty),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = s(startEmptyLabel),
                 style = BadanType.body,
                 color = colors.textSecondary,
             )
@@ -707,3 +804,23 @@ private val connectSubtitle = LocalizedString(
 )
 
 private val connectPrimary = LocalizedString(en = "Connect health data", ar = "ربط البيانات الصحية")
+private val connectingLabel = LocalizedString(en = "Connecting…", ar = "جارٍ الربط…")
+
+/** Denial is a legitimate answer, not a failure — no scolding, no dead end. */
+private val connectDeniedNotice = LocalizedString(
+    en = "No problem — Health Connect wasn't granted. You can pick one of the options below, or " +
+        "connect later from Settings.",
+    ar = "لا بأس — لم يُمنح إذن Health Connect. يمكنك اختيار أحد الخيارين أدناه، أو الربط لاحقاً من الإعدادات.",
+)
+private val connectUnavailableNotice = LocalizedString(
+    en = "Health Connect isn't available on this device yet. You can still explore or start empty.",
+    ar = "Health Connect غير متاح على هذا الجهاز بعد. لا يزال بإمكانك الاستكشاف أو البدء فارغاً.",
+)
+private val exploreSampleLabel = LocalizedString(en = "Explore with sample data", ar = "استكشف ببيانات تجريبية")
+
+/** The admission that makes the sample option honest rather than a trap. */
+private val exploreSampleCaption = LocalizedString(
+    en = "Made-up readings, so you can look around. Nothing here is yours until you connect.",
+    ar = "قراءات مُختلَقة كي تتصفّح التطبيق. لا شيء هنا يخصّك حتى تربط بياناتك.",
+)
+private val startEmptyLabel = LocalizedString(en = "Start empty", ar = "ابدأ فارغاً")

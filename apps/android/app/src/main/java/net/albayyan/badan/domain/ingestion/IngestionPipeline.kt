@@ -8,6 +8,7 @@ import net.albayyan.badan.domain.Device
 import net.albayyan.badan.domain.IngestionPath
 import net.albayyan.badan.domain.IntervalRecord
 import net.albayyan.badan.domain.Provenance
+import net.albayyan.badan.domain.QualityFlag
 import net.albayyan.badan.domain.RawSample
 import net.albayyan.badan.domain.ReconciliationDecision
 import net.albayyan.badan.domain.Session
@@ -81,7 +82,7 @@ class IngestionPipeline(
                 tzId = dto.tz,
                 provenance = platformProvenance(
                     sourceId = dto.sourceId, deviceId = dto.deviceId, externalId = dto.externalId,
-                    measuredAt = dto.start, tz = dto.tz, now = now,
+                    measuredAt = dto.start, tz = dto.tz, now = now, qualityFlags = dto.qualityFlags,
                 ),
                 updatedAt = now, originDeviceId = deviceId,
             )
@@ -102,7 +103,7 @@ class IngestionPipeline(
                 startAt = dto.start, endAt = dto.end, tzId = dto.tz, aggregation = dto.aggregation,
                 provenance = platformProvenance(
                     sourceId = dto.sourceId, deviceId = dto.deviceId, externalId = dto.externalId,
-                    measuredAt = dto.start, tz = dto.tz, now = now,
+                    measuredAt = dto.start, tz = dto.tz, now = now, qualityFlags = dto.qualityFlags,
                 ),
                 updatedAt = now, originDeviceId = deviceId,
             )
@@ -124,7 +125,7 @@ class IngestionPipeline(
                 ),
                 provenance = platformProvenance(
                     sourceId = dto.sourceId, deviceId = dto.deviceId, externalId = dto.externalId,
-                    measuredAt = dto.start, tz = dto.tz, now = now,
+                    measuredAt = dto.start, tz = dto.tz, now = now, qualityFlags = dto.qualityFlags,
                 ),
                 updatedAt = now, originDeviceId = deviceId,
             )
@@ -276,11 +277,12 @@ class IngestionPipeline(
         measuredAt: Long,
         tz: String,
         now: Long,
+        qualityFlags: List<QualityFlag> = emptyList(),
     ): Provenance =
         Provenance(
             sourceId = sourceId, deviceId = deviceId, ingestionPath = IngestionPath.PLATFORM_STORE,
             externalId = externalId, measuredAt = measuredAt, measuredTimezone = tz,
-            recordedAt = now, ingestedAt = now,
+            recordedAt = now, ingestedAt = now, qualityFlags = qualityFlags,
         )
 
     private fun stageSummary(stages: List<StageDto>): Map<String, Double> {

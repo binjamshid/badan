@@ -15,8 +15,13 @@ import kotlin.random.Random
 
 /**
  * Pure-JVM parity tests for the ported logic that the Android port must match iOS on: unit
- * conversion, dedup overlap/reconcile, ULID, and baseline median/MAD. (DB-backed pipeline tests
- * run as instrumented tests on a device.)
+ * conversion, dedup overlap/reconcile, ULID, and baseline median/MAD.
+ *
+ * This doc used to end "(DB-backed pipeline tests run as instrumented tests on a device.)" —
+ * which was not true. There is no `androidTest` source set in this module and never has been, so
+ * the repositories, migrations, ingestion pipeline and export writers have no automated coverage
+ * on Android at all. The sentence made a reviewer reading this file believe the opposite of the
+ * truth, which is worse than the gap itself. Stated plainly here until those tests exist.
  */
 class FoundationTest {
 

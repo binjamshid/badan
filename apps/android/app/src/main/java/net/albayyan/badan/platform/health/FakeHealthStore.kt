@@ -2,6 +2,7 @@ package net.albayyan.badan.platform.health
 
 import net.albayyan.badan.core.Clock
 import net.albayyan.badan.domain.Aggregation
+import net.albayyan.badan.domain.QualityFlag
 import net.albayyan.badan.domain.MetricId
 import net.albayyan.badan.domain.SessionKind
 import net.albayyan.badan.domain.SleepStage
@@ -187,23 +188,45 @@ class FakeHealthStore(
             }
         }
 
-        return GeneratedHistory(sessions, intervals, samples)
+        // Every row this class produces is invented, so every row says so. Stamped once here —
+        // the single point where generation finishes — rather than at each construction site, so
+        // a metric added to the generator later cannot silently ship unflagged. Mirrors iOS's
+        // FakeHealthStore.
+        return GeneratedHistory(
+            sessions.map { it.copy(qualityFlags = it.qualityFlags + QualityFlag.SAMPLE_DATA) },
+            intervals.map { it.copy(qualityFlags = it.qualityFlags + QualityFlag.SAMPLE_DATA) },
+            samples.map { it.copy(qualityFlags = it.qualityFlags + QualityFlag.SAMPLE_DATA) },
+        )
     }
 
     // MARK: HealthStorePort
 
     override fun availability(): HealthAvailability = HealthAvailability.available
 
+    /**
+     * The simulated devices behind the sample data.
+     *
+     * These were branded "Apple Watch" and "iPhone" under `com.apple.health` — on an Android
+     * device. That is fabricated data claiming provenance from a competitor's platform that
+     * cannot exist here: it surfaced in the provenance sheet, in the Sources screen, and in
+     * exported CSV's `source_app`, telling the user their readings came from hardware they do not
+     * own. Now BADAN's own namespace, with names that say "sample" wherever they are shown.
+     *
+     * [SourceType.HEALTHKIT] is kept only because it is the enum's platform-store case and the
+     * dedup/priority path keys off the descriptor rather than the type. The watch/phone shape and
+     * the priority gap are kept deliberately: they are what exercise the wearable-beats-phone
+     * reconciliation the two overlapping sleep sources exist to test.
+     */
     override fun sourceDescriptors(): List<SourceDescriptor> = listOf(
         SourceDescriptor(
-            id = watchSource, displayName = "Apple Watch", type = SourceType.HEALTHKIT,
-            bundleId = "com.apple.health", deviceId = watchDevice,
-            deviceName = "Apple Watch", deviceModel = "Watch7,1", priority = 100,
+            id = watchSource, displayName = "Sample watch (simulated)", type = SourceType.HEALTHKIT,
+            bundleId = SAMPLE_BUNDLE_ID, deviceId = watchDevice,
+            deviceName = "Sample watch (simulated)", deviceModel = "BADAN sample data", priority = 100,
         ),
         SourceDescriptor(
-            id = phoneSource, displayName = "iPhone", type = SourceType.HEALTHKIT,
-            bundleId = "com.apple.health", deviceId = phoneDevice,
-            deviceName = "iPhone", deviceModel = "iPhone16,1", priority = 50,
+            id = phoneSource, displayName = "Sample phone (simulated)", type = SourceType.HEALTHKIT,
+            bundleId = SAMPLE_BUNDLE_ID, deviceId = phoneDevice,
+            deviceName = "Sample phone (simulated)", deviceModel = "BADAN sample data", priority = 50,
         ),
     )
 
@@ -277,11 +300,15 @@ class FakeHealthStore(
         return Pair(stages, asleep)
     }
 
-    private companion object {
+    companion object {
         // Source identity (device wins dedup ties by priority — I4).
-        const val watchSource = "src_watch"
-        const val watchDevice = "watch-0001"
-        const val phoneSource = "src_iphone"
-        const val phoneDevice = "iphone-0001"
+        private const val watchSource = "src_watch"
+        private const val watchDevice = "watch-0001"
+        private const val phoneSource = "src_iphone"
+        private const val phoneDevice = "iphone-0001"
+
+        /** Bundle id for both simulated sources — BADAN's own namespace, never Apple's or
+         *  Google's. See [sourceDescriptors]. Matches iOS's `FakeHealthStore.sampleBundleId`. */
+        const val SAMPLE_BUNDLE_ID = "com.badan.sampledata"
     }
 }
