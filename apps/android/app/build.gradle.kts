@@ -6,11 +6,19 @@ plugins {
 }
 
 android {
+    // `namespace` (R-class/manifest package, and the Kotlin package every source
+    // file under app/src/main/java/net/albayyan/badan/ already declares) is left
+    // as `net.albayyan.badan` intentionally — it is independent of
+    // `applicationId` (below), and changing it would require moving ~80 Kotlin
+    // source files' package directories. Only `applicationId` (the Play Store /
+    // deep-link / Health Connect / Firebase identity) was updated to match the
+    // decided portfolio namespace (2026-07-20, see PHASE-Z-PENDING.md Z6
+    // resolution): Android has never shipped, so this is a safe rename.
     namespace = "net.albayyan.badan"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "net.albayyan.badan"
+        applicationId = "net.binjamshid.badan"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

@@ -8,6 +8,22 @@ Product master plan · technical architecture spec · implementation decompositi
 - **Lineage:** v1 was synthesized from (a) the "Health Analysis Apps: A Developer's Deep Report" market/technical analysis and (b) a frame-by-frame analysis of a ~6-minute Bevel screen recording (July 2026 build). v2 preserves every v1 decision and expands each section into implementation-grade specification, then adds twenty new execution sections (§47–§66) covering repository design, platform architectures, subsystem implementation plans, testing/CI/CD/migrations/observability, and the agent-orchestration capstone.
 - **Scope guardrail (unchanged):** wellness and personal health tracking, interpretation, logging, reporting, and user-controlled data workflows. No diagnosis, no treatment claims, no surveillance features. All clinical-adjacent capability is future potential, explicitly labeled and compliance-gated.
 
+> **⚠️ Partially superseded — read this before citing a section number.** This is a
+> pre-build strategic/planning blueprint, not the current build's source of truth. What
+> governs the actual repo: `CLAUDE.md` (working mode + guardrails, read first by every
+> agent), `docs/adr/` (accepted decisions), and `docs/EXECUTION_PLAN.md` (what's actually
+> being built and in what order). Where they conflict with this document, the ADRs win.
+> Known supersessions:
+>
+> | Blueprint section | Superseded by |
+> |---|---|
+> | §33/§47/§52 — KMP shared-core architecture | [ADR-0001](docs/adr/ADR-0001-native-first-contracts-shared.md) (native-first; contracts/schemas shared, not runtime) |
+> | §52 — storage (GRDB/Room via KMP) | [ADR-0005](docs/adr/ADR-0005-raw-sqlite-over-grdb.md) (iOS: raw SQLite) / [ADR-0007](docs/adr/ADR-0007-android-framework-sqlite.md) (Android: framework SQLite, not Room) |
+> | §39 — monetization/packaging | [docs/MONETIZATION.md](docs/MONETIZATION.md) |
+>
+> Sections not listed above have not been re-verified against current ADRs — check `docs/adr/`
+> before treating any architectural claim here as current.
+
 ## How to use this document
 
 | If you are… | Read first | Then |

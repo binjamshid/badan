@@ -47,6 +47,146 @@ jobs:
           print("metrics:", len(json.loads((root/'packages/metric-ontology/registry.json').read_text())['metrics']))
           sys.exit(1 if fail else 0)
           PY
+      - name: App Store legal pages exist and are placeholder-free
+        run: |
+          set -euo pipefail
+          for f in docs/legal/privacy.html docs/legal/eula.html docs/legal/support.html; do
+            if [ ! -s "$f" ]; then
+              echo "::error::$f is missing or empty — App Store requires hosted privacy/EULA/support pages"
+              exit 1
+            fi
+          done
+          if grep -InE 'TODO|PLACEHOLDER|\[CONTACT|REPLACE[_ ]?ME|example\.com|lorem ipsum|<insert|TBD\b' docs/legal/*.html; then
+            echo "::error::docs/legal/*.html still contains a placeholder token — fill it in before release"
+            exit 1
+          fi
+      - name: Export module stays network-free (ADR D-8)
+        run: |
+          set -euo pipefail
+          if grep -rqE 'URLSession|import Network|NSURLConnection' apps/ios/Sources/Export/; then
+            echo "::error::apps/ios/Sources/Export/ references a networking API — ADR D-8 requires the export module to be network-free"
+            grep -rnE 'URLSession|import Network|NSURLConnection' apps/ios/Sources/Export/
+            exit 1
+          fi
+      - name: Insight template copy stays inside the wellness-language guardrails (ADR D-11)
+        run: |
+          python3 - <<'PY'
+          import json, re, sys, pathlib
+          root = pathlib.Path('.')
+          data = json.loads((root/'packages/contracts/insights/templates.json').read_text())
+
+          # Derive the banned lexicon from wellnessRules itself, so the lint can never drift from
+          # the policy it enforces: each "Avoid ... (term, term, ...)" rule names its own terms.
+          lexicon = set()
+          for rule in data['wellnessRules']:
+            if not rule.startswith('Avoid'):
+              continue
+            m = re.search(r'\(([^)]*)\)', rule)
+            if not m:
+              continue
+            for item in m.group(1).split(','):
+              item = item.strip().strip("'")
+              if not item or 'named' in item:
+                continue
+              for part in item.split('/'):
+                lexicon.add(part.strip().lower())
+
+          violations = []
+          for t in data['templates']:
+            for field in ('textEn', 'textAr'):
+              text = t.get(field, '').lower()
+              for term in lexicon:
+                if term in text:
+                  violations.append(f"{t['id']}.{field} contains banned term '{term}'")
+
+          if violations:
+            for v in violations:
+              print(f"::error::packages/contracts/insights/templates.json: {v}")
+            sys.exit(1)
+          PY
+      - name: Design tokens stay in sync with Tokens.swift / Tokens.kt
+        run: |
+          python3 - <<'PY'
+          import json, re, sys, pathlib
+
+          root = pathlib.Path('.')
+          tokens = json.loads((root/'docs/design/design-tokens.json').read_text())
+          swift = (root/'apps/ios/Sources/DesignSystem/Tokens.swift').read_text()
+          kotlin = (root/'apps/android/app/src/main/java/net/albayyan/badan/designsystem/Tokens.kt').read_text()
+
+          fail = False
+          def err(msg):
+            global fail
+            print(f"::error::{msg}")
+            fail = True
+
+          swift_colors = {m.group(1): (m.group(2).upper(), m.group(3).upper())
+                           for m in re.finditer(r'static let (\w+) = Color\(light: "#([0-9A-Fa-f]{6})", dark: "#([0-9A-Fa-f]{6})"\)', swift)}
+          swift_nums = {m.group(1): int(m.group(2)) for m in re.finditer(r'static let (\w+): CGFloat = (\d+)', swift)}
+
+          def kt_colors(fn):
+            block = re.search(fn + r'\(\): BadanColors = BadanColors\((.*?)\n\)\n', kotlin, re.S).group(1)
+            return {m.group(1): m.group(2).upper() for m in re.finditer(r'(\w+) = Color\(0xFF([0-9A-Fa-f]{6})\)', block)}
+          kt_light, kt_dark = kt_colors('fun badanLightColors'), kt_colors('fun badanDarkColors')
+          kt_nums = {m.group(1): int(m.group(2)) for m in re.finditer(r'val (\w+) = (\d+)\.dp', kotlin)}
+
+          # JSON key -> shared Swift/Kotlin field name (statusColors names differ from the token names).
+          color_map = {
+            'background': 'background', 'surface': 'surface', 'surfaceElevated': 'surfaceElevated',
+            'primary': 'primary', 'textPrimary': 'textPrimary', 'textSecondary': 'textSecondary',
+            'separator': 'separator',
+            'withinRange': 'inBand', 'above': 'outOfBand', 'below': 'outOfBand',
+            'neutral': 'info', 'critical': 'critical',
+          }
+          palette = {**tokens['palette'], **tokens['statusColors']}
+          for json_key, code_key in color_map.items():
+            entry = palette[json_key]
+            want = (entry['light'].lstrip('#').upper(), entry['dark'].lstrip('#').upper())
+            got_swift = swift_colors.get(code_key, (None, None))
+            if got_swift != want:
+              err(f"Tokens.swift BadanColor.{code_key} {got_swift} != design-tokens.json palette.{json_key} {want}")
+            got_kt = (kt_light.get(code_key), kt_dark.get(code_key))
+            if got_kt != want:
+              err(f"Tokens.kt {code_key} {got_kt} != design-tokens.json palette.{json_key} {want}")
+
+          # Spacing/radii — touchMin is excluded: 44pt (iOS HIG) vs 48dp (Android Material) is an
+          # intentional per-platform divergence, not drift.
+          space_map = {f'space{i}': (f'space{i}', f's{i}') for i in range(1, 9)}
+          space_map['cardPadding'] = ('cardPadding', 'cardPadding')
+          for json_key, (swift_key, kt_key) in space_map.items():
+            want = tokens['spacing'][json_key]
+            if swift_nums.get(swift_key) != want:
+              err(f"Tokens.swift BadanSpace.{swift_key} ({swift_nums.get(swift_key)}) != design-tokens.json spacing.{json_key} ({want})")
+            if kt_nums.get(kt_key) != want:
+              err(f"Tokens.kt BadanSpace.{kt_key} ({kt_nums.get(kt_key)}) != design-tokens.json spacing.{json_key} ({want})")
+
+          for json_key in ('chip', 'control', 'card', 'sheet'):
+            want = tokens['radii'][json_key]
+            if swift_nums.get(json_key) != want:
+              err(f"Tokens.swift BadanRadius.{json_key} ({swift_nums.get(json_key)}) != design-tokens.json radii.{json_key} ({want})")
+            if kt_nums.get(json_key) != want:
+              err(f"Tokens.kt BadanRadius.{json_key} ({kt_nums.get(json_key)}) != design-tokens.json radii.{json_key} ({want})")
+
+          sys.exit(1 if fail else 0)
+          PY
+      - name: App icons carry no alpha channel (ITMS-90717)
+        run: |
+          python3 - <<'PY'
+          import glob, struct, sys
+          fail = False
+          for path in sorted(glob.glob('apps/ios/**/*.appiconset/*.png', recursive=True)):
+            with open(path, 'rb') as f:
+              header = f.read(33)
+            width, height = struct.unpack('>II', header[16:24])
+            colortype = header[25]
+            if colortype != 2:
+              print(f"::error::{path} is PNG colortype {colortype} (expected 2/RGB, no alpha) — App Store rejects alpha-bearing icons (ITMS-90717)")
+              fail = True
+            if '1024' in path and (width, height) != (1024, 1024):
+              print(f"::error::{path} is {width}x{height} (expected 1024x1024)")
+              fail = True
+          sys.exit(1 if fail else 0)
+          PY
 
   ios-build-test:
     name: iOS build + test

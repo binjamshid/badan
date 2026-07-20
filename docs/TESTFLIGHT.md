@@ -7,9 +7,12 @@ config-ready**; the remaining steps require your Apple credentials and must be d
 
 ## What's already in place (in this repo)
 
-- **App icon** — `apps/ios/App/Assets.xcassets/AppIcon.appiconset` (1024×1024, no alpha,
-  App Store-compliant). Xcode generates all size variants from it. Replace `icon_1024.png`
-  anytime with real artwork; the wiring stays the same.
+- **App icon** — `apps/ios/App/Assets.xcassets/` (five `*.appiconset` icon families, each a
+  1024×1024 source). No-alpha compliance (ITMS-90717 rejects alpha-bearing icons) is **CI-enforced**
+  by the `data-contracts` job, which asserts every `*.appiconset/*.png` is IHDR colortype 2
+  (RGB, no alpha channel) — it is not a one-time manual guarantee. Xcode generates all size
+  variants from each 1024 source; replace the `*-1024.png` files anytime with real artwork and
+  the wiring stays the same.
 - **Versioning** — `MARKETING_VERSION 0.1.0`, `CURRENT_PROJECT_VERSION 1` (project.yml).
   Info.plist `CFBundleShortVersionString`/`CFBundleVersion` reference them.
 - **Bundle identifier** — `net.binjamshid.badan`.
@@ -70,19 +73,20 @@ TestFlight app. External testing (up to 10,000) needs a short Beta App Review.
 - **Privacy** — a privacy policy URL and App Privacy "nutrition label". BADAN is local-first
   and stores health data only on-device; declare data collection accordingly (currently: none
   leaves the device).
-  - **The policy already exists** as `docs/PRIVACY_POLICY.md` (accurate to the app's
-    local-first, zero-collection behavior) and is rendered in-app, bilingually, at
-    **Settings → Data & privacy → Privacy Policy** — so testers can read it offline (COMP-04).
+  - **The finished, tracked pages already exist** at `docs/legal/`: `privacy.html`,
+    `eula.html`, and `support.html` — complete, styled, bilingual (en/ar), placeholder-free,
+    with a real support address. `docs/PRIVACY_POLICY.md` remains the source rendered in-app at
+    **Settings → Data & privacy → Privacy Policy** (COMP-04), but `docs/legal/privacy.html` is
+    the artifact to host for App Store Connect.
   - **Two required owner actions before public App Store submission** (App Store Connect
-    requires a *hosted* URL — you must do these; they are not, and cannot be, done from this
+    requires *hosted* URLs — you must do these; they are not, and cannot be, done from this
     repo):
-    1. **Host `docs/PRIVACY_POLICY.md` at a public URL** (e.g. a GitHub Pages page, your own
-       site, or any static host). Before hosting, fill in the `[CONTACT …]` placeholder in the
-       document (and the matching contact line in the in-app screen,
-       `apps/ios/Sources/Features/Settings/PrivacyPolicyScreen.swift`) with a real support
-       email or address.
-    2. **Enter that URL** in App Store Connect ▸ your app ▸ App Privacy (and the App Information
-       ▸ Privacy Policy URL field). Nothing here publishes or hosts anything for you.
+    1. **Host `docs/legal/privacy.html`, `docs/legal/eula.html`, and `docs/legal/support.html`**
+       at public URLs (e.g. a GitHub Pages page, your own site, or any static host). All three
+       are already filled in — no placeholder to replace.
+    2. **Enter those URLs** in App Store Connect ▸ your app ▸ App Privacy (Privacy Policy URL),
+       App Information (Support URL), and — if using a custom EULA — App Store Connect ▸
+       Agreements ▸ EULA. Nothing here publishes or hosts anything for you.
 
 ## HealthKit note
 
