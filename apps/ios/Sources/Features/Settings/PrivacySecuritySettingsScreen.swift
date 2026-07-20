@@ -8,6 +8,7 @@ import UserNotifications
 /// "Data & privacy" because there was nowhere else for them.
 struct PrivacySecuritySettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showPurgeConfirm = false
     @State private var showResetConfirm = false
     @State private var transientNotice: LocalizedString?
@@ -27,7 +28,7 @@ struct PrivacySecuritySettingsScreen: View {
         .overlay(alignment: .bottom) {
             if let notice = transientNotice { SettingsTransientNotice(notice: notice) }
         }
-        .animation(.easeInOut(duration: 0.25), value: transientNotice)
+        .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: transientNotice)
         // Purge is a real file deletion (the sensitive store is a separate DB) — confirm honestly.
         .confirmationDialog(
             env.s(SettingsStrings.purgeConfirmTitle),

@@ -1,5 +1,8 @@
 package net.albayyan.badan.designsystem
 
+import android.animation.ValueAnimator
+import androidx.compose.animation.core.TweenSpec
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -102,6 +105,34 @@ object BadanRadius {
     val control = 12.dp
     val card = 20.dp
     val sheet = 24.dp
+}
+
+/**
+ * Named animation durations (mirror of iOS `BadanMotion`). iOS had 34 literal `duration:` values
+ * across 12 files; Android's own equivalent was a single `animateFloatAsState` call with an
+ * unnamed default spec — no literal-duration problem to fix here, but also no Reduce Motion
+ * story, which this closes (ledger #36 / dossier "Motion is the un-tokenized fifth axis").
+ *
+ * Compose's `LocalAccessibilityManager` does **not** expose a reduce-motion flag the way iOS's
+ * `\.accessibilityReduceMotion` environment key does (checked: `AccessibilityManager` only
+ * offers `calculateRecommendedTimeoutMillis`) — so this reads Android's actual OS-level signal
+ * instead, the "Remove animations" accessibility setting
+ * (`Settings.Global.ANIMATOR_DURATION_SCALE == 0`), via the same `ValueAnimator
+ * .areAnimatorsEnabled()` check the platform's own `Animator`/`ObjectAnimator` APIs honour
+ * automatically but Compose's `animate*AsState` family does not.
+ */
+object BadanMotion {
+    const val briefMs = 150
+    const val quickMs = 200
+    const val standardMs = 250
+
+    /** False when the user has turned on Settings > Accessibility > Remove animations. */
+    val animationsEnabled: Boolean get() = ValueAnimator.areAnimatorsEnabled()
+
+    /** A `tween` spec at [durationMs], collapsed to instant when animations are disabled. */
+    @Composable
+    fun tween(durationMs: Int = quickMs): TweenSpec<Float> =
+        androidx.compose.animation.core.tween(durationMillis = if (animationsEnabled) durationMs else 0)
 }
 
 /**

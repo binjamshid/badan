@@ -134,6 +134,36 @@ enum BadanRadius {
     static let sheet: CGFloat = 24
 }
 
+/// Named animation durations (mirror of BadanColor/Space/Radius/Font). Was the fifth,
+/// un-tokenized design axis: 34 literal `duration:` values scattered across 12 files (0.2
+/// twenty-one times, 0.25 eleven times, 0.15 twice), with `accessibilityReduceMotion` honored in
+/// exactly one of them (ledger #36 / dossier "Motion is the un-tokenized fifth axis").
+///
+/// A token alone doesn't fix Reduce Motion — every call site still has to ask. `easeInOut(_:
+/// reduceMotion:)` makes asking the only way to get an animation at all: pass the environment
+/// flag through and a call under Reduce Motion structurally resolves to `nil` (SwiftUI's
+/// "animate with no animation," i.e. the change applies instantly) rather than relying on each
+/// screen to remember an `if`.
+enum BadanMotion {
+    /// Confirmation pulses, copy-feedback fades — the shortest step in the ramp. Was the bare
+    /// `0.15` (2 sites, ExportCenterScreen).
+    static let brief: Double = 0.15
+    /// Micro-interactions: toggles, chip/segment selection, inline reveals, saved-toast fades.
+    /// Was the ubiquitous bare `0.2` (21 sites).
+    static let quick: Double = 0.2
+    /// Section expand/collapse, onboarding step transitions, chart redraws, transient notices.
+    /// Was the bare `0.25` (11 sites).
+    static let standard: Double = 0.25
+
+    /// The one call every migrated site now goes through. `reduceMotion` is each view's own
+    /// `@Environment(\.accessibilityReduceMotion)` read, passed explicitly rather than reached
+    /// for internally — `BadanMotion` stays a plain value enum with no environment dependency of
+    /// its own, matching `BadanColor`/`BadanSpace`/`BadanRadius`/`BadanFont`.
+    static func easeInOut(_ duration: Double, reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .easeInOut(duration: duration)
+    }
+}
+
 /// The type ramp. Numerals use tabular monospaced digits so values never jitter as they
 /// tick (principle: data-forward typography).
 ///

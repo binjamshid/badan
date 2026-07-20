@@ -62,18 +62,30 @@ public struct ExportManifest: Codable, Hashable, Sendable {
     /// has both kinds in one file, and "the app is in demo mode" would answer the wrong question.
     /// Zero on a purely real export. Defaulted in the initializer so older manifests decode.
     public var sampleDataRowCount: Int
+    /// True when the files this manifest describes were wrapped into one `ExportEncryptor`
+    /// container (always true for an `includeSensitive` export — see ADR-0008) rather than
+    /// written as plain CSV/JSON. `checksums` above still describe the real plaintext content
+    /// either way; only how it reached disk changes. Defaulted `false` so pre-encryption
+    /// manifests decode unchanged.
+    public var encrypted: Bool
+    /// The container's filename inside the job's `outputPath` folder (always
+    /// `ExportEncryptor.containerFileName` today; kept as a manifest field rather than a
+    /// hardcoded constant lookup so `ExportCenterViewModel.availableFileURLs` doesn't need to
+    /// import `ExportEncryptor` just to know what to look for). `nil` when `encrypted` is false.
+    public var encryptedContainerName: String?
 
     public init(exportId: String, schemaVersion: String, appVersion: String, platform: String,
                 generatedAt: Date, scope: ExportScope, dateRange: String, displayLanguage: String,
                 unitProfile: String, timezonePolicy: String, dedupPolicy: String,
                 perMetricRowCounts: [String: Int], checksums: [String: String], dataQualityNote: String,
-                sampleDataRowCount: Int = 0) {
+                sampleDataRowCount: Int = 0, encrypted: Bool = false, encryptedContainerName: String? = nil) {
         self.exportId = exportId; self.schemaVersion = schemaVersion; self.appVersion = appVersion
         self.platform = platform; self.generatedAt = generatedAt; self.scope = scope
         self.dateRange = dateRange; self.displayLanguage = displayLanguage; self.unitProfile = unitProfile
         self.timezonePolicy = timezonePolicy; self.dedupPolicy = dedupPolicy
         self.perMetricRowCounts = perMetricRowCounts; self.checksums = checksums
         self.dataQualityNote = dataQualityNote; self.sampleDataRowCount = sampleDataRowCount
+        self.encrypted = encrypted; self.encryptedContainerName = encryptedContainerName
     }
 }
 

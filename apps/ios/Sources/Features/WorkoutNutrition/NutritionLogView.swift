@@ -161,6 +161,7 @@ final class NutritionLogViewModel {
 /// save. Today's meals and a plain totals bar sit below. Descriptive, calm, never judgmental.
 struct NutritionLogView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = NutritionLogViewModel()
 
     // Capture state
@@ -208,7 +209,7 @@ struct NutritionLogView: View {
                         quickEnergyCard
                     }
                 }
-                .animation(.easeInOut(duration: 0.2), value: quickCalories)
+                .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: quickCalories)
                 if let saveError {
                     errorRow(saveError)
                 }

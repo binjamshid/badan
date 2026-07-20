@@ -34,7 +34,6 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -282,7 +281,7 @@ private fun FilterChip(
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     val isOn = type in selection
-    val fg = if (isOn) Color.White else colors.textSecondary
+    val fg = if (isOn) colors.onPrimary else colors.textSecondary
     Row(
         modifier = Modifier
             .heightIn(min = BadanSpace.touchMin)

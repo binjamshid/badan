@@ -9,6 +9,30 @@ final class Database {
     let sensitive: SQLiteConnection
     let directory: URL
 
+    /// Read-back result of `applyHardening` for this database's directory, or `nil` when
+    /// `hardenDirectory` was never requested (`inMemoryFallback()`). `docs/PRIVACY_POLICY.md` §3
+    /// states unconditionally that both databases are "Excluded from iCloud and device backups"
+    /// and "Protected with iOS file protection" — this is what lets that claim be *checked*
+    /// rather than merely hoped, since `applyHardening`'s writes are all best-effort `try?` with
+    /// no OS-level guarantee they took effect (ledger #20 / dossier "The strongest policy claim
+    /// rests on three silent try? calls with no test and no read-back").
+    private(set) var hardeningStatus: HardeningStatus?
+
+    /// `applyHardening`'s outcome, read back from disk rather than assumed from the write
+    /// succeeding without error.
+    struct HardeningStatus: Equatable {
+        /// Whether the directory is actually excluded from iCloud/device backup right now
+        /// (`URLResourceValues.isExcludedFromBackup`, read back — not the value that was set).
+        let isExcludedFromBackup: Bool
+        /// Whether every file directly inside the directory carries at least
+        /// `.completeUntilFirstUserAuthentication` protection (the class `applyHardening` sets).
+        /// `.complete` also satisfies this — it's strictly stronger.
+        let isFileProtected: Bool
+        /// Both properties actually hold — the single boolean `docs/PRIVACY_POLICY.md` §3's
+        /// claim reduces to.
+        var isFullyHardened: Bool { isExcludedFromBackup && isFileProtected }
+    }
+
     static let mainFilename = "badan.db"
     static let sensitiveFilename = "badan_sensitive.db"
 
@@ -28,7 +52,7 @@ final class Database {
         try sensitive.execute("PRAGMA auto_vacuum = INCREMENTAL;")
         try Self.migrate(main, Schema.mainMigrations)
         try Self.migrate(sensitive, Schema.sensitiveMigrations)
-        if hardenDirectory { Self.applyHardening(to: directory) }
+        if hardenDirectory { hardeningStatus = Self.applyHardening(to: directory) }
     }
 
     convenience init(directory: URL) throws {
@@ -54,7 +78,15 @@ final class Database {
     /// backup, and set file protection. Failures here must never take down the open path — a health
     /// app that can't launch because a backup flag couldn't be set is worse than one that launches
     /// with the flag unset, so every step below is `try?`.
-    private static func applyHardening(to directory: URL) {
+    ///
+    /// The `try?` choice is right (see above); what was missing is anyone ever checking whether
+    /// those best-effort writes actually landed. Returns a read-back `HardeningStatus` — queried
+    /// fresh from `URLResourceValues`/`FileManager` after the writes, not derived from whether
+    /// the writes threw — so a silent failure on some device or OS revision is at least
+    /// *observable* instead of contradicting `docs/PRIVACY_POLICY.md` §3 with nobody able to
+    /// notice (ledger #20).
+    @discardableResult
+    private static func applyHardening(to directory: URL) -> HardeningStatus {
         var mutableDirectory = directory
         var resourceValues = URLResourceValues()
         resourceValues.isExcludedFromBackup = true
@@ -68,13 +100,39 @@ final class Database {
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
             ofItemAtPath: directory.path
         )
+        var fileURLs: [URL] = []
         if let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            fileURLs = contents
             for fileURL in contents {
                 try? FileManager.default.setAttributes(
                     [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                     ofItemAtPath: fileURL.path
                 )
             }
+        }
+        return HardeningStatus(
+            isExcludedFromBackup: readBackIsExcludedFromBackup(directory),
+            isFileProtected: readBackIsFileProtected(fileURLs)
+        )
+    }
+
+    /// Reads `.isExcludedFromBackupKey` back from the directory itself, rather than trusting the
+    /// `setResourceValues` call above didn't throw. `false` on any read failure — an unreadable
+    /// answer is treated as "not verified excluded", never as "assume it worked".
+    private static func readBackIsExcludedFromBackup(_ directory: URL) -> Bool {
+        (try? directory.resourceValues(forKeys: [.isExcludedFromBackupKey]))?.isExcludedFromBackup ?? false
+    }
+
+    /// True only if every file actually inside the directory (i.e. what `PRAGMA`-created DB
+    /// files landed as) reads back at least `.completeUntilFirstUserAuthentication` protection.
+    /// An empty directory (nothing to protect yet) reads as `true` vacuously — `Database.init`
+    /// always calls this after the DB files exist, so that case shouldn't occur in practice, but
+    /// "no files" is not itself an unprotected state worth flagging.
+    private static func readBackIsFileProtected(_ fileURLs: [URL]) -> Bool {
+        fileURLs.allSatisfy { url in
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let protectionType = attrs[.protectionKey] as? FileProtectionType else { return false }
+            return protectionType == .completeUntilFirstUserAuthentication || protectionType == .complete
         }
     }
 

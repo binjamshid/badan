@@ -49,7 +49,12 @@ final class LoggingRepository {
     }
 
     func regimen(id: String) throws -> MedicationRegimen? {
-        try sensitive.query("SELECT * FROM medication_regimens WHERE id = ?;", [.text(id)]).first.map(Self.readRegimen)
+        // WHERE deleted_at IS NULL was missing here — `regimens()` (the list read) already
+        // filtered tombstones, but this single-row read didn't, so a deleted regimen fetched by
+        // id still came back fully populated. Zero existing callers means nothing depended on
+        // the old (wrong) behavior; caught by `LoggingRepositoryDeleteTests`, added for ledger
+        // #34's tombstone-delete path.
+        try sensitive.query("SELECT * FROM medication_regimens WHERE id = ? AND deleted_at IS NULL;", [.text(id)]).first.map(Self.readRegimen)
     }
 
     func deleteRegimen(id: String, at date: Date) throws {
@@ -74,6 +79,15 @@ final class LoggingRepository {
     func adherence(regimenId: String, from: Date, to: Date) throws -> [AdherenceEvent] {
         try sensitive.query("SELECT * FROM adherence_events WHERE regimen_id = ? AND occurred_at >= ? AND occurred_at <= ? AND deleted_at IS NULL ORDER BY occurred_at DESC;",
                             [.text(regimenId), .date(from), .date(to)]).map(Self.readAdherence)
+    }
+
+    /// Tombstone-deletes one adherence event (a single take/skip record) — the row backing a
+    /// Timeline `.medication` event, which `TimelineAssembler` has always marked `deletable:
+    /// true` with no repository method to back it (ledger #34 / dossier "No manual log can be
+    /// edited or deleted anywhere in the app"). Same shape as `deleteRegimen`/`deleteSymptom`
+    /// above — a tombstone, not a hard delete, so the ADR-0003 sync columns keep meaning.
+    func deleteAdherence(id: String, at date: Date) throws {
+        try sensitive.run("UPDATE adherence_events SET deleted_at = ?, updated_at = ? WHERE id = ?;", [.date(date), .date(date), .text(id)])
     }
 
     // MARK: - Symptoms (sensitive)
@@ -163,6 +177,12 @@ final class LoggingRepository {
                        [.date(from), .date(to)]).map(Self.readNutrition)
     }
 
+    /// Tombstone-deletes one nutrition entry — backs the Timeline `.meal` event's `deletable:
+    /// true` (ledger #34).
+    func deleteNutrition(id: String, at date: Date) throws {
+        try main.run("UPDATE nutrition_entries SET deleted_at = ?, updated_at = ? WHERE id = ?;", [.date(date), .date(date), .text(id)])
+    }
+
     // MARK: - Notes (main)
 
     func upsertNote(_ note: NoteEntry) throws {
@@ -178,6 +198,12 @@ final class LoggingRepository {
                       tzId: r.requireString("tz_id"), tags: JSONCoding.decode([String].self, from: r.string("tags")) ?? [],
                       updatedAt: r.requireDate("updated_at"), originDeviceId: r.requireString("origin_device_id"), deletedAt: r.date("deleted_at"))
         }
+    }
+
+    /// Tombstone-deletes one note — backs the Timeline `.note` event's `deletable: true`
+    /// (ledger #34).
+    func deleteNote(id: String, at date: Date) throws {
+        try main.run("UPDATE note_entries SET deleted_at = ?, updated_at = ? WHERE id = ?;", [.date(date), .date(date), .text(id)])
     }
 
     // MARK: - Readers

@@ -43,6 +43,35 @@ private enum ExportCopy {
     static let sensitiveModuleDisabledNote = LocalizedString(
         en: "Turn on Sensitive records in Settings to include this.",
         ar: "فعّل السجلات الحساسة في الإعدادات لتضمين هذا.")
+
+    // MARK: Passphrase (review ledger #19, deferred fix 3 / FEAT-185 — see ADR-0008)
+
+    static let passphraseSectionTitle = LocalizedString(en: "Export passphrase", ar: "عبارة مرور التصدير")
+    static let passphrasePlaceholder = LocalizedString(en: "Passphrase", ar: "عبارة المرور")
+    static let passphraseConfirmPlaceholder = LocalizedString(en: "Confirm passphrase", ar: "تأكيد عبارة المرور")
+    /// `{n}` is filled with the localized minimum length so the digit itself follows
+    /// `env.format`'s Arabic-Indic numeral rule, matching `ExportRange.label`.
+    static func passphraseIntro(_ format: ValueFormatter) -> LocalizedString {
+        let n = format.integer(ExportPassphrasePolicy.minimumLength)
+        return LocalizedString(
+            en: "This export will be encrypted. Choose a passphrase (at least \(n) characters) — "
+                + "BADAN never stores it. If you forget it, this export cannot be recovered. "
+                + "There is no reset; that's by design, not an oversight.",
+            ar: "سيُشفَّر هذا التصدير. اختر عبارة مرور (\(n) أحرف على الأقل) — لا يحتفظ بدن بها "
+                + "أبداً. إن نسيتها، لا يمكن استرداد هذا التصدير. لا توجد طريقة لإعادة التعيين؛ "
+                + "وهذا مقصود، لا نقص في التصميم.")
+    }
+    static let passphraseTooShort = LocalizedString(
+        en: "Passphrase is too short.", ar: "عبارة المرور قصيرة جداً.")
+    static let passphraseMismatch = LocalizedString(
+        en: "Passphrases don't match.", ar: "عبارتا المرور غير متطابقتين.")
+    /// Shown on `ExportSuccessCard`'s checksum section for an encrypted result — the listed
+    /// hashes describe the plaintext content, not the `.badanenc` bytes actually on disk, so a
+    /// reader who tries to `shasum` the shared file directly needs to know to decrypt first.
+    static let checksumsDescribeDecrypted = LocalizedString(
+        en: "These checksums describe the file's contents after decryption, not the encrypted bytes themselves.",
+        ar: "تصف هذه البصمات محتوى الملف بعد فك التشفير، وليس البيانات المشفَّرة نفسها.")
+    static let encryptedBadge = LocalizedString(en: "Encrypted", ar: "مشفّر")
     static let casualIncludesNote = LocalizedString(
         en: "Includes: raw records + computed values, from your chosen date range.",
         ar: "يتضمّن: السجلات الخام + القيم المحسوبة، من النطاق الزمني الذي اخترته.")
@@ -204,6 +233,14 @@ final class ExportCenterViewModel {
     static func availableFileURLs(for job: ExportJob) -> [URL] {
         guard let path = job.outputPath, let manifest = job.manifest, !manifest.checksums.isEmpty else { return [] }
         let folder = URL(fileURLWithPath: path, isDirectory: true)
+        // An encrypted job's plaintext files no longer exist on disk (deleted the moment
+        // `ExportRunner.encryptResult` wrote the container, ledger #19) — the one shareable
+        // artifact is the container itself, named on the manifest rather than assumed, so this
+        // stays correct even if `ExportEncryptor.containerFileName` ever changes.
+        if manifest.encrypted, let containerName = manifest.encryptedContainerName {
+            let containerURL = folder.appendingPathComponent(containerName)
+            return FileManager.default.fileExists(atPath: containerURL.path) ? [containerURL] : []
+        }
         var names = Array(manifest.checksums.keys)
         if job.format == .csv { names.append("manifest.json") }
         return names
@@ -216,7 +253,12 @@ final class ExportCenterViewModel {
     /// time · raw+derived" export never freezes the UI or risks the iOS watchdog; then hops back
     /// to update state once. A failure aborts any remaining formats, matching the previous
     /// single-format error behavior.
-    func run(scope: ExportScope, formats: [ExportFormat], env: AppEnvironment) {
+    /// `passphrase` is only used (and only meaningful) when `scope.includeSensitive` is true —
+    /// `ExportCenterScreen` gates the Run button so a sensitive scope can't reach here without a
+    /// passphrase already validated against `ExportPassphrasePolicy`, and `ExportRunner` itself
+    /// enforces the same rule again as a second line of defense (review ledger #19, deferred fix
+    /// 3 / FEAT-185; ADR-0008).
+    func run(scope: ExportScope, formats: [ExportFormat], env: AppEnvironment, passphrase: String? = nil) {
         guard !isRunning, !formats.isEmpty else { return }
         isRunning = true
         errorText = nil
@@ -228,7 +270,7 @@ final class ExportCenterViewModel {
                 var produced: [ExportResultDisplay] = []
                 for fmt in formats {
                     let result = try await Task.detached(priority: .userInitiated) {
-                        try exporter.run(scope: scope, format: fmt)
+                        try exporter.run(scope: scope, format: fmt, passphrase: passphrase)
                     }.value
                     let sortedIds = result.job.manifest?.perMetricRowCounts.keys.sorted() ?? []
                     produced.append(ExportResultDisplay(result: result, sortedMetricIds: sortedIds))
@@ -251,6 +293,7 @@ final class ExportCenterViewModel {
 /// the unit profile, per-file checksums and the manifest. Same run, two altitudes.
 struct ExportCenterScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = ExportCenterViewModel()
 
     @State private var scope = ExportScope()
@@ -260,6 +303,13 @@ struct ExportCenterScreen: View {
     @State private var customEnd: Date = Date()
     @State private var unitNoteExpanded = false
     @State private var availableSources: [Source] = []
+
+    // Passphrase entry for `includeSensitive` exports (review ledger #19, deferred fix 3 /
+    // FEAT-185 — see ADR-0008). Never persisted anywhere, including `sessionPreferences` —
+    // unlike format/range, a passphrase is exactly the kind of state that must NOT survive past
+    // the screen that collected it.
+    @State private var passphrase = ""
+    @State private var passphraseConfirm = ""
 
     @State private var shareURLs: [URL] = []
     @State private var showShare = false
@@ -291,7 +341,7 @@ struct ExportCenterScreen: View {
                         shareURLs = item.result.fileURLs
                         showShare = !item.result.fileURLs.isEmpty
                     } onRunAgain: {
-                        vm.run(scope: item.result.job.scope, formats: [item.result.job.format], env: env)
+                        handleRunAgain(item.result.job)
                     }
                 }
                 historySection
@@ -324,7 +374,19 @@ struct ExportCenterScreen: View {
             showShare = true
         }
         .sheet(isPresented: $showShare) {
-            ShareSheet(activityItems: shareURLs)
+            ShareSheet(activityItems: shareURLs) { completed in
+                // Only on an actual completed share (AirDrop/Files/Mail/…, not Cancel): the
+                // destination the user just chose now holds its own copy, so the plaintext temp
+                // copy has no further reason to exist (ledger #19 / dossier "Sensitive health
+                // data is exported as plaintext to the temp directory"). A cancelled sheet leaves
+                // the folder in place — the user may reopen Share for the same export a moment
+                // later — and falls back to the shortened sweep as a backstop. Reloading history
+                // afterward makes `availableFileURLs` re-resolve to empty for anything just
+                // deleted, so the UI reflects it immediately rather than on next launch.
+                guard completed else { return }
+                deleteSharedFolders(shareURLs)
+                vm.loadHistory(env)
+            }
         }
         .sheet(isPresented: $showAllHistory) {
             allExportsSheet
@@ -336,6 +398,15 @@ struct ExportCenterScreen: View {
         // (unlike `toggleFormat`, which writes back inline), so it's captured here instead.
         .onChange(of: range) { _, newValue in
             env.update { $0.sessionPreferences.lastExportRange = newValue.rawValue }
+        }
+        // Turning Sensitive off removes the one place a passphrase was ever needed — clearing it
+        // here (rather than leaving it in `@State` until the screen deallocates) means turning
+        // Sensitive back on always starts from a blank, freshly-typed passphrase instead of a
+        // stale one the user might not even remember setting.
+        .onChange(of: scope.includeSensitive) { _, includeSensitive in
+            guard !includeSensitive else { return }
+            passphrase = ""
+            passphraseConfirm = ""
         }
     }
 
@@ -425,6 +496,7 @@ struct ExportCenterScreen: View {
                             .fixedSize(horizontal: false, vertical: true)
                     } else if scope.includeSensitive {
                         sensitiveNote
+                        passphraseFields
                     }
                     if !env.depth.showsPowerDetail {
                         Text(ExportCopy.casualIncludesNote, language: env.language)
@@ -433,7 +505,7 @@ struct ExportCenterScreen: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .animation(.easeInOut(duration: 0.2), value: scope.includeSensitive)
+                .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: scope.includeSensitive)
             }
         }
     }
@@ -477,6 +549,56 @@ struct ExportCenterScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(BadanColor.info.opacity(0.10),
                     in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+    }
+
+    // MARK: Passphrase (review ledger #19, deferred fix 3 / FEAT-185 — see ADR-0008)
+
+    /// The passphrase entry + confirm shown only while `includeSensitive` is on — `runButton`
+    /// stays disabled until `passphraseValid` (below), so this is the one place a sensitive
+    /// export's encryption key gets typed.
+    private var passphraseFields: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space2) {
+            Text(ExportCopy.passphraseIntro(env.format), language: env.language)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            passphraseField(env.s(ExportCopy.passphrasePlaceholder), text: $passphrase)
+            passphraseField(env.s(ExportCopy.passphraseConfirmPlaceholder), text: $passphraseConfirm)
+            if !passphrase.isEmpty && !ExportPassphrasePolicy.isValid(passphrase) {
+                Text(ExportCopy.passphraseTooShort, language: env.language)
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.outOfBand)
+            } else if !passphraseConfirm.isEmpty
+                        && !ExportPassphrasePolicy.matches(passphrase, confirmation: passphraseConfirm) {
+                Text(ExportCopy.passphraseMismatch, language: env.language)
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.outOfBand)
+            }
+        }
+        .padding(.top, BadanSpace.space1)
+    }
+
+    /// `.newPassword` rather than leaving content type unset — this passphrase has no recovery
+    /// path (`passphraseIntro` says so plainly), so letting iOS offer to save it to the user's
+    /// password manager/Keychain is a real mitigation for the "I forgot it" failure mode, not
+    /// just an autofill nicety.
+    private func passphraseField(_ placeholder: String, text: Binding<String>) -> some View {
+        SecureField(placeholder, text: text)
+            .font(BadanFont.body)
+            .textContentType(.newPassword)
+            .autocorrectionDisabled()
+            .padding(.horizontal, BadanSpace.space3)
+            .frame(minHeight: BadanSpace.touchMin)
+            .background(BadanColor.surfaceElevated, in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+    }
+
+    /// True once the passphrase clears both `ExportPassphrasePolicy` rules — the single gate
+    /// `runButton` checks for a sensitive scope. `ExportRunner` enforces the length rule again
+    /// independently (defense-in-depth); this is purely the UI's own gate so Run never needs to
+    /// round-trip to the runner just to reject an obviously-too-short passphrase.
+    private var passphraseValid: Bool {
+        ExportPassphrasePolicy.isValid(passphrase)
+            && ExportPassphrasePolicy.matches(passphrase, confirmation: passphraseConfirm)
     }
 
     // MARK: Sources (power)
@@ -577,7 +699,7 @@ struct ExportCenterScreen: View {
                 selection: $scope.unitProfile
             )
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { unitNoteExpanded.toggle() }
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { unitNoteExpanded.toggle() }
             } label: {
                 HStack(spacing: BadanSpace.space1) {
                     Text(ExportCopy.unitNoteCollapsedLabel, language: env.language)
@@ -674,7 +796,7 @@ struct ExportCenterScreen: View {
                         in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(vm.isRunning || selectedFormats.isEmpty || customRangeInvalid)
+        .disabled(vm.isRunning || selectedFormats.isEmpty || customRangeInvalid || sensitiveExportBlocked)
         .opacity(vm.isRunning ? 0.75 : 1)
     }
 
@@ -682,6 +804,14 @@ struct ExportCenterScreen: View {
     /// itself instead of silently producing an empty export (DATA-04).
     private var customRangeInvalid: Bool {
         range == .custom && Self.isRangeInvalid(start: customStart, end: customEnd)
+    }
+
+    /// True when Sensitive is on but the passphrase isn't ready yet — a sensitive export cannot
+    /// leave `ExportRunner` unencrypted (review ledger #19, deferred fix 3 / FEAT-185; see
+    /// ADR-0008), so Run stays disabled rather than letting the user discover the requirement
+    /// only after tapping it and reading `errorText`.
+    private var sensitiveExportBlocked: Bool {
+        scope.includeSensitive && !passphraseValid
     }
 
     /// The half-open next-midnight bound for `customEnd`, so the entire final day is included
@@ -704,8 +834,20 @@ struct ExportCenterScreen: View {
         return calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? date
     }
 
+    /// Deletes the temp export folder(s) backing `urls` — one call may span more than one
+    /// folder when both CSV and JSON were run together (`vm.lastResults.flatMap`) or when the
+    /// user shared a file list assembled from several past jobs. Delegates the actual removal to
+    /// `ExportRunner`, which validates every path stays inside `tmp/badan-export-*` before
+    /// touching disk (ledger #19).
+    private func deleteSharedFolders(_ urls: [URL]) {
+        let folders = Set(urls.map { $0.deletingLastPathComponent().path })
+        for folder in folders {
+            env.exporter.deleteExportedFiles(at: folder)
+        }
+    }
+
     private func runExport() {
-        guard !customRangeInvalid else { return }
+        guard !customRangeInvalid, !sensitiveExportBlocked else { return }
         var s = scope
         s.language = env.language
         if range == .custom {
@@ -715,7 +857,30 @@ struct ExportCenterScreen: View {
             s.startDate = range.startDate(now: env.now())
             s.endDate = nil
         }
-        vm.run(scope: s, formats: Array(selectedFormats), env: env)
+        vm.run(scope: s, formats: Array(selectedFormats), env: env, passphrase: scope.includeSensitive ? passphrase : nil)
+        // The passphrase has already been captured (by value) into the just-started run — there
+        // is no reason for it to keep living in this view's state a moment longer than that
+        // (same "don't outlive its purpose" reasoning as the plaintext files themselves,
+        // ledger #19). A re-run (including "Export again") always requires typing it again.
+        passphrase = ""
+        passphraseConfirm = ""
+    }
+
+    /// "Export again" / "Run again" for a past job. A non-sensitive job re-runs immediately, same
+    /// as before. A sensitive job never had its passphrase stored anywhere (by design — see
+    /// `passphraseFields`), so it cannot silently re-run: this loads the job's scope/format into
+    /// the top form instead, where the now-visible `passphraseFields` require a fresh passphrase
+    /// before Run re-enables. Quieter than surfacing `ExportRunError.sensitiveExportRequiresPassphrase`
+    /// as a raw error after a tap that looked like it should just work.
+    private func handleRunAgain(_ job: ExportJob) {
+        guard job.scope.includeSensitive else {
+            vm.run(scope: job.scope, formats: [job.format], env: env)
+            return
+        }
+        scope = job.scope
+        selectedFormats = [job.format]
+        passphrase = ""
+        passphraseConfirm = ""
     }
 
     private func errorCard(_ message: String) -> some View {
@@ -841,9 +1006,8 @@ struct ExportCenterScreen: View {
                     shareURLs = item.fileURLs
                     showShare = !item.fileURLs.isEmpty
                 } onRunAgain: {
-                    let job = item.job
                     inspectingItem = nil
-                    vm.run(scope: job.scope, formats: [job.format], env: env)
+                    handleRunAgain(item.job)
                 }
                 .padding(BadanSpace.space4)
             }
@@ -965,6 +1129,7 @@ private struct ExportSegmented<T: Hashable>: View {
 
 private struct ExportSuccessCard: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let result: ExportRunner.ExportResult
     let sortedMetricIds: [String]
     let onShare: () -> Void
@@ -986,6 +1151,9 @@ private struct ExportSuccessCard: View {
                         .font(BadanFont.body.weight(.semibold))
                         .foregroundStyle(BadanColor.textPrimary)
                     Spacer(minLength: BadanSpace.space2)
+                    if result.job.manifest?.encrypted == true {
+                        PillLabel(env.s(ExportCopy.encryptedBadge), systemImage: "lock.fill", tint: BadanColor.primary)
+                    }
                     PillLabel(result.job.format.rawValue.uppercased(), tint: BadanColor.primary)
                 }
 
@@ -1006,6 +1174,12 @@ private struct ExportSuccessCard: View {
                         .font(BadanFont.caption)
                         .foregroundStyle(BadanColor.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if result.job.manifest?.encrypted == true {
+                        Text(ExportCopy.checksumsDescribeDecrypted, language: env.language)
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ForEach(checksums.keys.sorted(), id: \.self) { name in
                         HStack(spacing: BadanSpace.space2) {
                             Text(name)
@@ -1077,11 +1251,11 @@ private struct ExportSuccessCard: View {
     private func copy(_ value: String) {
         guard !value.isEmpty else { return }
         UIPasteboard.general.string = value
-        withAnimation(.easeInOut(duration: 0.15)) { copiedValue = value }
+        withAnimation(BadanMotion.easeInOut(BadanMotion.brief, reduceMotion: reduceMotion)) { copiedValue = value }
         Task {
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             if copiedValue == value {
-                withAnimation(.easeInOut(duration: 0.15)) { copiedValue = nil }
+                withAnimation(BadanMotion.easeInOut(BadanMotion.brief, reduceMotion: reduceMotion)) { copiedValue = nil }
             }
         }
     }
@@ -1209,6 +1383,9 @@ private struct ExportHistoryRow: View {
                         .font(BadanFont.bodyCompact.weight(.semibold))
                         .foregroundStyle(BadanColor.textPrimary)
                     PillLabel(rowCountText)
+                    if job.manifest?.encrypted == true {
+                        PillLabel(env.s(ExportCopy.encryptedBadge), systemImage: "lock.fill", tint: BadanColor.primary)
+                    }
                     // Without this, an interrupted export (crash, force-quit) that never
                     // reached `.completed` looked identical to a successful one in history —
                     // missing files were the only, easy-to-miss hint (EDGE-02b).

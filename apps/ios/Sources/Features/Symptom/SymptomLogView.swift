@@ -180,6 +180,7 @@ final class SymptomLogViewModel {
 /// backdate, then save. Sensitive by nature — private, judgment-free, never alarming.
 struct SymptomLogView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var vm = SymptomLogViewModel()
@@ -235,7 +236,7 @@ struct SymptomLogView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: showSavedToast)
+        .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: showSavedToast)
         .sensoryFeedback(.success, trigger: savedTick)
         .task {
             tz = TimeZone.current.identifier
@@ -536,7 +537,7 @@ struct SymptomLogView: View {
                     .foregroundStyle(tint)
                     // A hard color snap at the 7/10 threshold can read as a sudden alarm;
                     // ease into it instead, consistent with "calm amber, never alarming" (UIUX-118).
-                    .animation(.easeInOut(duration: 0.2), value: tint)
+                    .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: tint)
                 VStack(alignment: .leading, spacing: BadanSpace.space1) {
                     // Subtle mild/moderate/severe landmarks under the track so the descriptor
                     // change isn't a surprise while dragging (UIUX-114).
@@ -553,7 +554,7 @@ struct SymptomLogView: View {
                     .frame(height: 4)
                     Slider(value: $severity, in: 0...10, step: 1)
                         .tint(tint)
-                        .animation(.easeInOut(duration: 0.2), value: tint)
+                        .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: tint)
                         .accessibilityValue(accessibilityValue)
                 }
                 HStack {

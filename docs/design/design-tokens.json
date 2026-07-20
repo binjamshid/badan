@@ -27,6 +27,13 @@
       "usage": "global interactive accent: buttons, links, selected states (chosen calm teal; blueprint left global primary unspecified, uses per-pillar accents)",
       "note": "derived — not literally in blueprint; verified WCAG AA (light 5.2:1 on white, dark high-contrast on base)"
     },
+    "onPrimary": {
+      "light": "#FFFFFF",
+      "dark": "#08201D",
+      "token": "color.accent.onPrimary",
+      "usage": "text/icon colour for content painted on a primary-filled surface (save buttons, selected chips)",
+      "note": "not literal white in dark mode — primary's dark value is a light teal, so white-on-primary measures ~2.07:1 (fails AA); this near-black teal passes (UIUX-223)"
+    },
     "textPrimary": {
       "light": "#17191C",
       "dark": "#F2F3F5",
