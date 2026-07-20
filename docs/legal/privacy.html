@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy · BADAN</title>
+<!-- No analytics, no tracking scripts, no third-party fonts or CDNs are loaded on this page by design. -->
+<style>
+  :root {
+    --accent: #2f6a63;
+    --ink: #1a1d1c;
+    --muted: #5b615f;
+    --line: #e3e6e5;
+    --bg: #ffffff;
+    --soft: #f4f8f7;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.65;
+    font-size: 17px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 40px 22px 96px; }
+  header.brand { border-bottom: 3px solid var(--accent); padding-bottom: 14px; margin-bottom: 28px; }
+  .brand-name { font-size: 22px; font-weight: 700; color: var(--accent); letter-spacing: .2px; }
+  .brand-tag { font-size: 14px; color: var(--muted); margin-top: 2px; }
+  h1 { font-size: 28px; line-height: 1.25; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 36px 0 10px; color: var(--accent); }
+  h3 { font-size: 17px; margin: 22px 0 6px; }
+  p, li { color: var(--ink); }
+  .meta { color: var(--muted); font-size: 14px; margin-top: 4px; }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  a { color: var(--accent); }
+  strong { color: var(--ink); }
+  .callout { background: var(--soft); padding: 14px 18px; border-radius: 10px; margin: 16px 0; }
+  .divider { border: none; border-top: 1px solid var(--line); margin: 56px 0 40px; }
+  nav.langnav { font-size: 14px; margin-bottom: 8px; }
+  nav.langnav a { margin-right: 14px; }
+  footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  footer a { margin-right: 16px; }
+  section[dir="rtl"] { text-align: right; font-size: 18px; line-height: 1.9; }
+  section[dir="rtl"] ul { padding-left: 0; padding-right: 22px; }
+  @media (prefers-color-scheme: dark) {
+    :root { --accent: #59b3a4; --ink: #eceeed; --muted: #9aa3a1; --line: #2a2e2d; --bg: #141716; --soft: #1b1f1e; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="brand">
+    <div class="brand-name">BADAN · بدن</div>
+    <div class="brand-tag">Your body, on your device · جسدك، على جهازك فقط</div>
+  </header>
+
+  <nav class="langnav">
+    <a href="#en">English</a>
+    <a href="#ar">العربية</a>
+  </nav>
+
+  <!-- ====================== ENGLISH ====================== -->
+  <section id="en" dir="ltr" lang="en">
+    <h1>Privacy Policy</h1>
+    <p class="meta">Last updated: 16 July 2026 · Applies to BADAN for iOS</p>
+
+    <div class="callout">
+      <strong>BADAN is a private, on-device health repository.</strong> Everything stays on your
+      device. BADAN has no servers, no accounts, and makes no network calls. Nothing you see in the
+      app is ever transmitted anywhere by the app.
+    </div>
+
+    <h2>1. Who this is for and what BADAN is</h2>
+    <p>
+      BADAN organizes your own health readings and the things you choose to log, and presents them
+      back to you. There is no sign-up and no account. You do not give BADAN a name, email, phone
+      number, or password, because there is nowhere for that information to go: the app has no
+      backend.
+    </p>
+    <p>
+      BADAN is a wellness and self-tracking tool. It is <strong>not a medical device</strong> and does
+      not diagnose, treat, or give medical advice. See section 6.
+    </p>
+
+    <h2>2. What data BADAN accesses</h2>
+    <h3>From Apple Health (only if you connect it)</h3>
+    <p>
+      BADAN never reads Apple Health until you tap "Connect" and grant permission in the system
+      HealthKit dialog. On a grant, it reads only these categories: sleep analysis, heart rate,
+      resting heart rate, and step count, to show them back to you and compute the on-device
+      summaries you see in the app. If you never connect Apple Health, BADAN reads none of it. You
+      can revoke access at any time in iOS Settings → Health; BADAN also links you there.
+    </p>
+    <h3>What you log yourself</h3>
+    <p>
+      BADAN lets you record entries by hand, including workouts, nutrition, notes, and a separate,
+      sensitive category, <strong>medications and symptoms</strong>,. You choose what to enter;
+      nothing is required.
+    </p>
+    <p>
+      BADAN does <strong>not</strong> access your contacts, location, photos, microphone, camera,
+      calendar, or advertising identifier.
+    </p>
+
+    <h2>3. Where your data lives</h2>
+    <p>
+      All of your data is stored <strong>on your device only</strong>, in two local SQLite databases
+      inside the app's private container: a main database for readings, workouts, nutrition, and
+      notes, and a separate, sensitive database used exclusively for medications and symptoms,
+      kept separate so you can erase it independently of everything else. Both databases are
+      excluded from iCloud and device backups and encrypted at rest by iOS file protection. There
+      is no cloud copy, no sync, and no shared server. If you delete the app, the databases go with
+      it.
+    </p>
+
+    <h2>4. What BADAN does not do</h2>
+    <ul>
+      <li><strong>Makes no network calls</strong>: there is no server to talk to.</li>
+      <li><strong>Has no accounts and no sign-in.</strong></li>
+      <li><strong>Uses no third-party SDKs</strong>: no analytics, no crash reporting, no telemetry,
+        no advertising.</li>
+      <li><strong>Does not track you</strong> across apps or websites, and collects no advertising
+        identifier.</li>
+      <li><strong>Shares nothing automatically.</strong> The only way data leaves the app is an
+        export you start yourself.</li>
+    </ul>
+
+    <h2>5. Your control over your data</h2>
+    <ul>
+      <li><strong>Export</strong>: Settings → Data &amp; privacy → Export gives you a CSV or JSON
+        export with a checksummed manifest, created on your device and handed to you (e.g. via the
+        share sheet). BADAN does not send it anywhere.</li>
+      <li><strong>Delete everything</strong>: Settings → Data management → "Delete all data"
+        permanently deletes everything on the device. This cannot be undone.</li>
+      <li><strong>Erase sensitive records separately</strong>: turning off "Sensitive records" in
+        Settings permanently removes all medication and symptom records independently of the rest of
+        your data.</li>
+      <li><strong>Revoke Apple Health access</strong> anytime in iOS Settings → Health.</li>
+    </ul>
+
+    <h2>6. Health data and wellness</h2>
+    <p>
+      BADAN is a self-tracking and wellness tool, not a medical device. The readings, summaries, and
+      any observations it shows are informational only, not a diagnosis and not medical advice.
+      Always consult a qualified health professional about your health and before making decisions
+      based on anything you see in the app.
+    </p>
+
+    <h2>7. Children</h2>
+    <p>
+      BADAN is not directed at children and does not knowingly request or collect personal
+      information from anyone. Because the app has no accounts and transmits nothing off the device,
+      it does not gather age or identity information at all. A device's owner is responsible for who
+      uses the device.
+    </p>
+
+    <h2>8. Changes to this policy</h2>
+    <p>
+      If the app's behavior changes in a way that affects your privacy, this document will be updated
+      and the date above will change. Because there is no account and no server, we cannot notify you
+      individually; the current policy always ships inside the app (Settings → Data &amp; privacy →
+      Privacy Policy) and lives at this address.
+    </p>
+
+    <h2>9. Contact</h2>
+    <p>Questions about privacy in BADAN: <a href="mailto:support@binjamshid.com">support@binjamshid.com</a></p>
+  </section>
+
+  <hr class="divider">
+
+  <!-- ====================== العربية ====================== -->
+  <section id="ar" dir="rtl" lang="ar">
+    <h1>سياسة الخصوصية</h1>
+    <p class="meta">آخر تحديث: ١٦ يوليو ٢٠٢٦ · تنطبق على تطبيق بدن لنظام iOS</p>
+
+    <div class="callout">
+      <strong>بدن مستودع صحي خاص يعمل بالكامل على جهازك.</strong> كل شيء يبقى على جهازك. لا يملك بدن
+      خوادم ولا حسابات ولا يجري أي اتصال شبكي. لا شيء ممّا تراه في التطبيق يُرسَل إلى أي مكان.
+    </div>
+
+    <h2>١. لمن هذا التطبيق وما هو بدن</h2>
+    <p>
+      ينظّم بدن قراءاتك الصحية والأشياء التي تختار تسجيلها، ويعرضها لك. لا يوجد تسجيل ولا حساب. لا
+      تُعطي بدن اسمك أو بريدك أو رقم هاتفك أو كلمة مرور، لأنه لا توجد وجهة لتلك المعلومات، فالتطبيق
+      بلا خادم خلفي.
+    </p>
+    <p>
+      بدن أداة للعافية والتتبّع الذاتي، وهو <strong>ليس جهازاً طبياً</strong> ولا يُشخِّص أو يُعالج أو
+      يقدّم استشارة طبية. انظر البند ٦.
+    </p>
+
+    <h2>٢. البيانات التي يصل إليها بدن</h2>
+    <h3>من تطبيق Apple Health (فقط إذا وصّلته)</h3>
+    <p>
+      لا يقرأ بدن بيانات Apple Health أبداً حتى تضغط "توصيل" وتمنح الإذن في نافذة HealthKit. عند
+      الموافقة، يقرأ فقط: تحليل النوم، معدل ضربات القلب، معدل ضربات القلب أثناء الراحة، وعدد الخطوات
+      ، لعرضها لك ولحساب الملخصات على الجهاز. إن لم توصّل Apple Health إطلاقاً، فلن يقرأ بدن منه شيئاً.
+      يمكنك إلغاء الإذن في أي وقت من إعدادات iOS ← الصحة؛ ويوفّر بدن رابطاً لذلك أيضاً.
+    </p>
+    <h3>ما تُسجّله بنفسك</h3>
+    <p>
+      يتيح لك بدن تسجيل مُدخلات يدوياً، منها التمارين والتغذية والملاحظات، وفئة حساسة منفصلة،
+      <strong>الأدوية والأعراض</strong>. أنت من يختار ما يُدخله؛ لا شيء إلزامي.
+    </p>
+    <p>
+      لا يصل بدن <strong>إطلاقاً</strong> إلى جهات اتصالك أو موقعك أو صورك أو الميكروفون أو الكاميرا أو
+      التقويم أو معرّف الإعلانات.
+    </p>
+
+    <h2>٣. أين تُخزَّن بياناتك</h2>
+    <p>
+      تُخزَّن جميع بياناتك <strong>على جهازك فقط</strong>، في قاعدتَي بيانات SQLite محليتَين داخل حاوية
+      التطبيق الخاصة: قاعدة رئيسية للقراءات والتمارين والتغذية والملاحظات، وقاعدة حساسة منفصلة
+      مخصّصة للأدوية والأعراض فقط، منفصلة كي تتمكن من محوها بشكل مستقل عن كل شيء آخر. وكلتا
+      القاعدتين مستبعدتان من النسخ الاحتياطي عبر iCloud والجهاز، ومُشفَّرتان أثناء عدم الاستخدام عبر
+      حماية ملفات iOS. لا توجد نسخة سحابية ولا مزامنة ولا خادم مشترك. وإذا حذفت التطبيق، تُحذف
+      القاعدتان معه.
+    </p>
+
+    <h2>٤. ما لا يفعله بدن</h2>
+    <ul>
+      <li><strong>لا يُجري أي اتصال شبكي</strong>: لا يوجد خادم يتواصل معه.</li>
+      <li><strong>لا حسابات ولا تسجيل دخول.</strong></li>
+      <li><strong>لا يستخدم أي حزم أدوات من طرف ثالث</strong>: لا تحليلات، لا تتبّع أعطال، لا قياس
+        عن بُعد، لا إعلانات.</li>
+      <li><strong>لا يتتبّعك</strong> عبر التطبيقات أو المواقع، ولا يجمع معرّف الإعلانات.</li>
+      <li><strong>لا يشارك شيئاً تلقائياً.</strong> الطريقة الوحيدة لمغادرة البيانات التطبيق هي تصدير
+        تبدأه أنت بنفسك.</li>
+    </ul>
+
+    <h2>٥. تحكّمك في بياناتك</h2>
+    <ul>
+      <li><strong>التصدير</strong>: الإعدادات ← البيانات والخصوصية ← تصدير، يمنحك ملف CSV أو JSON
+        مصحوباً بقائمة تحقّق (checksum)، يُنشأ على جهازك ويُسلَّم لك (مثلاً عبر ورقة المشاركة). لا
+        يُرسله بدن إلى أي مكان.</li>
+      <li><strong>حذف كل شيء</strong>: الإعدادات ← إدارة البيانات ← "حذف جميع البيانات" يحذف كل شيء
+        على الجهاز نهائياً، ولا يمكن التراجع عن ذلك.</li>
+      <li><strong>محو السجلات الحساسة بشكل منفصل</strong>: تعطيل "السجلات الحساسة" في الإعدادات يزيل
+        نهائياً جميع سجلات الأدوية والأعراض بمعزل عن باقي بياناتك.</li>
+      <li><strong>إلغاء إذن Apple Health</strong> في أي وقت من إعدادات iOS ← الصحة.</li>
+    </ul>
+
+    <h2>٦. البيانات الصحية والعافية</h2>
+    <p>
+      بدن أداة للتتبّع الذاتي والعافية وليس جهازاً طبياً. القراءات والملخصات وأي ملاحظات يعرضها هي
+      لأغراض معلوماتية فقط، وليست تشخيصاً ولا استشارة طبية. استشر دائماً أخصائياً صحياً مؤهلاً بشأن
+      صحتك وقبل اتخاذ قرارات بناءً على أي شيء تراه في التطبيق.
+    </p>
+
+    <h2>٧. الأطفال</h2>
+    <p>
+      بدن غير موجّه للأطفال ولا يطلب أو يجمع عن قصد أي معلومات شخصية من أي شخص. ولأن التطبيق بلا
+      حسابات ولا يُرسل شيئاً خارج الجهاز، فهو لا يجمع أي معلومات عن العمر أو الهوية إطلاقاً. ومالك
+      الجهاز مسؤول عن تحديد من يستخدمه.
+    </p>
+
+    <h2>٨. تغييرات هذه السياسة</h2>
+    <p>
+      إن تغيّر سلوك التطبيق بما يؤثّر في خصوصيتك، سيُحدَّث هذا المستند والتاريخ أعلاه. ولأنه لا يوجد
+      حساب ولا خادم، لا يمكننا إشعارك فردياً؛ وتُشحَن السياسة الحالية دائماً داخل التطبيق (الإعدادات ←
+      البيانات والخصوصية ← سياسة الخصوصية) وتوجد في هذا العنوان.
+    </p>
+
+    <h2>٩. التواصل</h2>
+    <p>للاستفسارات حول الخصوصية في بدن: <a href="mailto:support@binjamshid.com">support@binjamshid.com</a></p>
+  </section>
+
+  <footer>
+    <a href="privacy.html">Privacy</a>
+    <a href="eula.html">EULA</a>
+    <a href="support.html">Support</a>
+    <div style="margin-top:8px;">© 2026 BADAN · بدن</div>
+  </footer>
+
+</div>
+</body>
+</html>
