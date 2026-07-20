@@ -37,4 +37,22 @@
          within the hour" because WorkManager genuinely delivers that. It still may not say
          "every day at" or "guaranteed". -->
     <string name="hc_rationale_background">Lets BADAN pick up new readings in the background so what you see is already up to date when you open the app. Background updates usually run within the hour; opening BADAN always refreshes right away.</string>
+
+    <!--
+      EPIC-19 — launcher app shortcuts and the "Run export template" quick-settings tile.
+
+      Short labels are kept genuinely short (the launcher truncates hard); long labels are the
+      fuller phrasing shown where there is room. None of these promise a time or an outcome: a
+      shortcut and a tile are immediate, user-initiated actions, so honesty here is simply not
+      overstating what one tap does. The tile subtitle says plainly that it opens the export
+      screen rather than exporting on its own (see RunExportTileService for why it must).
+    -->
+    <string name="shortcut_export_short">Export</string>
+    <string name="shortcut_export_long">Export your data</string>
+    <string name="shortcut_today_short">Readiness</string>
+    <string name="shortcut_today_long">Today\'s readiness</string>
+    <string name="shortcut_water_short">Log water</string>
+    <string name="shortcut_water_long">Log water</string>
+    <string name="tile_run_export_label">Run export template</string>
+    <string name="tile_run_export_subtitle">Opens BADAN\'s Export</string>
 </resources>

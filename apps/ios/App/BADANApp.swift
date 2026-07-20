@@ -22,6 +22,11 @@ struct BADANApp: App {
         let environment = AppEnvironment.makeDefault()
         _env = State(initialValue: environment)
         environment.background.registerLaunchHandlers()
+        // EPIC-19: App Intents run in this process, so give them the same composition root the UI
+        // uses rather than letting them build a second one (a second write lock over the same DB
+        // files — see `IntentEnvironment`). Registered here, in `init`, because an intent can be
+        // performed on a background launch before the scene's `.task` ever runs.
+        IntentEnvironment.register(environment)
     }
 
     var body: some Scene {

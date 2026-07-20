@@ -23,4 +23,15 @@
     <string name="hc_rationale_routes">المسار المحفوظ مع تمرين سبق أن أنهيته. لا يتتبّع بدن مكانك أبداً ولا يسجّل أي مسار جديد، ولا تُدرَج المسارات في أي تصدير إلا إذا فعّلتها بنفسك.</string>
     <!-- "عادةً خلال ساعة" mirrors "usually within the hour" — a range, never a fixed time. -->
     <string name="hc_rationale_background">يتيح لبدن التقاط القراءات الجديدة في الخلفية ليكون ما تراه محدّثاً عند فتح التطبيق. تعمل التحديثات في الخلفية عادةً خلال ساعة، وفتح بدن يحدّث البيانات فوراً دائماً.</string>
+
+    <!-- EPIC-19 — اختصارات التطبيق وبطاقة الإعدادات السريعة. نفس السجل: لا وعد بوقت ولا بنتيجة؛
+         مجرّد إجراءات فورية يبدؤها المستخدم. عنوان البطاقة الفرعي يوضّح أنها تفتح شاشة التصدير. -->
+    <string name="shortcut_export_short">تصدير</string>
+    <string name="shortcut_export_long">صدّر بياناتك</string>
+    <string name="shortcut_today_short">الجاهزية</string>
+    <string name="shortcut_today_long">جاهزية اليوم</string>
+    <string name="shortcut_water_short">تسجيل ماء</string>
+    <string name="shortcut_water_long">تسجيل ماء</string>
+    <string name="tile_run_export_label">تشغيل قالب تصدير</string>
+    <string name="tile_run_export_subtitle">يفتح تصدير بدن</string>
 </resources>

@@ -39,7 +39,10 @@ import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.components.SampleDataBanner
 import net.albayyan.badan.features.body.BodyScreen
 import net.albayyan.badan.features.body.SourcesScreen
+import net.albayyan.badan.features.export.AdvancedExportScreen
+import net.albayyan.badan.features.export.ExportHealthScreen
 import net.albayyan.badan.features.export.ExportScreen
+import net.albayyan.badan.features.export.TemplateManagerScreen
 import net.albayyan.badan.features.home.HomeScreen
 import net.albayyan.badan.features.insights.InsightsScreen
 import net.albayyan.badan.features.loghub.LogHubScreen
@@ -162,6 +165,9 @@ private fun DetailContent(route: Route) {
         Route.NutritionLog -> NutritionLogScreen()
         Route.RouteConsent -> RouteConsentScreen()
         is Route.WorkoutDetail -> WorkoutDetailScreen(route.sessionId)
+        is Route.ExportBuilder -> AdvancedExportScreen(route.templateId)
+        Route.ExportTemplates -> TemplateManagerScreen()
+        Route.ExportHealth -> ExportHealthScreen()
     }
 }
 

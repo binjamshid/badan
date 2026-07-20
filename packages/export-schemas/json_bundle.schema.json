@@ -1,0 +1,666 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://albayyan.net/badan/schemas/json_bundle/1.0.0",
+  "title": "BADAN JSON export bundle",
+  "description": "The v1.0 JSON bundle envelope (execution plan §22.2). This is the PUBLIC face of an export: snake_case keys, ISO-8601 timestamps with a numeric offset, raw and derived in physically separate arrays (I5). BADAN's internal storage is unchanged by this schema — timestamps are epoch-millis in SQLite and are rendered on the way out; do not read this file as a description of the database. Written as a real JSON Schema rather than prose so a downstream consumer can validate a bundle mechanically; scripts/gen_data_dictionary.py reads it to generate DATA_DICTIONARY.md.",
+  "type": "object",
+  "required": [
+    "export_schema_version",
+    "generated_at",
+    "app",
+    "manifest",
+    "dictionaries",
+    "raw_samples",
+    "interval_records",
+    "sessions",
+    "workouts",
+    "derived_values",
+    "baselines",
+    "logs",
+    "deletions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "export_schema_version": {
+      "description": "Semver of the export contract this bundle was written against. Additive changes bump the minor, breaking changes bump the major with migration notes in CHANGELOG.md.",
+      "const": "1.0.0"
+    },
+    "generated_at": { "$ref": "#/$defs/timestamp" },
+    "app": {
+      "type": "object",
+      "required": ["name", "version", "platform"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "BADAN" },
+        "version": { "type": "string", "description": "Emitting app version." },
+        "platform": { "enum": ["ios", "android"] }
+      }
+    },
+    "manifest": { "$ref": "#/$defs/manifest" },
+    "dictionaries": {
+      "description": "Self-description of the ids used in this bundle, derived from the bundle's own contents so the artifact stays readable without the app, the registry, or a network. Every array is sorted by its own id for byte-stability.",
+      "type": "object",
+      "required": ["metrics", "sources", "algorithms", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["metric_id", "canonical_unit", "appears_in"],
+            "additionalProperties": false,
+            "properties": {
+              "metric_id": { "type": "string", "description": "Dot-namespaced registry metric id." },
+              "canonical_unit": { "type": "string", "description": "The unit every value for this metric is stored and published in." },
+              "appears_in": {
+                "type": "array",
+                "description": "Which top-level arrays carry rows for this metric.",
+                "items": { "enum": ["raw_samples", "interval_records", "derived_values", "baselines"] }
+              }
+            }
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source_app", "devices", "ingestion_paths"],
+            "additionalProperties": false,
+            "properties": {
+              "source_app": { "type": "string" },
+              "devices": { "type": "array", "items": { "type": "string" } },
+              "ingestion_paths": { "type": "array", "items": { "$ref": "#/$defs/ingestion_path" } }
+            }
+          }
+        },
+        "algorithms": {
+          "type": "array",
+          "description": "Every algorithm that produced a derived value or baseline in this bundle, with the versions actually present. Two versions of one algorithm appearing together is normal and expected: derived values append, never overwrite (I2).",
+          "items": {
+            "type": "object",
+            "required": ["algorithm_id", "versions"],
+            "additionalProperties": false,
+            "properties": {
+              "algorithm_id": { "type": "string" },
+              "versions": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["unit", "metric_ids"],
+            "additionalProperties": false,
+            "properties": {
+              "unit": { "type": "string", "description": "UCUM-style unit token." },
+              "metric_ids": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "raw_samples": {
+      "description": "As-measured readings (I1: each carries full provenance). Never contains a computed value — see derived_values.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/raw_sample" }
+    },
+    "interval_records": {
+      "description": "Normalized aggregates over a window (daily steps, nightly time-asleep). Measured-derived, not engine-computed: is_derived is false and value_type is 'aggregate'.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/interval_record" }
+    },
+    "sessions": {
+      "description": "Sleep episodes. Workout episodes are NOT here — they are promoted to `workouts` as parent objects and are not duplicated.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/session" }
+    },
+    "workouts": {
+      "description": "Workout episodes as parent objects with references, never flattened. A workout's heart-rate series is referenced by query descriptor into raw_samples, never copied.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/workout" }
+    },
+    "derived_values": {
+      "description": "Engine-computed values. Physically separate from raw (I5) and self-documenting: every row names the algorithm and version that produced it.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/derived_value" }
+    },
+    "baselines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/baseline" }
+    },
+    "logs": {
+      "description": "User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `journal` is reserved for EPIC-29 and is deliberately absent rather than emitted empty — an empty array would assert 'this user wrote no journal entries', which is not the same claim as 'this build has no journal'.",
+      "type": "object",
+      "required": ["symptoms", "adherence", "workouts", "nutrition"],
+      "additionalProperties": false,
+      "properties": {
+        "symptoms": { "type": "array", "items": { "$ref": "#/$defs/symptom_entry" } },
+        "adherence": { "type": "array", "items": { "$ref": "#/$defs/adherence_event" } },
+        "workouts": {
+          "description": "Manually logged workouts. Distinct from the top-level `workouts` array, which holds ingested workout SESSIONS. A user who logs a run by hand and also wears a watch legitimately has both.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/workout_log" }
+        },
+        "nutrition": { "type": "array", "items": { "$ref": "#/$defs/nutrition_entry" } }
+      }
+    },
+    "deletions": {
+      "description": "Tombstones: rows present in this bundle that carry a deleted_at. Deletion is recorded, not enacted by omission — a consumer syncing against a prior bundle needs to know a record went away rather than infer it from absence (§22.6).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["record_id", "entity", "deleted_at"],
+        "additionalProperties": false,
+        "properties": {
+          "record_id": { "type": "string" },
+          "entity": {
+            "enum": ["raw_sample", "interval_record", "session", "workout", "derived_value",
+                     "symptom", "adherence", "workout_log", "nutrition"]
+          },
+          "deleted_at": { "$ref": "#/$defs/timestamp" }
+        }
+      }
+    },
+    "config": {
+      "description": "The user's own export configuration, included so a backup restores settings rather than only data. Absent — not empty — when the emitting path did not supply it; an empty object would claim the user has no templates.",
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "description": "ISO-8601 with a NUMERIC offset, rendered in the record's own timezone so the offset is carried rather than normalized to UTC. 'Z' is never emitted; a zero offset renders as +00:00 (§22.1).",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$"
+    },
+    "nullable_timestamp": {
+      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA tz id at measurement (e.g. Asia/Dubai). The basis for day-boundary attribution."
+    },
+    "nullable_string": { "type": ["string", "null"] },
+    "nullable_number": { "type": ["number", "null"] },
+
+    "ingestion_path": {
+      "description": "How the datum entered BADAN. 'vendor' is reserved for direct vendor/broker ingestion.",
+      "enum": ["platformStore", "manual", "import", "derived", "vendor"]
+    },
+    "quality_flag": {
+      "description": "Honest annotations that travel with a datum. 'sampleData' marks a row fabricated by explore-with-sample-data mode — nobody measured it.",
+      "enum": ["gapFilled", "artifactSuspected", "userCorrected", "provisionalBaseline",
+               "estimate", "tzAssumed", "lowCoverage", "sampleData"]
+    },
+    "granularity": {
+      "description": "The time resolution a value describes. 'raw' is an as-measured reading. Null when the row's window is not a whole calendar unit — an arbitrary-length interval has no honest granularity, and a rounded-off guess would be worse than an absent one.",
+      "oneOf": [
+        { "enum": ["raw", "second", "minute", "hour", "day", "week", "month", "year"] },
+        { "type": "null" }
+      ]
+    },
+    "aggregation_method": {
+      "description": "How underlying readings were combined. 'none' asserts the value is a single reading (or an algorithm output that is not an aggregation of like readings) — it is an answer, not a missing one. Null is the missing one.",
+      "oneOf": [
+        { "enum": ["none", "sum", "mean", "min", "max", "min_avg_max", "duration", "latest"] },
+        { "type": "null" }
+      ]
+    },
+    "value_type": {
+      "description": "raw | aggregate | derived. With is_derived, the pair is what makes I5 checkable by a consumer that has flattened the arrays.",
+      "enum": ["raw", "aggregate", "derived"]
+    },
+
+    "provenance": {
+      "description": "Embedded on the row itself, never a join (I1/D-3). A record without provenance is a bug, not a shortcut.",
+      "type": "object",
+      "required": ["source_app", "source_device", "ingestion_path", "external_id", "import_batch_id",
+                   "measured_at", "measured_timezone", "recorded_at", "ingested_at",
+                   "algorithm_version_id", "quality_flags", "suppressed_by"],
+      "additionalProperties": false,
+      "properties": {
+        "source_app": { "type": "string", "description": "Bundle/package id of the app that produced the record." },
+        "source_device": { "$ref": "#/$defs/nullable_string" },
+        "ingestion_path": { "$ref": "#/$defs/ingestion_path" },
+        "external_id": {
+          "description": "The upstream system's own id — the idempotency key for re-ingest.",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "import_batch_id": { "$ref": "#/$defs/nullable_string" },
+        "measured_at": { "$ref": "#/$defs/timestamp" },
+        "measured_timezone": { "$ref": "#/$defs/timezone" },
+        "recorded_at": { "$ref": "#/$defs/timestamp" },
+        "ingested_at": {
+          "description": "When BADAN stored it. The incremental-export cursor is the max of this field (§22.6), which is why a backfilled row still appears in a later delta run.",
+          "$ref": "#/$defs/timestamp"
+        },
+        "algorithm_version_id": { "$ref": "#/$defs/nullable_string" },
+        "quality_flags": { "type": "array", "items": { "$ref": "#/$defs/quality_flag" } },
+        "suppressed_by": {
+          "description": "record_id of the winning record when dedup suppressed this row. Suppression is reversible and journaled; it is never a deletion (I3).",
+          "$ref": "#/$defs/nullable_string"
+        }
+      }
+    },
+
+    "raw_sample": {
+      "type": "object",
+      "required": ["record_id", "metric_id", "value", "unit", "canonical_value", "canonical_unit",
+                   "original_value", "original_unit", "start_at", "end_at", "timezone",
+                   "granularity", "aggregation_method", "value_type", "is_derived",
+                   "provenance", "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "metric_id": { "type": "string" },
+        "value": {
+          "description": "The stored value, always in the metric's canonical unit. Unlike CSV's `value` column, the bundle does not apply a display unit profile — it publishes the canonical number plus what the source actually reported, and lets the consumer convert.",
+          "type": "number"
+        },
+        "unit": { "type": "string" },
+        "canonical_value": { "type": "number" },
+        "canonical_unit": { "type": "string" },
+        "original_value": { "description": "The value exactly as the source reported it.", "type": "number" },
+        "original_unit": { "type": "string" },
+        "start_at": { "$ref": "#/$defs/timestamp" },
+        "end_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "granularity": { "const": "raw" },
+        "aggregation_method": { "const": "none" },
+        "value_type": { "const": "raw" },
+        "is_derived": { "const": false },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "interval_record": {
+      "type": "object",
+      "required": ["record_id", "metric_id", "value", "unit", "canonical_value", "canonical_unit",
+                   "start_at", "end_at", "timezone", "coverage", "granularity",
+                   "aggregation_method", "value_type", "is_derived", "provenance",
+                   "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "metric_id": { "type": "string" },
+        "value": { "type": "number" },
+        "unit": { "type": "string" },
+        "canonical_value": { "type": "number" },
+        "canonical_unit": { "type": "string" },
+        "start_at": { "$ref": "#/$defs/timestamp" },
+        "end_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "coverage": {
+          "description": "0–1 fraction of the window actually covered by underlying readings. Below 1 means the aggregate is over a partial window, which is a data-quality fact the consumer needs and BADAN does not silently backfill.",
+          "type": "number", "minimum": 0, "maximum": 1
+        },
+        "granularity": { "$ref": "#/$defs/granularity" },
+        "aggregation_method": { "$ref": "#/$defs/aggregation_method" },
+        "value_type": { "const": "aggregate" },
+        "is_derived": { "const": false },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "session": {
+      "type": "object",
+      "required": ["record_id", "kind", "subtype", "start_at", "end_at", "timezone", "local_night",
+                   "detail", "value_type", "is_derived", "provenance", "updated_at",
+                   "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "kind": { "enum": ["sleepPrimary", "sleepNap"] },
+        "subtype": { "$ref": "#/$defs/nullable_string" },
+        "start_at": { "$ref": "#/$defs/timestamp" },
+        "end_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "local_night": {
+          "description": "YYYY-MM-DD attribution key computed in the record's own timezone. This is what makes 'last night' survive DST and a post-midnight bedtime.",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "detail": {
+          "type": "object",
+          "required": ["merged_from", "time_asleep_seconds", "time_in_bed_seconds", "stage_summary_seconds"],
+          "additionalProperties": false,
+          "properties": {
+            "merged_from": {
+              "description": "record_ids of the raw sessions dedup combined into this one — the lineage the provenance sheet renders.",
+              "type": "array", "items": { "type": "string" }
+            },
+            "time_asleep_seconds": { "$ref": "#/$defs/nullable_number" },
+            "time_in_bed_seconds": { "$ref": "#/$defs/nullable_number" },
+            "stage_summary_seconds": {
+              "type": "object",
+              "additionalProperties": { "type": "number" },
+              "propertyNames": { "enum": ["inBed", "awake", "light", "deep", "rem", "asleepUnspecified"] }
+            }
+          }
+        },
+        "value_type": { "const": "raw" },
+        "is_derived": { "const": false },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "workout": {
+      "description": "A workout episode as a parent object. `strength_sets` from the plan's §22.2 sketch is NOT emitted: BADAN has no strength-set entity yet, and an empty array would claim the user recorded no sets rather than that the feature does not exist. It is reserved, not silently dropped.",
+      "type": "object",
+      "required": ["record_id", "activity_type", "start_at", "end_at", "timezone", "totals",
+                   "source_workout_id", "detail_version", "value_type", "is_derived",
+                   "provenance", "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string", "description": "The session ULID. Route filenames are derived from it (§22.4)." },
+        "activity_type": { "type": "string", "description": "A stable BADAN slug, never a platform's numeric enum value." },
+        "start_at": { "$ref": "#/$defs/timestamp" },
+        "end_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "totals": {
+          "description": "The totals the SOURCE reported. Absent keys stay absent and are never coerced to zero: '0 kcal' and 'not recorded' are different claims. KNOWN PLATFORM DIVERGENCE: energy appears as `energy_kcal` from iOS and `energy_kj` from Android, because the two builds' WorkoutTotals landed on different stored units in EPIC-03. Exactly one of the two keys appears, and the key names the unit — a consumer must read whichever is present rather than assume. This is declared rather than papered over with a conversion, which would introduce float residue into a lineage record; see packages/fixtures/export/README.md knownDivergences.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "energy_kcal": { "type": "number", "description": "iOS only — see the divergence note above." },
+            "energy_kj": { "type": "number", "description": "Android only — see the divergence note above." },
+            "distance_m": { "type": "number" },
+            "avg_hr": { "type": "number" },
+            "max_hr": { "type": "number" },
+            "elevation_gain_m": { "type": "number" }
+          }
+        },
+        "hr_series_ref": {
+          "description": "A QUERY DESCRIPTOR into raw_samples, never a copy of the series. Absent when no HR linkage was recorded. Resolve it by selecting raw_samples where metric_id matches and start_at falls in [start_at, end_at]. KNOWN PLATFORM DIVERGENCE: only iOS can emit this today — Android's WorkoutDetail has no hrSeriesRef field, so an Android bundle omits the key even for a workout that has an HR series in raw_samples. Declared in packages/fixtures/export/README.md.",
+          "type": "object",
+          "required": ["metric_id", "start_at", "end_at"],
+          "additionalProperties": false,
+          "properties": {
+            "metric_id": { "type": "string" },
+            "start_at": { "$ref": "#/$defs/timestamp" },
+            "end_at": { "$ref": "#/$defs/timestamp" }
+          }
+        },
+        "route_ref": {
+          "description": "Filename of the workout's GPX trace inside the artifact (§22.4). Location data gates independently of every other health class: this key is absent unless the export was built with the explicit route opt-in, and it is never present in a Quick Export.",
+          "type": "string",
+          "pattern": "^route_[A-Za-z0-9]+\\.gpx$"
+        },
+        "source_workout_id": {
+          "description": "The platform's own workout id, so an exported workout correlates against Apple Health / Health Connect without the reader knowing how BADAN composes external ids.",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "detail_version": {
+          "description": "Version of the typed workout payload the row was read from. iOS stores it as an integer and Android as this string; both render into this one spelling so the bundle does not leak which platform wrote it.",
+          "oneOf": [{ "type": "string", "pattern": "^workout\\.detail\\.v[0-9]+$" }, { "type": "null" }]
+        },
+        "local_night": { "$ref": "#/$defs/nullable_string" },
+        "value_type": { "const": "raw" },
+        "is_derived": { "const": false },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "derived_value": {
+      "type": "object",
+      "required": ["record_id", "metric_id", "value", "unit", "period_key", "granularity",
+                   "aggregation_method", "value_type", "is_derived", "confidence", "provisional",
+                   "algorithm_id", "algorithm_version", "input_manifest_ref", "computed_at",
+                   "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "metric_id": { "type": "string" },
+        "value": { "type": "number" },
+        "unit": { "type": "string" },
+        "period_key": {
+          "description": "day:YYYY-MM-DD | week:YYYY-Www | month:YYYY-MM | year:YYYY | session:<ulid>. granularity is read from this prefix, which is why it is null for a session-keyed value.",
+          "type": "string"
+        },
+        "granularity": { "$ref": "#/$defs/granularity" },
+        "aggregation_method": {
+          "description": "'none' on every derived value today: an algorithm output is not an aggregation of like readings, and claiming 'mean' would misdescribe how the number was produced. The algorithm's own composition is published in docs/algorithms/ and keyed by algorithm_id.",
+          "const": "none"
+        },
+        "value_type": { "const": "derived" },
+        "is_derived": { "const": true },
+        "confidence": { "$ref": "#/$defs/nullable_number" },
+        "provisional": {
+          "description": "True while the inputs are too thin to be honest about. A provisional value is published, not hidden — hiding it would make the app look more certain than it is.",
+          "type": "boolean"
+        },
+        "algorithm_id": { "type": "string" },
+        "algorithm_version": { "type": "string" },
+        "input_manifest_ref": {
+          "description": "Id of the input manifest listing the records this value was computed from.",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "computed_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "baseline": {
+      "description": "A materialized personal-normal band. Timestamps render at +00:00 because a baseline spans many days and has no single measurement timezone to be faithful to.",
+      "type": "object",
+      "required": ["record_id", "metric_id", "unit", "covariate_context", "window_days", "method",
+                   "center", "spread", "band_low", "band_high", "n_points", "provisional",
+                   "algorithm_version", "valid_from", "computed_at", "value_type", "is_derived"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "metric_id": { "type": "string" },
+        "unit": { "type": "string" },
+        "covariate_context": { "type": "string" },
+        "window_days": { "type": "integer" },
+        "method": { "enum": ["medianMAD"] },
+        "center": { "type": "number" },
+        "spread": { "type": "number" },
+        "band_low": { "type": "number" },
+        "band_high": { "type": "number" },
+        "n_points": { "type": "integer" },
+        "provisional": { "type": "boolean" },
+        "algorithm_version": { "type": "string" },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "computed_at": { "$ref": "#/$defs/timestamp" },
+        "value_type": { "const": "derived" },
+        "is_derived": { "const": true }
+      }
+    },
+
+    "symptom_entry": {
+      "type": "object",
+      "required": ["record_id", "symptom_id", "custom_label", "severity", "occurred_at", "timezone",
+                   "duration_seconds", "body_location", "triggers", "note", "updated_at",
+                   "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "symptom_id": { "$ref": "#/$defs/nullable_string" },
+        "custom_label": { "$ref": "#/$defs/nullable_string" },
+        "severity": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "occurred_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "duration_seconds": { "$ref": "#/$defs/nullable_number" },
+        "body_location": { "$ref": "#/$defs/nullable_string" },
+        "triggers": { "type": "array", "items": { "type": "string" } },
+        "note": { "$ref": "#/$defs/nullable_string" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "adherence_event": {
+      "type": "object",
+      "required": ["record_id", "regimen_id", "kind", "scheduled_for", "occurred_at", "timezone",
+                   "skip_reason", "skip_note", "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "regimen_id": { "type": "string" },
+        "kind": { "enum": ["taken", "skipped", "late"] },
+        "scheduled_for": { "$ref": "#/$defs/nullable_timestamp" },
+        "occurred_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "skip_reason": {
+          "oneOf": [
+            { "enum": ["forgot", "sideEffects", "ranOut", "doctorAdvice", "notNeeded", "other"] },
+            { "type": "null" }
+          ]
+        },
+        "skip_note": { "$ref": "#/$defs/nullable_string" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "workout_log": {
+      "type": "object",
+      "required": ["record_id", "activity_type", "start_at", "end_at", "timezone", "energy_kcal",
+                   "distance_m", "avg_hr", "max_hr", "perceived_effort", "note", "ingestion_path",
+                   "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "activity_type": { "type": "string" },
+        "start_at": { "$ref": "#/$defs/timestamp" },
+        "end_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "energy_kcal": { "$ref": "#/$defs/nullable_number" },
+        "distance_m": { "$ref": "#/$defs/nullable_number" },
+        "avg_hr": { "$ref": "#/$defs/nullable_number" },
+        "max_hr": { "$ref": "#/$defs/nullable_number" },
+        "perceived_effort": { "type": ["integer", "null"], "minimum": 1, "maximum": 10 },
+        "note": { "$ref": "#/$defs/nullable_string" },
+        "ingestion_path": { "$ref": "#/$defs/ingestion_path" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "nutrition_entry": {
+      "type": "object",
+      "required": ["record_id", "description", "meal_type", "energy_kcal", "protein_g", "carbs_g",
+                   "fat_g", "fiber_g", "water_ml", "caffeine_mg", "low_detail", "occurred_at",
+                   "timezone", "note", "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "description": { "type": "string" },
+        "meal_type": { "enum": ["breakfast", "lunch", "dinner", "snack", "drink"] },
+        "energy_kcal": { "$ref": "#/$defs/nullable_number" },
+        "protein_g": { "$ref": "#/$defs/nullable_number" },
+        "carbs_g": { "$ref": "#/$defs/nullable_number" },
+        "fat_g": { "$ref": "#/$defs/nullable_number" },
+        "fiber_g": { "$ref": "#/$defs/nullable_number" },
+        "water_ml": { "$ref": "#/$defs/nullable_number" },
+        "caffeine_mg": { "$ref": "#/$defs/nullable_number" },
+        "low_detail": {
+          "description": "True for a 'quick calories' entry — honestly flagged rather than presented as a measured macro breakdown.",
+          "type": "boolean"
+        },
+        "occurred_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "note": { "$ref": "#/$defs/nullable_string" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "manifest": {
+      "description": "The §22.5 manifest contract, embedded so the artifact is reproducible from its own description (D-8). The standalone manifest.json written alongside a CSV export carries the same fields.",
+      "type": "object",
+      "required": ["export_id", "export_schema_version", "app_version", "platform", "generated_at",
+                   "scope", "date_range", "display_language", "unit_profile",
+                   "timezone_policy_note", "dedup_policy_note", "per_metric_row_counts",
+                   "row_counts", "checksums", "data_quality_note", "sample_data_row_count",
+                   "is_delta", "cursor_before", "cursor_after", "previous_manifest_sha",
+                   "destination", "encryption"],
+      "additionalProperties": false,
+      "properties": {
+        "export_id": { "type": "string" },
+        "export_schema_version": { "const": "1.0.0" },
+        "app_version": { "type": "string" },
+        "platform": { "type": "string" },
+        "generated_at": { "$ref": "#/$defs/timestamp" },
+        "scope": {
+          "description": "Full echo of the scope that produced this artifact. A null list means 'all', which is not the same as an empty list.",
+          "type": "object",
+          "required": ["metric_ids", "families", "start_date", "end_date", "source_ids",
+                       "include_raw", "include_derived", "include_suppressed", "include_sensitive",
+                       "include_routes", "unit_profile", "language"],
+          "additionalProperties": false,
+          "properties": {
+            "metric_ids": { "type": ["array", "null"], "items": { "type": "string" } },
+            "families": { "type": ["array", "null"], "items": { "type": "string" } },
+            "start_date": { "$ref": "#/$defs/nullable_timestamp" },
+            "end_date": { "$ref": "#/$defs/nullable_timestamp" },
+            "source_ids": { "type": ["array", "null"], "items": { "type": "string" } },
+            "include_raw": { "type": "boolean" },
+            "include_derived": { "type": "boolean" },
+            "include_suppressed": { "type": "boolean" },
+            "include_sensitive": { "type": "boolean" },
+            "include_routes": { "type": "boolean" },
+            "unit_profile": { "enum": ["canonical", "display"] },
+            "language": { "enum": ["en", "ar"] }
+          }
+        },
+        "date_range": { "type": "string" },
+        "display_language": { "type": "string" },
+        "unit_profile": { "type": "string" },
+        "timezone_policy_note": { "type": "string" },
+        "dedup_policy_note": { "type": "string" },
+        "per_metric_row_counts": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "row_counts": {
+          "description": "Rows actually serialized per top-level array, counted by the writer from what it emitted rather than from what it was handed. Makes truncation detectable.",
+          "type": "object", "additionalProperties": { "type": "integer" }
+        },
+        "checksums": {
+          "description": "sha256 per file. Always describes the PLAINTEXT content, whether or not the artifact was encrypted on the way to disk. A self-contained bundle cannot checksum itself, so the bundle's own sha is recorded on the export job, not here.",
+          "type": "object", "additionalProperties": { "type": "string" }
+        },
+        "data_quality_note": { "type": "string" },
+        "sample_data_row_count": {
+          "description": "How many rows in THIS artifact were fabricated by sample/demo mode. Counted from the rows' own quality flags, not from an app-level demo switch, so it stays true for a store holding both kinds.",
+          "type": "integer", "minimum": 0
+        },
+        "is_delta": { "type": "boolean" },
+        "cursor_before": { "$ref": "#/$defs/nullable_timestamp" },
+        "cursor_after": { "$ref": "#/$defs/nullable_timestamp" },
+        "previous_manifest_sha": { "$ref": "#/$defs/nullable_string" },
+        "destination": {
+          "description": "Where the artifact was written, as name and kind ONLY. Credentials, tokens, account identifiers and secret-bearing paths are never recorded here — a manifest travels with the file it describes.",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["name", "kind"],
+              "additionalProperties": false,
+              "properties": { "name": { "type": "string" }, "kind": { "type": "string" } }
+            },
+            { "type": "null" }
+          ]
+        },
+        "encryption": { "enum": ["none", "badanenc-v1"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+record_id,record_kind,metric_id,metric_display,value,unit,canonical_value,canonical_unit,value_type,is_derived,timestamp_start,timestamp_end,timezone,recorded_at,source_app,source_device,ingestion_path,source_external_id,import_batch_id,quality_flags,confidence,algorithm_id,algorithm_version,suppressed_by,granularity,aggregation_method
+01J8ZK0000000000000000DRV1,derived,readiness.score,"Readiness, ""score"", comma",72.5,score,72.5,score,derived,true,2026-07-20T00:00:00+00:00,,UTC,2026-07-20T06:00:00+00:00,,,derived,,,,0.82,readiness.v1,1.0.0,,day,none

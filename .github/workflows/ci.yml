@@ -69,6 +69,66 @@ jobs:
       # resurfaces as a cross-platform "the two disagree" failure pointing at Units instead.
       - name: Shared fixtures match their recorded hashes
         run: scripts/check_fixture_hashes.sh
+      # EPIC-22. DATA_DICTIONARY.md is generated from packages/export-schemas/ + registry.json, so
+      # the one way it can be wrong is by being stale. --check regenerates in memory and diffs,
+      # which turns "someone changed a column and forgot the docs" from a thing a reader discovers
+      # into a thing the build says. It also cross-checks that csv_columns.json and
+      # json_bundle.schema.json agree on export_schema_version — two halves of one contract that
+      # can otherwise drift apart without either file looking wrong on its own.
+      - name: Data dictionary is regenerated from the contracts (EPIC-22)
+        run: scripts/gen_data_dictionary.py --check
+      # The point of writing json_bundle.schema.json as a real JSON Schema rather than prose is
+      # that something can validate against it. Nothing did until this step, which made "real JSON
+      # Schema" a claim about the file's syntax rather than about the bundle's contents. The golden
+      # is the bundle both platforms are asserted byte-identical on, so validating it validates the
+      # shape both writers actually emit.
+      - name: The golden export bundle validates against its own JSON Schema
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check 'jsonschema>=4,<5'
+          python3 - <<'PY'
+          import json, pathlib, sys
+          from jsonschema import Draft202012Validator
+
+          root = pathlib.Path('.')
+          schema = json.loads((root/'packages/export-schemas/json_bundle.schema.json').read_text())
+          bundle = json.loads((root/'packages/fixtures/export/bundle-v1.json').read_text())
+
+          Draft202012Validator.check_schema(schema)
+          errors = sorted(Draft202012Validator(schema).iter_errors(bundle), key=lambda e: list(e.path))
+          for error in errors:
+            location = '/'.join(str(p) for p in error.path) or '<root>'
+            print(f"::error::bundle-v1.json at {location}: {error.message}")
+          sys.exit(1 if errors else 0)
+          PY
+      # The version lives in four places that must never disagree: the two contract files, and the
+      # constant each platform's writers actually stamp into an artifact. A file labelled 1.0.0
+      # whose writer emits 0.9.0 is worse than an unversioned one — it tells a consumer how to
+      # read bytes that are not there.
+      - name: Export schema version agrees across contracts and both writers
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+
+          root = pathlib.Path('.')
+          version = json.loads((root/'packages/export-schemas/csv_columns.json').read_text())['version']
+          swift = (root/'apps/ios/Sources/Export/CSVWriter.swift').read_text()
+          kotlin = (root/'apps/android/app/src/main/java/net/albayyan/badan/export/CsvWriter.kt').read_text()
+
+          found = {
+            'csv_columns.json': version,
+            'json_bundle.schema.json': json.loads(
+              (root/'packages/export-schemas/json_bundle.schema.json').read_text()
+            )['properties']['export_schema_version']['const'],
+            'ExportSchema.version (iOS)': re.search(r'static let version = "([^"]+)"', swift).group(1),
+            'ExportSchema.VERSION (Android)': re.search(r'const val VERSION: String = "([^"]+)"', kotlin).group(1),
+          }
+          if len(set(found.values())) != 1:
+            for where, value in found.items():
+              print(f"::error::{where} says export schema {value}")
+            sys.exit(1)
+          print(f"export schema {version} agrees across {len(found)} sources")
+          PY
       - name: App Store legal pages exist and are placeholder-free
         run: |
           set -euo pipefail

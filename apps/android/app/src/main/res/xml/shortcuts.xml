@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EPIC-19 — static app shortcuts (launcher long-press menu).
+
+  Android has no Shortcuts-app equivalent to iOS's App Intents, so these launcher shortcuts plus
+  the "Run export template" quick-settings tile (see RunExportTileService) are the Approximate
+  parity BADAN offers (plan §14 line 1098). They mirror the three iOS intents as closely as a
+  launcher deep-link allows: run an export, see today's readiness, log water.
+
+  Each shortcut targets MainActivity with a distinct custom action rather than a string extra:
+  the static-shortcut `<intent>` element cannot carry `<extra>` values, so the action string IS
+  the payload, mapped back to a screen in `MainActivity.handleShortcutIntent`. The action names
+  are the constants in `platform/shortcuts/ShortcutActions.kt` — keep the two in step.
+
+  `android:targetPackage` is the installed package = the Gradle `applicationId`
+  (net.binjamshid.badan), which differs from the source namespace (net.albayyan.badan) that names
+  `targetClass`. Both are literal here because res XML has no `${applicationId}` substitution; if
+  the applicationId ever changes, this file and `ShortcutActions` change with it.
+
+  Labels live in strings.xml (en) / values-ar/strings.xml (ar); an Arabic device shows Arabic.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:shortcutId="run_export"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_export"
+        android:shortcutShortLabel="@string/shortcut_export_short"
+        android:shortcutLongLabel="@string/shortcut_export_long">
+        <intent
+            android:action="net.albayyan.badan.action.RUN_EXPORT"
+            android:targetPackage="net.binjamshid.badan"
+            android:targetClass="net.albayyan.badan.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="today_readiness"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_score"
+        android:shortcutShortLabel="@string/shortcut_today_short"
+        android:shortcutLongLabel="@string/shortcut_today_long">
+        <intent
+            android:action="net.albayyan.badan.action.TODAY"
+            android:targetPackage="net.binjamshid.badan"
+            android:targetClass="net.albayyan.badan.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="log_water"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_water"
+        android:shortcutShortLabel="@string/shortcut_water_short"
+        android:shortcutLongLabel="@string/shortcut_water_long">
+        <intent
+            android:action="net.albayyan.badan.action.LOG"
+            android:targetPackage="net.binjamshid.badan"
+            android:targetClass="net.albayyan.badan.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+</shortcuts>

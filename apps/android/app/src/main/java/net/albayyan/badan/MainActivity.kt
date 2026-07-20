@@ -28,6 +28,7 @@ import net.albayyan.badan.app.Navigator
 import net.albayyan.badan.app.RootScreen
 import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.domain.AppTheme
+import net.albayyan.badan.platform.shortcuts.ShortcutActions
 
 class MainActivity : ComponentActivity() {
     // Owned at the Activity level (not `remember`ed) so a warm-start deep link delivered via
@@ -115,6 +116,23 @@ class MainActivity : ComponentActivity() {
             "export" -> navigator.push(Route.Export)
             "timeline" -> navigator.push(Route.Timeline)
             "insights" -> navigator.selectTab(3)
+        }
+        handleShortcutIntent(intent)
+    }
+
+    /**
+     * EPIC-19 — launcher app shortcuts (shortcuts.xml) and the "Run export template" QS tile
+     * ([net.albayyan.badan.platform.shortcuts.RunExportTileService]) reach the app through custom
+     * intent actions, because a static shortcut's intent can carry no string extras. Mapped here,
+     * next to the demo/screenshot `badan_route` deep links, so every "open BADAN at X" path lives
+     * in one place. Tabs: Today = 0, Log = 2 (see `Navigator`).
+     */
+    private fun handleShortcutIntent(intent: Intent?) {
+        when (ShortcutActions.destination(intent?.action)) {
+            ShortcutActions.Destination.EXPORT -> navigator.push(Route.Export)
+            ShortcutActions.Destination.TODAY -> navigator.selectTab(0)
+            ShortcutActions.Destination.LOG -> navigator.selectTab(2)
+            null -> Unit
         }
     }
 

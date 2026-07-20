@@ -120,7 +120,35 @@
             <intent-filter>
                 <action android:name="androidx.health.connect.action.SHOW_PERMISSIONS_RATIONALE" />
             </intent-filter>
+            <!--
+              EPIC-19: static launcher shortcuts. Declared on the LAUNCHER activity because that is
+              the one the shortcut menu attaches to. The shortcuts' intents use custom actions
+              (net.albayyan.badan.action.*) handled in MainActivity.handleShortcutIntent; they
+              target this explicit component, so they need no additional intent-filter here.
+            -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!--
+          EPIC-19: the "Run export template" quick-settings tile. Android's stand-in for an iOS
+          App Intent surface (there is no Shortcuts app to donate to). Opens the Export Center
+          rather than exporting headlessly — see RunExportTileService for why that is the honest
+          behaviour given there is no notification surface yet to report a background run's outcome.
+          BIND_QUICK_SETTINGS_TILE is what restricts binding to the system, and exported=true is
+          required for the system to bind it at all.
+        -->
+        <service
+            android:name=".platform.shortcuts.RunExportTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_shortcut_export"
+            android:label="@string/tile_run_export_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <!--
           Exports are shared as content:// uris through this provider. Previously they were

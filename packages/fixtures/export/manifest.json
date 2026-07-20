@@ -1,0 +1,44 @@
+{
+  "fixtureSetVersion": "1",
+  "exportSchemaVersion": "1.0.0",
+  "spec": "packages/export-schemas/csv_columns.json + packages/export-schemas/json_bundle.schema.json",
+  "note": "Cross-platform export-serialization fixtures for the Phase-1 exit criterion 'the same store and scope produce byte-identical output on both platforms'. export-input-v1.json is the shared INPUT: both suites build their own domain objects from it, run their own writers, and must produce bundle-v1.json / raw-v1.csv / derived-v1.csv byte for byte. Read by apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt and apps/ios/Tests/ExportSchemaParityTests.swift. Neither suite may copy the records or the goldens into its own source — a copy is one more thing that can drift from the artifact it is supposed to police (same reasoning as packages/fixtures/encryption and packages/fixtures/canonicalization).",
+  "files": [
+    {
+      "id": "export-input-v1",
+      "file": "export-input-v1.json",
+      "sha256": "23f59fab5054f274e1f8bd9e3497e75735f10534e5dcada3bec33a2f8fb33608",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
+        "apps/ios/Tests/ExportSchemaParityTests.swift"
+      ]
+    },
+    {
+      "id": "bundle-v1",
+      "file": "bundle-v1.json",
+      "sha256": "7067d88c3d67111212c56da99152dc3770f9ab3bd4690bd116a2f5779e518b80",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
+        "apps/ios/Tests/ExportSchemaParityTests.swift"
+      ]
+    },
+    {
+      "id": "raw-v1",
+      "file": "raw-v1.csv",
+      "sha256": "53cbbc17f878f09f2ac832a44466aae64356c156cfaf0cec20fed515215d9eed",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
+        "apps/ios/Tests/ExportSchemaParityTests.swift"
+      ]
+    },
+    {
+      "id": "derived-v1",
+      "file": "derived-v1.csv",
+      "sha256": "2252fd58b3f977715315622b80ddd9893468723becc414d0a548115b43434721",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
+        "apps/ios/Tests/ExportSchemaParityTests.swift"
+      ]
+    }
+  ]
+}

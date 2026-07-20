@@ -1,0 +1,20 @@
+/* EPIC-19 — Siri phrases and short titles for BADAN's App Shortcuts (Arabic).
+ *
+ * Keys are the English phrase literals (with the ${applicationName} token); values are the Arabic
+ * a user actually says. The app name renders as بدن on an Arabic device, so the phrases read
+ * naturally. Same wellness register, no wall-clock promise. Keep key-for-key with the English. */
+
+"Run a ${applicationName} export" = "شغّل تصدير ${applicationName}";
+"Export my data with ${applicationName}" = "صدّر بياناتي عبر ${applicationName}";
+"${applicationName} export" = "تصدير ${applicationName}";
+
+"What's my ${applicationName} readiness" = "ما جاهزيتي في ${applicationName}";
+"Get my latest ${applicationName} score" = "أعطني أحدث قيمة من ${applicationName}";
+
+"Log water in ${applicationName}" = "سجّل ماءً في ${applicationName}";
+"Log a drink in ${applicationName}" = "سجّل مشروباً في ${applicationName}";
+
+/* Short titles shown on the shortcut tile in the Shortcuts app. */
+"shortcut.run_export.short_title" = "تشغيل تصدير";
+"shortcut.get_score.short_title" = "أحدث قيمة";
+"shortcut.log_water.short_title" = "تسجيل الماء";

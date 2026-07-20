@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="BADAN/0.1.0" xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>BADAN workout route export</name>
+    <desc>BADAN 0.1.0 · export schema 1.0.0</desc>
+    <time>2026-06-15T12:00:00Z</time>
+  </metadata>
+  <trk>
+    <name>Trail run · &lt;hills&gt; &amp; &quot;rocks&quot;</name>
+    <trkseg>
+      <trkpt lat="47.6062000" lon="-122.3321000">
+        <ele>56.3</ele>
+        <time>2026-06-15T06:00:00Z</time>
+      </trkpt>
+      <trkpt lat="47.6063500" lon="-122.3319000">
+        <ele>57.0</ele>
+        <time>2026-06-15T06:00:30Z</time>
+      </trkpt>
+      <trkpt lat="47.6065000" lon="-122.3317000">
+        <ele>58.1</ele>
+        <time>2026-06-15T06:01:30Z</time>
+      </trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="47.6068000" lon="-122.3312000">
+        <time>2026-06-15T06:02:31Z</time>
+      </trkpt>
+      <trkpt lat="47.6070000" lon="-122.3310000">
+        <ele>60.0</ele>
+        <time>2026-06-15T06:03:01Z</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>

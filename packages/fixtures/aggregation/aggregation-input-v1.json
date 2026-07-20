@@ -1,0 +1,37 @@
+{
+  "fixtureSetVersion": "1",
+  "note": "Shared INPUT for the EPIC-13 aggregation + wide-projection parity fixture. Both suites build AggregateInputRow objects and a MetricDefinition map from this file, run MetricAggregator + WideCSVProjector, and must produce records-hint-v1.csv / records-minavgmax-v1.csv / wide-v1.csv byte for byte (goldens in this folder). Read by apps/ios/Tests/GPXAggregationParityTests.swift and apps/android/app/src/test/java/net/albayyan/badan/GpxAggregationParityTest.kt. Numbers are strings so both platforms parse them through the correctly-rounded Double(String)/String.toDouble() path (same reasoning as packages/fixtures/export/README.md); timestamps are epoch-millis strings.",
+  "definitions": [
+    { "metricId": "activity.steps", "kind": "intervalAggregate", "canonicalUnit": "count" },
+    { "metricId": "activity.distance", "kind": "intervalAggregate", "canonicalUnit": "m" },
+    { "metricId": "activity.floors", "kind": "intervalAggregate", "canonicalUnit": "count" },
+    { "metricId": "heart.hr", "kind": "rawSample", "canonicalUnit": "bpm" },
+    { "metricId": "respiratory.rate", "kind": "intervalAggregate", "canonicalUnit": "breaths/min" }
+  ],
+  "rows": [
+    { "metricId": "activity.steps", "value": "3000", "unit": "count", "startMs": "1772947800000", "endMs": null, "tzId": "America/New_York", "storedAggregation": null },
+    { "metricId": "activity.steps", "value": "5000", "unit": "count", "startMs": "1773027000000", "endMs": null, "tzId": "America/New_York", "storedAggregation": null },
+    { "metricId": "activity.steps", "value": "2000", "unit": "count", "startMs": "1793507400000", "endMs": null, "tzId": "America/New_York", "storedAggregation": null },
+    { "metricId": "activity.steps", "value": "4000", "unit": "count", "startMs": "1793593800000", "endMs": null, "tzId": "America/New_York", "storedAggregation": null },
+    { "metricId": "activity.distance", "value": "500", "unit": "m", "startMs": "1772947800000", "endMs": "1772951400000", "tzId": "America/New_York", "storedAggregation": "sum" },
+    { "metricId": "activity.distance", "value": "1500", "unit": "m", "startMs": "1773027000000", "endMs": "1773030600000", "tzId": "America/New_York", "storedAggregation": "sum" },
+    { "metricId": "activity.floors", "value": "3", "unit": "count", "startMs": "1772947800000", "endMs": null, "tzId": "America/New_York", "storedAggregation": "sum" },
+    { "metricId": "activity.floors", "value": "5", "unit": "count", "startMs": "1773027000000", "endMs": null, "tzId": "America/New_York", "storedAggregation": "max" },
+    { "metricId": "respiratory.rate", "value": "14", "unit": "breaths/min", "startMs": "1772947800000", "endMs": null, "tzId": "America/New_York", "storedAggregation": "mean" },
+    { "metricId": "respiratory.rate", "value": "16", "unit": "breaths/min", "startMs": "1773027000000", "endMs": null, "tzId": "America/New_York", "storedAggregation": "mean" },
+    { "metricId": "heart.hr", "value": "62", "unit": "bpm", "startMs": "1781928000000", "endMs": null, "tzId": "Asia/Dubai", "storedAggregation": null },
+    { "metricId": "heart.hr", "value": "79", "unit": "bpm", "startMs": "1782000000000", "endMs": null, "tzId": "America/New_York", "storedAggregation": null },
+    { "metricId": "heart.hr", "value": "70", "unit": "bpm", "startMs": "1782046800000", "endMs": null, "tzId": "America/New_York", "storedAggregation": null }
+  ],
+  "coverage": {
+    "dst-spring": "activity.steps/distance/floors/respiratory.rate on 2026-03-08 in America/New_York — a 23-hour spring-forward day; bucket_end - bucket_start must be 82800000 ms",
+    "dst-fall": "activity.steps on 2026-11-01 in America/New_York — a 25-hour fall-back day; bucket_end - bucket_start must be 90000000 ms",
+    "tz-change": "heart.hr rows recorded 2026-06-20 08:00 in Asia/Dubai and 2026-06-20 20:00 in America/New_York share the local date 2026-06-20 and land in ONE bucket; contributing_tzs = America/New_York;Asia/Dubai; boundaries anchored in the earliest row's zone (Asia/Dubai, a 24h day); a third row on 2026-06-21 is a separate bucket",
+    "default-stat-path-1": "activity.distance rows all carry storedAggregation=sum (agree) -> sum; respiratory.rate rows all carry mean -> mean (a rate, so path 2 would not fire)",
+    "default-stat-path-2": "activity.steps has no storedAggregation -> intervalAggregate + cumulative unit 'count' -> sum",
+    "default-stat-path-3": "heart.hr is a rawSample in bpm (a rate) -> mean",
+    "default-stat-fallthrough": "activity.floors rows carry sum and max (disagree) -> fall through to path 2 (count is cumulative) -> sum",
+    "decimal-render": "heart.hr 2026-06-20 mean of 62 and 79 = 70.5 exercises non-integer decimal rendering; respiratory.rate mean of 14 and 16 = 15 stays integer",
+    "duration-latest": "activity.distance rows carry endMs (3600s each) so a duration run totals 7200 and a latest run yields 1500 — asserted directly in the suites, not goldened"
+  }
+}

@@ -134,6 +134,9 @@ struct HomeScreen: View {
                                 }
                             }
                             .animation(.default, value: env.depth)
+                            // §16: Export Center is elevated to a first-class destination — reachable
+                            // from Body, Settings, and here as a Home tool card.
+                            HomeExportToolCard()
                         }
                         .padding(.horizontal, BadanSpace.space4)
                         .padding(.vertical, BadanSpace.space4)
@@ -307,6 +310,49 @@ private struct HomeCasualBody: View {
 
     private func isVisible(_ id: String) -> Bool {
         isHomeModuleVisible(id, in: env.profile)
+    }
+}
+
+// MARK: - Export tool card (§16 elevation)
+
+/// The Home entry point to the elevated Export Center. A calm tool card at the foot of Today —
+/// "your data is yours" made reachable without a trip through Body → Tools.
+private struct HomeExportToolCard: View {
+    @Environment(AppEnvironment.self) private var env
+
+    private static let subtitle = LocalizedString(
+        en: "Your records, offline — CSV or JSON, always free.",
+        ar: "سجلاتك دون اتصال — CSV أو JSON، مجاناً دائماً.")
+
+    var body: some View {
+        NavigationLink { ExportCenterScreen() } label: {
+            BadanCard {
+                HStack(spacing: BadanSpace.space3) {
+                    Image(systemName: "square.and.arrow.up")
+                        .imageScale(.large)
+                        .foregroundStyle(BadanColor.primary)
+                        .frame(width: 30)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Loc.exportTitle, language: env.language)
+                            .font(BadanFont.body.weight(.semibold))
+                            .foregroundStyle(BadanColor.textPrimary)
+                        Text(Self.subtitle, language: env.language)
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: BadanSpace.space2)
+                    Image(systemName: "chevron.forward")
+                        .imageScale(.small)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .accessibilityHidden(true)
+                }
+                .frame(minHeight: BadanSpace.touchMin)
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

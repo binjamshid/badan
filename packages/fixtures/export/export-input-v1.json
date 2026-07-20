@@ -1,0 +1,528 @@
+{
+  "fixtureVersion": "1",
+  "exportSchemaVersion": "1.0.0",
+  "note": "The INPUT half of the export parity fixture. Both suites build their own domain objects from these records, run their own CSVWriter/CsvWriter and JSONBundleWriter/JsonBundleWriter, and must produce bundle-v1.json / raw-v1.csv / derived-v1.csv byte for byte. Numbers and epoch-millis are STRINGS on purpose - see README.md 'Why the numbers are strings'.",
+
+  "decimalCases": [
+    { "id": "integer-valued", "value": "5.0", "expected": "5" },
+    { "id": "plain-decimal", "value": "3.14", "expected": "3.14" },
+    { "id": "six-places", "value": "0.333333", "expected": "0.333333" },
+    { "id": "conversion-residue", "value": "4.999999999999998", "expected": "5" },
+    { "id": "kcal-to-kj-residue", "value": "2092.0000012049923", "expected": "2092.000001" },
+    { "id": "negative", "value": "-72.5", "expected": "-72.5" },
+    { "id": "negative-zero", "value": "-0.0", "expected": "0" },
+    { "id": "tiny-below-rounding", "value": "1.0E-9", "expected": "0" },
+    { "id": "large-integer", "value": "1.0E15", "expected": "1000000000000000" },
+    { "id": "huge-no-exponent", "value": "1.0E16", "expected": "10000000000000000" },
+    { "id": "large-non-integer", "value": "1234567890.123456", "expected": "1234567890.123456" }
+  ],
+
+  "timestampCases": [
+    { "id": "utc-renders-numeric-offset", "epochMillis": "1784541600000", "tzId": "UTC", "expected": "2026-07-20T10:00:00+00:00" },
+    { "id": "gulf-offset-carried", "epochMillis": "1784541600000", "tzId": "Asia/Dubai", "expected": "2026-07-20T14:00:00+04:00" },
+    { "id": "negative-offset", "epochMillis": "1784541600000", "tzId": "America/New_York", "expected": "2026-07-20T06:00:00-04:00" },
+    { "id": "unknown-tz-falls-back-to-utc", "epochMillis": "1784541600000", "tzId": "Not/AZone", "expected": "2026-07-20T10:00:00+00:00" }
+  ],
+
+  "csvRows": [
+    {
+      "recordId": "01J8ZK0000000000000000RAW1",
+      "recordKind": "sample",
+      "metricId": "heart.hrv_sdnn",
+      "metricDisplay": "HRV (SDNN)",
+      "value": "0.0621",
+      "unit": "s",
+      "canonicalValue": "0.0621",
+      "canonicalUnit": "s",
+      "valueType": "raw",
+      "isDerived": false,
+      "timestampStart": "2026-07-20T03:12:00+04:00",
+      "timestampEnd": null,
+      "timezone": "Asia/Dubai",
+      "recordedAt": "2026-07-20T03:12:05+04:00",
+      "sourceApp": "com.apple.health",
+      "sourceDevice": "Apple Watch",
+      "ingestionPath": "platformStore",
+      "sourceExternalId": "hk-1",
+      "importBatchId": null,
+      "qualityFlags": null,
+      "confidence": null,
+      "algorithmId": null,
+      "algorithmVersion": null,
+      "suppressedBy": null,
+      "granularity": "raw",
+      "aggregationMethod": "none"
+    },
+    {
+      "recordId": "01J8ZK0000000000000000RAW2",
+      "recordKind": "interval",
+      "metricId": "activity.steps",
+      "metricDisplay": "Steps, daily",
+      "value": "8342",
+      "unit": "count",
+      "canonicalValue": "8342",
+      "canonicalUnit": "count",
+      "valueType": "aggregate",
+      "isDerived": false,
+      "timestampStart": "2026-07-20T00:00:00+04:00",
+      "timestampEnd": "2026-07-21T00:00:00+04:00",
+      "timezone": "Asia/Dubai",
+      "recordedAt": "2026-07-21T00:00:10+04:00",
+      "sourceApp": "com.apple.health",
+      "sourceDevice": "=Injected Device",
+      "ingestionPath": "platformStore",
+      "sourceExternalId": "@sum(A1)",
+      "importBatchId": "batch-7",
+      "qualityFlags": "lowCoverage;sampleData",
+      "confidence": null,
+      "algorithmId": null,
+      "algorithmVersion": null,
+      "suppressedBy": null,
+      "granularity": "day",
+      "aggregationMethod": "sum"
+    },
+    {
+      "recordId": "01J8ZK0000000000000000DRV1",
+      "recordKind": "derived",
+      "metricId": "readiness.score",
+      "metricDisplay": "Readiness, \"score\", comma",
+      "value": "72.5",
+      "unit": "score",
+      "canonicalValue": "72.5",
+      "canonicalUnit": "score",
+      "valueType": "derived",
+      "isDerived": true,
+      "timestampStart": "2026-07-20T00:00:00+00:00",
+      "timestampEnd": null,
+      "timezone": "UTC",
+      "recordedAt": "2026-07-20T06:00:00+00:00",
+      "sourceApp": null,
+      "sourceDevice": null,
+      "ingestionPath": "derived",
+      "sourceExternalId": null,
+      "importBatchId": null,
+      "qualityFlags": null,
+      "confidence": "0.82",
+      "algorithmId": "readiness.v1",
+      "algorithmVersion": "1.0.0",
+      "suppressedBy": null,
+      "granularity": "day",
+      "aggregationMethod": "none"
+    },
+    {
+      "recordId": "01J8ZK0000000000000000DRV2",
+      "recordKind": "sample",
+      "metricId": "body.weight",
+      "metricDisplay": "الوزن",
+      "value": "81.2",
+      "unit": "kg",
+      "canonicalValue": "81.2",
+      "canonicalUnit": "kg",
+      "valueType": "raw",
+      "isDerived": false,
+      "timestampStart": "2026-07-19T07:00:00+04:00",
+      "timestampEnd": null,
+      "timezone": "Asia/Dubai",
+      "recordedAt": "2026-07-19T07:00:00+04:00",
+      "sourceApp": "manual",
+      "sourceDevice": null,
+      "ingestionPath": "manual",
+      "sourceExternalId": null,
+      "importBatchId": null,
+      "qualityFlags": "userCorrected",
+      "confidence": null,
+      "algorithmId": null,
+      "algorithmVersion": null,
+      "suppressedBy": "01J8ZK0000000000000000RAW1",
+      "granularity": null,
+      "aggregationMethod": null
+    }
+  ],
+
+  "bundleManifest": {
+    "exportId": "01J8ZKEXPORT00000000000001",
+    "appVersion": "1.4.0",
+    "platform": "ios",
+    "generatedAtMillis": "1784541720000",
+    "dateRange": "2026-07-13T00:00:00+04:00/2026-07-21T00:00:00+04:00",
+    "displayLanguage": "en",
+    "unitProfile": "canonical",
+    "timezonePolicy": "timestamps carry original offsets; day boundaries computed in tz-at-measurement",
+    "dedupPolicy": "source-priority v1; suppressed duplicates excluded",
+    "perMetricRowCounts": { "activity.steps": 1, "heart.hrv_sdnn": 2, "readiness.score": 2 },
+    "checksums": { "bundle.json": "" },
+    "dataQualityNote": "Rows reflect stored records only; coverage gaps are not backfilled.",
+    "sampleDataRowCount": 1,
+    "encrypted": false,
+    "scope": {
+      "metricIds": null,
+      "families": ["heart", "activity"],
+      "startDateMillis": "1783929600000",
+      "endDateMillis": "1784620800000",
+      "sourceIds": null,
+      "includeRaw": true,
+      "includeDerived": true,
+      "includeSuppressed": true,
+      "includeSensitive": true,
+      "unitProfile": "canonical",
+      "language": "en"
+    }
+  },
+
+  "rawSamples": [
+    {
+      "id": "01J8ZK0000000000000000RAW1",
+      "metricId": "heart.hrv_sdnn",
+      "value": "0.0621",
+      "unit": "s",
+      "originalValue": "62.1",
+      "originalUnit": "ms",
+      "startAtMillis": "1784509920000",
+      "endAtMillis": null,
+      "tzId": "Asia/Dubai",
+      "updatedAtMillis": "1784509925000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null,
+      "provenance": {
+        "sourceId": "com.apple.health",
+        "deviceId": "Apple Watch",
+        "ingestionPath": "platformStore",
+        "externalId": "hk-hrv-1",
+        "importBatchId": null,
+        "measuredAtMillis": "1784509920000",
+        "measuredTimezone": "Asia/Dubai",
+        "recordedAtMillis": "1784509925000",
+        "ingestedAtMillis": "1784509930000",
+        "algorithmVersionId": null,
+        "qualityFlags": [],
+        "suppressedBy": null
+      }
+    },
+    {
+      "id": "01J8ZK0000000000000000RAW2",
+      "metricId": "heart.hrv_sdnn",
+      "value": "0.0584",
+      "unit": "s",
+      "originalValue": "58.4",
+      "originalUnit": "ms",
+      "startAtMillis": "1784423520000",
+      "endAtMillis": "1784423580000",
+      "tzId": "UTC",
+      "updatedAtMillis": "1784423600000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": "1784600000000",
+      "provenance": {
+        "sourceId": "com.badan.sample",
+        "deviceId": "Sample watch (simulated)",
+        "ingestionPath": "manual",
+        "externalId": null,
+        "importBatchId": "batch-7",
+        "measuredAtMillis": "1784423520000",
+        "measuredTimezone": "UTC",
+        "recordedAtMillis": "1784423600000",
+        "ingestedAtMillis": "1784423600000",
+        "algorithmVersionId": null,
+        "qualityFlags": ["sampleData", "estimate"],
+        "suppressedBy": "01J8ZK0000000000000000RAW1"
+      }
+    }
+  ],
+
+  "intervalRecords": [
+    {
+      "id": "01J8ZK00000000000000000INT1",
+      "metricId": "activity.steps",
+      "value": "8342",
+      "unit": "count",
+      "startAtMillis": "1784476800000",
+      "endAtMillis": "1784563200000",
+      "tzId": "Asia/Dubai",
+      "aggregation": "sum",
+      "coverage": "0.94",
+      "updatedAtMillis": "1784563210000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null,
+      "provenance": {
+        "sourceId": "com.apple.health",
+        "deviceId": "iPhone",
+        "ingestionPath": "platformStore",
+        "externalId": "hk-steps-1",
+        "importBatchId": null,
+        "measuredAtMillis": "1784476800000",
+        "measuredTimezone": "Asia/Dubai",
+        "recordedAtMillis": "1784563210000",
+        "ingestedAtMillis": "1784563220000",
+        "algorithmVersionId": null,
+        "qualityFlags": ["lowCoverage"],
+        "suppressedBy": null
+      }
+    },
+    {
+      "id": "01J8ZK00000000000000000INT2",
+      "metricId": "heart.hr",
+      "value": "78.0",
+      "unit": "bpm",
+      "startAtMillis": "1784476800000",
+      "endAtMillis": "1784478000000",
+      "tzId": "Asia/Dubai",
+      "aggregation": "mean",
+      "coverage": "1.0",
+      "updatedAtMillis": "1784478010000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null,
+      "provenance": {
+        "sourceId": "com.apple.health",
+        "deviceId": "Apple Watch",
+        "ingestionPath": "platformStore",
+        "externalId": "hk-hr-window-1",
+        "importBatchId": null,
+        "measuredAtMillis": "1784476800000",
+        "measuredTimezone": "Asia/Dubai",
+        "recordedAtMillis": "1784478010000",
+        "ingestedAtMillis": "1784478020000",
+        "algorithmVersionId": null,
+        "qualityFlags": [],
+        "suppressedBy": null
+      }
+    }
+  ],
+
+  "sessions": [
+    {
+      "id": "01J8ZK000000000000000SLEEP1",
+      "kind": "sleepPrimary",
+      "subtype": null,
+      "startAtMillis": "1784496000000",
+      "endAtMillis": "1784522400000",
+      "tzId": "Asia/Dubai",
+      "localNight": "2026-07-19",
+      "detail": {
+        "mergedFrom": ["01J8ZKMERGEDSOURCE00000001"],
+        "timeAsleepSeconds": "24120.0",
+        "timeInBedSeconds": "26400.0",
+        "stageSummarySeconds": { "deep": "4320.0", "light": "13200.0", "rem": "6600.0", "awake": "2280.0" }
+      },
+      "updatedAtMillis": "1784522500000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null,
+      "provenance": {
+        "sourceId": "com.apple.health",
+        "deviceId": "Apple Watch",
+        "ingestionPath": "platformStore",
+        "externalId": "hk-sleep-1",
+        "importBatchId": null,
+        "measuredAtMillis": "1784496000000",
+        "measuredTimezone": "Asia/Dubai",
+        "recordedAtMillis": "1784522500000",
+        "ingestedAtMillis": "1784522510000",
+        "algorithmVersionId": null,
+        "qualityFlags": [],
+        "suppressedBy": null
+      }
+    },
+    {
+      "id": "01J8ZK0000000000000000WKT1",
+      "kind": "workout",
+      "subtype": "running",
+      "startAtMillis": "1784435400000",
+      "endAtMillis": "1784438040000",
+      "tzId": "Asia/Dubai",
+      "localNight": null,
+      "detail": {
+        "mergedFrom": [],
+        "timeAsleepSeconds": null,
+        "timeInBedSeconds": null,
+        "stageSummarySeconds": {},
+        "workout": {
+          "activityType": "running",
+          "sourceWorkoutId": "hk-workout-uuid-1",
+          "routeRef": "01J8ZKROUTE0000000000000001",
+          "totals": {
+            "distanceM": "8300.0",
+            "avgHr": "152.0",
+            "maxHr": "176.0",
+            "elevationGainM": "42.0"
+          }
+        }
+      },
+      "updatedAtMillis": "1784438100000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null,
+      "provenance": {
+        "sourceId": "com.apple.health",
+        "deviceId": "Apple Watch",
+        "ingestionPath": "platformStore",
+        "externalId": "hk-workout-1",
+        "importBatchId": null,
+        "measuredAtMillis": "1784435400000",
+        "measuredTimezone": "Asia/Dubai",
+        "recordedAtMillis": "1784438100000",
+        "ingestedAtMillis": "1784438110000",
+        "algorithmVersionId": null,
+        "qualityFlags": [],
+        "suppressedBy": null
+      }
+    }
+  ],
+
+  "derivedValues": [
+    {
+      "id": "01J8ZK00000000000000000DV1",
+      "metricId": "readiness.score",
+      "value": "72.5",
+      "unit": "score",
+      "periodKey": "day:2026-07-20",
+      "confidence": "0.82",
+      "provisional": false,
+      "algorithmId": "readiness.v1",
+      "algorithmVersion": "1.0.0",
+      "inputManifestId": "01J8ZKINPUTMANIFEST0000001",
+      "computedAtMillis": "1784498400000",
+      "updatedAtMillis": "1784498400000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null
+    },
+    {
+      "id": "01J8ZK00000000000000000DV2",
+      "metricId": "sleep.score",
+      "value": "88.0",
+      "unit": "score",
+      "periodKey": "session:01J8ZK000000000000000SLEEP1",
+      "confidence": null,
+      "provisional": true,
+      "algorithmId": "sleep.score.v1",
+      "algorithmVersion": "0.9.0",
+      "inputManifestId": null,
+      "computedAtMillis": "1784522600000",
+      "updatedAtMillis": "1784522600000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null
+    }
+  ],
+
+  "baselines": [
+    {
+      "id": "01J8ZK00000000000000000BL1",
+      "metricId": "heart.hrv_sdnn",
+      "covariateContext": "default",
+      "windowDays": 28,
+      "method": "medianMAD",
+      "center": "0.0598",
+      "spread": "0.0071",
+      "bandLow": "0.0456",
+      "bandHigh": "0.074",
+      "nPoints": 24,
+      "provisional": false,
+      "algorithmVersion": "1.0.0",
+      "validFromMillis": "1784419200000",
+      "computedAtMillis": "1784498400000",
+      "unit": "s"
+    }
+  ],
+
+  "symptoms": [
+    {
+      "id": "01J8ZK00000000000000000SY1",
+      "symptomId": "headache",
+      "customLabel": null,
+      "severity": 4,
+      "occurredAtMillis": "1784487600000",
+      "tzId": "Asia/Dubai",
+      "durationSeconds": "5400.0",
+      "bodyLocation": "head",
+      "triggers": ["poor_sleep", "dehydration"],
+      "note": "صداع خفيف بعد الظهر\tمع ضوء ساطع",
+      "updatedAtMillis": "1784487700000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null
+    }
+  ],
+
+  "adherence": [
+    {
+      "id": "01J8ZK00000000000000000AD1",
+      "regimenId": "01J8ZKREGIMEN000000000001",
+      "kind": "skipped",
+      "scheduledForMillis": "1784484000000",
+      "occurredAtMillis": "1784485000000",
+      "tzId": "Asia/Dubai",
+      "skipReason": "ranOut",
+      "skipNote": "pharmacy closed",
+      "updatedAtMillis": "1784485100000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null
+    }
+  ],
+
+  "workoutLogs": [
+    {
+      "id": "01J8ZK00000000000000000WL1",
+      "activityType": "swimming",
+      "startAtMillis": "1784350800000",
+      "endAtMillis": "1784353200000",
+      "tzId": "Asia/Dubai",
+      "energyKcal": "420.0",
+      "distanceM": null,
+      "avgHr": null,
+      "maxHr": null,
+      "perceivedEffort": 6,
+      "note": "pool, \"easy\" pace",
+      "ingestionPath": "manual",
+      "updatedAtMillis": "1784353300000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null
+    }
+  ],
+
+  "nutrition": [
+    {
+      "id": "01J8ZK00000000000000000NU1",
+      "description": "Oats, dates, coffee",
+      "mealType": "breakfast",
+      "energyKcal": "480.0",
+      "proteinG": "14.0",
+      "carbsG": "72.0",
+      "fatG": "12.0",
+      "fiberG": null,
+      "waterMl": null,
+      "caffeineMg": "95.0",
+      "lowDetail": true,
+      "occurredAtMillis": "1784480400000",
+      "tzId": "Asia/Dubai",
+      "note": null,
+      "updatedAtMillis": "1784480500000",
+      "originDeviceId": "device-fixture",
+      "deletedAtMillis": null
+    }
+  ],
+
+  "knownDivergences": [
+    {
+      "id": "workout-totals-energy-unit",
+      "field": "workouts[].totals energy",
+      "ios": "WorkoutTotals.energyKcal (kilocalories) -> emitted as `energy_kcal`",
+      "android": "WorkoutTotals.energyKj (kilojoules) -> emitted as `energy_kj`",
+      "why": "EPIC-03 landed the typed workout payload independently on the two platforms and they chose different stored units for energy. The writers publish the unit in the key name rather than converting, because converting a lineage record introduces float residue into the one field whose job is to preserve what the source said.",
+      "fix": "Pick one stored unit in both domains' WorkoutTotals (kJ is the canonical-unit choice the rest of the store makes), migrate the stored payloads, then delete the losing key from json_bundle.schema.json and this entry.",
+      "fixtureHandling": "The fixture workout carries NO energy total, so the golden stays byte-identical while the divergence exists."
+    },
+    {
+      "id": "workout-hr-series-ref",
+      "field": "workouts[].hr_series_ref",
+      "ios": "WorkoutDetail.hrSeriesRef exists; the key is emitted when set",
+      "android": "WorkoutDetail has no hrSeriesRef field; the key is never emitted",
+      "why": "The HR-linkage pointer was added to the iOS payload by EPIC-03 and not mirrored. Android fabricating `{\"metric_id\": \"heart.hr\"}` would assert a linkage BADAN never recorded on that device.",
+      "fix": "Add `hrSeriesRef: String? = null` to Android's WorkoutDetail and stamp it where iOS does, then give the fixture workout an hrSeriesRef and delete this entry.",
+      "fixtureHandling": "The fixture workout has NO hrSeriesRef, so the golden stays byte-identical while the divergence exists."
+    },
+    {
+      "id": "manifest-sample-data-row-count",
+      "field": "manifest.sample_data_row_count",
+      "ios": "ExportManifest.sampleDataRowCount is a stored field; the writer reads it",
+      "android": "ExportManifest has no such field; the writer takes it as a parameter defaulting to 0",
+      "why": "The honesty counter was added to the iOS manifest and not mirrored into the Android entity.",
+      "fix": "Add `sampleDataRowCount: Int = 0` to Android's ExportManifest and compute it in that platform's ExportRunner, then drop the writer parameter.",
+      "fixtureHandling": "Both suites pass the fixture's `bundleManifest.sampleDataRowCount` explicitly, so the golden is identical; what is NOT proven by this fixture is that each platform's ExportRunner computes the same number."
+    }
+  ]
+}

@@ -1,7 +1,48 @@
 import Foundation
 import CryptoKit
 
-/// One export row rendered as the 24-column, language-stable CSV contract
+/// The version of the export contract this build writes, shared by every format (CSV, JSON
+/// bundle, manifest) so a single constant moves them together.
+///
+/// Lives here rather than in `Domain/Export.swift` because the *shape* of an artifact is the
+/// writers' contract, not the domain's: `ExportManifest.schemaVersion` is a stored field that a
+/// persisted job carries forward from whenever it ran, while this is what the code in front of
+/// you actually emits. EPIC-08 widened it 0.1.0 -> 1.0.0 under approval A1
+/// (`docs/adr/ADR-0009-approvals-a1-a2-a3.md`); the migration notes are in
+/// `packages/export-schemas/CHANGELOG.md`.
+enum ExportSchema {
+    static let version = "1.0.0"
+
+    /// The time resolution a row's value describes (`granularity`, CSV column 25, added
+    /// 1.0.0/A1).
+    ///
+    /// An enum rather than a raw string for the same reason Android's `RecordKind`/`ValueType`
+    /// are (OPT-269): a typo'd granularity is not a crash, it is a silently wrong claim about
+    /// what a number means, which is the failure mode a versioned contract exists to prevent.
+    enum Granularity: String {
+        case raw, second, minute, hour, day, week, month, year
+    }
+
+    /// How multiple underlying readings were combined into one value (`aggregation_method`, CSV
+    /// column 26, added 1.0.0/A1).
+    ///
+    /// `none` is an answer — "this is a single reading" — and is distinct from the column being
+    /// empty, which means the emitting path has not declared one. `minAvgMax` is reserved for
+    /// the triple-valued rollups the registry defines but no writer produces yet.
+    ///
+    /// Nested here, rather than sitting at file scope, because `Domain/Export.swift` owns a
+    /// same-named `ExportAggregationMethod` for EPIC-09's template bucketing. The two are
+    /// deliberately different vocabularies — that one is a choice the user made about how to
+    /// bucket an export and has no `none`; this one reports what a row already is — and giving
+    /// each its own namespace keeps them from being silently interchanged at a call site.
+    enum AggregationMethod: String {
+        case none, sum, mean, min, max
+        case minAvgMax = "min_avg_max"
+        case duration, latest
+    }
+}
+
+/// One export row rendered as the 26-column, language-stable CSV contract
 /// (`packages/export-schemas/csv_columns.json`). Fields are pre-formatted cell strings so the
 /// writer's only job is RFC-4180 escaping — formatting (numbers, timestamps, booleans) is
 /// decided by the caller that owns provenance and unit-profile context.
@@ -30,18 +71,41 @@ struct ExportRow {
     var algorithmId: String? = nil
     var algorithmVersion: String? = nil
     var suppressedBy: String? = nil
+    /// Columns 25 and 26 (schema 1.0.0, approval A1).
+    ///
+    /// Optional, and defaulted to `nil`, for two reasons. First, a row whose window is not a
+    /// whole calendar unit has no honest granularity, and rounding one off would put a wrong
+    /// claim in a column whose entire purpose is to stop consumers guessing. Second, the callers
+    /// that build these rows are not all migrated yet — `ExportRunner` still emits both as empty
+    /// (it is owned by a later stage of EPIC-08), so today a shipped export carries the columns
+    /// with blank cells rather than fabricated ones. Empty means "not stated"; it never means
+    /// "raw" or "none".
+    ///
+    /// One Swift trap worth knowing before you write a call site: `aggregationMethod: .none`
+    /// resolves to `Optional.none` — nil — and NOT to `AggregationMethod.none`, because the
+    /// property is optional and `Optional` wins the shorthand. The two mean opposite things here
+    /// ("not stated" versus "this is a single reading"), so spell the enum case out:
+    /// `aggregationMethod: ExportSchema.AggregationMethod.none`.
+    var granularity: ExportSchema.Granularity? = nil
+    var aggregationMethod: ExportSchema.AggregationMethod? = nil
 }
 
 /// Renders `ExportRow`s to RFC-4180 CSV text. Column names and order are the frozen contract
 /// from `csv_columns.json`; a single writer guarantees every file in an export shares them.
 struct CSVWriter {
-    /// The 24 columns, in contract order. Do not reorder — downstream joins are positional.
+    /// The 26 columns, in contract order.
+    ///
+    /// Do not reorder — downstream joins are positional. The first 24 are the set frozen at
+    /// 0.1.0 and are byte-for-byte where they always were; `granularity` and
+    /// `aggregation_method` were APPENDED at 25/26 by A1 precisely so a consumer pinned to the
+    /// 24-column read keeps parsing correctly by name.
     static let columns: [String] = [
         "record_id", "record_kind", "metric_id", "metric_display", "value", "unit",
         "canonical_value", "canonical_unit", "value_type", "is_derived", "timestamp_start",
         "timestamp_end", "timezone", "recorded_at", "source_app", "source_device",
         "ingestion_path", "source_external_id", "import_batch_id", "quality_flags",
-        "confidence", "algorithm_id", "algorithm_version", "suppressed_by"
+        "confidence", "algorithm_id", "algorithm_version", "suppressed_by",
+        "granularity", "aggregation_method"
     ]
 
     /// RFC-4180 record separator (CRLF).
@@ -84,7 +148,9 @@ struct CSVWriter {
             row.confidence ?? "",
             row.algorithmId ?? "",
             row.algorithmVersion ?? "",
-            row.suppressedBy ?? ""
+            row.suppressedBy ?? "",
+            row.granularity?.rawValue ?? "",
+            row.aggregationMethod?.rawValue ?? ""
         ]
         return cells.map(Self.escape).joined(separator: ",")
     }
@@ -187,6 +253,19 @@ enum TimestampFormatting {
     private static let lock = NSLock()
     private static var cache: [String: DateFormatter] = [:]
 
+    /// Renders `date` as `yyyy-MM-ddTHH:mm:ss±HH:MM` in `tzId`.
+    ///
+    /// The offset is always NUMERIC — a zero offset renders `+00:00`, never `Z`. Schema 1.0.0
+    /// (§22.1: "all public timestamps ISO-8601 with numeric offset") makes this the contract for
+    /// every format, and one renderer serving CSV, the JSON bundle and the manifest is what
+    /// keeps them from drifting apart. `ZZZZZ` emits `Z` for a zero offset on its own, so the
+    /// substitution below is load-bearing rather than cosmetic: without it a UTC-recorded row
+    /// and an `Asia/Dubai`-recorded row come out in two different shapes, and the schema's
+    /// timestamp pattern rejects one of them.
+    ///
+    /// Note for anyone diffing a 0.1.0 artifact against a 1.0.0 one: this is a real output
+    /// change for zero-offset records. It is listed in `packages/export-schemas/CHANGELOG.md`;
+    /// both spellings parse as the same instant under any conformant ISO-8601 reader.
     static func string(_ date: Date, tzId: String) -> String {
         lock.lock()
         defer { lock.unlock() }
@@ -201,6 +280,7 @@ enum TimestampFormatting {
             cache[tzId] = made
             formatter = made
         }
-        return formatter.string(from: date)
+        let rendered = formatter.string(from: date)
+        return rendered.hasSuffix("Z") ? rendered.dropLast() + "+00:00" : rendered
     }
 }

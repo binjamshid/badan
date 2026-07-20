@@ -1,0 +1,21 @@
+/* EPIC-19 — Siri phrases and short titles for BADAN's App Shortcuts (English).
+ *
+ * The keys are the phrase literals from `BadanAppShortcuts.appShortcuts`, with the app name
+ * written as the `${applicationName}` token — App Intents requires every phrase to contain the app
+ * name, and this is how that token is spelled in a strings file. Rendered by Siri in the system
+ * language. Keep in step with ar.lproj/AppShortcuts.strings, key for key. */
+
+"Run a ${applicationName} export" = "Run a ${applicationName} export";
+"Export my data with ${applicationName}" = "Export my data with ${applicationName}";
+"${applicationName} export" = "${applicationName} export";
+
+"What's my ${applicationName} readiness" = "What's my ${applicationName} readiness";
+"Get my latest ${applicationName} score" = "Get my latest ${applicationName} score";
+
+"Log water in ${applicationName}" = "Log water in ${applicationName}";
+"Log a drink in ${applicationName}" = "Log a drink in ${applicationName}";
+
+/* Short titles shown on the shortcut tile in the Shortcuts app. */
+"shortcut.run_export.short_title" = "Run export";
+"shortcut.get_score.short_title" = "Latest score";
+"shortcut.log_water.short_title" = "Log water";

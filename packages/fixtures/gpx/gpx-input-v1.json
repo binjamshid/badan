@@ -1,0 +1,49 @@
+{
+  "fixtureSetVersion": "1",
+  "note": "Shared INPUT for the EPIC-12 GPX writer parity fixture. Both suites build their own GPXWorkout/GPxWorkout objects from this file, run their own GPXWriter/GpxWriter, and must produce route_<id>.gpx byte for byte (goldens in this folder). Read by apps/ios/Tests/GPXAggregationParityTests.swift and apps/android/app/src/test/java/net/albayyan/badan/GpxAggregationParityTest.kt. Numbers are strings so both platforms parse them through Double(String)/String.toDouble() — the correctly-rounded parse — instead of a bare JSON literal each platform's decoder interprets its own way (same reasoning as packages/fixtures/export/README.md 'Why the numbers are strings'). Timestamps are epoch-millis strings.",
+  "appVersion": "0.1.0",
+  "generatedAtMillis": "1781524800000",
+  "routeExportEnabled": true,
+  "workouts": [
+    {
+      "workoutId": "01JQZ8WKATRN00000000000001",
+      "name": "Trail run · <hills> & \"rocks\"",
+      "routes": [
+        {
+          "routeId": "01JQZ8RTEAAA00000000000001",
+          "points": [
+            { "seq": "0", "lat": "47.6062000", "lon": "-122.3321000", "ele": "56.3", "ts": "1781503200000" },
+            { "seq": "1", "lat": "47.6063500", "lon": "-122.3319000", "ele": "57.0", "ts": "1781503230000" },
+            { "seq": "2", "lat": "47.6065000", "lon": "-122.3317000", "ele": "58.1", "ts": "1781503290000" },
+            { "seq": "3", "lat": "47.6068000", "lon": "-122.3312000", "ele": null, "ts": "1781503351000" },
+            { "seq": "4", "lat": "47.6070000", "lon": "-122.3310000", "ele": "60.0", "ts": "1781503381000" }
+          ]
+        }
+      ]
+    },
+    {
+      "workoutId": "01JQZ8WKACTY00000000000002",
+      "name": "City loop",
+      "routes": [
+        {
+          "routeId": "01JQZ8RTEBBB00000000000002",
+          "points": [
+            { "seq": "0", "lat": "-33.8688000", "lon": "151.2093000", "ele": "12.5", "ts": "1781503500000" },
+            { "seq": "1", "lat": "-33.8690000", "lon": "151.2095000", "ele": "12.0", "ts": "1781503530000" }
+          ]
+        },
+        {
+          "routeId": "01JQZ8RTECCC00000000000003",
+          "points": [
+            { "seq": "0", "lat": "25.00390625", "lon": "-0.0000001", "ele": "-5.5", "ts": "1781503560000" },
+            { "seq": "1", "lat": "0.0000000", "lon": "0.0000000", "ele": null, "ts": "1781503590000" }
+          ]
+        }
+      ]
+    }
+  ],
+  "coverage": {
+    "01JQZ8WKATRN00000000000001": "one route, five points: a 60s gap that must NOT split (boundary is strictly >60s) then a 61s gap that must, and a point with no elevation so <ele> is conditionally emitted",
+    "01JQZ8WKACTY00000000000002": "two routes → a route-boundary segment split even though timestamps continue; southern/western (negative) coordinates; a dyadic-rational latitude (25 + 1/256 = 25.00390625) that %.7f rounds differently on the two platforms' printf implementations but integer-space rounding renders identically; a near-zero negative longitude that must keep its sign; a negative (below-sea-level) elevation"
+  }
+}
