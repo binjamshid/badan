@@ -17,16 +17,21 @@ public enum MetricID {
     public static let heartRate = "heart.hr"
     public static let restingHeartRate = "heart.rhr"
     public static let hrv = "heart.hrv"
+    public static let vo2Max = "heart.vo2max"
 
     // Activity
     public static let steps = "activity.steps"
     public static let distance = "activity.distance"
     public static let activeEnergy = "activity.active_energy"
+    public static let restingEnergy = "activity.resting_energy"
+    public static let floors = "activity.floors"
     public static let exerciseMinutes = "activity.exercise_minutes"
 
     // Body
     public static let weight = "body.weight"
     public static let bmi = "body.bmi"
+    public static let bodyFatPercentage = "body.fat_pct"
+    public static let leanMass = "body.lean_mass"
 
     // Respiratory
     public static let respiratoryRate = "respiratory.rate"

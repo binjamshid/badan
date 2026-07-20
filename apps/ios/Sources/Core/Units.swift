@@ -51,7 +51,6 @@ public enum Units {
         // rate (base: count/min; bpm is an alias)
         "count/min": Spec(base: "count/min", factor: 1, offset: 0),
         "bpm":       Spec(base: "count/min", factor: 1, offset: 0),
-        "brpm":      Spec(base: "count/min", factor: 1, offset: 0),
         // ratio (base: fraction 0..1). (DATA-02) registry canonicals spell this "percent"
         // (SpO2, body fat %, sleep efficiency) while some display/legacy code spells it "%" —
         // both must resolve to the same base or every percent-canonical metric throws
@@ -76,9 +75,28 @@ public enum Units {
         // body mass index (base: kg/m^2) — identity; no other unit expresses BMI.
         "kg/m^2": Spec(base: "kg/m^2", factor: 1, offset: 0),
         // cardiorespiratory fitness (base: mL/kg/min) — identity; VO2 max has one unit.
+        // (EPIC-01) `ml/kg/min` is the same unit spelled with a lowercase L, which is how
+        // HealthKit and most vendor payloads write it. Aliased for the same reason `%` and
+        // `percent` are both present: an unlisted spelling doesn't throw somewhere visible, it
+        // falls through `toCanonical`'s `?? value` and stores an unconverted number tagged
+        // `.estimate` — a silent quality downgrade over a capital letter.
         "mL/kg/min": Spec(base: "mL/kg/min", factor: 1, offset: 0),
-        // breathing rate (base: breaths/min) — identity; respiratory.rate has one unit.
+        "ml/kg/min": Spec(base: "mL/kg/min", factor: 1, offset: 0),
+        // breathing rate (base: breaths/min) — deliberately its OWN dimension, not an alias of
+        // `count/min`, even though HealthKit spells respiratory rate's unit `count/min`. Sharing
+        // a base with `bpm` would let a heart-rate value convert cleanly into a breathing rate
+        // (and vice versa) with no `.estimate` flag to show for it — a mislabelled source would
+        // land 60 "breaths per minute" on a chart as a valid-looking reading. Adapters are
+        // expected to label breaths as breaths (see `HKTypeMap`'s respiratoryRate row); the cost
+        // of that discipline is one honest `.incompatible` throw if they don't.
+        //
+        // (EPIC-01) `brpm` moved here from the `count/min` dimension, where it had been since
+        // the table was written. It is an alias spelling of breaths-per-minute, so filing it
+        // under heart-rate's base meant `convert(v, from: "brpm", to: "breaths/min")` threw
+        // `.incompatible` and every `brpm`-labelled reading was stored unconverted and stamped
+        // `.estimate` — latent only because nothing in-tree emitted that spelling yet.
         "breaths/min": Spec(base: "breaths/min", factor: 1, offset: 0),
+        "brpm":        Spec(base: "breaths/min", factor: 1, offset: 0),
         // 0-100 composite scores (base: score_0_100) — sleep.score; "points" is its display
         // spelling, same numeric value.
         "score_0_100": Spec(base: "score_0_100", factor: 1, offset: 0),

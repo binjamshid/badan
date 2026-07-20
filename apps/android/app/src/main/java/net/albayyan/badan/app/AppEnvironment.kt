@@ -30,7 +30,9 @@ import net.albayyan.badan.export.ExportRunner
 import net.albayyan.badan.ontology.InsightTemplateStore
 import net.albayyan.badan.ontology.MetricRegistry
 import net.albayyan.badan.ontology.SymptomDictionary
+import net.albayyan.badan.platform.background.BackgroundScheduler
 import net.albayyan.badan.storage.Database
+import net.albayyan.badan.storage.repositories.BackgroundRunRepository
 import net.albayyan.badan.storage.repositories.CatalogRepository
 import net.albayyan.badan.storage.repositories.DerivationRepository
 import net.albayyan.badan.storage.repositories.ExportJobRepository
@@ -38,7 +40,9 @@ import net.albayyan.badan.storage.repositories.InsightRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
 import net.albayyan.badan.storage.repositories.ProfileRepository
+import net.albayyan.badan.storage.repositories.ReadAnchorRepository
 import net.albayyan.badan.storage.repositories.ReconciliationRepository
+import net.albayyan.badan.storage.repositories.RouteRepository
 import java.util.Calendar
 
 /**
@@ -72,10 +76,13 @@ class AppEnvironment(context: Context) {
     val logging: LoggingRepository = LoggingRepository(database.main, database.sensitive)
     val exportJobs: ExportJobRepository = ExportJobRepository(database.main)
     val profiles: ProfileRepository = ProfileRepository(database.main)
+    val backgroundRuns: BackgroundRunRepository = BackgroundRunRepository(database.main)
+    val routes: RouteRepository = RouteRepository(database.main)
+    val readAnchors: ReadAnchorRepository = ReadAnchorRepository(database.main)
 
     // Services
     val ingestion: IngestionPipeline =
-        IngestionPipeline(measurements, catalog, reconciliation, registry, clock, deviceId)
+        IngestionPipeline(measurements, catalog, reconciliation, registry, clock, deviceId, routes)
     val baselines: BaselineEngine =
         BaselineEngine(derivation, measurements, registry, clock, deviceId)
     val insightEngine: InsightEngine =
@@ -111,16 +118,98 @@ class AppEnvironment(context: Context) {
         }.getOrDefault(false)
 
     /** The real Health Connect integration boundary (lazy: safe even when no provider is present). */
-    val healthConnect: HealthConnectAdapter by lazy { HealthConnectAdapter(appContext) }
+    val healthConnect: HealthConnectAdapter by lazy {
+        HealthConnectAdapter(
+            appContext,
+            anchors = readAnchors,
+            // Now backed by the real toggle `RouteConsentScreen` owns (EPIC-03 UI). Still a lambda
+            // rather than a captured value, so turning consent off takes effect on the very next
+            // sync instead of the next process launch — the adapter's own doc explains why
+            // eventually-consistent consent is not good enough for location data.
+            //
+            // The default remains `false` (see [isRouteCaptureEnabled]): shipping with it defaulted
+            // on would collect GPS traces the user was never asked about.
+            routeConsentGranted = { isRouteCaptureEnabled },
+            // Per-writer dedup priority the user has edited on the Sources screen. Resolved fresh
+            // per sync for the same reason: an edit made now must change the next reconciliation,
+            // not the one after a restart.
+            writerPriorityOverrides = { writerPriorityOverrides() },
+        )
+    }
+
+    // MARK: - Route capture consent (EPIC-03, plan §4 rule 11)
 
     /**
-     * Pull the last 90 days from Health Connect through the same ingestion + dedup + derivation path
+     * Whether BADAN may copy GPS traces out of Health Connect at all.
+     *
+     * Stored in SharedPreferences rather than in the profile row because it must be readable
+     * without opening the database — `HealthConnectAdapter` consults it inside the read loop, and
+     * a per-record database round trip there would be a measurable cost on a 10k-point route for a
+     * value that changes once a year.
+     *
+     * Turning it off stops collection but deliberately does not itself delete what was already
+     * collected; `RouteConsentScreen` offers that as its own explicit action, because "stop doing
+     * this" and "destroy what you have" are two different requests and merging them would surprise
+     * a user in one direction or the other.
+     */
+    var isRouteCaptureEnabled: Boolean
+        get() = prefs.getBoolean(ROUTE_CAPTURE_KEY, false)
+        set(value) = prefs.edit().putBoolean(ROUTE_CAPTURE_KEY, value).apply()
+
+    // MARK: - Source priority overrides (EPIC-02 multi-writer)
+
+    /**
+     * User-set dedup priority per writing package, higher wins — the editable layer over
+     * `HcTypeMap.writerPriorityDefaults`.
+     *
+     * Persisted as a `package=priority` line-delimited string rather than JSON so a corrupt or
+     * partially-written value degrades to "ignore the unparseable lines" instead of "lose every
+     * override", which matters because the fallback for a lost override is silently reverting to a
+     * default ordering the user explicitly disagreed with.
+     */
+    fun writerPriorityOverrides(): Map<String, Int> {
+        val raw = prefs.getString(WRITER_PRIORITY_KEY, null) ?: return emptyMap()
+        return raw.lineSequence()
+            .mapNotNull { line ->
+                val idx = line.lastIndexOf('=')
+                if (idx <= 0) return@mapNotNull null
+                val pkg = line.substring(0, idx)
+                val value = line.substring(idx + 1).toIntOrNull() ?: return@mapNotNull null
+                pkg to value
+            }
+            .toMap()
+    }
+
+    fun setWriterPriorityOverrides(overrides: Map<String, Int>) {
+        val encoded = overrides.entries
+            .sortedBy { it.key }
+            .joinToString("\n") { "${it.key}=${it.value}" }
+        prefs.edit().putString(WRITER_PRIORITY_KEY, encoded).apply()
+    }
+
+    /**
+     * Pull recent history from Health Connect through the same ingestion + dedup + derivation path
      * as the seed. Returns the ingest summary (may be all-zero when the user has no HC data yet).
      * Runs entirely off the main thread.
+     *
+     * [lookbackDays] defaults to the 90-day backfill the connect flow wants. `SyncWorker` (EPIC-05)
+     * passes a short catch-up window instead: every write here is idempotent by upstream identity,
+     * so a narrow overlapping window is *correct* — it is only the 90-day re-walk, once an hour,
+     * that would be indefensible on battery.
+     *
+     * This is not an interim arrangement waiting on the changes-token read, which is what the
+     * previous note claimed (audit finding #4). That read shipped with EPIC-02 and is wired
+     * immediately below via `anchors = readAnchors`; `HealthConnectAdapter.readType` resumes from a
+     * persisted token whenever it has one. The range stays a parameter because it governs the
+     * *fallback* — a token that has expired or been invalidated drops through to a full windowed
+     * re-read, and the two callers want visibly different amounts of history when that happens.
+     * Both should keep passing one.
      */
-    suspend fun syncHealthConnect(): IngestionPipeline.IngestSummary? = withContext(Dispatchers.IO) {
+    suspend fun syncHealthConnect(
+        lookbackDays: Int = 90,
+    ): IngestionPipeline.IngestSummary? = withContext(Dispatchers.IO) {
         val now = clock.now()
-        val range = HealthDateRange(now - 90L * MILLIS_PER_DAY, now)
+        val range = HealthDateRange(now - lookbackDays * MILLIS_PER_DAY, now)
         // The user's real data must never land on top of the fabricated seed. Without this, a
         // connected Android user's Home screen mixed 90 days of invented readings with their own
         // and presented the blend as theirs — permanently, since nothing ever removed the seed.
@@ -180,6 +269,65 @@ class AppEnvironment(context: Context) {
         }
         runCatching { catalog.upsertPermission(PermissionState("healthConnect", "health", status, clock.now())) }
         isHealthConnected = readHealthConnectedFromDisk()
+        reconcileBackgroundSchedule()
+    }
+
+    // MARK: - Background sync (EPIC-05)
+
+    /**
+     * Whether the hourly [SyncWorker] should do anything when it wakes. Read from disk rather than
+     * from the Compose-observable [isHealthConnected], because the worker runs with no Activity
+     * alive and this instance's observable state may never have been populated.
+     *
+     * The Health-Connect-connected half is not a convenience check. `syncHealthConnect` purges the
+     * demo seed on its first real ingest, so a background run for a user who has never connected
+     * would delete the sample data they are still exploring.
+     */
+    fun isBackgroundSyncEligible(): Boolean =
+        isBackgroundSyncEnabled && isHealthConnectedPersisted()
+
+    /**
+     * The connected half of [isBackgroundSyncEligible], on its own.
+     *
+     * A user-triggered "sync now" gates on *this*, not on the full eligibility check: turning the
+     * background-sync preference off means "stop waking my phone on a schedule", not "refuse to
+     * sync when I explicitly ask". Gating the one-off on the background preference would leave the
+     * button visibly doing nothing for exactly the users who turned the schedule off.
+     */
+    fun isHealthConnectedPersisted(): Boolean = readHealthConnectedFromDisk()
+
+    /**
+     * The user's background-sync preference. Defaults to on for connected users: syncing data the
+     * user has already granted is not a new disclosure, and the alternative — silently stale
+     * readings until the app is opened — is the thing EPIC-05 exists to fix. The seam is public so
+     * the Settings toggle (EPIC-15) has somewhere to land; nothing turns it off today.
+     */
+    var isBackgroundSyncEnabled: Boolean
+        get() = prefs.getBoolean(BACKGROUND_SYNC_KEY, true)
+        set(value) {
+            prefs.edit().putBoolean(BACKGROUND_SYNC_KEY, value).apply()
+            reconcileBackgroundSchedule()
+        }
+
+    /**
+     * Bring WorkManager's schedule in line with current eligibility. Idempotent at both ends —
+     * `schedulePeriodic` uses `ExistingPeriodicWorkPolicy.UPDATE` and `cancelUniqueWork` on absent
+     * work is a no-op — so this is safe to call from bootstrap, from permission changes, and from
+     * the preference setter without tracking what it did last time.
+     */
+    fun reconcileBackgroundSchedule() {
+        runCatching {
+            if (isBackgroundSyncEligible()) {
+                BackgroundScheduler.schedulePeriodic(appContext)
+            } else {
+                BackgroundScheduler.cancelPeriodic(appContext)
+            }
+        }
+    }
+
+    /** Run the sync immediately at the user's request (EPIC-05 expedited one-off). */
+    fun requestSyncNow() {
+        runCatching { BackgroundScheduler.runNow(appContext) }
     }
 
     // Live presentation state (Compose-observable). `profile` starts at the default and is
@@ -214,6 +362,10 @@ class AppEnvironment(context: Context) {
         profile = loaded
         isDemoDataActive = seedController.isDemoDataActive
         isHealthConnected = readHealthConnectedFromDisk()
+        // Re-asserted on every launch rather than only at connect time: WorkManager's schedule can
+        // be lost to a force-stop, a "clear data", or an OEM cleaner, and an app launch is the one
+        // moment BADAN is guaranteed to be running and able to notice.
+        reconcileBackgroundSchedule()
         isReady = true
     }
 
@@ -320,9 +472,52 @@ class AppEnvironment(context: Context) {
         return id
     }
 
-    private companion object {
-        const val PREFS = "badan.prefs"
-        const val DEVICE_KEY = "badan.deviceId"
-        const val ONBOARDING_KEY = "badan.onboardingComplete"
+    // Registered last, after every property above is initialized, so `shared()` can never hand a
+    // caller a half-constructed environment. See [Companion.shared].
+    init {
+        current = this
+    }
+
+    companion object {
+        private const val PREFS = "badan.prefs"
+        private const val DEVICE_KEY = "badan.deviceId"
+        private const val ONBOARDING_KEY = "badan.onboardingComplete"
+        private const val BACKGROUND_SYNC_KEY = "badan.backgroundSyncEnabled"
+        private const val ROUTE_CAPTURE_KEY = "badan.routeCaptureEnabled"
+        private const val WRITER_PRIORITY_KEY = "badan.writerPriorityOverrides"
+
+        @Volatile
+        private var current: AppEnvironment? = null
+
+        /**
+         * The process-wide environment, for entry points that have no Activity — today that is
+         * `SyncWorker` (EPIC-05).
+         *
+         * Why reuse rather than construct per caller: `AppEnvironment` owns two `SqliteConnection`s,
+         * and each connection serializes its own writes behind a `ReentrantReadWriteLock`. Two
+         * environments in one process would be two independent locks over the same files, so a
+         * worker ingesting while the UI writes a log would fall through to SQLite's own contention
+         * handling and surface as `SQLITE_BUSY` — intermittently, under load, and only on real
+         * devices.
+         *
+         * `MainActivity` still constructs its environment directly; the `init` block above registers
+         * whatever was built most recently, so the worker picks up the live one. An Activity
+         * recreation replaces the registration and leaves the previous environment's connections
+         * open, which is pre-existing behaviour (nothing has ever closed them on destroy) and is
+         * harmless here: a worker holding the older reference keeps working against valid handles.
+         */
+        fun shared(context: Context): AppEnvironment =
+            current ?: synchronized(this) {
+                current ?: AppEnvironment(context.applicationContext)
+            }
+
+        /**
+         * The background-sync preference without building an `AppEnvironment`. Exists for
+         * `BootReceiver`, which runs on the main thread under a short deadline and must not open
+         * and migrate two databases to answer one boolean.
+         */
+        fun isBackgroundSyncEnabledPreference(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean(BACKGROUND_SYNC_KEY, true)
     }
 }

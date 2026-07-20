@@ -1,10 +1,23 @@
-/* (C9) The English baseline for the system HealthKit permission sheet.
+/* (C9) The English baseline for the system HealthKit and location permission sheets.
  *
- * Present alongside ar.lproj even though project.yml's NSHealthShareUsageDescription already
- * carries this text: once an ar.lproj/InfoPlist.strings exists, the en.lproj counterpart is what
- * keeps English an explicitly-authored localization rather than an unlocalized fallback that
- * happens to work. Both files must stay in step with the plist value and with each other —
- * changing the read set means changing all three, and the App Store review record depends on
- * this string naming exactly the four types the code actually requests (COMP-08).
+ * Present alongside ar.lproj even though project.yml's info.properties already carries this text:
+ * once an ar.lproj/InfoPlist.strings exists, the en.lproj counterpart is what keeps English an
+ * explicitly-authored localization rather than an unlocalized fallback that happens to work.
+ *
+ * Three places hold each of these strings — project.yml (which GENERATES App/Info.plist), this
+ * file, and ar.lproj/InfoPlist.strings. They must stay in step: the plist value is what App
+ * Review reads, and the .strings value is what the user actually sees. Drift is invisible in
+ * English and shows up as a stale Arabic prompt (COMP-08).
  */
-"NSHealthShareUsageDescription" = "BADAN reads your sleep, heart rate, resting heart rate, and step data on your device to build your personal, private health repository. Nothing leaves your phone.";
+
+/* Widened for A2 (ADR-0009) to name the full read set: the original four types plus HRV,
+ * breathing rate, blood oxygen, wrist temperature, distance, flights, energy, cardio fitness,
+ * body measurements and workouts. Must match `HealthKitAdapter.readTypes` — overstating the ask
+ * is a review problem, understating it is a rejection. Routes are deliberately not named: they
+ * are not in the initial authorization bundle and have their own consent screen (plan §13.1). */
+"NSHealthShareUsageDescription" = "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, and workouts on your device to build your personal, private health repository. Nothing leaves your phone.";
+
+/* Workout routes only. Deliberately phrased as reading back an already-recorded path rather than
+ * "using your location", because the latter describes live tracking BADAN does not do — and the
+ * system sheet is the one place the user cannot see our own explainer screen first. */
+"NSLocationWhenInUseUsageDescription" = "BADAN uses location access only to read the routes your Apple Watch or iPhone already saved with workouts you finished earlier. BADAN never follows where you are and never records a new route. Nothing leaves your phone.";

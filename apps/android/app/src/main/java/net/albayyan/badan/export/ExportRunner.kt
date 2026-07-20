@@ -40,6 +40,22 @@ import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.ensureActive
 
 /**
+ * Thrown by [ExportRunner.run] when `scope.includeSensitive` is set without a passphrase meeting
+ * [ExportPassphrasePolicy] — the runner's own defense-in-depth so a caller that bypassed the
+ * export screen's passphrase fields (a future automation surface, a test, a bug in the UI's
+ * disable logic) still cannot produce an unencrypted sensitive export.
+ *
+ * Mirror of iOS `ExportRunError.sensitiveExportRequiresPassphrase` (ADR-0008). Sealed rather than
+ * a bare exception so the export UI can branch on the reason without string-matching a message.
+ */
+sealed class ExportRunException(message: String) : Exception(message) {
+    object SensitiveExportRequiresPassphrase : ExportRunException(
+        "a sensitive export requires a passphrase of at least " +
+            "${ExportPassphrasePolicy.MINIMUM_LENGTH} characters",
+    )
+}
+
+/**
  * Runs a fully offline export: gathers scoped records from the repositories, renders them (CSV
  * split into raw/derived files, or one JSON bundle), checksums every file, writes a versioned
  * manifest, and records the completed [ExportJob]. No networking or entitlement imports live on
@@ -68,7 +84,22 @@ class ExportRunner(
 
     // MARK: - Entry point
 
-    suspend fun run(scope: ExportScope, format: ExportFormat, outputDir: File): ExportResult {
+    /**
+     * [passphrase] is required (and validated against [ExportPassphrasePolicy]) whenever
+     * `scope.includeSensitive` is true — a sensitive export can no longer leave this function as
+     * plaintext (ADR-0008, EPIC-06). Ignored (and may be omitted) for a non-sensitive scope, which
+     * stays exactly the unencrypted behavior it always was.
+     */
+    suspend fun run(
+        scope: ExportScope,
+        format: ExportFormat,
+        outputDir: File,
+        passphrase: String? = null,
+    ): ExportResult {
+        if (scope.includeSensitive && (passphrase == null || !ExportPassphrasePolicy.isValid(passphrase))) {
+            throw ExportRunException.SensitiveExportRequiresPassphrase
+        }
+
         val startedAt = clock.now()
         val exportId = Ulid.newId()
         outputDir.mkdirs()
@@ -114,7 +145,7 @@ class ExportRunner(
             }
         }
 
-        return when (format) {
+        val result = when (format) {
             ExportFormat.CSV -> runCsv(
                 scope, exportId, outputDir, startedAt,
                 rawSamples, intervalRecords, sessions, derivedValues, baselines,
@@ -124,6 +155,85 @@ class ExportRunner(
                 rawSamples, intervalRecords, sessions, derivedValues, baselines,
             )
         }
+
+        if (!scope.includeSensitive || passphrase == null) return result
+        return try {
+            encryptResult(result, exportId, outputDir, scope, format, startedAt, passphrase)
+        } catch (e: Throwable) {
+            // A sensitive export must never survive half-encrypted: the plaintext files are on
+            // disk at this point, so a failure between here and the container write would leave
+            // exactly the artifact ADR-0008 exists to remove. Recorded as a failed job for the
+            // same reason iOS does — export history should show the attempt, not a gap.
+            //
+            // Deletes the files this run produced rather than the folder, which is where this
+            // diverges from iOS on purpose: the iOS runner creates its own temp folder and so owns
+            // it outright, whereas `outputDir` here is supplied by the caller. A `deleteRecursively`
+            // on a directory we did not create is a footgun aimed at whoever eventually passes a
+            // shared path. The empty folder left behind is swept by the export screen's own prune.
+            for (file in result.files) file.delete()
+            File(outputDir, ExportEncryptor.CONTAINER_FILE_NAME).delete()
+            runCatching {
+                exportJobs.insert(
+                    ExportJob(
+                        id = exportId, scope = scope, format = format, status = ExportJobStatus.FAILED,
+                        outputPath = outputDir.path, startedAt = startedAt,
+                        finishedAt = clock.now(), createdAt = startedAt,
+                    ),
+                )
+            }
+            throw e
+        }
+    }
+
+    // MARK: - Encryption (includeSensitive only)
+
+    /**
+     * Wraps every file [runCsv]/[runJson] just wrote into one [ExportEncryptor] container, writes
+     * it as [ExportEncryptor.CONTAINER_FILE_NAME] in the same folder, deletes the plaintext
+     * originals, and re-persists the job with `manifest.encrypted = true` pointing at the
+     * container instead. The manifest's checksums are left exactly as computed — they describe the
+     * real plaintext content, which is the thing a user actually wants to verify after decrypting
+     * (ADR-0008) — so only `encrypted`/`encryptedContainerName` change.
+     *
+     * Reading each file back off disk rather than threading the in-memory bytes through the two
+     * writers keeps this step decoupled from both (CSV's files stream straight to an
+     * `OutputStream` and are never held as one in-memory array, PERF-252/254) at the cost of one
+     * extra read pass — acceptable for a step that already pays a ~600k-round KDF.
+     *
+     * Byte-for-byte the same container iOS's `encryptResult` produces; that equivalence is what
+     * the fixtures under `packages/fixtures/encryption/` assert, in both directions.
+     */
+    private fun encryptResult(
+        result: ExportResult,
+        exportId: String,
+        folder: File,
+        scope: ExportScope,
+        format: ExportFormat,
+        startedAt: Long,
+        passphrase: String,
+    ): ExportResult {
+        val files = result.files.map { ExportContainerFile(it.name, it.readBytes()) }
+        val containerData = ExportEncryptor.encrypt(files, passphrase)
+        val containerFile = File(folder, ExportEncryptor.CONTAINER_FILE_NAME)
+        containerFile.writeBytes(containerData)
+
+        // The plaintext files have a durable encrypted replacement now, so they have no further
+        // reason to sit in the app's cache directory waiting for the next prune.
+        for (file in result.files) file.delete()
+
+        val manifest = result.job.manifest?.copy(
+            encrypted = true,
+            encryptedContainerName = ExportEncryptor.CONTAINER_FILE_NAME,
+        )
+        val job = ExportJob(
+            id = exportId, scope = scope, format = format, status = ExportJobStatus.COMPLETED,
+            manifest = manifest, outputPath = folder.path, rowCount = result.rowCount,
+            startedAt = startedAt, finishedAt = clock.now(), createdAt = startedAt,
+        )
+        // Replaces the row runCsv/runJson just inserted for this same export id, so history shows
+        // one completed encrypted job rather than a plaintext job shadowed by an encrypted one.
+        exportJobs.insert(job)
+        return ExportResult(job, listOf(containerFile), result.rowCount)
     }
 
     // MARK: - CSV

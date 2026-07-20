@@ -22,8 +22,21 @@ public enum SensitiveClass: String, Codable, Hashable, Sendable {
 /// High-level grouping used for pillars, icons, and colour families in the UI. Backed by
 /// the free-form `family` string on a MetricDefinition so the registry can add families
 /// without a code change; unknown families fall back to `.other`.
+///
+/// The `.other` fallback is a crash guard, not a shipping state. Registry v0.2.0 added seven
+/// families at once (workout, readiness, effort, hydration, stress, cycle, lab) and, until they
+/// were enumerated here, all 22 of their metrics collapsed into a single "Other" pillar with the
+/// generic grid glyph — a third of the catalogue, indistinguishable in the Body browse surface.
+/// `MetricFamilyParityTests` now fails the build's test run if the registry names a family this
+/// enum doesn't, so the next registry bump can't repeat that silently.
+///
+/// Case order is load-bearing: `BodyScreen.orderIndex` sorts pillars by `allCases` position, so
+/// this reads top-to-bottom as the Body screen does. New cases were *inserted* next to the family
+/// they relate to rather than appended, which preserves the relative order of the original ten;
+/// `.medications` and `.other` stay last because they are the non-registry and unknown buckets.
 public enum MetricFamily: String, Codable, Hashable, Sendable, CaseIterable {
-    case sleep, heart, activity, body, respiratory, nutrition, subjective, symptoms, medications, other
+    case sleep, readiness, heart, activity, workout, effort, body, respiratory
+    case nutrition, hydration, subjective, stress, cycle, symptoms, lab, medications, other
 
     public init(rawValueOrOther raw: String) {
         self = MetricFamily(rawValue: raw) ?? .other
@@ -32,29 +45,50 @@ public enum MetricFamily: String, Codable, Hashable, Sendable, CaseIterable {
     public var displayName: LocalizedString {
         switch self {
         case .sleep: return LocalizedString(en: "Sleep", ar: "النوم")
+        case .readiness: return LocalizedString(en: "Readiness", ar: "الجاهزية")
         case .heart: return LocalizedString(en: "Heart", ar: "القلب")
         case .activity: return LocalizedString(en: "Activity", ar: "النشاط")
+        case .workout: return LocalizedString(en: "Workouts", ar: "التمارين")
+        case .effort: return LocalizedString(en: "Effort", ar: "الجهد")
         case .body: return LocalizedString(en: "Body", ar: "الجسم")
         case .respiratory: return LocalizedString(en: "Respiratory", ar: "التنفّس")
         case .nutrition: return LocalizedString(en: "Nutrition", ar: "التغذية")
+        case .hydration: return LocalizedString(en: "Hydration", ar: "الترطيب")
         case .subjective: return LocalizedString(en: "How you feel", ar: "شعورك")
+        // "Stress" names what the family tracks, not a state the reader is in — the metric is a
+        // day-level trend (`stress.day_trend`), and the copy inside the family keeps it directional.
+        case .stress: return LocalizedString(en: "Stress", ar: "التوتر")
+        case .cycle: return LocalizedString(en: "Cycle", ar: "الدورة الشهرية")
         case .symptoms: return LocalizedString(en: "Symptoms", ar: "الأعراض")
+        case .lab: return LocalizedString(en: "Lab results", ar: "نتائج المختبر")
         case .medications: return LocalizedString(en: "Medications", ar: "الأدوية")
         case .other: return LocalizedString(en: "Other", ar: "أخرى")
         }
     }
 
     /// SF Symbol name for the family — kept here so both list and detail agree.
+    ///
+    /// Every name here must exist at the iOS 17 deployment target. A typo is not a build error:
+    /// `Image(systemName:)` renders an empty frame, so the icon just silently vanishes in shipped
+    /// UI. `MetricFamilyParityTests.testEveryFamilySymbolResolves` resolves all of them through
+    /// `UIImage(systemName:)` for exactly that reason.
     public var symbolName: String {
         switch self {
         case .sleep: return "moon.stars.fill"
+        case .readiness: return "bolt.heart.fill"
         case .heart: return "heart.fill"
         case .activity: return "figure.walk"
+        case .workout: return "figure.run"
+        case .effort: return "flame.fill"
         case .body: return "figure.stand"
         case .respiratory: return "lungs.fill"
         case .nutrition: return "fork.knife"
+        case .hydration: return "drop.fill"
         case .subjective: return "face.smiling"
+        case .stress: return "brain.head.profile"
+        case .cycle: return "calendar"
         case .symptoms: return "bandage.fill"
+        case .lab: return "testtube.2"
         case .medications: return "pills.fill"
         case .other: return "square.grid.2x2"
         }

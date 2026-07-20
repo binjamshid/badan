@@ -260,6 +260,23 @@ final class MeasurementRepository {
         try db.query("SELECT * FROM sessions WHERE id = ?;", [.text(id)]).first.map(Self.readSession)
     }
 
+    /// The session stored at an upstream identity, including suppressed and soft-deleted rows.
+    ///
+    /// (EPIC-03) `upsertSession` returns only whether the row was new, not which id won — on an
+    /// update the existing row keeps its id and the caller's freshly-generated one is discarded.
+    /// A workout route has to attach to the id that actually won (`workout_routes.session_id`),
+    /// so re-reading by identity is the only way to learn it. Covered by `idx_session_identity`
+    /// (`(external_id, source_id)`, migration v3), so this is an index seek rather than the scan
+    /// a `sessions(kind:...)`-then-filter would have been.
+    ///
+    /// Suppressed and deleted rows are included deliberately: a route must still resolve to its
+    /// session when that session lost a dedup or was removed upstream, otherwise re-ingesting a
+    /// restored workout would orphan the trace instead of re-attaching it.
+    func session(externalId: String, sourceId: String) throws -> Session? {
+        try db.query("SELECT * FROM sessions WHERE external_id = ? AND source_id = ? LIMIT 1;",
+                     [.text(externalId), .text(sourceId)]).first.map(Self.readSession)
+    }
+
     // MARK: - Row readers
 
     static func readRawSample(_ r: SQLiteRow) -> RawSample {

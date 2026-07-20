@@ -1,0 +1,240 @@
+{
+  "fixtureId": "canonical-rows-v1",
+  "registryVersion": "0.2.0",
+  "note": "The shared canonicalization golden, read by BOTH test suites. Each row is an as-received reading (metricId, value, unit) and the exact number BADAN must store for it (canonicalValue, canonicalUnit). Numbers are STRINGS on purpose: they are parsed with each platform's correctly-rounded strtod path (Swift Double(String) / Kotlin String.toDouble) and compared for exact IEEE-754 equality, so the fixture pins the stored bits rather than a rendering of them. See README.md for why a %.6f golden string was rejected.",
+  "rows": [
+    {
+      "id": "steps-count",
+      "metricId": "activity.steps",
+      "value": "8432",
+      "unit": "count",
+      "canonicalUnit": "count",
+      "canonicalValue": "8432",
+      "emittedBy": ["HcTypeMap:StepsRecord", "HKTypeMap:HKQuantityTypeIdentifierStepCount"],
+      "why": "Identity, asserted anyway: it is an identity only because Units.table says count and count share a base. A wrong adapter unit would throw here instead of round-tripping."
+    },
+    {
+      "id": "active-energy-kilojoules",
+      "metricId": "activity.active_energy",
+      "value": "2100",
+      "unit": "kJ",
+      "canonicalUnit": "kJ",
+      "canonicalValue": "2100",
+      "emittedBy": ["HcTypeMap:ActiveCaloriesBurnedRecord"],
+      "why": "Health Connect emits inKilojoules, which is already the registry canonical, so this leg does no arithmetic at all. Paired with active-energy-kilocalories below, which is the same metric arriving from iOS in the other unit."
+    },
+    {
+      "id": "distance-metres",
+      "metricId": "activity.distance",
+      "value": "5432.5",
+      "unit": "m",
+      "canonicalUnit": "m",
+      "canonicalValue": "5432.5",
+      "emittedBy": ["HcTypeMap:DistanceRecord", "HKTypeMap:HKQuantityTypeIdentifierDistanceWalkingRunning"]
+    },
+    {
+      "id": "floors-count",
+      "metricId": "activity.floors",
+      "value": "12",
+      "unit": "count",
+      "canonicalUnit": "count",
+      "canonicalValue": "12",
+      "emittedBy": ["HcTypeMap:FloorsClimbedRecord", "HKTypeMap:HKQuantityTypeIdentifierFlightsClimbed"]
+    },
+    {
+      "id": "heart-rate-bpm",
+      "metricId": "heart.hr",
+      "value": "72",
+      "unit": "bpm",
+      "canonicalUnit": "bpm",
+      "canonicalValue": "72",
+      "emittedBy": ["HcTypeMap:HeartRateRecord", "HKTypeMap:HKQuantityTypeIdentifierHeartRate"]
+    },
+    {
+      "id": "resting-heart-rate-bpm",
+      "metricId": "heart.rhr",
+      "value": "54",
+      "unit": "bpm",
+      "canonicalUnit": "bpm",
+      "canonicalValue": "54",
+      "emittedBy": ["HcTypeMap:RestingHeartRateRecord", "HKTypeMap:HKQuantityTypeIdentifierRestingHeartRate"]
+    },
+    {
+      "id": "hrv-milliseconds",
+      "metricId": "heart.hrv",
+      "value": "61.5",
+      "unit": "ms",
+      "canonicalUnit": "ms",
+      "canonicalValue": "61.5",
+      "emittedBy": ["HcTypeMap:HeartRateVariabilityRmssdRecord", "HKTypeMap:HKQuantityTypeIdentifierHeartRateVariabilitySDNN"],
+      "why": "Both adapters deliberately read HRV out in milliseconds rather than seconds so this leg is an identity. ms and s share a base, so a platform that read it in s and forgot to relabel would land 0.0615 here — a thousandfold error that still converts cleanly."
+    },
+    {
+      "id": "respiratory-rate-breaths",
+      "metricId": "respiratory.rate",
+      "value": "14.2",
+      "unit": "breaths/min",
+      "canonicalUnit": "breaths/min",
+      "canonicalValue": "14.2",
+      "emittedBy": ["HcTypeMap:RespiratoryRateRecord", "HKTypeMap:HKQuantityTypeIdentifierRespiratoryRate"],
+      "why": "breaths/min is its OWN dimension in Units.table, not an alias of count/min, so a heart rate can never silently become a breathing rate. Both adapters must label breaths as breaths; if either regressed to count/min this row throws rather than converting."
+    },
+    {
+      "id": "spo2-percent-sign",
+      "metricId": "respiratory.spo2",
+      "value": "97.5",
+      "unit": "%",
+      "canonicalUnit": "percent",
+      "canonicalValue": "97.5",
+      "emittedBy": ["HcTypeMap:OxygenSaturationRecord"],
+      "why": "(DATA-02) The registry canonical spells this percent while Health Connect's adapter emits %; both resolve to the fraction base, so the stored number stays 0-100. If one platform ever treated % as the fraction itself, a 97.5% reading would be stored as 0.975 there and 97.5 here, and both would render plausibly on their own screen."
+    },
+    {
+      "id": "wrist-temp-deviation-celsius",
+      "metricId": "body.wrist_temp_deviation",
+      "value": "-0.35",
+      "unit": "degC",
+      "canonicalUnit": "degC",
+      "canonicalValue": "-0.35",
+      "emittedBy": ["HcTypeMap:SkinTemperatureRecord"],
+      "why": "A temperature DIFFERENCE, which is why the unit must stay degC on every platform: Units' degF spec carries the freezing-point offset, correct for a temperature and catastrophically wrong for a delta (+0.5 degF would canonicalize to about -17.5 degC). iOS has no counterpart row because HKTypeMap reads appleSleepingWristTemperature as an ABSOLUTE and deliberately stores nothing (strategy .authorizationOnly(.awaitingDerivation))."
+    },
+    {
+      "id": "weight-kilograms",
+      "metricId": "body.weight",
+      "value": "80.4",
+      "unit": "kg",
+      "canonicalUnit": "kg",
+      "canonicalValue": "80.4",
+      "emittedBy": ["HcTypeMap:WeightRecord", "HKTypeMap:HKQuantityTypeIdentifierBodyMass"]
+    },
+    {
+      "id": "body-fat-percent-sign",
+      "metricId": "body.fat_pct",
+      "value": "22.5",
+      "unit": "%",
+      "canonicalUnit": "percent",
+      "canonicalValue": "22.5",
+      "emittedBy": ["HcTypeMap:BodyFatRecord"]
+    },
+    {
+      "id": "lean-mass-kilograms",
+      "metricId": "body.lean_mass",
+      "value": "62.3",
+      "unit": "kg",
+      "canonicalUnit": "kg",
+      "canonicalValue": "62.3",
+      "emittedBy": ["HcTypeMap:LeanBodyMassRecord", "HKTypeMap:HKQuantityTypeIdentifierLeanBodyMass"]
+    },
+    {
+      "id": "vo2max-ml-kg-min",
+      "metricId": "heart.vo2max",
+      "value": "48.2",
+      "unit": "mL/kg/min",
+      "canonicalUnit": "mL/kg/min",
+      "canonicalValue": "48.2",
+      "emittedBy": ["HcTypeMap:Vo2MaxRecord", "HKTypeMap:HKQuantityTypeIdentifierVO2Max"]
+    },
+    {
+      "id": "active-energy-kilocalories",
+      "metricId": "activity.active_energy",
+      "value": "500",
+      "unit": "kcal",
+      "canonicalUnit": "kJ",
+      "canonicalValue": "2092.0000012049923",
+      "emittedBy": ["HKTypeMap:HKQuantityTypeIdentifierActiveEnergyBurned"],
+      "why": "The kcal->kJ leg, which only iOS's adapter walks. A dropped conversion reads as a fourfold understatement of every day's energy and still looks plausible on a chart. The expected value is NOT 500*4.184 = 2092 exactly: Units.table stores the kJ leg as 0.239005736 (1/4.184 rounded to nine places) and DIVIDES by it, landing ~1.2e-6 relative high. That residue is pinned here on purpose — it is the number actually stored, and it must be the same number on both platforms."
+    },
+    {
+      "id": "resting-energy-kilocalories",
+      "metricId": "activity.resting_energy",
+      "value": "1600",
+      "unit": "kcal",
+      "canonicalUnit": "kJ",
+      "canonicalValue": "6694.400003855974",
+      "emittedBy": ["HKTypeMap:HKQuantityTypeIdentifierBasalEnergyBurned"],
+      "why": "Android has no counterpart: HcTypeMap declares TotalCaloriesBurnedRecord and deliberately does not ingest it, because Health Connect reports total (basal+active) expenditure and the registry has no total metric. The asymmetry is a known, documented gap, not a missing row."
+    },
+    {
+      "id": "spo2-fraction",
+      "metricId": "respiratory.spo2",
+      "value": "0.975",
+      "unit": "fraction",
+      "canonicalUnit": "percent",
+      "canonicalValue": "97.5",
+      "emittedBy": ["HKTypeMap:HKQuantityTypeIdentifierOxygenSaturation"],
+      "why": "(DATA-02) HKUnit.percent() hands back 0.975 for a 97.5% reading, so HKTypeMap labels it fraction and lets Units scale it. Labelling it percent there would store 0.975 as '97.5 percent' — a hundredfold error the conversion would report as success. This row and spo2-percent-sign are the same reading arriving in the two platforms' two spellings and MUST produce the identical stored number."
+    },
+    {
+      "id": "body-fat-fraction",
+      "metricId": "body.fat_pct",
+      "value": "0.225",
+      "unit": "fraction",
+      "canonicalUnit": "percent",
+      "canonicalValue": "22.5",
+      "emittedBy": ["HKTypeMap:HKQuantityTypeIdentifierBodyFatPercentage"],
+      "why": "Same HKUnit.percent() fraction semantics as spo2-fraction; paired with body-fat-percent-sign for the same reason."
+    },
+    {
+      "id": "weight-pounds",
+      "metricId": "body.weight",
+      "value": "177.25",
+      "unit": "lb",
+      "canonicalUnit": "kg",
+      "canonicalValue": "80.39924758250001",
+      "emittedBy": [],
+      "why": "No adapter emits lb today — manual entry and third-party imports will. Included because lb is the most-used non-SI mass spelling in the table and a factor typo there is invisible on a body-weight chart. The expected value is the exact IEEE-754 product of 177.25 and 0.45359237, residue included."
+    },
+    {
+      "id": "distance-miles",
+      "metricId": "activity.distance",
+      "value": "3.1",
+      "unit": "mi",
+      "canonicalUnit": "m",
+      "canonicalValue": "4988.9664",
+      "emittedBy": [],
+      "why": "As with weight-pounds: not adapter-emitted, but the imperial length leg both platforms carry and the one an import path will hit first."
+    },
+    {
+      "id": "walking-speed-kmh",
+      "metricId": "activity.walking_speed",
+      "value": "5.4",
+      "unit": "km/h",
+      "canonicalUnit": "m/s",
+      "canonicalValue": "1.5000000000000002",
+      "emittedBy": [],
+      "why": "The speed dimension was missing from Android's Units entirely until it was ported, and the symptom was a 1.5 m/s walking speed rendered to the user as '1.5 km/h' — wrong by a factor of 3.6 with no error anywhere. Pinned so the dimension cannot go missing again on either side. The trailing ...02 is the real IEEE-754 result of dividing by 1000/3600 and is part of the assertion."
+    },
+    {
+      "id": "hydration-millilitres",
+      "metricId": "hydration.volume",
+      "value": "500",
+      "unit": "mL",
+      "canonicalUnit": "L",
+      "canonicalValue": "0.5",
+      "emittedBy": [],
+      "why": "A logged metric rather than an ingested one, and the only sub-unity canonical in the set — the case where a dropped conversion produces a number a thousand times too large rather than too small."
+    },
+    {
+      "id": "vo2max-lowercase-litre",
+      "metricId": "heart.vo2max",
+      "value": "48.2",
+      "unit": "ml/kg/min",
+      "canonicalUnit": "mL/kg/min",
+      "canonicalValue": "48.2",
+      "emittedBy": [],
+      "why": "The same unit spelled with a lowercase L. emittedBy is deliberately EMPTY: both HKTypeMap and HcTypeMap read VO2 max out in the capital-L spelling, and naming either here asserts that adapter emits this exact string — which testFixtureRowsAgreeWithTheUnitsHKTypeMapReads correctly rejected when it was first written that way. The lowercase spelling reaches BADAN from vendor apps writing into HealthKit/Health Connect directly, so it must convert even though no in-tree adapter produces it. Promoted from knownDivergences once Android's Units.kt gained the alias: EPIC-01 added it on iOS only, so for one round Android fell through toCanonical's catch and stored the value UNCONVERTED and stamped ESTIMATE. That happens to be the numerically right answer for an identity unit, which is exactly why the convert leg is asserted too — a fixture built on toCanonical alone would have passed while the unit was entirely absent from the table."
+    },
+    {
+      "id": "breaths-per-minute-alias",
+      "metricId": "respiratory.rate",
+      "value": "14.2",
+      "unit": "brpm",
+      "canonicalUnit": "breaths/min",
+      "canonicalValue": "14.2",
+      "emittedBy": [],
+      "why": "An alias spelling of breaths-per-minute. Both platforms once filed `brpm` under heart rate's count/min base, which made convert(v, \"brpm\", \"breaths/min\") throw Incompatible and stored every brpm-labelled reading unconverted and stamped ESTIMATE. EPIC-01 re-based it on iOS; Android followed, and the pair moved here. Nothing in-tree emits this spelling yet, so the row is the only thing keeping either table from drifting back."
+    }
+  ],
+  "knownDivergences": []
+}

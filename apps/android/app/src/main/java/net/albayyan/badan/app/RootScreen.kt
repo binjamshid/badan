@@ -51,6 +51,8 @@ import net.albayyan.badan.features.symptom.SymptomLogScreen
 import net.albayyan.badan.features.timeline.TimelineScreen
 import net.albayyan.badan.features.workoutnutrition.NutritionLogScreen
 import net.albayyan.badan.features.workoutnutrition.WorkoutLogScreen
+import net.albayyan.badan.features.workouts.RouteConsentScreen
+import net.albayyan.badan.features.workouts.WorkoutDetailScreen
 
 /**
  * The app's top-level gate (mirror of the iOS `RootView`): a calm splash while the store seeds,
@@ -158,6 +160,8 @@ private fun DetailContent(route: Route) {
         Route.MedicationLog -> MedicationLogScreen()
         Route.WorkoutLog -> WorkoutLogScreen()
         Route.NutritionLog -> NutritionLogScreen()
+        Route.RouteConsent -> RouteConsentScreen()
+        is Route.WorkoutDetail -> WorkoutDetailScreen(route.sessionId)
     }
 }
 

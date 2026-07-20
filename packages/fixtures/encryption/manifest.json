@@ -1,0 +1,37 @@
+{
+  "fixtureSetVersion": "1",
+  "containerFormat": "BDNX",
+  "containerFormatVersion": 1,
+  "spec": "docs/adr/ADR-0008-sensitive-export-encryption.md",
+  "note": "Cross-platform interop fixtures for EPIC-06. Each container was produced by the named platform's real shipped encryptor and must decrypt on the OTHER platform. Read by apps/android/app/src/test/java/net/albayyan/badan/ExportEncryptorTest.kt and apps/ios/Tests/ExportEncryptionTests.swift. The passphrases below are fixture secrets with no relationship to any user data; they are non-ASCII on purpose, because that is the case where a platform's key-derivation encoding can diverge without an ASCII test noticing.",
+  "containers": [
+    {
+      "id": "ios-written-v1",
+      "file": "ios-written-v1.badanenc",
+      "writtenBy": "iOS",
+      "mustDecryptOn": "Android",
+      "iterations": 600000,
+      "passphrase": "بادان-fixture-🌙-2026",
+      "sha256": "a8a27f50255e934b8cdf79b39a0235084b1c0293ada2e09491a25d1a84c53a5b",
+      "plaintext": {
+        "manifest.json": "{\"exportId\":\"fixture-xplat-001\",\"schemaVersion\":\"0.1.0\",\"platform\":\"iOS\"}",
+        "raw.csv": "record_id,value\nr1,42\n",
+        "ملاحظات.txt": "قياسات تجريبية\n"
+      }
+    },
+    {
+      "id": "android-written-v1",
+      "file": "android-written-v1.badanenc",
+      "writtenBy": "Android",
+      "mustDecryptOn": "iOS",
+      "iterations": 600000,
+      "passphrase": "بادان-fixture-🌙-2026",
+      "sha256": "55432a55bc1bff130361a13ac707b107e4117b5421e19c2113b715103002df21",
+      "plaintext": {
+        "manifest.json": "{\"exportId\":\"fixture-xplat-002\",\"schemaVersion\":\"0.1.0\",\"platform\":\"Android\"}",
+        "raw.csv": "record_id,value\nr2,43\n",
+        "ملاحظات.txt": "قياسات تجريبية\n"
+      }
+    }
+  ]
+}

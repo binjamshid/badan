@@ -1,0 +1,267 @@
+{
+  "version": "0.1.0",
+  "note": "Maps (source class, metric family) -> high/medium/low so the Health Monitor (EPIC-27) can label how much a given number is worth without pretending every source is equal (plan §15 'Device/source registry + sensor-quality map', §4 principle 9 'sensor-quality labeling is a required feature, not a nice-to-have'). This is an HONESTY surface, not a ranking: a 'low' label means BADAN will show the number and export it unchanged while telling the user what produced it. Quality NEVER suppresses, hides, or paywalls a reading — raw data is not paywalled, and dedup/reconciliation is decided by the separate source-priority + dedup-journal machinery (I3, I4), not by this file. A source class is a statement about the SENSOR, not about the person: 'low' on wrist-measured blood pressure is a fact about optical wrist sensors, and the copy must read that way ('wrist sensors estimate this') rather than as doubt about the user.",
+  "levels": {
+    "high": "The sensor class is the appropriate instrument for this family; the number can be read at face value.",
+    "medium": "A reasonable estimate from this sensor class; useful for trends over time, less so for a single absolute reading.",
+    "low": "This sensor class only infers the family indirectly. Show the value, show the caveat, and prefer direction over absolutes.",
+    "unsupported": "This sensor class does not produce this family at all; a value arriving here means it was relayed from somewhere else and the relay is what should be labelled."
+  },
+  "resolution": {
+    "orderEn": "Resolve a row's label as: (1) its source's assigned sourceClassId, (2) the sourceTypeDefaults entry for its source type, (3) unknown.",
+    "assignedBy": "Class assignment from device model + source type is EPIC-27's job and lives in code, not here — model-string matching is vendor-specific and churns faster than a shared contract should. This file deliberately contains no model-string matchers so it never becomes a stale allowlist that silently mislabels a device it has not heard of.",
+    "derivedFamilies": "readiness, effort, and stress carry no entries of their own. A derived value inherits the LOWEST quality among the sources that fed it, so a readiness score built partly on a phone-estimated input is labelled by that input rather than by its best one. Optimistic inheritance would let a score launder a weak input into a confident-looking number, which is exactly what the anatomy sheet exists to prevent.",
+    "unknownFamily": "A family with no entry for a class falls back to defaultQuality rather than to 'high'. An unlabelled new family must degrade toward caution."
+  },
+  "defaultQuality": "medium",
+  "sourceTypeDefaults": {
+    "healthkit": "unknown",
+    "healthConnect": "unknown",
+    "manual": "manual_entry",
+    "import": "file_import",
+    "vendor": "unknown"
+  },
+  "sourceClasses": [
+    {
+      "sourceClassId": "wrist_wearable",
+      "nameEn": "Watch or wristband",
+      "nameAr": "ساعة أو سوار",
+      "descriptionEn": "Optical heart-rate sensing at the wrist, plus motion and (on some models) skin temperature.",
+      "descriptionAr": "استشعار ضوئي للنبض من المعصم، مع الحركة وحرارة الجلد في بعض الطُرز.",
+      "quality": {
+        "heart": "high",
+        "sleep": "medium",
+        "activity": "high",
+        "workout": "high",
+        "respiratory": "medium",
+        "body": "low",
+        "nutrition": "unsupported",
+        "hydration": "unsupported",
+        "cycle": "low",
+        "lab": "unsupported",
+        "subjective": "unsupported",
+        "symptoms": "unsupported"
+      },
+      "familyNotes": {
+        "sleep": "Stage estimates from a wrist device are inferred from motion and heart rate, not measured directly — reliable for duration, directional for stages.",
+        "body": "Wrist devices do not measure body composition; anything in this family arrived from elsewhere or is an estimate.",
+        "cycle": "Wrist temperature deviation is a supporting signal that a person may choose to read alongside their own recorded dates — never a standalone determination."
+      }
+    },
+    {
+      "sourceClassId": "ring_wearable",
+      "nameEn": "Smart ring",
+      "nameAr": "خاتم ذكي",
+      "descriptionEn": "Finger-worn optical sensing with skin temperature; strong at rest, less so during motion.",
+      "descriptionAr": "استشعار ضوئي من الإصبع مع حرارة الجلد؛ دقيق أثناء الراحة وأقل أثناء الحركة.",
+      "quality": {
+        "heart": "high",
+        "sleep": "high",
+        "activity": "medium",
+        "workout": "low",
+        "respiratory": "medium",
+        "body": "low",
+        "nutrition": "unsupported",
+        "hydration": "unsupported",
+        "cycle": "medium",
+        "lab": "unsupported",
+        "subjective": "unsupported",
+        "symptoms": "unsupported"
+      },
+      "familyNotes": {
+        "workout": "Finger-worn optical sensing degrades under grip and impact, so workout heart rate from a ring is the weakest thing it produces."
+      }
+    },
+    {
+      "sourceClassId": "chest_strap",
+      "nameEn": "Chest strap",
+      "nameAr": "حزام صدري",
+      "descriptionEn": "Electrical heart-rate sensing at the chest — the reference instrument for beat-to-beat timing.",
+      "descriptionAr": "استشعار كهربائي للنبض من الصدر — المرجع الأدق لتوقيت النبضات.",
+      "quality": {
+        "heart": "high",
+        "workout": "high",
+        "respiratory": "medium",
+        "activity": "low",
+        "sleep": "low",
+        "body": "unsupported",
+        "nutrition": "unsupported",
+        "hydration": "unsupported",
+        "cycle": "unsupported",
+        "lab": "unsupported",
+        "subjective": "unsupported",
+        "symptoms": "unsupported"
+      },
+      "familyNotes": {
+        "activity": "A chest strap has no step or distance sensing; activity values relayed through one came from a paired device."
+      }
+    },
+    {
+      "sourceClassId": "phone_handset",
+      "nameEn": "Phone",
+      "nameAr": "الهاتف",
+      "descriptionEn": "Motion, barometer, and location sensors in a device that is not always carried.",
+      "descriptionAr": "مستشعرات الحركة والضغط والموقع في جهاز لا يُحمل دائماً.",
+      "quality": {
+        "activity": "medium",
+        "workout": "medium",
+        "heart": "unsupported",
+        "sleep": "low",
+        "respiratory": "unsupported",
+        "body": "unsupported",
+        "nutrition": "unsupported",
+        "hydration": "unsupported",
+        "cycle": "unsupported",
+        "lab": "unsupported",
+        "subjective": "unsupported",
+        "symptoms": "unsupported"
+      },
+      "familyNotes": {
+        "activity": "Undercounts whenever the phone is set down — the gap is the phone's, not the person's, and the copy must say so rather than implying an inactive day."
+      }
+    },
+    {
+      "sourceClassId": "smart_scale",
+      "nameEn": "Smart scale",
+      "nameAr": "ميزان ذكي",
+      "descriptionEn": "Weight by load cell (accurate) plus body composition by bioimpedance (estimated).",
+      "descriptionAr": "الوزن بخلية حِمل (دقيق) مع تقدير تركيب الجسم بالمقاومة الحيوية.",
+      "quality": {
+        "body": "medium",
+        "heart": "low",
+        "sleep": "unsupported",
+        "activity": "unsupported",
+        "workout": "unsupported",
+        "respiratory": "unsupported",
+        "nutrition": "unsupported",
+        "hydration": "unsupported",
+        "cycle": "unsupported",
+        "lab": "unsupported",
+        "subjective": "unsupported",
+        "symptoms": "unsupported"
+      },
+      "familyNotes": {
+        "body": "Weight from a scale is high quality; body-fat and lean-mass percentages from the same scale are bioimpedance estimates that shift with hydration and time of day. The family label is capped at medium because one id (body.weight) cannot carry a better label than the family it shares with body.fat_pct — split this entry per-metric if that ever becomes limiting."
+      }
+    },
+    {
+      "sourceClassId": "bp_cuff",
+      "nameEn": "Blood pressure cuff",
+      "nameAr": "جهاز قياس ضغط الدم",
+      "descriptionEn": "Oscillometric upper-arm cuff — the appropriate instrument for blood pressure.",
+      "descriptionAr": "جهاز ضغط بكُم للذراع — الأداة المناسبة لقياس ضغط الدم.",
+      "quality": {
+        "heart": "high",
+        "sleep": "unsupported",
+        "activity": "unsupported",
+        "workout": "unsupported",
+        "respiratory": "unsupported",
+        "body": "unsupported",
+        "nutrition": "unsupported",
+        "hydration": "unsupported",
+        "cycle": "unsupported",
+        "lab": "unsupported",
+        "subjective": "unsupported",
+        "symptoms": "unsupported"
+      }
+    },
+    {
+      "sourceClassId": "clinical_device",
+      "nameEn": "Clinical device or laboratory",
+      "nameAr": "جهاز سريري أو مختبر",
+      "descriptionEn": "A medically-cleared instrument or an accredited laboratory.",
+      "descriptionAr": "جهاز معتمد طبياً أو مختبر معتمد.",
+      "quality": {
+        "lab": "high",
+        "heart": "high",
+        "respiratory": "high",
+        "body": "high",
+        "cycle": "high",
+        "sleep": "high",
+        "activity": "medium",
+        "workout": "medium",
+        "nutrition": "medium",
+        "hydration": "medium",
+        "subjective": "unsupported",
+        "symptoms": "unsupported"
+      },
+      "familyNotes": {
+        "lab": "A high label here describes the instrument's accuracy only. BADAN still never interprets a lab value — reference ranges and flags shown to the user are the ones the report itself carried."
+      }
+    },
+    {
+      "sourceClassId": "manual_entry",
+      "nameEn": "Entered by you",
+      "nameAr": "أدخلتها بنفسك",
+      "descriptionEn": "Typed in by the person, from a reading, a label, or their own account of the day.",
+      "descriptionAr": "أدخلها الشخص بنفسه من قراءة أو ملصق أو من واقع يومه.",
+      "quality": {
+        "subjective": "high",
+        "symptoms": "high",
+        "nutrition": "medium",
+        "hydration": "medium",
+        "cycle": "high",
+        "body": "medium",
+        "heart": "medium",
+        "lab": "medium",
+        "sleep": "medium",
+        "activity": "low",
+        "workout": "medium",
+        "respiratory": "medium"
+      },
+      "familyNotes": {
+        "subjective": "How someone feels is not estimated by any sensor — the person is the instrument, and this is the highest-quality source there is for it.",
+        "cycle": "Recorded period dates are first-hand fact, not inference; they outrank every sensor signal in this family.",
+        "body": "I4 already makes a manual weight/BP/lab entry authoritative over a device reading in reconciliation. The medium label here is about transcription slips, and must never be surfaced as doubt about the person."
+      }
+    },
+    {
+      "sourceClassId": "file_import",
+      "nameEn": "Imported file",
+      "nameAr": "ملف مستورد",
+      "descriptionEn": "Data brought in from another app's export; the original instrument is usually not recoverable from the file.",
+      "descriptionAr": "بيانات مستوردة من تصدير تطبيق آخر، وغالباً لا يمكن معرفة الجهاز الأصلي منها.",
+      "quality": {
+        "sleep": "medium",
+        "heart": "medium",
+        "activity": "medium",
+        "workout": "medium",
+        "respiratory": "medium",
+        "body": "medium",
+        "nutrition": "medium",
+        "hydration": "medium",
+        "cycle": "medium",
+        "lab": "medium",
+        "subjective": "medium",
+        "symptoms": "medium"
+      },
+      "familyNotes": {
+        "sleep": "Uniformly medium on purpose: the honest statement about an imported file is that the sensor behind it is unknown, and a per-family guess would be inventing information the file did not contain."
+      }
+    },
+    {
+      "sourceClassId": "unknown",
+      "nameEn": "Unrecognised source",
+      "nameAr": "مصدر غير معروف",
+      "descriptionEn": "A connected app or device BADAN has no sensor profile for.",
+      "descriptionAr": "تطبيق أو جهاز متصل لا يملك BADAN وصفاً لمستشعراته.",
+      "quality": {
+        "sleep": "medium",
+        "heart": "medium",
+        "activity": "medium",
+        "workout": "medium",
+        "respiratory": "medium",
+        "body": "medium",
+        "nutrition": "medium",
+        "hydration": "medium",
+        "cycle": "medium",
+        "lab": "medium",
+        "subjective": "medium",
+        "symptoms": "medium"
+      },
+      "familyNotes": {
+        "heart": "The default class for anything arriving through HealthKit or Health Connect until EPIC-27 identifies the originating device. 'Unrecognised' is a statement about BADAN's knowledge, not about the data — the label copy must not imply the reading is suspect."
+      }
+    }
+  ]
+}

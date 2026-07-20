@@ -27,16 +27,20 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.DirectionsBike
-import androidx.compose.material.icons.filled.DirectionsRun
-import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.automirrored.filled.DirectionsBike
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Eco
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.SelfImprovement
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Straighten
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -75,6 +79,7 @@ import kotlinx.coroutines.withContext
 import net.albayyan.badan.app.AppEnvironment
 import net.albayyan.badan.app.LocalAppEnvironment
 import net.albayyan.badan.app.LocalNavigator
+import net.albayyan.badan.app.Route
 import net.albayyan.badan.core.Loc
 import net.albayyan.badan.core.LocalizedString
 import net.albayyan.badan.core.Ulid
@@ -87,8 +92,11 @@ import net.albayyan.badan.designsystem.components.PillLabel
 import net.albayyan.badan.designsystem.components.ProvenanceRow
 import net.albayyan.badan.designsystem.components.SectionHeader
 import net.albayyan.badan.domain.IngestionPath
+import net.albayyan.badan.domain.Session
+import net.albayyan.badan.domain.SessionKind
 import net.albayyan.badan.domain.WorkoutEntry
 import net.albayyan.badan.domain.ingestion.DayAttribution
+import net.albayyan.badan.features.workouts.IngestedActivity
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -126,6 +134,32 @@ private val wHighValueHint = LocalizedString(
     ar = "هذا يبدو مرتفعاً بشكل غير معتاد — يستحق التأكد.",
 )
 
+// Unified-list vocabulary (EPIC-03). The list below is one list of workouts, not a "your entries"
+// list with a "from your watch" list beside it: the user did one run, and which of the two paths
+// it arrived by is provenance, not identity.
+// An ingested row is marked by naming its writing app, not by a generic "From a device" pill: on
+// Android the useful answer to "where did this come from" is which app, because several of them
+// write the same metric.
+private val wYourEntry = LocalizedString(en = "Your entry", ar = "إدخالك")
+private val wShowSetAside = LocalizedString(en = "Show duplicates set aside", ar = "إظهار المكرّرات الموضوعة جانباً")
+private val wHideSetAside = LocalizedString(en = "Hide duplicates set aside", ar = "إخفاء المكرّرات الموضوعة جانباً")
+private val wSetAside = LocalizedString(en = "Set aside", ar = "موضوع جانباً")
+private fun wSetAsideCount(n: Int) = LocalizedString(
+    en = "$n duplicate(s) set aside, not deleted",
+    ar = "$n نسخة مكرّرة موضوعة جانباً، ولم تُحذف",
+)
+private val wSetAsideExplainer = LocalizedString(
+    en = "When two sources record the same session, BADAN shows one and sets the other aside. " +
+        "Nothing is deleted, and you can open either one.",
+    ar = "عندما يسجّل مصدران الجلسة نفسها، يعرض بدن واحدة ويضع الأخرى جانباً. لا يُحذف شيء، ويمكنك " +
+        "فتح أي منهما.",
+)
+private fun wKeptOver(n: Int) = LocalizedString(
+    en = "Kept over $n other recording(s)",
+    ar = "احتُفظ بها بدل $n تسجيل آخر",
+)
+private val wOpenDetail = LocalizedString(en = "Open workout", ar = "فتح التمرين")
+
 // MARK: - Activity model
 
 /**
@@ -133,10 +167,10 @@ private val wHighValueHint = LocalizedString(
  * seeded data); display is bilingual and mirror-safe. Faithful port of the iOS `WorkoutActivity`.
  */
 private enum class WorkoutActivity(val key: String, val label: LocalizedString, val icon: ImageVector) {
-    RUN("Run", LocalizedString(en = "Run", ar = "جري"), Icons.Filled.DirectionsRun),
-    WALK("Walk", LocalizedString(en = "Walk", ar = "مشي"), Icons.Filled.DirectionsWalk),
+    RUN("Run", LocalizedString(en = "Run", ar = "جري"), Icons.AutoMirrored.Filled.DirectionsRun),
+    WALK("Walk", LocalizedString(en = "Walk", ar = "مشي"), Icons.AutoMirrored.Filled.DirectionsWalk),
     STRENGTH("Strength", LocalizedString(en = "Strength", ar = "قوة"), Icons.Filled.FitnessCenter),
-    CYCLE("Cycle", LocalizedString(en = "Cycle", ar = "دراجة"), Icons.Filled.DirectionsBike),
+    CYCLE("Cycle", LocalizedString(en = "Cycle", ar = "دراجة"), Icons.AutoMirrored.Filled.DirectionsBike),
     OTHER("Other", LocalizedString(en = "Other", ar = "أخرى"), Icons.Filled.SelfImprovement);
 
     companion object {
@@ -149,18 +183,91 @@ private enum class WorkoutActivity(val key: String, val label: LocalizedString, 
     }
 }
 
-// MARK: - Loaded data
+// MARK: - Unified recent list (EPIC-03)
 
-private data class WorkoutLogData(val recent: List<WorkoutEntry>, val loggedToday: Boolean)
+/**
+ * One row in the recent list, whichever way the workout arrived.
+ *
+ * Manual entries and ingested sessions live in two different tables with two different shapes and
+ * genuinely different capabilities — only the ingested side has a heart-rate series, a route, or a
+ * dedup decision attached — so they are modelled as two cases rather than flattened into a lowest
+ * common denominator that would throw the ingested side's detail away before it reached the screen.
+ * What is unified is the *list*, not the record.
+ */
+private sealed interface UnifiedWorkout {
+    val startAt: Long
 
-/** Load the last two weeks of workouts and note whether anything is attributed to today. */
-private fun loadWorkoutData(env: AppEnvironment): WorkoutLogData {
+    data class Manual(val entry: WorkoutEntry) : UnifiedWorkout {
+        override val startAt: Long get() = entry.startAt
+    }
+
+    data class Ingested(
+        val session: Session,
+        val sourceName: String,
+        /** Count of other recordings this one won against, from `SessionDetail.mergedFrom`. */
+        val keptOver: Int,
+    ) : UnifiedWorkout {
+        override val startAt: Long get() = session.startAt
+        val isSetAside: Boolean get() = session.provenance.isSuppressed
+        val activityCode: String? get() = session.detail.workout?.activityType
+    }
+}
+
+private data class WorkoutLogData(
+    val recent: List<UnifiedWorkout>,
+    val loggedToday: Boolean,
+    /** How many rows in the window are dedup-suppressed, whether or not they are being shown. */
+    val setAsideCount: Int,
+)
+
+/**
+ * Load the last two weeks of workouts from both paths and note whether anything is attributed
+ * to today.
+ *
+ * [includeSetAside] controls only whether suppressed *sessions* are returned as rows;
+ * [WorkoutLogData.setAsideCount] is computed from the full set either way, so the "n set aside"
+ * affordance can exist before the user has asked to see them. Manual entries are never suppressed
+ * — `workout_entries` has no `suppressed_by` column and `IngestionPipeline.dedupWorkouts`
+ * deliberately reconciles ingested sessions against each other only — so a manual twin of an
+ * ingested run stays visible beside it. That is the safe direction and is worth knowing before
+ * anyone "fixes" the apparent double: hiding a row the user typed is a bigger error than showing
+ * two.
+ */
+private fun loadWorkoutData(env: AppEnvironment, includeSetAside: Boolean): WorkoutLogData {
     val now = env.now()
     val tz = TimeZone.getDefault().id
     val from = now - 14L * 86_400_000L
-    val all = runCatching { env.logging.workouts(from, now) }.getOrDefault(emptyList())
+
+    val manual = runCatching { env.logging.workouts(from, now) }.getOrDefault(emptyList())
+
+    val sourceNames = runCatching { env.catalog.sources().associate { it.id to it.displayName } }
+        .getOrDefault(emptyMap())
+    val allSessions = runCatching {
+        env.measurements.sessions(SessionKind.WORKOUT, from, now, includeSuppressed = true)
+    }.getOrDefault(emptyList())
+    val setAsideCount = allSessions.count { it.provenance.isSuppressed }
+    val sessions = allSessions
+        .filter { includeSetAside || !it.provenance.isSuppressed }
+        .map {
+            UnifiedWorkout.Ingested(
+                session = it,
+                sourceName = sourceNames[it.provenance.sourceId] ?: it.provenance.sourceId,
+                keptOver = it.detail.mergedFrom.size,
+            )
+        }
+
+    val rows: List<UnifiedWorkout> = (manual.map { UnifiedWorkout.Manual(it) } + sessions)
+        .sortedByDescending { it.startAt }
+
     val startOfToday = DayAttribution.startOfDay(now, tz)
-    return WorkoutLogData(recent = all, loggedToday = all.any { it.startAt >= startOfToday })
+    return WorkoutLogData(
+        recent = rows,
+        // "Did I move today" is answered by either path. Before the unified list this only ever
+        // consulted manual entries, so a user whose watch recorded a 10k was still shown the
+        // "nothing logged today" recovery card.
+        loggedToday = rows.any { it.startAt >= startOfToday },
+        setAsideCount = setAsideCount,
+    )
 }
 
 // MARK: - Screen
@@ -199,17 +306,33 @@ fun WorkoutLogScreen() {
     }
 
     // Recent list (secondary surface) — loaded off the main thread, like the sibling log surfaces.
-    var recent by remember { mutableStateOf<List<WorkoutEntry>>(emptyList()) }
+    var recent by remember { mutableStateOf<List<UnifiedWorkout>>(emptyList()) }
     var loggedToday by remember { mutableStateOf(false) }
+    var setAsideCount by remember { mutableStateOf(0) }
+    var showSetAside by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        val data = withContext(Dispatchers.IO) { loadWorkoutData(env) }
+    suspend fun refresh() {
+        val data = withContext(Dispatchers.IO) { loadWorkoutData(env, includeSetAside = showSetAside) }
         recent = data.recent
         loggedToday = data.loggedToday
-        // Pre-fill duration/effort from the most recent entry for this activity type, so a
+        setAsideCount = data.setAsideCount
+    }
+
+    // Keyed on the filter so toggling "show set aside" re-queries rather than filtering a stale
+    // in-memory list — the suppressed rows were never fetched, so there is nothing to filter.
+    LaunchedEffect(showSetAside) { refresh() }
+
+    LaunchedEffect(Unit) {
+        // Pre-fill duration/effort from the most recent *manual* entry for this activity type, so a
         // habitual routine doesn't need re-adjusting from the generic defaults every visit.
-        data.recent
-            .filter { it.activityType == activity.key }
+        // Deliberately not seeded from ingested sessions: those record what a device measured, and
+        // pre-filling a manual form from them would invite the user to save a second, hand-typed
+        // copy of a workout BADAN already has.
+        val manual = withContext(Dispatchers.IO) {
+            runCatching { env.logging.workouts(env.now() - 14L * 86_400_000L, env.now()) }
+                .getOrDefault(emptyList())
+        }
+        manual.filter { it.activityType == activity.key }
             .maxByOrNull { it.startAt }
             ?.let { last ->
                 minutes = (last.durationSeconds / 60.0).roundToInt().coerceIn(1, 360)
@@ -430,25 +553,43 @@ fun WorkoutLogScreen() {
                 distanceText = ""
                 scope.launch {
                     withContext(Dispatchers.IO) { runCatching { env.logging.upsertWorkout(entry) } }
-                    val data = withContext(Dispatchers.IO) { loadWorkoutData(env) }
-                    recent = data.recent
-                    loggedToday = data.loggedToday
+                    refresh()
                 }
             }
 
-            // Recent workouts.
+            // Recent workouts — one list over both paths (manual + ingested sessions).
             Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
                 SectionHeader(title = env.s(wRecentWorkouts))
                 if (!loggedToday) {
                     RecoveryCard()
                 }
+
+                // The set-aside affordance is shown whenever duplicates exist, at every altitude.
+                // Dedup is not a power-user detail: it is the difference between "BADAN lost my
+                // run" and "BADAN is showing one of the two copies of it", and a casual user is
+                // more likely to need that sentence, not less.
+                if (setAsideCount > 0) {
+                    SetAsideBar(
+                        count = setAsideCount,
+                        expanded = showSetAside,
+                        onToggle = { showSetAside = !showSetAside },
+                    )
+                }
+
                 if (recent.isEmpty()) {
                     if (loggedToday) {
                         Text(text = env.s(wNoneYet), style = BadanType.caption, color = colors.textSecondary)
                     }
                 } else {
                     for (workout in recent) {
-                        WorkoutRow(workout = workout, power = power)
+                        when (workout) {
+                            is UnifiedWorkout.Manual -> WorkoutRow(workout = workout.entry, power = power)
+                            is UnifiedWorkout.Ingested -> IngestedWorkoutRow(
+                                row = workout,
+                                power = power,
+                                onOpen = { nav.push(Route.WorkoutDetail(workout.session.id)) },
+                            )
+                        }
                     }
                 }
             }
@@ -531,24 +672,31 @@ private fun WorkoutRow(workout: WorkoutEntry, power: Boolean) {
                 )
             }
 
-            val hasChips = workout.perceivedEffort != null || workout.energyKcal != null || workout.distanceM != null
-            if (hasChips) {
-                Row(horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
-                    workout.perceivedEffort?.let {
-                        PillLabel(text = "${env.s(wRpe)} ${env.format.integer(it)}", icon = Icons.Filled.Speed)
-                    }
-                    workout.energyKcal?.let {
-                        PillLabel(
-                            text = "${env.format.integer(it.roundToInt())} ${env.s(wKcal)}",
-                            icon = Icons.Filled.LocalFireDepartment,
-                        )
-                    }
-                    workout.distanceM?.let {
-                        PillLabel(
-                            text = "${env.format.number(it / 1000.0, 1)} ${env.s(wKm)}",
-                            icon = Icons.Filled.Straighten,
-                        )
-                    }
+            // The chip row is now unconditional, because it always carries at least the
+            // "Your entry" marker. In a list that mixes hand-logged and device-recorded workouts,
+            // which one you are looking at has to be legible without opening anything — otherwise a
+            // manual row sitting next to its device twin reads as BADAN having duplicated a record.
+            Row(
+                // Scrollable: with the marker pill added, a workout carrying effort + energy +
+                // distance is four pills wide and clipped on a narrow phone at large Dynamic Type.
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+            ) {
+                PillLabel(text = env.s(wYourEntry), icon = Icons.Filled.Edit)
+                workout.perceivedEffort?.let {
+                    PillLabel(text = "${env.s(wRpe)} ${env.format.integer(it)}", icon = Icons.Filled.Speed)
+                }
+                workout.energyKcal?.let {
+                    PillLabel(
+                        text = "${env.format.integer(it.roundToInt())} ${env.s(wKcal)}",
+                        icon = Icons.Filled.LocalFireDepartment,
+                    )
+                }
+                workout.distanceM?.let {
+                    PillLabel(
+                        text = "${env.format.number(it / 1000.0, 1)} ${env.s(wKm)}",
+                        icon = Icons.Filled.Straighten,
+                    )
                 }
             }
 
@@ -575,6 +723,139 @@ private fun WorkoutRow(workout: WorkoutEntry, power: Boolean) {
                     sourceName = env.s(wSavedManually),
                     ingestionPath = workout.ingestionPath,
                     timestampMillis = workout.startAt,
+                    language = env.language,
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Ingested workouts (EPIC-03)
+
+/**
+ * The "n duplicates set aside" bar.
+ *
+ * Deliberately worded as *set aside* everywhere, never as removed, hidden, ignored or cleaned up.
+ * I3 is that dedup suppresses and never deletes, and the words on screen are the only part of that
+ * invariant the user ever meets — a bar reading "3 duplicates removed" would make the database's
+ * honesty invisible and the app's behaviour look destructive.
+ */
+@Composable
+private fun SetAsideBar(count: Int, expanded: Boolean, onToggle: () -> Unit) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    BadanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Layers,
+                    contentDescription = null,
+                    tint = colors.info,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = env.s(wSetAsideCount(count)),
+                    style = BadanType.bodyCompact,
+                    color = colors.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Text(
+                text = env.s(wSetAsideExplainer),
+                style = BadanType.caption,
+                color = colors.textSecondary,
+            )
+            Box(
+                modifier = Modifier
+                    .heightIn(min = BadanSpace.touchMin)
+                    .clickable(onClick = onToggle),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    text = env.s(if (expanded) wHideSetAside else wShowSetAside),
+                    style = BadanType.body,
+                    color = colors.primary,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One ingested workout session in the recent list.
+ *
+ * A set-aside row is rendered at reduced opacity with a "Set aside" pill, and stays fully tappable
+ * — dimming communicates "this is the copy BADAN isn't counting", while remaining reachable is what
+ * keeps the suppression inspectable and therefore reversible. A row that were merely greyed out and
+ * inert would be a deletion with extra steps.
+ */
+@Composable
+private fun IngestedWorkoutRow(row: UnifiedWorkout.Ingested, power: Boolean, onOpen: () -> Unit) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val dim = if (row.isSetAside) 0.6f else 1f
+
+    BadanCard(modifier = Modifier.clickable(onClickLabel = env.s(wOpenDetail), onClick = onOpen)) {
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
+            ) {
+                Icon(
+                    imageVector = IngestedActivity.icon(row.activityCode),
+                    contentDescription = null,
+                    tint = colors.primary.copy(alpha = dim),
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = env.s(IngestedActivity.label(row.activityCode)),
+                    style = BadanType.body.copy(fontWeight = FontWeight.Medium),
+                    color = colors.textPrimary.copy(alpha = dim),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = env.format.duration(row.session.durationSeconds, "min"),
+                    style = BadanType.monospaceDigits(BadanType.bodyCompact),
+                    color = colors.textSecondary.copy(alpha = dim),
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+                // The originating app is named on the row itself, not only in the detail: on
+                // Android several apps writing the same metric is the normal configuration, so
+                // "which app said this" is list-level information, not a drill-down.
+                PillLabel(text = row.sourceName, icon = Icons.Filled.Smartphone)
+                if (row.isSetAside) {
+                    PillLabel(
+                        text = env.s(wSetAside),
+                        icon = Icons.Filled.VisibilityOff,
+                        tint = colors.outOfBand,
+                    )
+                }
+                if (row.keptOver > 0) {
+                    PillLabel(text = env.s(wKeptOver(row.keptOver)), icon = Icons.Filled.Layers)
+                }
+            }
+
+            Text(
+                text = dateTimeText(row.session.startAt, env.language.localeTag),
+                style = BadanType.caption,
+                color = colors.textSecondary.copy(alpha = dim),
+            )
+
+            if (power) {
+                HorizontalDivider(color = colors.separator)
+                ProvenanceRow(
+                    sourceName = row.sourceName,
+                    ingestionPath = row.session.provenance.ingestionPath,
+                    timestampMillis = row.session.provenance.ingestedAt,
                     language = env.language,
                 )
             }

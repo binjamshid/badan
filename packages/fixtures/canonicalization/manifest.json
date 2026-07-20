@@ -1,0 +1,16 @@
+{
+  "fixtureSetVersion": "1",
+  "spec": "packages/metric-ontology/registry.json",
+  "note": "Cross-platform canonicalization fixtures for the Phase-0 exit criterion 'widened ingestion fixtures pass identically both platforms'. canonical-rows-v1.json is the shared artifact: both suites read THIS file from the repo, feed its as-received (metricId, value, unit) triples through their own Units, and assert the same canonicalValue and canonicalUnit. Read by apps/android/app/src/test/java/net/albayyan/badan/HealthConnectCanonicalParityTest.kt and apps/ios/Tests/CanonicalizationParityTests.swift. Neither suite may copy the rows into its own source — a copy is one more thing that can drift from the artifact it is supposed to police (same reasoning as packages/fixtures/encryption).",
+  "files": [
+    {
+      "id": "canonical-rows-v1",
+      "file": "canonical-rows-v1.json",
+      "sha256": "465a38f8190b967e7d33c49e443fa24d200e01087037c1494fda7df1d5711426",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/HealthConnectCanonicalParityTest.kt",
+        "apps/ios/Tests/CanonicalizationParityTests.swift"
+      ]
+    }
+  ]
+}

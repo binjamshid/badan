@@ -27,6 +27,27 @@ final class PipelineTests: XCTestCase {
                           registry: MetricRegistry.shared, clock: clock, deviceId: deviceId)
     }
 
+    /// (EPIC-03) The fully-wired pipeline: routes and manual-log reconciliation only happen when
+    /// their repositories are injected, so the workout tests build this rather than
+    /// `makeIngestion()`.
+    private func makeWorkoutIngestion() -> IngestionPipeline {
+        IngestionPipeline(measurements: MeasurementRepository(db.main),
+                          catalog: CatalogRepository(db.main),
+                          reconciliation: ReconciliationRepository(db.main),
+                          registry: MetricRegistry.shared, clock: clock, deviceId: deviceId,
+                          routes: RouteRepository(db.main),
+                          logging: LoggingRepository(main: db.main, sensitive: db.sensitive))
+    }
+
+    /// Route consent as the settings toggle will supply it once EPIC-03's consent screen lands.
+    private struct StubRouteConsent: RouteConsentProviding {
+        let granted: Bool
+        func routeConsent() -> RouteConsent {
+            RouteConsent(granted: granted, policyVersion: RouteConsent.currentPolicyVersion,
+                         decidedAt: granted ? Date(timeIntervalSince1970: 1_780_000_000) : nil)
+        }
+    }
+
     private var range: HealthDateRange {
         HealthDateRange(start: clock.now().addingTimeInterval(-90 * 86_400), end: clock.now())
     }
@@ -86,6 +107,234 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(second.intervals, 0)
         XCTAssertEqual(second.sessions, 0)
         XCTAssertEqual(second.suppressed, 0, "re-running ingestion must be a no-op")
+    }
+
+    // MARK: - EPIC-03: workout ingestion
+
+    func testWorkoutsIngestAsSessionsWithTypedDetailAndProvenance() throws {
+        let pipeline = makeWorkoutIngestion()
+        let store = FakeHealthStore(clock: clock, historyDays: 90)
+        let summary = try pipeline.ingest(from: store, range: range)
+
+        XCTAssertGreaterThan(summary.workouts, 0, "sample data must produce ingested workouts")
+        let measurements = MeasurementRepository(db.main)
+        let workouts = try measurements.sessions(kind: .workout)
+        XCTAssertFalse(workouts.isEmpty)
+
+        let workout = try XCTUnwrap(workouts.first)
+        let detail = try XCTUnwrap(workout.detail.workout, "kind=workout rows must carry WorkoutDetail")
+        XCTAssertEqual(detail.schemaVersion, WorkoutDetail.currentSchemaVersion)
+        XCTAssertEqual(detail.activityType, "running")
+        XCTAssertFalse(detail.sourceWorkoutUUID.isEmpty)
+        XCTAssertEqual(detail.hrSeriesRef, MetricID.heartRate,
+                       "HR linkage resolves from the canonical store, never a duplicated series")
+        XCTAssertNotNil(detail.totals.energyKcal)
+        XCTAssertNotNil(detail.totals.avgHeartRateBpm)
+
+        // I1: full provenance, not a partial stamp.
+        XCTAssertEqual(workout.provenance.ingestionPath, .platformStore)
+        XCTAssertFalse(workout.provenance.sourceId.isEmpty)
+        XCTAssertNotNil(workout.provenance.externalId)
+        XCTAssertFalse(workout.provenance.measuredTimezone.isEmpty)
+        XCTAssertTrue(workout.provenance.qualityFlags.contains(.sampleData),
+                      "fabricated rows stay labelled as fabricated wherever they travel")
+    }
+
+    /// A workout is attributed to the local day it STARTED in, deliberately unlike sleep, which
+    /// is attributed to the morning it ends.
+    func testWorkoutIsAttributedToTheDayItStarted() throws {
+        let pipeline = makeWorkoutIngestion()
+        _ = try pipeline.ingest(from: FakeHealthStore(clock: clock, historyDays: 30), range: range)
+
+        let workout = try XCTUnwrap(try MeasurementRepository(db.main).sessions(kind: .workout).first)
+        XCTAssertEqual(workout.localNight,
+                       DayAttribution.localDayKey(workout.startAt, tz: workout.tzId))
+    }
+
+    func testWorkoutReingestIsIdempotent() throws {
+        let pipeline = makeWorkoutIngestion()
+        let store = FakeHealthStore(clock: clock, historyDays: 90)
+        _ = try pipeline.ingest(from: store, range: range)
+        let workoutCount = try count("sessions")
+
+        let second = try pipeline.ingest(from: store, range: range)
+        XCTAssertEqual(second.workouts, 0, "a replayed workout must upsert, not insert")
+        XCTAssertEqual(try count("sessions"), workoutCount)
+    }
+
+    // MARK: - EPIC-03: route consent gating
+
+    /// The acceptance criterion in as few lines as it can be stated: no route rows exist without
+    /// the toggle. Consent-off is the DEFAULT, so this is also the behaviour a build that forgot
+    /// to wire the toggle would get.
+    func testNoRouteRowsAreWrittenWithoutConsent() throws {
+        let pipeline = makeWorkoutIngestion()
+        let store = FakeHealthStore(clock: clock, historyDays: 30,
+                                    routeConsent: StubRouteConsent(granted: false))
+        let summary = try pipeline.ingest(from: store, range: range)
+
+        XCTAssertGreaterThan(summary.workouts, 0, "sanity: workouts themselves still ingest")
+        XCTAssertEqual(summary.routes, 0)
+        XCTAssertEqual(try count("workout_routes"), 0, "location data must not exist without consent")
+        XCTAssertEqual(try count("route_points"), 0)
+
+        let workout = try XCTUnwrap(try MeasurementRepository(db.main).sessions(kind: .workout).first)
+        XCTAssertNil(workout.detail.workout?.routeRef,
+                     "a nil routeRef must not be papered over with a dangling id")
+    }
+
+    func testRoutesIngestWithConsentAndStampTheirSnapshot() throws {
+        let pipeline = makeWorkoutIngestion()
+        let store = FakeHealthStore(clock: clock, historyDays: 30,
+                                    routeConsent: StubRouteConsent(granted: true))
+        let summary = try pipeline.ingest(from: store, range: range)
+
+        XCTAssertGreaterThan(summary.routes, 0)
+        let measurements = MeasurementRepository(db.main)
+        let routeRepo = RouteRepository(db.main)
+        let workout = try XCTUnwrap(try measurements.sessions(kind: .workout).first)
+
+        let routeRef = try XCTUnwrap(workout.detail.workout?.routeRef,
+                                     "a stored route must be reachable from its workout")
+        let route = try XCTUnwrap(try routeRepo.route(id: routeRef),
+                                  "routeRef must name a route row that actually exists")
+        XCTAssertEqual(route.sessionId, workout.id)
+        XCTAssertTrue(route.consentSnapshot.granted)
+        XCTAssertEqual(route.consentSnapshot.policyVersion, RouteConsent.currentPolicyVersion)
+        XCTAssertEqual(route.provenance.ingestionPath, .platformStore,
+                       "I1: a route point's lineage resolves through its parent route")
+
+        let points = try routeRepo.points(routeId: route.id)
+        XCTAssertEqual(points.count, route.pointCount, "point_count must match the stored trace")
+        XCTAssertEqual(points.map(\.seq), Array(0..<points.count))
+    }
+
+    func testRouteReingestReplacesRatherThanDuplicating() throws {
+        let pipeline = makeWorkoutIngestion()
+        let store = FakeHealthStore(clock: clock, historyDays: 30,
+                                    routeConsent: StubRouteConsent(granted: true))
+        _ = try pipeline.ingest(from: store, range: range)
+        let routeRows = try count("workout_routes")
+        let pointRows = try count("route_points")
+
+        _ = try pipeline.ingest(from: store, range: range)
+
+        XCTAssertEqual(try count("workout_routes"), routeRows, "a replayed route must update in place")
+        XCTAssertEqual(try count("route_points"), pointRows,
+                       "points are replaced wholesale, never appended to the previous trace")
+    }
+
+    // MARK: - EPIC-03: workout.session_overlap.v1
+
+    /// The acceptance criterion: a manually-logged workout with an ingested twin is suppressed,
+    /// with its lineage visible and reversible (I3). Suppression is journal-only because
+    /// `workout_entries` carries no `suppressed_by` column — see
+    /// `IngestionPipeline.dedupWorkouts`.
+    func testIngestedWorkoutSuppressesItsManuallyLoggedTwin() throws {
+        let logging = LoggingRepository(main: db.main, sensitive: db.sensitive)
+        let store = FakeHealthStore(clock: clock, historyDays: 30)
+        // Log a manual entry over the same window as one of the sample workouts, the way a user
+        // would after finishing a run their watch also recorded.
+        let sampleWorkout = try XCTUnwrap(store.readWorkouts(range).last)
+        let now = clock.now()
+        let manual = WorkoutEntry(id: ULID.newID(), activityType: "Run",
+                                  startAt: sampleWorkout.start.addingTimeInterval(-120),
+                                  endAt: sampleWorkout.end.addingTimeInterval(180), tzId: "UTC",
+                                  energyKcal: 400, perceivedEffort: 6, ingestionPath: .manual,
+                                  updatedAt: now, originDeviceId: deviceId)
+        try logging.upsertWorkout(manual)
+
+        let summary = try makeWorkoutIngestion().ingest(from: store, range: range)
+        XCTAssertGreaterThan(summary.suppressed, 0)
+
+        let decision = try XCTUnwrap(try ReconciliationRepository(db.main).forSuppressed(manual.id),
+                                     "the manual twin must be journaled as suppressed")
+        XCTAssertEqual(decision.rule, DedupLite.workoutRuleId)
+        XCTAssertTrue(decision.reversible, "I3: every dedup decision stays reversible")
+        XCTAssertEqual(decision.detail["suppressed_kind"], "manual_workout_entry")
+        XCTAssertEqual(decision.detail["kept_kind"], "ingested_workout_session")
+        XCTAssertNotNil(decision.detail["overlap_pct"], "lineage must state why it was suppressed")
+
+        // I3: suppressed, never deleted — the row is untouched and still readable.
+        let stillThere = try logging.workouts(from: manual.startAt.addingTimeInterval(-60),
+                                              to: manual.endAt.addingTimeInterval(60))
+        XCTAssertTrue(stillThere.contains { $0.id == manual.id },
+                      "the manual entry itself must survive; only the decision hides it")
+
+        // The winner it names is a real ingested workout session.
+        let winner = try XCTUnwrap(try MeasurementRepository(db.main).session(id: decision.keptRecordId))
+        XCTAssertEqual(winner.kind, .workout)
+    }
+
+    func testWorkoutDedupIsIdempotentAcrossReingest() throws {
+        let logging = LoggingRepository(main: db.main, sensitive: db.sensitive)
+        let store = FakeHealthStore(clock: clock, historyDays: 30)
+        let sampleWorkout = try XCTUnwrap(store.readWorkouts(range).last)
+        let now = clock.now()
+        try logging.upsertWorkout(WorkoutEntry(id: ULID.newID(), activityType: "Run",
+                                               startAt: sampleWorkout.start, endAt: sampleWorkout.end,
+                                               tzId: "UTC", ingestionPath: .manual,
+                                               updatedAt: now, originDeviceId: deviceId))
+
+        let pipeline = makeWorkoutIngestion()
+        _ = try pipeline.ingest(from: store, range: range)
+        let decisionCount = try count("dedup_decisions")
+
+        let second = try pipeline.ingest(from: store, range: range)
+        XCTAssertEqual(second.suppressed, 0, "a re-ingest must not re-journal an existing decision")
+        XCTAssertEqual(try count("dedup_decisions"), decisionCount)
+    }
+
+    /// A manual entry that merely shares an afternoon with an ingested workout is a different
+    /// session and must survive untouched — the rule suppresses duplicates, not neighbours.
+    func testNonOverlappingManualWorkoutIsNotSuppressed() throws {
+        let logging = LoggingRepository(main: db.main, sensitive: db.sensitive)
+        let store = FakeHealthStore(clock: clock, historyDays: 30)
+        let sampleWorkout = try XCTUnwrap(store.readWorkouts(range).last)
+        let now = clock.now()
+        // Starts after the ingested workout has finished.
+        let manual = WorkoutEntry(id: ULID.newID(), activityType: "Yoga",
+                                  startAt: sampleWorkout.end.addingTimeInterval(3600),
+                                  endAt: sampleWorkout.end.addingTimeInterval(3600 + 2700),
+                                  tzId: "UTC", ingestionPath: .manual,
+                                  updatedAt: now, originDeviceId: deviceId)
+        try logging.upsertWorkout(manual)
+
+        _ = try makeWorkoutIngestion().ingest(from: store, range: range)
+
+        XCTAssertNil(try ReconciliationRepository(db.main).forSuppressed(manual.id),
+                     "a separate session must not be suppressed just for sharing a day")
+    }
+
+    // MARK: - EPIC-01: the widened families reach the store
+
+    func testWidenedFamiliesFlowThroughToStoredRows() throws {
+        let pipeline = makeIngestion()
+        _ = try pipeline.ingest(from: FakeHealthStore(clock: clock, historyDays: 90), range: range)
+        let measurements = MeasurementRepository(db.main)
+
+        // Sample data covers the subset of the widened set it can honestly fabricate; each of
+        // these asserts the metric id resolves in the registry AND lands in the right table,
+        // which together are what `HKTypeMap.validate` checks statically.
+        XCTAssertFalse(try measurements.rawSamples(metricId: MetricID.spo2).isEmpty)
+        XCTAssertFalse(try measurements.rawSamples(metricId: MetricID.weight).isEmpty)
+        XCTAssertFalse(try measurements.intervalRecords(metricId: MetricID.hrv).isEmpty)
+        XCTAssertFalse(try measurements.intervalRecords(metricId: MetricID.respiratoryRate).isEmpty)
+        XCTAssertFalse(try measurements.intervalRecords(metricId: MetricID.activeEnergy).isEmpty)
+        XCTAssertFalse(try measurements.intervalRecords(metricId: MetricID.distance).isEmpty)
+
+        // Unit fidelity end-to-end: sample data emits active energy in kcal, the registry
+        // canonical is kJ, so the stored value must be the converted one and must NOT be tagged
+        // `.estimate` (which is what a failed conversion would leave behind).
+        let energy = try XCTUnwrap(try measurements.intervalRecords(metricId: MetricID.activeEnergy).first)
+        XCTAssertEqual(energy.unit, "kJ")
+        // The generator clamps active energy to 200-750 kcal, i.e. 837-3138 kJ. An unconverted
+        // value would sit inside the kcal band and below this floor — which is exactly what the
+        // silent-failure mode looks like, since nothing else about the row would appear wrong.
+        XCTAssertGreaterThan(energy.value, 800,
+                             "kcal must be converted to the registry's canonical kJ, not passed through")
+        XCTAssertFalse(energy.provenance.qualityFlags.contains(.estimate),
+                       "a clean kcal->kJ conversion must not be stamped as an estimate")
     }
 
     // MARK: - Derivation

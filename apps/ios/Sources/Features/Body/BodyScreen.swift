@@ -40,12 +40,15 @@ final class BodyViewModel {
     /// Headline metric preference per family; falls back to any baseline-eligible metric that
     /// actually carries data. Same data, curated altitude — never a second dataset.
     ///
-    /// Only 6 of `MetricFamily`'s 10 cases are curated here — `.subjective`/`.symptoms`/
-    /// `.medications`/`.other` have no typed `MetricID` constants yet (OPT-016), so they fall
-    /// through to `makePillar`'s uncurated "first baseline-eligible metric in registry order"
-    /// path below. Extending this dictionary for `.subjective`/`.other` needs new constants in
-    /// `Domain/MetricID.swift`, which this bundle doesn't own — left as a known, intentional gap
-    /// rather than hardcoding raw id strings here.
+    /// Only 6 of `MetricFamily`'s 17 cases are curated here. The uncurated remainder splits in two:
+    /// `.subjective`/`.symptoms`/`.medications`/`.other` have no typed `MetricID` constants yet
+    /// (OPT-016), and the seven registry v0.2.0 families (`.readiness`, `.workout`, `.effort`,
+    /// `.hydration`, `.stress`, `.cycle`, `.lab`) have constants but no curated headline choice —
+    /// picking one is a product call owned by the epics building those surfaces. Both fall through
+    /// to `makePillar`'s uncurated "first baseline-eligible metric in registry order" path below,
+    /// which yields a correct pillar, just not a deliberately-chosen one. Extending this dictionary
+    /// needs either new constants in `Domain/MetricID.swift` or that product call — left as a known,
+    /// intentional gap rather than hardcoding raw id strings here.
     /// `nonisolated` — read from `makePillar`, which now runs off the main actor (PERF-01); a
     /// plain immutable `let` of `Sendable` value types is safe to hand to a nonisolated context.
     private nonisolated static let headline: [MetricFamily: [String]] = [
@@ -210,6 +213,11 @@ final class BodyViewModel {
 struct BodyScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var vm = BodyViewModel()
+    /// (EPIC-01 task 5, plan §13.1: "body metrics from Body") Weight, body fat and lean mass are
+    /// asked for here rather than at onboarding's connect step — most people have none of them,
+    /// and spending a permission prompt on an empty family before the user has seen anything is
+    /// how a first run starts feeling extractive.
+    @State private var permissions = HealthPermissionGate()
 
     private static let browseHeader = LocalizedString(en: "Browse everything", ar: "تصفّح كل شيء")
     private static let pillarsHeader = LocalizedString(en: "Your systems", ar: "أنظمتك")
@@ -250,7 +258,12 @@ struct BodyScreen: View {
                 .accessibilityLabel(Text(Loc.search, language: env.language))
             }
         }
+        .permissionExplainer(permissions)
         .task(id: BodyLoadKey(profile: env.profile, generation: env.dataGeneration)) { await vm.load(env) }
+        // Separate from the load task: staging runs once per appearance, not again on every
+        // `dataGeneration` bump — an explainer that re-evaluates whenever a sync lands is one
+        // background wake away from reading as a nag.
+        .task { permissions.request([.body]) }
     }
 }
 
@@ -269,7 +282,10 @@ private struct BodyPillarCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let pillar: BodyPillar
 
+    @State private var showsExplainer = false
+
     private static let moreInFamily = LocalizedString(en: "+{n} more in this family", ar: "+{n} أخرى في هذه الفئة")
+    private static let whatIsThis = LocalizedString(en: "What is this?", ar: "ما هذا؟")
     /// "In your usual range" alone is unfalsifiable without the numbers behind it; show the band
     /// once here rather than forcing a second tap into Metric Detail to see it (EASE-140).
     private static let usualRangeCaption = LocalizedString(en: "Usual range {low}–{high}", ar: "النطاق المعتاد {low}–{high}")
@@ -326,17 +342,36 @@ private struct BodyPillarCard: View {
                 // A family can carry several tracked metrics behind its one headline value; hint
                 // that more exist instead of leaving them undiscoverable outside "All metrics"
                 // (EASE-179). A separate tap target, not nested inside the link above.
-                if pillar.familyMetricCount > 1 {
-                    NavigationLink {
-                        BodyAllMetricsBrowser(initialFamily: pillar.family)
+                HStack(spacing: BadanSpace.touchGap) {
+                    if pillar.familyMetricCount > 1 {
+                        NavigationLink {
+                            BodyAllMetricsBrowser(initialFamily: pillar.family)
+                        } label: {
+                            Text(Self.moreInFamily.filling(["n": env.format.integer(pillar.familyMetricCount - 1)]), language: env.language)
+                                .font(BadanFont.caption.weight(.medium))
+                                .foregroundStyle(BadanColor.primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Spacer(minLength: 0)
+                    // (EPIC-01 task 5) The family explainer, reachable from the surface the
+                    // family is actually shown on. "Why is this empty?" and "what is wrist
+                    // temperature?" are both questions people ask HERE, looking at the card —
+                    // not two taps away in Sources.
+                    Button {
+                        showsExplainer = true
                     } label: {
-                        Text(Self.moreInFamily.filling(["n": env.format.integer(pillar.familyMetricCount - 1)]), language: env.language)
+                        Text(Self.whatIsThis, language: env.language)
                             .font(BadanFont.caption.weight(.medium))
                             .foregroundStyle(BadanColor.primary)
                     }
                     .buttonStyle(.plain)
                 }
+                .frame(minHeight: BadanSpace.touchMin)
             }
+        }
+        .sheet(isPresented: $showsExplainer) {
+            MetricFamilyExplainerSheet(family: pillar.family)
         }
     }
 
@@ -523,8 +558,13 @@ struct BodyAllMetricsBrowser: View {
     private func metricRow(_ def: MetricDefinition) -> some View {
         HStack(spacing: BadanSpace.space3) {
             // Every other row-based list in the app leads with a family/type icon; this was the
-            // one text-only list, exactly where scanning 44 unfamiliar metric names benefits
-            // most from it (UIUX-022).
+            // one text-only list, exactly where scanning the registry's whole catalogue of
+            // unfamiliar metric names benefits most from it (UIUX-022).
+            //
+            // The catalogue size is not written here: it said "44 unfamiliar metric names" and the
+            // registry had already grown past that (audit finding #9). The argument for the icon
+            // does not depend on the exact count, and a count in a comment is a count that goes
+            // stale on the next ontology addition — `env.registry.all` is the live one.
             Image(systemName: def.familyGroup.symbolName)
                 .font(.system(size: 17))
                 .foregroundStyle(BadanColor.primary)

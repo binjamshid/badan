@@ -1,16 +1,95 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Health Connect READ permissions for the record types BADAN ingests. -->
+    <!--
+      Health Connect READ permissions for the record types BADAN ingests.
+
+      Declaring a permission here does NOT request it. `HealthConnectAdapter.permissions` is what
+      is actually put in front of the user, and it is requested in staged family bundles rather
+      than one blanket prompt (plan §13.1/§14). The manifest is the superset of everything BADAN
+      may ever ask for; the adapter decides when. A permission requested by the adapter but
+      missing here fails silently at request time, so the two lists are edited together.
+
+      Grouped by consent family below because the families are the unit the user sees and the
+      unit Play Data Safety is filled in against — keep a new record type's permission with its
+      family rather than appending to the end of the list.
+    -->
+
+    <!-- Activity. -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <!--
+      READ_TOTAL_CALORIES_BURNED was declared here and is deliberately gone (audit finding #7).
+      `HcTypeMap` defers TotalCaloriesBurnedRecord — the registry has no total-expenditure metric,
+      and total-minus-active is a derivation rather than an ingestion — so the type never entered
+      the app. It also states the governing principle: asking for a permission BADAN does not act
+      on spends the user's trust on nothing. The manifest said the opposite of the code, and the
+      manifest is what the Play Data Safety form is built from, so the declaration would have had
+      BADAN disclosing a data type it never reads.
+
+      Restore this line only in the same change that gives the type a metric to land in.
+      `HcTypeMapTest.deferredTypePermissionsAreNotDeclaredInTheManifest` fails if it comes back
+      alone.
+    -->
     <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_FLOORS_CLIMBED" />
+
+    <!-- Vitals. -->
     <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
     <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
     <uses-permission android:name="android.permission.health.READ_HEART_RATE_VARIABILITY" />
     <uses-permission android:name="android.permission.health.READ_RESPIRATORY_RATE" />
     <uses-permission android:name="android.permission.health.READ_OXYGEN_SATURATION" />
+    <!-- SkinTemperatureRecord is the Health Connect analogue of HealthKit wrist temperature.
+         Surfaced as a deviation band, never an absolute clinical temperature (plan §4 rule 9). -->
+    <uses-permission android:name="android.permission.health.READ_SKIN_TEMPERATURE" />
+
+    <!-- Sleep. -->
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
+
+    <!-- Body measurements. -->
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_BODY_FAT" />
+    <uses-permission android:name="android.permission.health.READ_LEAN_BODY_MASS" />
+    <uses-permission android:name="android.permission.health.READ_VO2_MAX" />
+
+    <!--
+      Workouts. READ_EXERCISE covers ExerciseSessionRecord.
+
+      There is deliberately NO route-read permission here. connect-client 1.1.0 defines only
+      WRITE_EXERCISE_ROUTE — reading a route goes through `ExerciseRouteRequestAppContract`
+      (action androidx.health.action.REQUEST_EXERCISE_ROUTE), a per-route system consent dialog,
+      not a manifest permission. The bulk platform permission (READ_EXERCISE_ROUTES) is
+      restricted and requires Google allowlisting, and is not exposed by this client version.
+      Verified against the 1.1.0 aar, not assumed. This is also the behavior BADAN wants: routes
+      are the one location-bearing health record, and plan §17 gives them their own toggle, so
+      per-route consent is the honest shape rather than a limitation to work around. Do not add a
+      READ_EXERCISE_ROUTE(S) line "for completeness" — it grants nothing and misstates the ask.
+    -->
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+
+    <!--
+      The Android counterpart to iOS A2 (ADR-0009): without this, Health Connect reads from the
+      EPIC-05 WorkManager sync return empty once the app is backgrounded on platforms that
+      enforce it, which presents as "background sync runs and finds nothing" rather than as an
+      error. Declared here; requested only from the background-sync opt-in, never bundled into
+      the first-run prompt. On platforms/HC versions that do not define it, an undefined
+      permission is simply never granted — declaring it is inert, not a compatibility risk.
+
+      Note what is NOT here: READ_HEALTH_DATA_HISTORY. BADAN accepts Health Connect's 30-day
+      default window and states the achievable window per type in the backfill banner (plan §14)
+      rather than asking for a broad historical grant it has not yet earned the user's trust for.
+    -->
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+
+    <!--
+      WorkManager's own manifest already merges this in, so the build works without the line.
+      It is stated explicitly anyway: this manifest should read as what BADAN needs, not as what
+      it happened to inherit — a reviewer auditing "why can this app run at boot?" should find
+      the answer here. Reason: periodic HC sync must survive a reboot, otherwise scheduled work
+      silently stops until the user next opens the app.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Provider visibility so getSdkStatus() can detect Health Connect on Android 13 and below. -->
     <queries>

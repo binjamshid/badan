@@ -24,9 +24,19 @@ struct OnboardingView: View {
     /// STUB-01/COMP-06 (ONB "Start empty"): true while the purge kicked off by "Start empty" is
     /// in flight, so a second tap can't race it.
     @State private var startingEmpty = false
+    /// (EPIC-01 task 5, plan §13.1) The staged permission bundles onboarding's connect step
+    /// covers — core vitals, sleep, activity — each behind its own explainer before its own
+    /// system prompt. Body measurements and workouts are deliberately NOT asked for here; the
+    /// surfaces that need them ask when they open.
+    @State private var permissions = HealthPermissionGate()
 
     private enum ConnectState: Equatable {
         case idle
+        /// The explainer sequence is on screen. Distinct from `.connecting`: nothing has been
+        /// written and no backfill exists yet, so the "Continue" escape hatch must not appear —
+        /// the user is mid-decision, and offering a way past their own consent flow would be a
+        /// dark pattern in the other direction.
+        case staging
         case connecting
         /// Authorization was denied or HealthKit is unavailable on this device/simulator — shown
         /// as a calm inline notice rather than navigating away immediately, so the user actually
@@ -87,6 +97,14 @@ struct OnboardingView: View {
         }
         .onChange(of: step) { _, newValue in
             UserDefaults.standard.set(newValue, forKey: Self.stepKey)
+        }
+        .permissionExplainer(permissions)
+        // The staged sequence has no completion callback of its own — the gate is a state
+        // machine, not a coordinator — so onboarding watches it drain. Guarded on
+        // `connectState == .staging` inside `finishStagedConnect`, since `isIdle` is also true
+        // before the sequence ever starts.
+        .onChange(of: permissions.isIdle) { _, idle in
+            if idle { finishStagedConnect() }
         }
     }
 
@@ -403,12 +421,12 @@ struct OnboardingView: View {
                                 .padding(.horizontal, BadanSpace.space2)
                             primaryButton(Loc.done) { finishOnboarding() }
 
-                        case .idle, .connecting:
-                            primaryButton(connectState == .connecting ? Self.connecting : Self.connectPrimary) {
+                        case .idle, .staging, .connecting:
+                            primaryButton(connectLabel) {
                                 startConnect()
                             }
-                            .disabled(connectState == .connecting)
-                            .opacity(connectState == .connecting ? 0.7 : 1)
+                            .disabled(connectState != .idle)
+                            .opacity(connectState == .idle ? 1 : 0.7)
 
                             // STUB-01/COMP-06: honest framing for the "don't connect now" path —
                             // this used to read "Continue without connecting" with no mention
@@ -424,7 +442,7 @@ struct OnboardingView: View {
                                         .foregroundStyle(BadanColor.textSecondary)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(connectState == .connecting)
+                                .disabled(connectState != .idle)
 
                                 Text(env.s(Self.sampleDataCaption))
                                     .font(BadanFont.caption)
@@ -449,7 +467,7 @@ struct OnboardingView: View {
                             }
                             .buttonStyle(.plain)
                             .frame(minHeight: BadanSpace.touchMin)
-                            .disabled(connectState == .connecting || startingEmpty)
+                            .disabled(connectState != .idle || startingEmpty)
                         }
                     }
                 }
@@ -497,11 +515,56 @@ struct OnboardingView: View {
     /// (`AppEnvironment.connectHealthKit`/`awaitBackfillCompletion`) so onboarding can pay off
     /// its "you'll see something real about yourself" promise with one real fact — but never for
     /// longer than `firstFactTimeout`, and the "Continue" escape hatch works the whole time.
+    /// (EPIC-01 task 5) Kicks off the STAGED sequence rather than one blanket prompt: the gate
+    /// presents core vitals, then sleep, then activity, each explainer followed by that bundle's
+    /// own system sheet. Nothing is written and no backfill starts until the last one is answered
+    /// — `finishStagedConnect()` below picks up from there, driven by `onChange(of:
+    /// permissions.isIdle)`.
+    ///
+    /// If HealthKit is unavailable (simulator without a Health store, an iPad, a restricted
+    /// device) the gate queues nothing and stays idle, so the sequence would never start. Detect
+    /// that here rather than leaving the button spinning forever.
+    /// The button label under the explainer sheets. `.staging` gets its own wording because
+    /// "Connecting…" would be false while the user is still deciding — nothing has connected, and
+    /// the sheet they are reading is the reason.
+    private var connectLabel: LocalizedString {
+        switch connectState {
+        case .idle: return Self.connectPrimary
+        case .staging: return Self.reviewingPermissions
+        default: return Self.connecting
+        }
+    }
+
     private func startConnect() {
+        connectState = .staging
+        permissions.request(HealthPermissionBundle.onboardingConnect)
+        if permissions.isIdle {
+            // Nothing to explain: either the platform is unavailable, or these bundles were all
+            // answered in a previous run of onboarding. Proceed straight to the connect, which
+            // itself no-ops honestly when HealthKit isn't there.
+            finishStagedConnect()
+        }
+    }
+
+    /// Runs after the last explainer is answered.
+    ///
+    /// `requestAuthorization: false` because the gate has already shown every sheet this flow
+    /// intends to show — see `AppEnvironment.connectHealthKit(requestAuthorization:)`.
+    ///
+    /// A user who dismissed every explainer with "Not now" has connected nothing, and saying
+    /// otherwise would put a "Connected" state in front of a person who declined. They land on
+    /// the same calm notice a denied prompt produces, which already points them at Sources for
+    /// later — so declining costs them the flow, not the app.
+    private func finishStagedConnect() {
+        guard connectState == .staging else { return }
+        guard !permissions.confirmed.isEmpty else {
+            setConnectState(.unavailable)
+            return
+        }
         connectState = .connecting
         Task {
-            let granted = await env.connectHealthKit()
-            guard granted else {
+            let connected = await env.connectHealthKit(requestAuthorization: false)
+            guard connected else {
                 setConnectState(.unavailable)
                 return
             }
@@ -689,6 +752,10 @@ struct OnboardingView: View {
 
     // FEAT-01: real HealthKit connect states.
     private static let connecting = LocalizedString(en: "Connecting…", ar: "جارٍ الاتصال…")
+    /// (EPIC-01 task 5) Shown while the staged explainers are on screen — the user is reading,
+    /// not waiting on us.
+    private static let reviewingPermissions = LocalizedString(
+        en: "Choosing what to share…", ar: "اختيار ما تريد مشاركته…")
     private static let connectUnavailableNotice = LocalizedString(
         en: "We couldn't connect right now. You can connect later from Sources.",
         ar: "تعذّر الاتصال الآن. يمكنك الاتصال لاحقاً من صفحة المصادر.")

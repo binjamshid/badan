@@ -30,12 +30,22 @@ final class AppEnvironment {
     let logging: LoggingRepository
     let exportJobs: ExportJobRepository
     let profiles: ProfileRepository
+    let backgroundRuns: BackgroundRunRepository
+    /// EPIC-03. Workout GPS traces. Wired here like every other repository so the workout detail
+    /// screen reads routes through the composition root rather than constructing its own
+    /// repository against `database.main` — the one place route rows are reachable from should be
+    /// visible in the dependency list, not buried in a view model.
+    let routes: RouteRepository
 
     // Services
     let ingestion: IngestionPipeline
     let baselines: BaselineEngine
     let insightEngine: InsightEngine
     let exporter: ExportRunner
+    /// EPIC-04. The background substrate: HealthKit observer wakes, `BGTaskScheduler` tasks, and
+    /// the `background_runs` log. Also owns the ingest lock every sync path now goes through —
+    /// see `BackgroundIngestBridge.ingestLock`.
+    let background: BackgroundCoordinator
 
     // Live presentation state
     var profile: CustomizationProfile
@@ -133,6 +143,9 @@ final class AppEnvironment {
         self.logging = LoggingRepository(main: main, sensitive: sensitive)
         self.exportJobs = ExportJobRepository(main)
         self.profiles = ProfileRepository(main)
+        self.routes = RouteRepository(main)
+        let backgroundRuns = BackgroundRunRepository(main)
+        self.backgroundRuns = backgroundRuns
 
         self.ingestion = IngestionPipeline(measurements: measurements, catalog: catalog,
                                            reconciliation: reconciliation, registry: registry,
@@ -149,10 +162,35 @@ final class AppEnvironment {
         self.profile = (try? profiles.load()) ?? CustomizationProfile()
         self.onboardingComplete = UserDefaults.standard.bool(forKey: Self.onboardingKey)
         self.isHealthKitConnected = UserDefaults.standard.bool(forKey: Self.healthKitConnectedKey)
-        self.seedController = SeedController(catalog: catalog, ingestion: ingestion, logging: logging,
-                                             measurements: measurements, baselines: baselines,
-                                             insightEngine: insightEngine, registry: registry,
-                                             clock: clock, deviceId: deviceId)
+        let seedController = SeedController(catalog: catalog, ingestion: ingestion, logging: logging,
+                                            measurements: measurements, baselines: baselines,
+                                            insightEngine: insightEngine, registry: registry,
+                                            clock: clock, deviceId: deviceId)
+        self.seedController = seedController
+
+        // EPIC-04 wiring. The bridge takes closures rather than reaching back into `self`: it is
+        // called from HealthKit's queues and from `BGTaskScheduler`'s, neither of which is the
+        // main actor this class is isolated to, so it must not hold a reference to it.
+        let connectedKey = Self.healthKitConnectedKey
+        let bridge = BackgroundIngestBridge(
+            seedController: seedController,
+            main: main,
+            // A fresh adapter per ingest, matching every other call site — each one owns its own
+            // `pendingAnchors` buffer (DATA-08), so sharing one across concurrent callers would
+            // be the exact hazard the ingest lock exists to prevent.
+            // EPIC-03: the background port needs the route-consent provider for the same reason
+            // the foreground one does — a background wake is an ingest, and an ingest that
+            // ignored the toggle would write location rows the user never agreed to. The
+            // provider reads `UserDefaults` at call time precisely so it is legal here, off the
+            // main actor (see `RouteConsentStore`).
+            makePort: { HealthKitAdapter(anchors: ReadAnchorRepository(main), routeConsent: RouteConsentStore()) },
+            // Read from `UserDefaults` rather than the `isHealthKitConnected` property: the
+            // property is main-actor-isolated `@Observable` state and this closure runs on
+            // background queues. Both read the same key, written together in `connectHealthKit()`.
+            connected: { UserDefaults.standard.bool(forKey: connectedKey) })
+        self.background = BackgroundCoordinator(runs: backgroundRuns, clock: clock, ingest: bridge,
+                                                protectedData: ProtectedDataMonitor())
+
         applyLaunchOverrides()
     }
 
@@ -276,6 +314,15 @@ final class AppEnvironment {
     func resetDemoData() async {
         isReady = false
         resetError = nil
+        // EPIC-03/EPIC-01: this method backs "Delete all data"
+        // (`PrivacySecuritySettingsScreen`). Wiping the databases while leaving a standing
+        // location consent and a full "we already explained ourselves to this person" record
+        // behind would contradict what that button promises — the next launch would resume
+        // reading routes into an otherwise-empty store, with no explainer ever shown again.
+        // Cleared before the purge rather than after so a failure mid-purge still leaves consent
+        // revoked, which is the safe direction.
+        RouteConsentStore.clear()
+        HealthPermissionGate.clearAll()
         let db = database
         let connected = isHealthKitConnected
         let adapter = connected ? makeHealthKitAdapter() : nil
@@ -336,15 +383,31 @@ final class AppEnvironment {
     /// result, per the "connect now or later, BADAN works either way" promise; the backfill
     /// itself keeps running in the background after this returns, so onboarding never blocks on
     /// ingest duration.
+    /// - Parameter requestAuthorization: pass `false` when the caller has ALREADY put the user
+    ///   through the system sheets itself — which is exactly what onboarding does now that it
+    ///   stages permission bundle by bundle (`HealthPermissionGate`, plan §13.1). Re-requesting
+    ///   there would defeat the staging: the adapter's request covers the whole read set, so
+    ///   after three explained subset prompts the user would meet a fourth, unexplained sheet
+    ///   asking for body measurements and workouts — the blanket prompt staging exists to avoid.
+    ///   Defaults to `true`, so `SourcesConnectCard` and every other existing caller is unchanged.
     @discardableResult
-    func connectHealthKit() async -> Bool {
+    func connectHealthKit(requestAuthorization: Bool = true) async -> Bool {
         guard HKHealthStore.isHealthDataAvailable() else { return false }
         let adapter = makeHealthKitAdapter()
-        let granted = await adapter.requestAuthorization()
-        guard granted else { return false }
+        if requestAuthorization {
+            let granted = await adapter.requestAuthorization()
+            guard granted else { return false }
+        }
 
         isHealthKitConnected = true
         UserDefaults.standard.set(true, forKey: Self.healthKitConnectedKey)
+        // EPIC-04: start observing now rather than waiting for the next launch. `activate()` is
+        // a no-op until HealthKit is connected, and this is the first instant it is — a user who
+        // connects and then backgrounds the app would otherwise get no background delivery at all
+        // until they next cold-launched. Safe to overlap the backfill below: an observer wake
+        // that lands mid-backfill finds the ingest lock held and records `throttled` rather than
+        // running a second pass.
+        background.activate()
 
         let db = database
         // BUG-18: chain onto any in-flight pipeline task instead of racing it.
@@ -424,8 +487,27 @@ final class AppEnvironment {
         try FirstFact.select(insights: insightsRepo, derivation: derivation, format: format)
     }
 
+    /// EPIC-03: every adapter BADAN builds carries the live route-consent provider, so the
+    /// decision made on `RouteConsentScreen` is what decides whether a GPS trace is ever read.
+    ///
+    /// `HealthKitAdapter`'s default is `DeniedRouteConsent` (fail-closed by design — see its
+    /// doc), which means an adapter constructed WITHOUT this argument silently ingests no routes
+    /// forever. That is the safe failure, not a harmless one: the user's toggle would appear to
+    /// do nothing. Both construction sites — this one and `BackgroundIngestBridge`'s `makePort`
+    /// in `init` — pass it, and they are the only two.
     private func makeHealthKitAdapter() -> HealthKitAdapter {
-        HealthKitAdapter(anchors: ReadAnchorRepository(database.main))
+        HealthKitAdapter(anchors: ReadAnchorRepository(database.main), routeConsent: RouteConsentStore())
+    }
+
+    /// Ask Apple for workout-route read access. Called ONLY from `RouteConsentScreen`, after its
+    /// explainer and after BADAN's own consent has already been recorded — see that screen for
+    /// why the two gates are written in that order.
+    ///
+    /// Returns "the sheet completed", never "routes are now readable"; HealthKit does not reveal
+    /// read grants. The route screen's copy is written against that limitation rather than
+    /// around it.
+    func requestRouteAuthorization() async -> Bool {
+        await makeHealthKitAdapter().requestRouteAuthorization()
     }
 
     // MARK: - Foreground incremental sync (BUG-02)
@@ -446,17 +528,18 @@ final class AppEnvironment {
 
         isSyncInFlight = true
         lastSyncAt = now
-        let adapter = makeHealthKitAdapter()
         let previous = pipelineTask
-        let task = Task.detached(priority: .utility) { [seedController, clock, adapter] () -> Error? in
+        // EPIC-04: the ingest→derive chain that used to be inline here now runs through
+        // `BackgroundCoordinator.runForegroundSync`, which is the same funnel observer wakes and
+        // BG tasks use. Two things change and nothing else does: this sync now takes the ingest
+        // lock (so it can no longer overlap a background wake — see
+        // `BackgroundIngestBridge.ingestLock`), and it writes a `foregroundSync` row to
+        // `background_runs` so Diagnostics can tell "background never fires on this device" apart
+        // from "nothing ever syncs at all". Same adapter, same 90-day window, same quiet-failure
+        // contract (BUG-02).
+        let task = Task.detached(priority: .utility) { [background, clock] () -> Error? in
             _ = await previous?.value
-            do {
-                _ = try seedController.ingestHealthData(from: adapter, historyDays: 90, asOf: clock.now())
-                try seedController.deriveAndGenerateInsights(asOf: clock.now())
-                return nil
-            } catch {
-                return error
-            }
+            return background.runForegroundSync(now: clock.now())
         }
         pipelineTask = task
         Task { [weak self] in

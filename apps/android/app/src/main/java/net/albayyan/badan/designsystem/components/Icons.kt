@@ -6,7 +6,9 @@ import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bloodtype
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BreakfastDining
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Cookie
 import androidx.compose.material.icons.filled.DinnerDining
 import androidx.compose.material.icons.filled.DirectionsRun
@@ -18,13 +20,16 @@ import androidx.compose.material.icons.filled.Healing
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material.icons.filled.LocalDrink
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.LunchDining
 import androidx.compose.material.icons.filled.Medication
 import androidx.compose.material.icons.filled.MonitorWeight
 import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.Nightlight
 import androidx.compose.material.icons.filled.Notes
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.SelfImprovement
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.WaterDrop
@@ -39,15 +44,24 @@ import androidx.compose.ui.graphics.vector.ImageVector
  * diagnosable rather than silently masquerading as valid content (UIUX-261).
  */
 fun iconForKey(key: String): ImageVector = when (key) {
-    // MetricFamily
+    // MetricFamily. `MetricFamilyParityTest.everyFamilyIconKeyIsMapped` asserts every family's
+    // `symbolName` lands on a real branch here — an unmapped key falls to the help glyph, which is
+    // diagnosable but is still a wrong icon shipped on a real screen.
+    // `directions_run` (WORKOUT) and `water_drop` (HYDRATION) are mapped under the sections below;
+    // the families reuse those keys deliberately rather than duplicating a branch.
     "bedtime" -> Icons.Filled.Bedtime
+    "bolt" -> Icons.Filled.Bolt
     "favorite" -> Icons.Filled.Favorite
     "directions_walk" -> Icons.Filled.DirectionsWalk
+    "local_fire_department" -> Icons.Filled.LocalFireDepartment
     "accessibility" -> Icons.Filled.Accessibility
     "air" -> Icons.Filled.Air
     "restaurant" -> Icons.Filled.Restaurant
     "mood" -> Icons.Filled.Mood
+    "psychology" -> Icons.Filled.Psychology
+    "calendar_month" -> Icons.Filled.CalendarMonth
     "healing" -> Icons.Filled.Healing
+    "science" -> Icons.Filled.Science
     "medication" -> Icons.Filled.Medication
     "grid_view" -> Icons.Filled.GridView
 

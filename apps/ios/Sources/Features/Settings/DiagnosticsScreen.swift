@@ -41,6 +41,36 @@ private enum DiagnosticsStrings {
     static let no = LocalizedString(en: "No", ar: "لا")
     static let remindersCapped = LocalizedString(en: "Reminders not scheduled", ar: "تذكيرات غير مجدولة")
 
+    // EPIC-04 background health. Every string here obeys plan §13.7: no wall-clock time is
+    // promised, "best-effort" is the language, and a locked device is described as normal rather
+    // than as a problem. The word "cron" does not appear, in either language.
+    static let background = LocalizedString(en: "Background activity", ar: "النشاط في الخلفية")
+    static let backgroundIntro = LocalizedString(
+        en: "iOS decides when BADAN may check for new data in the background, so these checks are "
+            + "best-effort rather than scheduled. BADAN is always fully up to date the moment you "
+            + "open it.",
+        ar: "يقرّر نظام iOS متى يُسمح لـ BADAN بالبحث عن بيانات جديدة في الخلفية، لذا فهذه "
+            + "الفحوصات بأفضل جهد ممكن وليست مجدولة في وقت محدّد. وتكون بياناتك محدّثة بالكامل "
+            + "لحظة فتحك للتطبيق.")
+    static let lastBackgroundCheck = LocalizedString(en: "Last background check", ar: "آخر فحص في الخلفية")
+    static let backgroundNever = LocalizedString(en: "None recorded yet", ar: "لم يُسجَّل أي فحص بعد")
+    static let backgroundChecks = LocalizedString(en: "Checks in the last 14 days", ar: "الفحوصات خلال ١٤ يومًا")
+    static let backgroundResponse = LocalizedString(en: "Response time", ar: "زمن الاستجابة")
+    /// Handler latency is meaningless to a user as "p50/p99" but very meaningful to whoever reads
+    /// a support paste, so the screen shows the typical/slowest pair in words and the copied text
+    /// keeps the percentile labels.
+    static let backgroundResponseFormat = LocalizedString(
+        en: "typically %@ ms, slowest %@ ms", ar: "عادةً %@ مللي ثانية، وأبطأ %@ مللي ثانية")
+
+    static let outcomeCompleted = LocalizedString(en: "Completed", ar: "اكتملت")
+    static let outcomeExpired = LocalizedString(en: "Ran out of time", ar: "نفد وقتها")
+    /// Never phrased as a failure — see `BackgroundRunOutcome.storeLocked`. A locked device is
+    /// iOS protecting the user's data exactly as it should, and telling them it is an error would
+    /// be both untrue and alarming.
+    static let outcomeStoreLocked = LocalizedString(en: "Device locked (normal)", ar: "الجهاز مقفل (أمر طبيعي)")
+    static let outcomeThrottled = LocalizedString(en: "Already up to date", ar: "محدّثة بالفعل")
+    static let outcomeError = LocalizedString(en: "Did not finish", ar: "لم تكتمل")
+
     static let copy = LocalizedString(en: "Copy diagnostics", ar: "نسخ التشخيص")
     static let copied = LocalizedString(en: "Copied", ar: "تم النسخ")
     static let shareHint = LocalizedString(
@@ -81,6 +111,12 @@ struct DiagnosticsReport: Equatable {
     var lastSyncAt: Date?
     var isSampleDataActive: Bool
     var remindersTruncatedCount: Int
+    /// EPIC-04. `nil` when the run log could not be read (it never should be, but a diagnostics
+    /// screen that fails to render because its own telemetry query threw would be an unusually
+    /// bad joke). Value-free by construction — see `BackgroundHealthSummary`.
+    ///
+    /// Defaulted so the memberwise initializer keeps working for callers that predate it.
+    var backgroundHealth: BackgroundHealthSummary? = nil
 
     /// The shareable text. Fixed labels in English regardless of app language: this is pasted
     /// into a support conversation, and it has to be legible to whoever reads it there.
@@ -99,6 +135,12 @@ struct DiagnosticsReport: Equatable {
         lines.append("last_sync_attempt: \(lastSyncAt.map { dateFormatter.string(from: $0) } ?? "none this session")")
         lines.append("sample_data_active: \(isSampleDataActive)")
         lines.append("reminders_dropped_by_os_cap: \(remindersTruncatedCount)")
+        // (EPIC-04) "background sync never happens on my phone" is otherwise unanswerable, and
+        // the handler-latency lines are the only evidence anywhere that HealthKit's three-strikes
+        // budget is being respected on a real device — the failure they guard against is silent
+        // by design (see `ObserverCompletionGate`).
+        lines += backgroundHealth?.plainTextLines(dateFormatter: dateFormatter)
+            ?? ["background_last_run: unavailable"]
         return lines.joined(separator: "\n")
     }
 }
@@ -130,6 +172,9 @@ struct DiagnosticsScreen: View {
                     appSection(report)
                     storageSection(report)
                     syncSection(report)
+                    if let backgroundHealth = report.backgroundHealth {
+                        backgroundSection(backgroundHealth)
+                    }
                     copyButton(report)
                 }
             }
@@ -215,6 +260,53 @@ struct DiagnosticsScreen: View {
         }
     }
 
+    /// EPIC-04 background health: last wake, outcome mix, handler latency.
+    ///
+    /// Nothing here is emphasised, because nothing here is an error. Even the outcomes that look
+    /// like problems are not: a locked device is Data Protection doing its job, and "already up
+    /// to date" is a wake that correctly declined to duplicate work. The one genuinely bad
+    /// outcome (`error`) is rendered in the same weight as the rest — a diagnostics screen that
+    /// alarms people about their phone's normal scheduling behaviour would cause more support
+    /// contacts than it resolves.
+    private func backgroundSection(_ health: BackgroundHealthSummary) -> some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(DiagnosticsStrings.background))
+            BadanCard {
+                VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                    row(DiagnosticsStrings.lastBackgroundCheck,
+                        health.lastRunAt.map { Self.timestampFormatter.string(from: $0) }
+                            ?? env.s(DiagnosticsStrings.backgroundNever))
+                    rowDivider
+                    row(DiagnosticsStrings.backgroundChecks, "\(health.totalRuns)")
+                    ForEach(health.outcomeCounts, id: \.outcome) { entry in
+                        rowDivider
+                        row(Self.label(for: entry.outcome), "\(entry.count)")
+                    }
+                    if let typical = health.handlerLatencyP50Ms, let slowest = health.handlerLatencyMaxMs {
+                        rowDivider
+                        row(DiagnosticsStrings.backgroundResponse,
+                            String(format: env.s(DiagnosticsStrings.backgroundResponseFormat),
+                                   "\(typical)", "\(slowest)"))
+                    }
+                }
+            }
+            LText(DiagnosticsStrings.backgroundIntro)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    static func label(for outcome: BackgroundRunOutcome) -> LocalizedString {
+        switch outcome {
+        case .completed: return DiagnosticsStrings.outcomeCompleted
+        case .expired: return DiagnosticsStrings.outcomeExpired
+        case .storeLocked: return DiagnosticsStrings.outcomeStoreLocked
+        case .throttled: return DiagnosticsStrings.outcomeThrottled
+        case .error: return DiagnosticsStrings.outcomeError
+        }
+    }
+
     private func copyButton(_ report: DiagnosticsReport) -> some View {
         VStack(alignment: .leading, spacing: BadanSpace.space2) {
             Button {
@@ -278,11 +370,19 @@ struct DiagnosticsScreen: View {
     @MainActor
     static func gather(_ env: AppEnvironment) async -> DiagnosticsReport {
         let database = env.database
+        let background = env.background
         let storage: (main: Int64, sensitive: Int64, schema: Int64) = await Task.detached {
             let sizes = (try? database.diskUsage()) ?? (main: 0, sensitive: 0)
+            // `try?` flattens the optional chain here, so the `?? 0` below already makes `schema`
+            // a non-optional Int64 — a second `?? 0` at the return site was dead and warned. A
+            // failed/absent PRAGMA read reports schema version 0, which the row renders as
+            // "unknown" rather than implying a real migration state.
             let schema = (try? database.main.query("PRAGMA user_version;").first?.int("user_version")) ?? 0
-            return (sizes.main, sizes.sensitive, schema ?? 0)
+            return (sizes.main, sizes.sensitive, schema)
         }.value
+        // Same off-main-actor treatment as the storage reads above: `healthSummary()` is three
+        // indexed queries plus a percentile pass, which is cheap but is still SQLite I/O.
+        let backgroundHealth = await Task.detached { try? background.healthSummary() }.value
 
         return DiagnosticsReport(
             appVersion: env.appVersion,
@@ -297,7 +397,8 @@ struct DiagnosticsScreen: View {
             isHealthKitConnected: env.isHealthKitConnected,
             lastSyncAt: env.lastSyncAt,
             isSampleDataActive: SeedController.isDemoDataActive,
-            remindersTruncatedCount: env.remindersTruncatedCount)
+            remindersTruncatedCount: env.remindersTruncatedCount,
+            backgroundHealth: backgroundHealth)
     }
 
     /// Bytes as a short human string. Locale-independent on purpose — this value is copied into

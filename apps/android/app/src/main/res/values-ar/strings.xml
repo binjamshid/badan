@@ -2,4 +2,25 @@
 <!-- بدن — the app's name as it appears under the launcher icon on an Arabic device. -->
 <resources>
     <string name="app_name">بدن</string>
+
+    <!--
+      Arabic Health Connect rationale copy. Mirrors values/strings.xml meaning-for-meaning rather
+      than word-for-word: the English is already plain, and a literal rendering reads as
+      translated. Term choices follow the Health Connect Arabic vocabulary the user has already
+      seen in the system permission screen (تغيّر معدل نبض القلب, أكسجين الدم, لياقة القلب
+      والرئتين), because this screen and that one are shown seconds apart.
+
+      Same wellness register as the English: describes what is read, never asserts a state as
+      fact, never promises a wall-clock time.
+    -->
+    <string name="hc_rationale_intro">يقرأ بدن بياناتك الصحية من Health Connect ويحتفظ بها على هذا الهاتف، ليكون لديك مكان واحد يجمع سجلّك الخاص. أنت تختار ما تشاركه، مجموعة تلو الأخرى، ويمكنك تغيير رأيك في أي وقت.</string>
+    <string name="hc_rationale_activity">الخطوات والمسافة والطوابق التي صعدتها والطاقة المحروقة — ليظهر يومك كما حدث فعلاً لا كتقدير تقريبي.</string>
+    <string name="hc_rationale_vitals">نبض القلب، والنبض أثناء الراحة، وتغيّر معدل نبض القلب، ومعدل التنفّس، وأكسجين الدم، وحرارة الجلد — ليعرض بدن نطاقاتك المعتادة وكيف يقارَن يومك بها.</string>
+    <string name="hc_rationale_sleep">جلسات نومك ومراحله — لتظهر لياليك إلى جانب الأيام المحيطة بها.</string>
+    <string name="hc_rationale_body">الوزن، ونسبة الدهون، وكتلة الجسم الصافية، ولياقة القلب والرئتين — لتكون القياسات طويلة المدى ضمن سجلّك نفسه بدل أن تبقى في تطبيق منفصل.</string>
+    <string name="hc_rationale_workouts">تمارينك المسجّلة — ليحتفظ كل تمرين بملخّصه الخاص، ويمكن مقارنته بنومك وتعافيك حوله.</string>
+    <!-- Routes: same standalone-toggle framing as the English. -->
+    <string name="hc_rationale_routes">المسار المحفوظ مع تمرين سبق أن أنهيته. لا يتتبّع بدن مكانك أبداً ولا يسجّل أي مسار جديد، ولا تُدرَج المسارات في أي تصدير إلا إذا فعّلتها بنفسك.</string>
+    <!-- "عادةً خلال ساعة" mirrors "usually within the hour" — a range, never a fixed time. -->
+    <string name="hc_rationale_background">يتيح لبدن التقاط القراءات الجديدة في الخلفية ليكون ما تراه محدّثاً عند فتح التطبيق. تعمل التحديثات في الخلفية عادةً خلال ساعة، وفتح بدن يحدّث البيانات فوراً دائماً.</string>
 </resources>

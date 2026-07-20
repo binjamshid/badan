@@ -14,6 +14,15 @@ object DedupLite {
     /** Stable id for the rule, journaled on every decision so power mode can name it. */
     const val ruleId = "sleep.session_overlap.v1"
 
+    /**
+     * The workout counterpart (plan §9.1/§20 EPIC-03). A separate rule id rather than a shared
+     * one because the journal is user-facing: "sleep overlap" and "workout overlap" resolve
+     * different everyday situations (a phone and a watch recording one night, versus a watch
+     * recording a run the user had already typed in), and a single id would make the provenance
+     * sheet unable to say which happened.
+     */
+    const val workoutRuleId = "workout.session_overlap.v1"
+
     /** A loser must overlap the winner by at least this fraction to be suppressed. */
     const val overlapThreshold = 0.70
 
@@ -84,6 +93,103 @@ object DedupLite {
             )
         }
         return DedupOutcome(winnerId = winner.id, suppressed = suppressed)
+    }
+
+    // MARK: - workout.session_overlap.v1
+
+    /**
+     * A workout considered for reconciliation, from either side of the unified read model: an
+     * ingested `sessions` row (kind=workout) or a manually-typed `workout_entries` row.
+     *
+     * A flat struct rather than the two real entity types on purpose — the rule must be able to
+     * compare a `Session` against a `WorkoutEntry`, which share no supertype and never should.
+     * Reducing both to (id, source, window, manual?) is also what keeps the rule pure and
+     * fixture-testable against iOS's identical inputs.
+     */
+    data class WorkoutCandidate(
+        val id: String,
+        val sourceId: String,
+        val startAt: Long,
+        val endAt: Long,
+        /** True for `workout_entries` rows (the quick-add path), false for ingested sessions. */
+        val isManual: Boolean,
+    )
+
+    /**
+     * Reconcile overlapping workouts.
+     *
+     * Unlike sleep — where a local night has one winner by definition — a day holds many
+     * unrelated workouts, so this returns one outcome *per overlap cluster* rather than a single
+     * global winner. Collapsing them to one winner would suppress a morning run because an
+     * evening lift outranked it.
+     *
+     * Clustering is greedy from the strongest candidate outward, repeated until every candidate is
+     * assigned: take the best unassigned workout as a winner, absorb everything still unassigned
+     * that overlaps it past [overlapThreshold], emit, repeat. Greedy rather than transitive
+     * (union-find over pairwise overlaps) because transitivity is wrong here — three workouts each
+     * overlapping the next by 70% can span twice the duration of the first, and chaining them into
+     * one cluster would suppress a genuinely separate session that merely touched its neighbour.
+     *
+     * Ingested beats manual on a tie. That is not a contradiction of I4 ("manual wins for
+     * weight/BP/labs"): I4's list is deliberately the metrics people *correct* by hand, where a
+     * typed number is a considered override of a device. A workout is the opposite case — the
+     * quick-add entry is a rough estimate the user typed before their watch synced, and the
+     * device's version has the real start, end and heart rate. Suppressing the estimate is what
+     * the user means by having both.
+     */
+    fun reconcileWorkouts(
+        candidates: List<WorkoutCandidate>,
+        priorityForSource: (String) -> Int,
+    ): List<DedupOutcome> {
+        // Total, deterministic ordering. `best` picks the maximum, so the ordering runs weakest to
+        // strongest: lower priority first, manual before ingested, shorter before longer, id last
+        // as the final tiebreak so two identical windows always resolve the same way across runs
+        // and across platforms (the parity fixtures depend on this).
+        val strength = compareBy<WorkoutCandidate> { priorityForSource(it.sourceId) }
+            .thenBy { if (it.isManual) 0 else 1 }
+            .thenBy { it.endAt - it.startAt }
+            .thenBy { it.id }
+
+        val remaining = candidates.sortedWith(strength).toMutableList()
+        val outcomes = mutableListOf<DedupOutcome>()
+
+        while (remaining.isNotEmpty()) {
+            val winner = remaining.maxWith(strength)
+            remaining.remove(winner)
+            val winnerPriority = priorityForSource(winner.sourceId)
+
+            val suppressed = mutableListOf<DedupOutcome.Suppression>()
+            val absorbed = mutableListOf<WorkoutCandidate>()
+            for (loser in remaining) {
+                val score = overlap(winner.startAt to winner.endAt, loser.startAt to loser.endAt)
+                if (score < overlapThreshold) continue
+                absorbed.add(loser)
+                suppressed.add(
+                    DedupOutcome.Suppression(
+                        loserId = loser.id, winnerId = winner.id, score = score,
+                        detail = mapOf(
+                            "rule" to workoutRuleId,
+                            "overlap_pct" to format(score * 100, 1),
+                            "threshold" to format(overlapThreshold, 2),
+                            "winner_source" to winner.sourceId,
+                            "loser_source" to loser.sourceId,
+                            "winner_priority" to winnerPriority.toString(),
+                            "loser_priority" to priorityForSource(loser.sourceId).toString(),
+                            // The one detail the sleep rule has no equivalent of, and the one a
+                            // user is most likely to ask about: "why did my typed-in run vanish?"
+                            "loser_manual" to loser.isManual.toString(),
+                        ),
+                    ),
+                )
+            }
+            remaining.removeAll(absorbed)
+
+            // A cluster of one is still reported, with an empty suppression list: callers use the
+            // winner id to know which workout survived, and dropping singletons would make a
+            // day with no duplicates indistinguishable from a day with no workouts.
+            outcomes.add(DedupOutcome(winnerId = winner.id, suppressed = suppressed))
+        }
+        return outcomes
     }
 
     /** Locale-independent fixed-point formatting, matching iOS `String(format:)` (period decimal). */

@@ -34,6 +34,19 @@ jobs:
               'apps/ios/Sources/Resources/csv_columns.json',
               'apps/android/app/src/main/assets/csv_columns.json',
             ],
+            # Added to both sync scripts by EPIC-07 but not to this map, which is the gap that
+            # lets a mirror rot: registry.json sat 28 metrics behind its source in both bundles
+            # precisely because nothing compared them on a push. A contract that is worth
+            # mirroring is worth checking here — if you add a cp line to a sync script, add the
+            # pair here in the same change.
+            'packages/contracts/algorithms/algorithms.json': [
+              'apps/ios/Sources/Resources/algorithms.json',
+              'apps/android/app/src/main/assets/algorithms.json',
+            ],
+            'packages/contracts/sensor_quality.json': [
+              'apps/ios/Sources/Resources/sensor_quality.json',
+              'apps/android/app/src/main/assets/sensor_quality.json',
+            ],
           }
           fail = False
           for src, mirrors in canonical.items():
@@ -47,6 +60,15 @@ jobs:
           print("metrics:", len(json.loads((root/'packages/metric-ontology/registry.json').read_text())['metrics']))
           sys.exit(1 if fail else 0)
           PY
+      # scripts/check_fixture_hashes.sh was added alongside the canonicalization fixture but was
+      # never invoked by anything, so its own docstring ("should be caught on a plain checkout
+      # too, in one second, naming the file") described a guard that did not run. Both test
+      # suites verify the hash before parsing, but only where a JVM or a simulator is available —
+      # which is the expensive half of CI and, on a contracts-only change, may not run at all.
+      # Delete this step and a mangled fixture (CRLF checkout, bad merge, well-meaning reformat)
+      # resurfaces as a cross-platform "the two disagree" failure pointing at Units instead.
+      - name: Shared fixtures match their recorded hashes
+        run: scripts/check_fixture_hashes.sh
       - name: App Store legal pages exist and are placeholder-free
         run: |
           set -euo pipefail
@@ -331,13 +353,61 @@ jobs:
       - name: Generate project
         working-directory: apps/ios
         run: xcodegen generate
+      # The destination is DISCOVERED, not named. It used to be pinned to
+      # `name=iPhone 16`, which does not exist on the Xcode 26.x runners this job selects
+      # (they ship iPhone 17 / iPad Pro 13-inch M5), so every run would have failed on
+      # "Unable to find a destination" — a red build that says nothing about the code, and the
+      # slowest possible way to learn that a model name rotted. Any hardcoded model rots the
+      # same way on the next Xcode bump, so this picks the newest available iPhone runtime
+      # instead: `simctl list -j` is the runner's own inventory, and `available == true`
+      # excludes simulators whose runtime is not installed. Keep this resolution step if you
+      # change the build command — reintroducing a literal model name reintroduces the defect.
+      - name: Resolve a simulator destination
+        id: sim
+        run: |
+          set -euo pipefail
+          xcrun simctl list -j devices available > /tmp/simctl-devices.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys
+
+          devices = json.load(open('/tmp/simctl-devices.json'))['devices']
+
+          def ios_version(runtime_key):
+            # Keys look like com.apple.CoreSimulator.SimRuntime.iOS-26-0. Compared as a tuple of
+            # ints so iOS-9 does not sort above iOS-26 the way a string compare would.
+            parts = runtime_key.rsplit('.', 1)[-1].split('-')[1:]
+            return tuple(int(p) for p in parts if p.isdigit())
+
+          newest = None
+          for runtime, entries in devices.items():
+            if '.iOS-' not in runtime:
+              continue
+            # `simctl list available` already filters unavailable runtimes; isAvailable is checked
+            # anyway so a partially-installed runtime cannot be selected and fail at launch.
+            iphones = [d for d in entries if d.get('isAvailable') and d['name'].startswith('iPhone')]
+            if not iphones:
+              continue
+            candidate = (ios_version(runtime), iphones[0])
+            if newest is None or candidate[0] > newest[0]:
+              newest = candidate
+
+          if newest is None:
+            sys.exit('::error::No available iPhone simulator on this runner')
+
+          version, device = newest
+          # stdout is the step's output file; the human-readable line goes to stderr so it lands in
+          # the log without being parsed as another output key.
+          print(f"Selected simulator: {device['name']} on iOS {'.'.join(str(p) for p in version)} "
+                f"({device['udid']})", file=sys.stderr)
+          print(f"udid={device['udid']}")
+          PY
       - name: Build & test
         working-directory: apps/ios
         run: |
           set -o pipefail
           xcodebuild -project BADAN.xcodeproj -scheme BADAN \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult \
             test | xcpretty
       - name: Upload test results on failure

@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0",
-  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§10 Health metric ontology)",
+  "version": "0.2.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§10 Health metric ontology) v0.2.0 (EPIC-07) adds the ingested workout.* family, wrist-temperature deviation, the Phase-2 derived score ids, and the v1.1 domain ids (hydration/cycle/lab) per plan §28.1 amendment 12, so no second registry pass is needed. Four ids from the EPIC-07 brief were NOT added because an existing row already means the same thing and duplicating it would split one fact across two ids: heart.hrv_sdnn (heart.hrv is the SDNN-fed row — its preciseLabel said rMSSD and was corrected in v0.2.0), respiratory.rr (respiratory.rate), activity.basal_energy (activity.resting_energy), body.vo2max (heart.vo2max). Every canonicalUnit and displayUnit here must exist in Units.table on both platforms — UnitTests.testRegistryCanonicalAndDisplayUnitsAreAllKnown enforces it. Families beyond MetricFamily's cases (workout/readiness/effort/stress/hydration/cycle/lab) intentionally fall back to .other in the UI until those cases are added; the registry is designed to add families without a code change.",
   "metrics": [
     {
       "metricId": "sleep.time_asleep",
@@ -223,7 +223,7 @@
       "nameEn": "Heart rate variability",
       "nameAr": "تغيّر معدل ضربات القلب",
       "casualLabel": "HRV",
-      "preciseLabel": "Heart rate variability (rMSSD)",
+      "preciseLabel": "Heart rate variability (SDNN)",
       "chartHint": "line",
       "baselineEligible": true,
       "sensitiveClass": "normal",
@@ -770,6 +770,487 @@
       "baselineEligible": true,
       "sensitiveClass": "sensitivePlus",
       "explainerEn": "How many symptoms you logged over a period."
+    },
+    {
+      "metricId": "body.wrist_temp_deviation",
+      "family": "body",
+      "kind": "intervalAggregate",
+      "canonicalUnit": "degC",
+      "displayUnits": [
+        "degC"
+      ],
+      "nameEn": "Wrist temperature deviation",
+      "nameAr": "انحراف حرارة المعصم",
+      "casualLabel": "Wrist temp",
+      "preciseLabel": "Sleeping wrist temperature deviation",
+      "chartHint": "line",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "How far your overnight wrist temperature sat from your own usual level, rather than an absolute reading."
+    },
+    {
+      "metricId": "workout.duration",
+      "family": "workout",
+      "kind": "session",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "Workout duration",
+      "nameAr": "مدة التمرين",
+      "casualLabel": "Duration",
+      "preciseLabel": "Workout duration",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "How long a recorded workout lasted, from its start to its end."
+    },
+    {
+      "metricId": "workout.energy",
+      "family": "workout",
+      "kind": "session",
+      "canonicalUnit": "kJ",
+      "displayUnits": [
+        "kcal",
+        "kJ"
+      ],
+      "nameEn": "Workout energy",
+      "nameAr": "طاقة التمرين",
+      "casualLabel": "Energy",
+      "preciseLabel": "Workout energy burned",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "The energy your body used during a recorded workout, as reported by the device that tracked it."
+    },
+    {
+      "metricId": "workout.distance",
+      "family": "workout",
+      "kind": "session",
+      "canonicalUnit": "m",
+      "displayUnits": [
+        "km",
+        "mi"
+      ],
+      "nameEn": "Workout distance",
+      "nameAr": "مسافة التمرين",
+      "casualLabel": "Distance",
+      "preciseLabel": "Workout distance",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "How far you covered during a recorded workout."
+    },
+    {
+      "metricId": "workout.avg_hr",
+      "family": "workout",
+      "kind": "session",
+      "canonicalUnit": "bpm",
+      "displayUnits": [
+        "bpm"
+      ],
+      "nameEn": "Average heart rate",
+      "nameAr": "متوسط النبض في التمرين",
+      "casualLabel": "Avg HR",
+      "preciseLabel": "Workout average heart rate",
+      "chartHint": "line",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "Your average heart rate across a recorded workout."
+    },
+    {
+      "metricId": "workout.max_hr",
+      "family": "workout",
+      "kind": "session",
+      "canonicalUnit": "bpm",
+      "displayUnits": [
+        "bpm"
+      ],
+      "nameEn": "Peak heart rate",
+      "nameAr": "أعلى نبض في التمرين",
+      "casualLabel": "Max HR",
+      "preciseLabel": "Workout maximum heart rate",
+      "chartHint": "line",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "The highest heart rate reached during a recorded workout."
+    },
+    {
+      "metricId": "sleep.need",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "Sleep need",
+      "nameAr": "حاجة النوم",
+      "casualLabel": "Sleep need",
+      "preciseLabel": "Estimated sleep need",
+      "chartHint": "range",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "An estimate of how much sleep your body was looking for, shown as a range rather than an exact target."
+    },
+    {
+      "metricId": "sleep.performance",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "percent",
+      "displayUnits": [
+        "percent"
+      ],
+      "nameEn": "Sleep performance",
+      "nameAr": "نسبة تحقيق حاجة النوم",
+      "casualLabel": "Sleep performance",
+      "preciseLabel": "Sleep need fulfilment",
+      "chartHint": "range",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much of your estimated sleep need last night's sleep covered."
+    },
+    {
+      "metricId": "sleep.debt",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "s",
+      "displayUnits": [
+        "h",
+        "min"
+      ],
+      "nameEn": "Sleep debt",
+      "nameAr": "دين النوم",
+      "casualLabel": "Sleep debt",
+      "preciseLabel": "Accumulated sleep debt",
+      "chartHint": "line",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "Sleep you have been short of recently, carried forward and easing off as you catch up."
+    },
+    {
+      "metricId": "sleep.consistency",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "score_0_100",
+      "displayUnits": [
+        "points"
+      ],
+      "nameEn": "Sleep consistency",
+      "nameAr": "انتظام النوم",
+      "casualLabel": "Consistency",
+      "preciseLabel": "Sleep timing consistency",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How closely your bedtimes and wake times have matched each other over the last two weeks."
+    },
+    {
+      "metricId": "sleep.disturbances",
+      "family": "sleep",
+      "kind": "derived",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Sleep disturbances",
+      "nameAr": "مرات الاستيقاظ أثناء النوم",
+      "casualLabel": "Wake-ups",
+      "preciseLabel": "Wake episodes during sleep",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How many times you surfaced from sleep long enough to be counted as awake."
+    },
+    {
+      "metricId": "readiness.score",
+      "family": "readiness",
+      "kind": "derived",
+      "canonicalUnit": "score_0_100",
+      "displayUnits": [
+        "points"
+      ],
+      "nameEn": "Readiness",
+      "nameAr": "مؤشر الجاهزية",
+      "casualLabel": "Readiness",
+      "preciseLabel": "Daily readiness composite",
+      "chartHint": "range",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "A single summary of how your overnight signals compare with your own usual pattern."
+    },
+    {
+      "metricId": "effort.day",
+      "family": "effort",
+      "kind": "derived",
+      "canonicalUnit": "score_0_100",
+      "displayUnits": [
+        "points"
+      ],
+      "nameEn": "Day effort",
+      "nameAr": "مجهود اليوم",
+      "casualLabel": "Effort",
+      "preciseLabel": "Daily cardiovascular effort",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much cardiovascular work your day added up to, based on the time your heart spent in each zone."
+    },
+    {
+      "metricId": "effort.workout",
+      "family": "effort",
+      "kind": "derived",
+      "canonicalUnit": "score_0_100",
+      "displayUnits": [
+        "points"
+      ],
+      "nameEn": "Workout effort",
+      "nameAr": "مجهود التمرين",
+      "casualLabel": "Effort",
+      "preciseLabel": "Per-workout cardiovascular effort",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much cardiovascular work a single workout added up to."
+    },
+    {
+      "metricId": "stress.day_trend",
+      "family": "stress",
+      "kind": "derived",
+      "canonicalUnit": "score_0_100",
+      "displayUnits": [
+        "points"
+      ],
+      "nameEn": "Daily stress trend",
+      "nameAr": "اتجاه التوتر اليومي",
+      "casualLabel": "Stress trend",
+      "preciseLabel": "Daily physiological stress trend",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "The direction your body's day-to-day load signals have been moving, read against your own usual pattern."
+    },
+    {
+      "metricId": "workout.strength.e1rm",
+      "family": "workout",
+      "kind": "derived",
+      "canonicalUnit": "kg",
+      "displayUnits": [
+        "kg",
+        "lb"
+      ],
+      "nameEn": "Estimated one-rep max",
+      "nameAr": "أقصى وزن مقدر لتكرار واحد",
+      "casualLabel": "Est. 1RM",
+      "preciseLabel": "Estimated one-repetition maximum",
+      "chartHint": "line",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "An estimate of the most you could lift once for a given exercise, worked out from the sets you logged."
+    },
+    {
+      "metricId": "workout.strength.volume",
+      "family": "workout",
+      "kind": "derived",
+      "canonicalUnit": "kg",
+      "displayUnits": [
+        "kg",
+        "lb"
+      ],
+      "nameEn": "Training volume",
+      "nameAr": "حجم التدريب",
+      "casualLabel": "Volume",
+      "preciseLabel": "Strength training volume load",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "The total load you moved in a strength session, counting weight against repetitions."
+    },
+    {
+      "metricId": "workout.strength.pr",
+      "family": "workout",
+      "kind": "event",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Personal record",
+      "nameAr": "أفضل رقم شخصي",
+      "casualLabel": "PR",
+      "preciseLabel": "Strength personal record",
+      "chartHint": "scatter",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "A moment where a logged set beat your previous best for that exercise."
+    },
+    {
+      "metricId": "hydration.volume",
+      "family": "hydration",
+      "kind": "derived",
+      "canonicalUnit": "L",
+      "displayUnits": [
+        "mL",
+        "L",
+        "fl_oz"
+      ],
+      "nameEn": "Fluid intake",
+      "nameAr": "كمية السوائل",
+      "casualLabel": "Hydration",
+      "preciseLabel": "Total fluid intake",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "normal",
+      "explainerEn": "Your total fluids for the day, drawn together from every drink you logged and every source that reported one."
+    },
+    {
+      "metricId": "hydration.goal_pct",
+      "family": "hydration",
+      "kind": "derived",
+      "canonicalUnit": "percent",
+      "displayUnits": [
+        "percent"
+      ],
+      "nameEn": "Hydration goal progress",
+      "nameAr": "نسبة تحقيق هدف السوائل",
+      "casualLabel": "Goal progress",
+      "preciseLabel": "Share of daily fluid goal met",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "How much of the daily fluid goal you set for yourself the day's drinks have covered."
+    },
+    {
+      "metricId": "cycle.day",
+      "family": "cycle",
+      "kind": "derived",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Cycle day",
+      "nameAr": "يوم الدورة",
+      "casualLabel": "Cycle day",
+      "preciseLabel": "Day within current cycle",
+      "chartHint": "line",
+      "baselineEligible": false,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "Which day you are on counting from the start of the most recent period you recorded."
+    },
+    {
+      "metricId": "cycle.length",
+      "family": "cycle",
+      "kind": "derived",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Cycle length",
+      "nameAr": "طول الدورة",
+      "casualLabel": "Cycle length",
+      "preciseLabel": "Cycle length in days",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "How many days ran between the starts of two periods you recorded."
+    },
+    {
+      "metricId": "cycle.period_length",
+      "family": "cycle",
+      "kind": "derived",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Period length",
+      "nameAr": "مدة الطمث",
+      "casualLabel": "Period length",
+      "preciseLabel": "Menstrual period length in days",
+      "chartHint": "bar",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "How many days a recorded period lasted."
+    },
+    {
+      "metricId": "cycle.flow",
+      "family": "cycle",
+      "kind": "event",
+      "canonicalUnit": "scale_1_5",
+      "displayUnits": [
+        "level"
+      ],
+      "nameEn": "Flow",
+      "nameAr": "غزارة الطمث",
+      "casualLabel": "Flow",
+      "preciseLabel": "Recorded menstrual flow level",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "The flow level you recorded for a given day."
+    },
+    {
+      "metricId": "cycle.phase",
+      "family": "cycle",
+      "kind": "derived",
+      "canonicalUnit": "",
+      "displayUnits": [],
+      "nameEn": "Cycle phase",
+      "nameAr": "مرحلة الدورة",
+      "casualLabel": "Phase",
+      "preciseLabel": "Cycle phase from recorded dates",
+      "chartHint": "stacked",
+      "baselineEligible": false,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "Which part of your cycle a day falls in, worked out from the period dates you recorded."
+    },
+    {
+      "metricId": "lab.result",
+      "family": "lab",
+      "kind": "rawSample",
+      "canonicalUnit": "",
+      "displayUnits": [],
+      "nameEn": "Lab result",
+      "nameAr": "نتيجة تحليل مخبري",
+      "casualLabel": "Lab result",
+      "preciseLabel": "Laboratory analyte result",
+      "chartHint": "scatter",
+      "baselineEligible": false,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "A single measured value from a lab report, kept with the units and reference range printed on the report."
+    },
+    {
+      "metricId": "lab.result_count",
+      "family": "lab",
+      "kind": "derived",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Lab results recorded",
+      "nameAr": "عدد نتائج التحاليل",
+      "casualLabel": "Results",
+      "preciseLabel": "Lab results recorded in period",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "How many lab values you have on file for the period you are looking at."
+    },
+    {
+      "metricId": "lab.out_of_range_count",
+      "family": "lab",
+      "kind": "derived",
+      "canonicalUnit": "count",
+      "displayUnits": [
+        "count"
+      ],
+      "nameEn": "Results outside reference range",
+      "nameAr": "نتائج خارج النطاق المرجعي",
+      "casualLabel": "Outside range",
+      "preciseLabel": "Results flagged outside the lab's reference range",
+      "chartHint": "bar",
+      "baselineEligible": false,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "How many results your lab marked as sitting outside the reference range it printed on the report."
     }
   ]
 }

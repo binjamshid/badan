@@ -9,6 +9,12 @@ final class FakeHealthStore: HealthStorePort {
     private let clock: Clock
     private let historyDays: Int
     private let tz: String
+    /// (EPIC-03) Route consent, consulted exactly the way `HealthKitAdapter` consults it, so the
+    /// simulator path exercises the same gate the device path does rather than a stubbed-open
+    /// one. Fail-closed by default: sample data includes no location history unless a caller
+    /// deliberately asks for it, which keeps "explore with sample data" free of fabricated
+    /// places even in a debug build.
+    private let routeConsent: RouteConsentProviding
 
     // Source identity (device wins dedup ties by priority — I4).
     private static let watchSource = "src_watch"
@@ -23,6 +29,7 @@ final class FakeHealthStore: HealthStorePort {
     private let allSessions: [SessionDTO]
     private let allIntervals: [IntervalDTO]
     private let allSamples: [SampleDTO]
+    private let allWorkouts: [WorkoutDTO]
 
     // Generation is a pure function of (historyDays, tz, today's local day) — a fresh
     // FakeHealthStore built with unchanged inputs (e.g. every "Reset demo data" tap within the
@@ -31,14 +38,21 @@ final class FakeHealthStore: HealthStorePort {
         let sessions: [SessionDTO]
         let intervals: [IntervalDTO]
         let samples: [SampleDTO]
+        /// Always route-free. Routes are attached at read time in `readWorkouts` because consent
+        /// is revocable and is therefore not part of this cache's key — baking a trace in here
+        /// would let a store built while consent was on keep handing out routes after it was
+        /// turned off.
+        let workouts: [WorkoutDTO]
     }
     private static let cacheLock = NSLock()
     private static var cache: [String: GeneratedData] = [:]
 
-    init(clock: Clock, historyDays: Int = 90, tz: String = TimeZone.current.identifier) {
+    init(clock: Clock, historyDays: Int = 90, tz: String = TimeZone.current.identifier,
+         routeConsent: RouteConsentProviding = DeniedRouteConsent()) {
         self.clock = clock
         self.historyDays = max(1, historyDays)
         self.tz = tz
+        self.routeConsent = routeConsent
 
         let now = clock.now()
         let todayStart = DayAttribution.startOfDay(now, tz: tz)
@@ -52,12 +66,14 @@ final class FakeHealthStore: HealthStorePort {
             self.allSessions = cached.sessions
             self.allIntervals = cached.intervals
             self.allSamples = cached.samples
+            self.allWorkouts = cached.workouts
             return
         }
 
         var sessions: [SessionDTO] = []
         var intervals: [IntervalDTO] = []
         var samples: [SampleDTO] = []
+        var workouts: [WorkoutDTO] = []
 
         // Pure, order-independent helpers (local funcs so they don't touch `self` mid-init).
         // FNV-1a (64-bit) of "metricKey:salt" mapped into [0, 1) — the sole source of variation.
@@ -195,6 +211,28 @@ final class FakeHealthStore: HealthStorePort {
                     sourceId: Self.watchSource, deviceId: Self.watchDevice,
                     externalId: "watch-heart.hr-\(dayKey)-\(i)"))
             }
+
+            // --- Workouts (EPIC-03): an outdoor run every third day, late afternoon ---
+            // Every third day rather than daily so the unified workout list has a realistic mix
+            // of days with and without a session, and so day-attribution of a workout is
+            // visibly distinct from the nightly sleep cadence.
+            if dayIndex % 3 == 1 {
+                let start = dayStart.addingTimeInterval(17 * 3600 + unit(dayKey, "wostart") * 3600)
+                let minutes = 28 + unit(dayKey, "wolen") * 34                     // 28-62 min
+                let end = start.addingTimeInterval(minutes * 60)
+                let distanceM = round(minutes * (150 + unit(dayKey, "wopace") * 40))
+                workouts.append(WorkoutDTO(
+                    activityType: "running", start: start, end: end, tz: tz,
+                    sourceId: Self.watchSource, deviceId: Self.watchDevice,
+                    externalId: "watch-workout-\(dayKey)",
+                    sourceWorkoutUUID: "sample-workout-\(dayKey)",
+                    totals: WorkoutTotals(
+                        energyKcal: round(minutes * (8 + unit(dayKey, "wokcal") * 4)),
+                        distanceMeters: distanceM,
+                        avgHeartRateBpm: round(clamp(142 + (unit(dayKey, "wohr") - 0.5) * 20, 120, 170)),
+                        maxHeartRateBpm: round(clamp(168 + (unit(dayKey, "womax") - 0.5) * 16, 150, 190)),
+                        elevationGainMeters: round(unit(dayKey, "woelev") * 80))))
+            }
         }
 
         // Every row this type produces is invented, so every row says so (`.sampleData`).
@@ -205,12 +243,15 @@ final class FakeHealthStore: HealthStorePort {
         for i in sessions.indices { sessions[i].qualityFlags.append(.sampleData) }
         for i in intervals.indices { intervals[i].qualityFlags.append(.sampleData) }
         for i in samples.indices { samples[i].qualityFlags.append(.sampleData) }
+        for i in workouts.indices { workouts[i].qualityFlags.append(.sampleData) }
 
         self.allSessions = sessions
         self.allIntervals = intervals
         self.allSamples = samples
+        self.allWorkouts = workouts
 
-        let generated = GeneratedData(sessions: sessions, intervals: intervals, samples: samples)
+        let generated = GeneratedData(sessions: sessions, intervals: intervals, samples: samples,
+                                      workouts: workouts)
         Self.cacheLock.lock()
         Self.cache[cacheKey] = generated
         Self.cacheLock.unlock()
@@ -256,6 +297,57 @@ final class FakeHealthStore: HealthStorePort {
     func readSessions(_ range: HealthDateRange) -> [SessionDTO] {
         // Attributed to the morning they end (the "last night" key).
         allSessions.filter { $0.end >= range.start && $0.end <= range.end }
+    }
+
+    /// Sample workouts, with a synthetic route attached only when route consent is granted —
+    /// consulted here, at read time, exactly as `HealthKitAdapter.readWorkouts` does, so the
+    /// consent gate is exercised by the same code path the simulator runs rather than being a
+    /// device-only behaviour nobody tests.
+    func readWorkouts(_ range: HealthDateRange) -> [WorkoutDTO] {
+        let consent = routeConsent.routeConsent()
+        return allWorkouts
+            .filter { $0.start >= range.start && $0.start <= range.end }
+            .map { workout in
+                guard consent.granted else { return workout }
+                var withRoute = workout
+                withRoute.route = RouteDTO(externalId: "sample-route-\(workout.sourceWorkoutUUID)",
+                                           points: Self.sampleRoute(for: workout), consent: consent)
+                return withRoute
+            }
+    }
+
+    /// A deterministic loop of GPS fixes for one sample workout, one per 10 seconds of its
+    /// duration.
+    ///
+    /// The coordinates trace a small circle around a fixed origin rather than a real place, and
+    /// like every other row this type produces they carry `.sampleData` on the parent workout —
+    /// invented data must not be able to masquerade as somewhere the user actually went.
+    private static func sampleRoute(for workout: WorkoutDTO) -> [RoutePointDTO] {
+        let seconds = workout.end.timeIntervalSince(workout.start)
+        let count = max(2, Int(seconds / 10))
+        let originLat = 24.7136, originLon = 46.6753   // Riyadh, as a neutral fixed origin
+        let radius = 0.01
+        return (0..<count).map { i in
+            let theta = 2.0 * .pi * Double(i) / Double(count)
+            return RoutePointDTO(
+                latitude: originLat + radius * sin(theta),
+                longitude: originLon + radius * cos(theta),
+                altitudeMeters: 600 + 20 * sin(theta * 3),
+                horizontalAccuracyMeters: 5,
+                timestamp: workout.start.addingTimeInterval(Double(i) * 10))
+        }
+    }
+
+    /// Sample data covers the full generated history for every type it produces, so each window
+    /// honestly reports the same start — no type here has the sleep-only or accessory-dependent
+    /// gaps a real store has (see `HKTypeMap.BackfillCaveat`), and pretending otherwise would
+    /// make the simulator a worse rehearsal of the real thing, not a better one.
+    func backfillWindows(_ range: HealthDateRange) -> [HealthBackfillWindow] {
+        let earliest = allIntervals.map(\.start).min()
+        return MetricID.seededTimeSeries.map {
+            HealthBackfillWindow(platformType: "sample:\($0)", metricId: $0,
+                                 requestedStart: range.start, earliestAvailable: earliest)
+        }
     }
 
     // `deletions(_:)` and `commitPendingAnchors()` are intentionally not overridden: this store

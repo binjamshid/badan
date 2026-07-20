@@ -53,7 +53,6 @@ object Units {
         // rate (base: count/min; bpm alias)
         "count/min" to Spec("count/min", 1.0, 0.0),
         "bpm" to Spec("count/min", 1.0, 0.0),
-        "brpm" to Spec("count/min", 1.0, 0.0),
         // ratio (base: fraction 0..1). (DATA-02) registry canonicals spell this "percent" while
         // adapters emit "%" — both must resolve to the same base or every percent-canonical
         // metric throws.
@@ -77,9 +76,28 @@ object Units {
         // BMI (base: kg/m^2) — identity; body.bmi has one unit.
         "kg/m^2" to Spec("kg/m^2", 1.0, 0.0),
         // cardiorespiratory fitness (base: mL/kg/min) — identity; VO2 max has one unit.
+        // (EPIC-01) `ml/kg/min` is the same unit with a lowercase L, which is how HealthKit and
+        // most vendor payloads spell it. Aliased for the same reason `%` and `percent` both
+        // exist: an unlisted spelling does not throw anywhere visible, it falls through
+        // `toCanonical`'s `?: value` and stores an unconverted number tagged ESTIMATE — a silent
+        // quality downgrade over a capital letter. Delete this row and VO2 max from any
+        // lowercase-spelling source is stamped ESTIMATE while reading correctly on screen.
         "mL/kg/min" to Spec("mL/kg/min", 1.0, 0.0),
-        // breathing rate (base: breaths/min) — identity; respiratory.rate has one unit.
+        "ml/kg/min" to Spec("mL/kg/min", 1.0, 0.0),
+        // breathing rate (base: breaths/min) — deliberately its OWN dimension, not an alias of
+        // `count/min`. Sharing a base with `bpm` would let a heart rate convert cleanly into a
+        // breathing rate with no ESTIMATE flag to show for it — a mislabelled source would land
+        // 60 "breaths per minute" on a chart as a valid-looking reading.
+        //
+        // (EPIC-01) `brpm` moved here from the `count/min` dimension, where it had sat since the
+        // table was written. It is an alias spelling of breaths-per-minute, so filing it under
+        // heart rate's base made `convert(v, "brpm", "breaths/min")` throw Incompatible and every
+        // brpm-labelled reading was stored unconverted and stamped ESTIMATE. Move it back and
+        // that bug returns — latent until something in-tree emits that spelling, then silent.
+        // iOS's `Units.swift` carries the identical pairing; the two tables are asserted against
+        // one shared golden (`packages/fixtures/canonicalization/canonical-rows-v1.json`).
         "breaths/min" to Spec("breaths/min", 1.0, 0.0),
+        "brpm" to Spec("breaths/min", 1.0, 0.0),
         // 0-100 composite scores (base: score_0_100) — sleep.score; "points" is its display
         // spelling, same numeric value.
         "score_0_100" to Spec("score_0_100", 1.0, 0.0),

@@ -7,7 +7,18 @@
 	     "collected data" in the App Store Privacy Nutrition Label sense — reading/writing
 	     data into the app's own on-device SQLite databases and UserDefaults is on-device
 	     processing, not "collection," which Apple's privacy manifest spec defines as
-	     transmission off the device (or to a third party on-device). -->
+	     transmission off the device (or to a third party on-device).
+
+	     A2 (ADR-0009) reviewed and deliberately changed nothing here. Background delivery and
+	     BGTaskScheduler let BADAN do the SAME on-device work at a different time; they move no
+	     data off the device, add no third party, and introduce no required-reason API
+	     (BGTaskScheduler and HKObserverQuery are not on Apple's required-reason list). The
+	     widened HealthKit read set likewise adds no collected-data type, because none of it is
+	     transmitted. Padding this file with declarations that "look responsible" would make it
+	     less accurate, not more — its value is that every entry below is load-bearing.
+
+	     The standing rule: a new entry belongs here only when the app genuinely calls a
+	     required-reason API or genuinely transmits something. Re-check on each release. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>

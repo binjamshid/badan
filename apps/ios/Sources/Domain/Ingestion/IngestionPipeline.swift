@@ -15,16 +15,30 @@ final class IngestionPipeline {
     private let registry: MetricRegistry
     private let clock: Clock
     private let deviceId: String
+    /// Route storage (EPIC-03). Optional, and its absence is a hard gate rather than a
+    /// degradation: with no repository, consented routes read from the platform are dropped
+    /// instead of stored. Defaulted to `nil` so this stays additive for callers that predate
+    /// routes; wiring it is a deliberate act alongside wiring the consent provider into the
+    /// adapter, which is the pairing that has to be reviewed together.
+    private let routes: RouteRepository?
+    /// Manual logs (EPIC-03). Needed only by `workout.session_overlap.v1`, which reconciles
+    /// ingested workouts against manually-logged twins in `workout_entries`. Without it the
+    /// rule simply does not run — manual duplicates stay visible, which is the safe direction
+    /// (nothing is suppressed that shouldn't be).
+    private let logging: LoggingRepository?
 
     init(measurements: MeasurementRepository, catalog: CatalogRepository,
          reconciliation: ReconciliationRepository, registry: MetricRegistry,
-         clock: Clock, deviceId: String) {
+         clock: Clock, deviceId: String,
+         routes: RouteRepository? = nil, logging: LoggingRepository? = nil) {
         self.measurements = measurements
         self.catalog = catalog
         self.reconciliation = reconciliation
         self.registry = registry
         self.clock = clock
         self.deviceId = deviceId
+        self.routes = routes
+        self.logging = logging
     }
 
     /// New rows created this run, per family (derived rollups are excluded — they are a
@@ -33,6 +47,16 @@ final class IngestionPipeline {
         var samples: Int = 0
         var intervals: Int = 0
         var sessions: Int = 0
+        /// Workout sessions specifically. Counted separately from `sessions` (which stays sleep)
+        /// so "a re-ingest created nothing" can be asserted per family — a workout regression
+        /// hiding inside a nonzero sleep count is exactly the kind of thing the idempotence
+        /// tests exist to catch.
+        var workouts: Int = 0
+        /// Routes WRITTEN this run — inserted or replaced, unlike the counters above, which count
+        /// only new rows. A route is replaced wholesale on every re-delivery (see
+        /// `RouteRepository`), so "new" is not a property it has. Always 0 without route consent,
+        /// by construction.
+        var routes: Int = 0
         var suppressed: Int = 0
     }
 
@@ -48,6 +72,10 @@ final class IngestionPipeline {
         let samples = port.readSamples(range)
         let intervals = port.readIntervals(range)
         let sessionDTOs = port.readSessions(range)
+        // Workouts and their (consent-gated) routes. Read in phase 1 with everything else so the
+        // route streaming — which is several HealthKit round trips per workout — happens before
+        // any write lock is taken, not while one is held.
+        let workoutDTOs = port.readWorkouts(range)
         // Must run after the read* calls above for this same `range` — see
         // `HealthStorePort.deletions(_:)`'s doc.
         let deletions = port.deletions(range)
@@ -71,7 +99,7 @@ final class IngestionPipeline {
         // progress is never mistaken for complete progress.
         let summary = try applyIngestBatched(descriptors: descriptors, samples: samples,
                                              intervals: intervals, sessionDTOs: sessionDTOs,
-                                             deletions: deletions)
+                                             workoutDTOs: workoutDTOs, deletions: deletions)
 
         // (DATA-08) Phase 3: only persist the port's read cursor/anchor AFTER the write
         // transaction above has actually committed. Persisting eagerly (the old behavior) only
@@ -98,6 +126,7 @@ final class IngestionPipeline {
     /// transaction, and for why interrupting it between batches is safe.
     private func applyIngestBatched(descriptors: [SourceDescriptor], samples: [SampleDTO],
                                     intervals: [IntervalDTO], sessionDTOs: [SessionDTO],
+                                    workoutDTOs: [WorkoutDTO],
                                     deletions: HealthStoreDeletions) throws -> IngestSummary {
         let now = clock.now()
         var summary = IngestSummary()
@@ -114,6 +143,14 @@ final class IngestionPipeline {
             }
             for del in deletions.intervals {
                 try measurements.softDelete(table: "interval_records", metricId: del.metricId,
+                                            externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
+            }
+            // (EPIC-03) Workout sessions deleted upstream. `sessions` has no `metric_id` column,
+            // so `metricId` is passed nil — which is correct rather than lossy: a workout
+            // deletion's `externalId` embeds the platform's own workout UUID and is unique on its
+            // own (see `HealthStoreDeletions`). Sleep never populates this list.
+            for del in deletions.sessions {
+                try measurements.softDelete(table: "sessions", metricId: nil,
                                             externalId: del.externalId, sourceId: del.sourceId, updatedAt: now)
             }
             return priorities
@@ -144,17 +181,133 @@ final class IngestionPipeline {
             }
         }
 
+        let batchId = ULID.newID()
+
+        // (d2) Workout episodes -> sessions (+ routes). Batched on the same rule; a workout's
+        // route rows are written inside the same transaction as the session they belong to, so a
+        // route can never outlive a failed session write and dangle against a missing
+        // `session_id`.
+        for batch in workoutDTOs.badanChunked(Self.writeBatchSize) {
+            try measurements.transaction {
+                let written = try writeWorkouts(batch, now: now)
+                summary.workouts += written.sessions
+                summary.routes += written.routes
+            }
+        }
+
         // (e)+(f) Dedup each affected night, then rebuild its daily sleep rollups. One
         // transaction per night: already naturally bounded (one night's sessions), and keeping
         // each night atomic means a night is never left half-reconciled.
-        let batchId = ULID.newID()
         for night in affectedNights.sorted() {
             summary.suppressed += try measurements.transaction {
                 try dedup(night: night, priorityBySource: priorityBySource, batchId: batchId, now: now)
             }
         }
 
+        // (g) `workout.session_overlap.v1`. Runs after every workout has landed, so a manual
+        // entry is compared against the complete ingested set for its window rather than against
+        // whichever batch happened to contain its twin.
+        if !workoutDTOs.isEmpty {
+            summary.suppressed += try measurements.transaction {
+                try dedupWorkouts(workoutDTOs, batchId: batchId, now: now)
+            }
+        }
+
         return summary
+    }
+
+    /// (d2) Ingested workouts -> `sessions` rows with a versioned `WorkoutDetail` payload
+    /// (plan §9.1), plus their consent-gated routes.
+    ///
+    /// Workouts are attributed to the local day they START in, deliberately unlike sleep, which
+    /// `DayAttribution.localNight` attributes to the morning it ENDS. A 23:30 run belongs to that
+    /// evening — calling it tomorrow's workout because it crossed midnight would misfile it
+    /// against the day the person actually trained. Sleep's rule exists because a night that
+    /// begins on Tuesday is universally called "Tuesday night"; no equivalent convention makes a
+    /// late run belong to Wednesday.
+    private func writeWorkouts(_ workoutDTOs: ArraySlice<WorkoutDTO>,
+                               now: Date) throws -> (sessions: Int, routes: Int) {
+        var writtenSessions = 0
+        var writtenRoutes = 0
+        for dto in workoutDTOs {
+            let detail = WorkoutDetail(
+                activityType: dto.activityType, totals: dto.totals,
+                sourceWorkoutUUID: dto.sourceWorkoutUUID,
+                // `hrSeriesRef` names the canonical series the workout's window is read against
+                // (plan §9.1) — the samples themselves are already in `raw_samples` from the
+                // heart-rate read path, and copying them per workout would duplicate the store's
+                // largest table for no new information.
+                hrSeriesRef: MetricID.heartRate)
+            let session = Session(
+                id: ULID.newID(), kind: .workout, subtype: dto.activityType, startAt: dto.start,
+                endAt: dto.end, tzId: dto.tz,
+                localNight: DayAttribution.localDayKey(dto.start, tz: dto.tz),
+                detail: SessionDetail(workout: detail),
+                provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
+                                               externalId: dto.externalId, measuredAt: dto.start,
+                                               tz: dto.tz, now: now, qualityFlags: dto.qualityFlags),
+                updatedAt: now, originDeviceId: deviceId)
+            let isNew = try measurements.upsertSession(session)
+            if isNew { writtenSessions += 1 }
+
+            // The session id that actually won: `upsertSession` returns false when an existing
+            // row was updated, and in that case the route must attach to the STORED row's id,
+            // not to the freshly-generated one we tried to insert. Re-reading by identity is the
+            // only way to learn it, and it only happens for workouts that carry a route.
+            guard let routeDTO = dto.route, let routes else { continue }
+            let ownerId = isNew ? session.id
+                : try measurements.session(externalId: dto.externalId, sourceId: dto.sourceId)?.id
+            guard let ownerId else { continue }
+            if try writeRoute(routeDTO, sessionId: ownerId, workout: dto, now: now, repository: routes) {
+                writtenRoutes += 1
+            }
+        }
+        return (writtenSessions, writtenRoutes)
+    }
+
+    /// Store one consented route and point its session's `WorkoutDetail.routeRef` at it.
+    ///
+    /// The `routeRef` write is a second `upsertSession` rather than something folded into the
+    /// first, because the route's id is only known after `RouteRepository.upsert` resolves which
+    /// row won. Cheap (one workout, one update) and it keeps the invariant that a `routeRef` in
+    /// the database always names a route row that exists — the alternative, guessing the id
+    /// before writing it, produces a dangling reference whenever the route write fails.
+    ///
+    /// (I1) The route carries the full embedded provenance of the workout that produced it, not
+    /// a reduced version: it came from the same source, the same device, the same ingestion path
+    /// and the same instant. Its points inherit that through `route_id` (see migration v4).
+    private func writeRoute(_ routeDTO: RouteDTO, sessionId: String, workout: WorkoutDTO,
+                            now: Date, repository: RouteRepository) throws -> Bool {
+        // Belt-and-braces: the adapter does not read routes without consent, so an
+        // un-granted snapshot should be unreachable. It is checked anyway because this is the
+        // last point before location data becomes rows on disk, and the cost of the check is
+        // nothing next to the cost of being wrong about the layer above.
+        guard routeDTO.consent.granted, !routeDTO.points.isEmpty else { return false }
+
+        let provenance = platformProvenance(sourceId: workout.sourceId, deviceId: workout.deviceId,
+                                            externalId: routeDTO.externalId, measuredAt: workout.start,
+                                            tz: workout.tz, now: now, qualityFlags: workout.qualityFlags)
+        let routeId = ULID.newID()
+        let points = routeDTO.points.enumerated().map { index, p in
+            RoutePoint(routeId: routeId, seq: index, latitude: p.latitude, longitude: p.longitude,
+                       altitudeMeters: p.altitudeMeters,
+                       horizontalAccuracyMeters: p.horizontalAccuracyMeters, timestamp: p.timestamp)
+        }
+        let route = WorkoutRoute(
+            id: routeId, sessionId: sessionId, pointCount: points.count,
+            startAt: points.first?.timestamp ?? workout.start,
+            endAt: points.last?.timestamp ?? workout.end,
+            consentSnapshot: routeDTO.consent, provenance: provenance,
+            updatedAt: now, originDeviceId: deviceId)
+        let storedId = try repository.upsert(route, points: points)
+
+        if var session = try measurements.session(id: sessionId),
+           session.detail.workout?.routeRef != storedId {
+            session.detail.workout?.routeRef = storedId
+            session.updatedAt = now
+            try measurements.upsertSession(session)
+        }
+        return true
     }
 
     /// (c) Instant readings -> raw_samples (canonicalized, provenance stamped).
@@ -181,17 +334,26 @@ final class IngestionPipeline {
         var written = 0
         for dto in intervals {
             guard let def = registry.definition(dto.metricId) else { continue }
-            if dto.metricId == MetricID.steps, dto.value == 0 {
-                // (BUG-10b) A zero-sum step day means every contributing sample HealthKit knows
-                // about for that day summed to zero — either genuinely no steps, or (the case
-                // this exists for) every sample was deleted since the last sync. Only write it
-                // when a row already exists at this identity: that's the correction case. A
-                // fresh zero row for a day HealthKit has simply never reported anything for
-                // (e.g. before the user owned a phone/watch) would manufacture up to 90 noise
-                // rows on every first-connect backfill, which is exactly the failure mode this
-                // guard exists to avoid — see `HealthKitAdapter.readDailySteps`'s doc for why
-                // the adapter emits the zero-day DTO unconditionally and leaves this decision
-                // to the pipeline, which is the layer with DB access to make it.
+            if dto.isRecomputedDailyTotal, dto.value == 0 {
+                // (BUG-10b) A zero-sum day on a recomputed total means every contributing sample
+                // the platform store knows about for that day summed to zero — either genuinely
+                // no activity, or (the case this exists for) every sample was deleted since the
+                // last sync. Only write it when a row already exists at this identity: that's
+                // the correction case. A fresh zero row for a day the store has simply never
+                // reported anything for (e.g. before the user owned a phone/watch) would
+                // manufacture up to 90 noise rows on every first-connect backfill, which is
+                // exactly the failure mode this guard exists to avoid — see
+                // `HealthKitAdapter.readDailySum`'s doc for why the adapter emits the zero-day
+                // DTO unconditionally and leaves this decision to the pipeline, which is the
+                // layer with DB access to make it.
+                //
+                // (EPIC-01) Keyed off `isRecomputedDailyTotal` rather than
+                // `metricId == MetricID.steps`, which is what it said while steps was the only
+                // type read this way. Active energy, basal energy, distance and flights are read
+                // by the identical statistics-collection strategy and need the identical
+                // treatment; an id list would have had to grow in lockstep with `HKTypeMap`, and
+                // forgetting to grow it fails in the silent direction (up to 90 fabricated
+                // zero rows per family per first connect).
                 guard try measurements.intervalRecordExists(metricId: dto.metricId, externalId: dto.externalId) else { continue }
             }
             let (value, flags) = canonicalValue(dto.value, from: dto.unit, canonical: def.canonicalUnit)
@@ -296,6 +458,60 @@ final class IngestionPipeline {
             try upsertDailySleepInterval(metricId: "sleep.time_in_bed",
                                          seconds: primary.detail.timeInBedSeconds,
                                          winner: primary, night: night, now: now)
+            try upsertStageIntervals(winner: primary, night: night, now: now)
+        }
+        return newSuppressions
+    }
+
+    /// `workout.session_overlap.v1` (EPIC-03, plan §9.1): an ingested workout suppresses a
+    /// manually-logged twin. Returns how many *new* suppressions were journaled.
+    ///
+    /// Suppression here is journal-only, and that is a schema fact rather than a shortcut:
+    /// `workout_entries` (migration v1) carries no `suppressed_by` column, so there is no flag to
+    /// set — and adding one would mean a new migration, which this change does not need. I3 is
+    /// satisfied without it: the manual row is never touched, the decision is written to
+    /// `dedup_decisions` with `reversible = true`, and read models resolve suppression through
+    /// `ReconciliationRepository.forSuppressed(entryId)` — whose backing index
+    /// `idx_dedup_suppressed` exists precisely for this lookup direction. Reversal is
+    /// `markReversed`, after which the entry reappears with nothing to restore, because nothing
+    /// was ever removed.
+    ///
+    /// **Any surface listing manual workouts must consult `forSuppressed`** — a unified workout
+    /// list that reads `LoggingRepository.workouts` alone will show both the ingested workout and
+    /// its manual twin, which is the duplicate this rule exists to remove.
+    ///
+    /// Idempotent by the same shape the sleep rule uses, adapted to the journal: a decision that
+    /// already names this winner is skipped rather than re-inserted, so a re-ingest journals
+    /// nothing and `summary.suppressed` stays 0.
+    private func dedupWorkouts(_ workoutDTOs: [WorkoutDTO], batchId: String, now: Date) throws -> Int {
+        guard let logging else { return 0 }
+        guard let earliest = workoutDTOs.map(\.start).min(),
+              let latest = workoutDTOs.map(\.end).max() else { return 0 }
+
+        // Scoped to the span this run's workouts actually cover rather than to the whole ingest
+        // range. On a first-connect backfill the two are nearly the same, but on the ordinary
+        // case — an incremental sync delivering one new workout — this reads a day of manual
+        // entries instead of ninety. Padded by one day on each side so a manual entry typed with
+        // a rough start/end still overlaps its twin.
+        let padding: TimeInterval = 86_400
+        let manual = try logging.workouts(from: earliest.addingTimeInterval(-padding),
+                                          to: latest.addingTimeInterval(padding))
+        guard !manual.isEmpty else { return 0 }
+        let ingested = try measurements.sessions(kind: .workout,
+                                                 from: earliest.addingTimeInterval(-padding),
+                                                 to: latest.addingTimeInterval(padding))
+
+        var newSuppressions = 0
+        for suppression in DedupLite.reconcileWorkouts(ingested: ingested, manual: manual) {
+            let existing = try reconciliation.forSuppressed(suppression.manualEntryId)
+            if existing?.keptRecordId == suppression.ingestedSessionId { continue }
+            try reconciliation.insert(ReconciliationDecision(
+                id: ULID.newID(), batchId: batchId, rule: DedupLite.workoutRuleId,
+                ruleVersion: DedupLite.workoutRuleVersion,
+                keptRecordId: suppression.ingestedSessionId,
+                suppressedRecordId: suppression.manualEntryId,
+                score: suppression.score, decidedAt: now, detail: suppression.detail))
+            newSuppressions += 1
         }
         return newSuppressions
     }
@@ -357,6 +573,130 @@ final class IngestionPipeline {
             } else if !shouldBeSuppressed, r.provenance.suppressedBy != nil {
                 try measurements.setSuppressed(table: "interval_records", recordId: r.id, by: nil, updatedAt: now)
             }
+        }
+    }
+
+    // MARK: - Per-stage nightly rollups
+
+    /// The four stage ids `registry.json` v0.2.0 carries, in a fixed order so a night's rows are
+    /// written deterministically rather than in whatever order a dictionary iterates.
+    private static let stageRollupMetrics = [MetricID.sleepAwake, MetricID.sleepDeep,
+                                             MetricID.sleepLight, MetricID.sleepRem]
+
+    /// (COV-01) Emit `sleep.deep` / `sleep.rem` / `sleep.light` / `sleep.awake` as daily interval
+    /// rows for the night's dedup winner.
+    ///
+    /// The stage data itself has been ingested since the beginning — `writeSessions` stores every
+    /// segment in `session_stages` and `SessionDetail.stageSummarySeconds` — but it existed ONLY
+    /// as session detail, so four registry ids with real data behind them had no writer and read
+    /// as empty everywhere a metric is read as a metric (Metric Detail, baselines, insights,
+    /// CSV/JSON export). The audit counted them as not flowing, correctly.
+    ///
+    /// Goes through `upsertDailySleepInterval` rather than building rows here, deliberately: that
+    /// method is where DATA-01's day-anchoring and DATA-05's winner-flip suppression live, and
+    /// both bugs apply to a stage row exactly as they apply to `sleep.time_asleep`. Re-deriving
+    /// either one at a second call site is how they come back.
+    private func upsertStageIntervals(winner: Session, night: String, now: Date) throws {
+        let seconds = try stageSeconds(for: winner)
+        for metricId in Self.stageRollupMetrics {
+            if let value = seconds[metricId] {
+                try upsertDailySleepInterval(metricId: metricId, seconds: value,
+                                             winner: winner, night: night, now: now)
+            } else {
+                try suppressStageRollupWithoutABasis(metricId: metricId, winner: winner,
+                                                     night: night, now: now)
+            }
+        }
+    }
+
+    /// (COV-01) Per-stage seconds for `winner`, or an EMPTY map when this source does not stage
+    /// sleep at all.
+    ///
+    /// Read from `session_stages` rather than from the winner's `detail.stageSummarySeconds`,
+    /// even though the latter is already sitting in memory. `sleep.awake` is defined by the
+    /// registry as awake time *after sleep onset* ("Awake time after sleep onset", explainer:
+    /// "The total time you were awake after first falling asleep") — a flat stage→seconds summary
+    /// has thrown away the ordering needed to tell the settling-down stretch before sleep from a
+    /// mid-night waking, so summing its `awake` bucket would overstate the metric by the whole
+    /// sleep-onset latency. That is wrong under the metric's own label, not merely imprecise, and
+    /// it is the kind of error nobody catches from a chart.
+    ///
+    /// The empty-map guard is the honesty gate. It requires at least one of deep/REM/light before
+    /// emitting anything, because that is what distinguishes a source that stages sleep from one
+    /// that does not: HealthKit's unstaged vocabulary is `inBed`/`awake`/`asleepUnspecified` (see
+    /// `HealthKitAdapter.mapSleepStage`), so a device that can only say "asleep" produces none of
+    /// the three. Without the gate every such night would get four rows reading 0 s of deep, REM
+    /// and light sleep — fabricated zeros carrying full provenance, which reads as "you got no
+    /// deep sleep" rather than "this device doesn't measure that". Once the gate passes, a stage
+    /// that is genuinely absent from a staged night IS zero, and writing 0 is a fact.
+    ///
+    /// `asleepUnspecified` time on an otherwise-staged night is deliberately attributed to no
+    /// stage. It is time the source declined to classify, and folding it into `sleep.light`
+    /// because light sleep is the most common stage would be a guess presented as a measurement.
+    private func stageSeconds(for winner: Session) throws -> [String: Double] {
+        let segments = try measurements.stages(sessionId: winner.id).sorted { $0.startAt < $1.startAt }
+        guard segments.contains(where: { Self.stagedSleepMarkers.contains($0.stage) }),
+              // Sleep onset: the first segment the source calls sleep of any kind. `inBed` is
+              // excluded alongside `awake` for the same reason `HealthKitAdapter.makeSession`
+              // excludes it from `timeAsleepSeconds` — it is a container for the night, not a
+              // claim about being asleep.
+              let onset = segments.first(where: { $0.stage != .awake && $0.stage != .inBed })?.startAt
+        else { return [:] }
+
+        var totals: [String: Double] = [MetricID.sleepAwake: 0, MetricID.sleepDeep: 0,
+                                        MetricID.sleepLight: 0, MetricID.sleepRem: 0]
+        for segment in segments {
+            let duration = segment.endAt.timeIntervalSince(segment.startAt)
+            switch segment.stage {
+            case .deep: totals[MetricID.sleepDeep]? += duration
+            case .rem: totals[MetricID.sleepRem]? += duration
+            case .light: totals[MetricID.sleepLight]? += duration
+            case .awake:
+                // Clipped at onset so a segment straddling the moment sleep began contributes
+                // only its post-onset part, and a wholly pre-onset one contributes nothing.
+                totals[MetricID.sleepAwake]? += max(0, segment.endAt.timeIntervalSince(max(segment.startAt, onset)))
+            case .inBed, .asleepUnspecified:
+                continue
+            }
+        }
+        return totals
+    }
+
+    /// The stages whose presence proves a source actually stages sleep — see `stageSeconds`.
+    private static let stagedSleepMarkers: Set<SleepStage> = [.deep, .rem, .light]
+
+    /// (COV-01) The winner-flip case DATA-05 does not reach: a night whose rollups were written
+    /// from a staging source, whose dedup winner has since flipped to a source that stages
+    /// nothing.
+    ///
+    /// `upsertDailySleepInterval`'s DATA-05 compensation only runs when a row is written, and it
+    /// resolves "who won" by finding the row carrying the winner's `sourceId`. Neither holds
+    /// here — nothing is written and no row for the new winner exists — so without this the old
+    /// staging source's `sleep.deep` row would stay live under a night now attributed to a device
+    /// that never measured a stage in its life. That is a real number attached to the wrong
+    /// provenance, which is worse than the gap.
+    ///
+    /// Suppressed rather than deleted (I3), and the suppressor is the winning SESSION's id rather
+    /// than another `interval_records` id, because in this case no interval row won — the session
+    /// did. `Provenance.suppressedBy` is documented as "the winning record's id" and is not
+    /// constrained to the same table; `dedupWorkouts` already journals a session id as the
+    /// `keptRecordId` for a suppressed `workout_entries` row, so a cross-table lineage pointer is
+    /// existing vocabulary here, not a new idea. Reversible by construction: if a staging source
+    /// wins the night back, `upsertStageIntervals` takes the write branch and
+    /// `upsertDailySleepInterval`'s compensation un-suppresses the winner's own row.
+    private func suppressStageRollupWithoutABasis(metricId: String, winner: Session,
+                                                  night: String, now: Date) throws {
+        guard let dayStart = DayAttribution.date(fromDayKey: night, tz: winner.tzId) else { return }
+        let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: winner.tzId)
+        let externalId = "derived.\(metricId).\(night)"
+        let rowsForNight = try measurements.intervalRecords(metricId: metricId, from: dayStart,
+                                                            to: dayEnd, includeSuppressed: true)
+            .filter { $0.provenance.externalId == externalId }
+        // Idempotent in the same shape as `dedup`'s session loop: a row already suppressed by
+        // this winner is left alone, so a re-ingest of a non-staging night writes nothing.
+        for row in rowsForNight where row.provenance.suppressedBy != winner.id {
+            try measurements.setSuppressed(table: "interval_records", recordId: row.id,
+                                           by: winner.id, updatedAt: now)
         }
     }
 
