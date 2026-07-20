@@ -2,7 +2,7 @@
 
 > Status: living document, updated 2026-07-10. Scope: the iOS flagship app plus the shared,
 > cross-platform contracts. See `docs/EXECUTION_PLAN.md` for sequencing and `docs/adr/` for
-> the decision records this doc references (D-1…D-11, ADR-0001…0006).
+> the decision records this doc references (D-1…D-11, ADR-0001…0007).
 
 BADAN is a privacy-respecting, local-first personal health repository. One canonical data
 model is rendered at two altitudes (casual / power). This document describes how the code is
@@ -107,8 +107,9 @@ never moralizes state: out-of-band is one calm amber with an arrow + text, never
 ## 8. Android parity (ADR-0006)
 
 Android is the next milestone, not a rewrite. It consumes the same `packages/` data, implements
-the same logical schema in Room, mirrors these screens in Compose, and passes the same
-conformance fixtures. The Kotlin scaffold under `apps/android/` is the starting point.
+the same logical schema on framework SQLite behind a thin `SqliteConnection` wrapper — the exact
+parity of the iOS wrapper, not Room (ADR-0007) — mirrors these screens in Compose, and passes the
+same conformance fixtures. The Kotlin scaffold under `apps/android/` is the starting point.
 
 ## 9. Build & run
 

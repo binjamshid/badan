@@ -62,7 +62,7 @@ cd apps/android
 # Run on an emulator (see scripts/run_android.sh for a one-shot build+boot+install+launch):
 $ANDROID_HOME/emulator/emulator -avd Medium_Phone &
 ./gradlew :app:installDebug
-adb shell am start -n net.albayyan.badan/.MainActivity
+adb shell am start -n net.binjamshid.badan/.MainActivity
 ```
 
 Or open `apps/android` in Android Studio and Run.
@@ -88,7 +88,8 @@ scripts/run_android.sh Low_End_API26
 
 Kotlin 2.0.21 · Jetpack Compose (BOM 2024.10.01) · Material 3 · AGP 8.9.1 / Gradle 8.11.1 ·
 framework SQLite (ADR-0007, no Room/KSP) · kotlinx.serialization · Health Connect 1.1.0 ·
-compileSdk 36 / minSdk 26 · `applicationId net.albayyan.badan`. Package layout mirrors iOS:
+compileSdk 36 / minSdk 26 · `applicationId net.binjamshid.badan` (Kotlin package/namespace stays
+`net.albayyan.badan`, see `apps/android/app/build.gradle.kts`). Package layout mirrors iOS:
 `core/ domain/ ontology/ storage/ platform/health/ export/ designsystem/ features/ app/`.
 
 See `docs/android-parity-status.md` for exactly what is done, partial, and deferred, and

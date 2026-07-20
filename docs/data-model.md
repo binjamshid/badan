@@ -1,10 +1,11 @@
 # BADAN Data Model (iOS logical schema)
 
 The one logical schema, implemented in raw SQLite (ADR-0005). Two physical files. Android
-implements the same table/column names in Room. Timestamps are INTEGER epoch-millis (UTC);
-booleans are 0/1; JSON payloads are TEXT; ids are TEXT ULIDs. Every row table carries the
-sync-ready convention columns `updated_at, origin_device_id, deleted_at` (D-7); measurement
-tables additionally carry the 12 embedded provenance columns (D-3).
+implements the same table/column names on framework SQLite (ADR-0007), not Room. Timestamps
+are INTEGER epoch-millis (UTC); booleans are 0/1; JSON payloads are TEXT; ids are TEXT ULIDs.
+Every row table carries the sync-ready convention columns `updated_at, origin_device_id,
+deleted_at` (D-7); measurement tables additionally carry the 12 embedded provenance columns
+(D-3).
 
 ## `badan.db` (main)
 
