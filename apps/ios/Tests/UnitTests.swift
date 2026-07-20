@@ -79,7 +79,18 @@ final class UnitTests: XCTestCase {
             allUnits.insert(def.canonicalUnit)
             allUnits.formUnion(def.displayUnits)
         }
-        XCTAssertTrue(Units.unknownUnits(in: allUnits).isEmpty)
+        // Registry v0.2.0 (EPIC-07) introduced the first genuinely unitless metrics — `cycle.phase`
+        // is categorical (follicular/luteal) and `lab.result` carries its unit per-analyte on the
+        // row, not on the definition — so `canonicalUnit` is "" for both. That is the honest
+        // declaration, not a missing table entry: inventing a symbol for either would make
+        // `toCanonical` claim a conversion it cannot do. Excluded at the assertion site rather
+        // than inside `Units.unknownUnits`, which stays strict for its production callers — the
+        // same split `DerivationFixTests.testRegistryCanonicalAndDisplayUnitsAreAllKnown` already
+        // makes. If you add a unit-bearing metric and it lands here, add the unit to `Units.table`;
+        // do not widen this exclusion.
+        allUnits.remove("")
+        let unknown = Units.unknownUnits(in: allUnits)
+        XCTAssertTrue(unknown.isEmpty, "registry units missing from Units.table: \(unknown.sorted())")
     }
 
     // MARK: - Dedup overlap

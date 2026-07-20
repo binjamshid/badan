@@ -128,6 +128,32 @@ final class IncrementalSyncFixTests: XCTestCase {
                        "a failed ingest must not let the port commit anchors past uncommitted data")
     }
 
+    /// (EPIC-01/EPIC-03) The same guarantee, now with every widened family in flight at once.
+    ///
+    /// The original test proved the API shape with an empty store. Once eleven more types share
+    /// `runAnchoredQuery` and `pendingAnchors`, the failure mode to rule out is different and
+    /// worse: one type persisting its anchor eagerly (a plausible "optimization" for a type whose
+    /// read looks self-contained) would advance that single cursor past data whose write never
+    /// committed, silently dropping it forever while every other type replayed correctly. This
+    /// exercises a store carrying samples, intervals, a session and a workout together, so a
+    /// per-type shortcut has somewhere to show up.
+    func testAnchorsNotPersistedForAnyWidenedTypeWhenWriteTransactionThrows() throws {
+        let pipeline = makeIngestion()
+        let store = WidenedFamiliesStore(now: clock.now())
+
+        // Sanity: the fixture really does carry every family, so a green result cannot come from
+        // the store having handed over nothing.
+        XCTAssertFalse(store.readSamples(range).isEmpty)
+        XCTAssertFalse(store.readIntervals(range).isEmpty)
+        XCTAssertFalse(store.readWorkouts(range).isEmpty)
+
+        try db.main.execute("DROP TABLE sources;")
+
+        XCTAssertThrowsError(try pipeline.ingest(from: store, range: range))
+        XCTAssertEqual(store.commitCount, 0,
+                       "no type may persist its anchor when the write transaction for its data failed")
+    }
+
     // MARK: - tzAssumed threading (completes wave-1 DATA-07)
 
     func testTzAssumedQualityFlagPropagatesIntoStoredProvenance() throws {
@@ -220,6 +246,58 @@ final class IncrementalSyncFixTests: XCTestCase {
         func readSamples(_ range: HealthDateRange) -> [SampleDTO] { [] }
         func readIntervals(_ range: HealthDateRange) -> [IntervalDTO] { [] }
         func readSessions(_ range: HealthDateRange) -> [SessionDTO] { [] }
+        func commitPendingAnchors() { commitCount += 1 }
+    }
+
+    /// Every family EPIC-01/EPIC-03 added, delivered in one pass, counting
+    /// `commitPendingAnchors()` calls. Values mirror what `HKTypeMap` says each type is read in
+    /// (note SpO2 and body fat arrive as `fraction`, the `HKUnit.percent()` shape).
+    private final class WidenedFamiliesStore: HealthStorePort {
+        private(set) var commitCount = 0
+        let now: Date
+
+        init(now: Date) { self.now = now }
+
+        func availability() -> HealthAvailability { .available }
+        func sourceDescriptors() -> [SourceDescriptor] {
+            [SourceDescriptor(id: "src_widened", displayName: "Widened", type: .healthkit, priority: 100)]
+        }
+        func readSamples(_ range: HealthDateRange) -> [SampleDTO] {
+            [(MetricID.heartRate, 68.0, "bpm"), (MetricID.spo2, 0.97, "fraction"),
+             (MetricID.weight, 79.4, "kg"), (MetricID.bodyFatPercentage, 0.183, "fraction"),
+             (MetricID.leanMass, 58.2, "kg")].enumerated().map { i, spec in
+                SampleDTO(metricId: spec.0, value: spec.1, unit: spec.2,
+                          start: now.addingTimeInterval(Double(-i) * 60), tz: "UTC",
+                          sourceId: "src_widened", externalId: "widened-sample-\(i)")
+            }
+        }
+        func readIntervals(_ range: HealthDateRange) -> [IntervalDTO] {
+            [(MetricID.restingHeartRate, 56.0, "bpm", Aggregation.mean),
+             (MetricID.hrv, 42.5, "ms", .mean),
+             (MetricID.respiratoryRate, 14.2, "breaths/min", .mean),
+             (MetricID.vo2Max, 48.6, "mL/kg/min", .latest),
+             (MetricID.activeEnergy, 500, "kcal", .sum),
+             (MetricID.restingEnergy, 1_600, "kcal", .sum),
+             (MetricID.distance, 6_500, "m", .sum),
+             (MetricID.floors, 12, "count", .sum)].enumerated().map { i, spec in
+                IntervalDTO(metricId: spec.0, value: spec.1, unit: spec.2,
+                            start: now.addingTimeInterval(Double(-i) * 3600),
+                            end: now.addingTimeInterval(Double(-i) * 3600 + 3600), tz: "UTC",
+                            aggregation: spec.3, sourceId: "src_widened",
+                            externalId: "widened-interval-\(i)")
+            }
+        }
+        func readSessions(_ range: HealthDateRange) -> [SessionDTO] {
+            [SessionDTO(kind: .sleepPrimary, start: now.addingTimeInterval(-8 * 3600), end: now,
+                        tz: "UTC", sourceId: "src_widened", externalId: "widened-sleep",
+                        timeAsleepSeconds: 7 * 3600, timeInBedSeconds: 8 * 3600)]
+        }
+        func readWorkouts(_ range: HealthDateRange) -> [WorkoutDTO] {
+            [WorkoutDTO(activityType: "running", start: now.addingTimeInterval(-3600), end: now,
+                        tz: "UTC", sourceId: "src_widened", externalId: "widened-workout",
+                        sourceWorkoutUUID: "uuid-widened-workout",
+                        totals: WorkoutTotals(energyKcal: 420, distanceMeters: 8_000))]
+        }
         func commitPendingAnchors() { commitCount += 1 }
     }
 

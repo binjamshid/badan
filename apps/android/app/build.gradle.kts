@@ -83,6 +83,13 @@ dependencies {
 
     implementation(libs.health.connect.client)
     implementation(libs.kotlinx.serialization.json)
+    // EPIC-05 background sync. Android's answer to iOS A2: WorkManager periodic work is the only
+    // scheduler that survives process death and reboot, which is what makes the Android UI able
+    // to say "usually within the hour" where iOS can only promise "best-effort" (plan §14).
+    // Pulled in at the platform-config layer so the worker implementation lands against a
+    // dependency that is already resolving, rather than bundling a dependency bump into a
+    // feature PR.
+    implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation(libs.junit)
 }

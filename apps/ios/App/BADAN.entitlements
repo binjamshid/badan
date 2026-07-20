@@ -4,5 +4,36 @@
 <dict>
 	<key>com.apple.developer.healthkit</key>
 	<true/>
+	<!-- A2 (ADR-0009). Lets HealthKit wake BADAN via HKObserverQuery when the types it reads
+	     change, so the on-device repository is reasonably fresh without the user opening the app.
+	     This is an entitlement, not a UIBackgroundModes key: HealthKit background delivery is
+	     gated *here* and needs no background mode at all (plan §13.6).
+
+	     BUG-BG-01 — read the next paragraph before acting on the one above. This comment used to
+	     end with "there is deliberately no `UIBackgroundModes` entry", stated as a property of
+	     the app rather than of HealthKit. That was true of HealthKit background delivery and
+	     false of BGTaskScheduler, which the same change set added, and the two are gated by
+	     different mechanisms:
+	       • HealthKit background delivery — entitlement-gated (this file). No background mode.
+	       • BGTaskScheduler              — background-mode-gated. `submit(_:)` throws
+	         `BGTaskSchedulerError.unavailable` without UIBackgroundModes `fetch` (for
+	         BGAppRefreshTask) and `processing` (for BGProcessingTask). The entitlement does
+	         nothing for it and BGTaskSchedulerPermittedIdentifiers only covers `register`.
+	     Both modes are now declared in `project.yml`. Conflating the two mechanisms is what let
+	     the app ship where no BG task could ever run, so scope any future claim about
+	     UIBackgroundModes to the specific capability it describes.
+
+	     What this does NOT change: an observer wake carries no payload and grants no new read
+	     access. It only says "something changed"; the anchored re-query that follows reads exactly
+	     the types NSHealthShareUsageDescription already names. No data leaves the device as a
+	     result, which is why PrivacyInfo.xcprivacy is unchanged by A2.
+
+	     Binding constraint from ADR-0009: the observer completion handler must be called within
+	     seconds of every wake regardless of outcome. HealthKit permanently disables background
+	     delivery for the app after 3 missed handlers, and there is no way to detect or reverse
+	     that from inside the app — so any code that awaits ingestion before completing the
+	     handler breaks this entitlement's value silently and for good. -->
+	<key>com.apple.developer.healthkit.background-delivery</key>
+	<true/>
 </dict>
 </plist>

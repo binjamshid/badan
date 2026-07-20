@@ -21,9 +21,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Eco
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MedicalInformation
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Share
@@ -63,21 +67,29 @@ import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.BadanType
 import net.albayyan.badan.designsystem.components.BadanCard
 import net.albayyan.badan.domain.DepthPolicy
+import net.albayyan.badan.domain.PermissionStatus
+import net.albayyan.badan.features.health.FamilyBundlePicker
+import net.albayyan.badan.features.health.InlineNotice
+import net.albayyan.badan.features.health.rememberStagedPermissionRequest
+import net.albayyan.badan.features.health.stageProgressLabel
+import net.albayyan.badan.features.health.stagedPermissionFamilies
 import net.albayyan.badan.platform.health.HealthAvailability
-import net.albayyan.badan.platform.health.HealthConnectAdapter
-import androidx.activity.compose.rememberLauncherForActivityResult
 
 /**
  * The pre-shell welcome flow (mirror of the iOS `OnboardingView`). The root gates the tab UI on
  * `env.onboardingComplete`; this screen owns its own full-screen layout and, on the final step,
  * calls `env.completeOnboarding()` to hand off to the shell.
  *
- * Four calm steps over the BADAN background:
+ * Five calm steps over the BADAN background:
  *   1. Welcome — with a live EN/AR language toggle so RTL flips immediately.
  *   2. A short "why BADAN" value set (private repository / your data is yours / works offline).
- *   3. A depth preset choice — "Keep it simple" (casual) vs "Show me detail" (power).
- *   4. A connect step — a primary connect action and a secondary "continue without connecting",
- *      both of which complete onboarding.
+ *   3. "What BADAN never does" — the negative half of the promise (plan §16). Placed *before* the
+ *      connect step on purpose: the commitments a user most wants before handing over health data
+ *      are the ones about what will not happen to it, and a screen making them after the request
+ *      is reassurance nobody asked for.
+ *   4. A depth preset choice — "Keep it simple" (casual) vs "Show me detail" (power).
+ *   5. A connect step — the staged, per-family permission flow, plus "explore with sample data"
+ *      and "start empty", all of which complete onboarding.
  *
  * Swiping (via [HorizontalPager]) and the Back/Skip/Next controls all move between steps; only the
  * Next button is gated on the depth page until a preset is chosen. RTL is honoured automatically
@@ -89,8 +101,10 @@ fun OnboardingScreen() {
     val colors = BadanTheme.colors
     val scope = rememberCoroutineScope()
 
-    val pageCount = 4
+    val pageCount = 5
     val lastStep = pageCount - 1
+    /** The depth picker's index — the one page whose Next button is gated on a choice. */
+    val depthStep = 3
     val pagerState = rememberPagerState(pageCount = { pageCount })
     val step = pagerState.currentPage
 
@@ -136,7 +150,9 @@ fun OnboardingScreen() {
 
                     1 -> ValuePage(s = env::s)
 
-                    2 -> DepthPage(
+                    2 -> NeverDoesPage(s = env::s)
+
+                    3 -> DepthPage(
                         selected = selectedDepth,
                         onSelect = { policy ->
                             selectedDepth = policy
@@ -145,16 +161,13 @@ fun OnboardingScreen() {
                         s = env::s,
                     )
 
-                    else -> ConnectPage(
-                        onComplete = { env.completeOnboarding() },
-                        s = env::s,
-                    )
+                    else -> ConnectPage(s = env::s)
                 }
             }
 
-            // Footer: a Next button for steps 0–2 (the final step carries its own actions).
+            // Footer: a Next button for every step but the last (which carries its own actions).
             if (step < lastStep) {
-                val disabled = step == 2 && selectedDepth == null
+                val disabled = step == depthStep && selectedDepth == null
                 PrimaryButton(
                     label = env.s(Loc.next),
                     enabled = !disabled,
@@ -423,7 +436,57 @@ private fun ValueCard(icon: ImageVector, tint: Color, title: String, body: Strin
     }
 }
 
-// MARK: - Page 3: Depth preset
+// MARK: - Page 3: What BADAN never does
+
+/**
+ * The negative promises (plan §16: "no selling, no diagnosis, no cloud without your action").
+ *
+ * Deliberately three flat statements with no hedging verbs — "never", not "does not currently".
+ * Each one corresponds to something structural rather than to a policy that could quietly change:
+ * there is no account and no server to sell to, the wellness-language rule is enforced on every
+ * user-facing string, and nothing leaves the device without an explicit share action.
+ */
+@Composable
+private fun NeverDoesPage(s: (LocalizedString) -> String) {
+    val colors = BadanTheme.colors
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = BadanSpace.s5)
+            .padding(top = BadanSpace.s4, bottom = BadanSpace.s4),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(BadanSpace.s4),
+    ) {
+        Text(
+            text = s(neverTitle),
+            style = titleFont,
+            color = colors.textPrimary,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { heading() },
+        )
+        ValueCard(
+            icon = Icons.Filled.Block,
+            tint = colors.primary,
+            title = s(neverSellTitle),
+            body = s(neverSellBody),
+        )
+        ValueCard(
+            icon = Icons.Filled.MedicalInformation,
+            tint = colors.info,
+            title = s(neverDiagnoseTitle),
+            body = s(neverDiagnoseBody),
+        )
+        ValueCard(
+            icon = Icons.Filled.CloudOff,
+            tint = colors.inBand,
+            title = s(neverCloudTitle),
+            body = s(neverCloudBody),
+        )
+    }
+}
+
+// MARK: - Page 4: Depth preset
 
 @Composable
 private fun DepthPage(
@@ -530,48 +593,62 @@ private fun DepthOption(
     }
 }
 
-// MARK: - Page 4: Connect
+// MARK: - Page 5: Connect (staged, per family)
 
+/**
+ * The connect step, asking one consent family at a time (EPIC-02, plan §13.1/§14).
+ *
+ * What changed and why it matters: this page used to launch a single request for all fifteen Health
+ * Connect permissions. The system sheet that produces is an undifferentiated wall of toggles with
+ * no statement of purpose attached to any of them, at the moment in the app where the user has the
+ * least context — so the realistic answers are "allow everything unread" or "deny everything", and
+ * neither is consent. Now the user sees what each bundle is for, can drop any of them before
+ * anything is requested, and answers one focused sheet per bundle.
+ *
+ * The 30-day disclosure appears here rather than after the first sync, because "BADAN can read the
+ * last 30 days" is information needed to *decide*, not an explanation owed afterwards.
+ */
 @Composable
-private fun ConnectPage(
-    onComplete: () -> Unit,
-    s: (LocalizedString) -> String,
-) {
+private fun ConnectPage(s: (LocalizedString) -> String) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
     val scope = rememberCoroutineScope()
-    var connecting by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var syncing by remember { mutableStateOf(false) }
     var connectError by remember { mutableStateOf<LocalizedString?>(null) }
 
-    // Same contract the Sources screen uses — onboarding now runs the real permission flow
-    // rather than a button that looked like it did.
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = HealthConnectAdapter.requestPermissionsContract(),
-    ) { grantedSet ->
-        scope.launch {
-            env.recordHealthConnectPermissions(grantedSet)
-            val anyGranted = grantedSet.any { it in HealthConnectAdapter.permissions }
+    // Everything selected by default — the user tapped "connect", so the default is yes to each,
+    // and each is individually removable rather than individually opt-in.
+    var selected by remember { mutableStateOf(stagedPermissionFamilies.toSet()) }
+
+    val staged = rememberStagedPermissionRequest(
+        onComplete = { outcomes ->
+            val anyGranted = outcomes.values.any {
+                it == PermissionStatus.GRANTED || it == PermissionStatus.PARTIAL
+            }
             if (anyGranted) {
-                // Purges the sample seed before ingesting, so a connected user never ends up with
-                // their data blended into fabricated readings.
-                env.syncHealthConnect()
-                connecting = false
-                env.completeOnboarding()
+                scope.launch {
+                    // Purges the sample seed before ingesting, so a connected user never ends up
+                    // with their data blended into fabricated readings.
+                    syncing = true
+                    env.syncHealthConnect()
+                    syncing = false
+                    env.completeOnboarding()
+                }
             } else {
                 // Denial is not a dead end and not a scolding: stay on the page, say so calmly,
                 // and leave the other two ways forward available.
-                connecting = false
                 connectError = connectDeniedNotice
             }
-        }
-    }
+        },
+    )
 
     val onConnect: () -> Unit = {
         connectError = null
-        if (env.healthConnect.availability() == HealthAvailability.available) {
-            connecting = true
-            permissionLauncher.launch(HealthConnectAdapter.permissions)
+        if (selected.isEmpty()) {
+            connectError = connectNothingSelectedNotice
+        } else if (env.healthConnect.availability() == HealthAvailability.available) {
+            staged.start(stagedPermissionFamilies.filter { it in selected })
         } else {
             connectError = connectUnavailableNotice
         }
@@ -589,17 +666,18 @@ private fun ConnectPage(
             env.completeOnboarding()
         }
     }
+    val working = staged.isRunning || syncing || busy
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = BadanSpace.s5)
             .padding(bottom = BadanSpace.s5),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(modifier = Modifier.weight(1f))
-
-        IconMark(icon = Icons.Filled.MonitorHeart, tint = colors.primary, diameter = 84.dp)
-        Spacer(modifier = Modifier.size(BadanSpace.s6))
+        IconMark(icon = Icons.Filled.MonitorHeart, tint = colors.primary, diameter = 64.dp)
+        Spacer(modifier = Modifier.size(BadanSpace.s4))
         Text(
             text = s(connectTitle),
             style = titleFont,
@@ -607,7 +685,7 @@ private fun ConnectPage(
             textAlign = TextAlign.Center,
             modifier = Modifier.semantics { heading() },
         )
-        Spacer(modifier = Modifier.size(BadanSpace.s3))
+        Spacer(modifier = Modifier.size(BadanSpace.s2))
         Text(
             text = s(connectSubtitle),
             style = BadanType.body,
@@ -615,13 +693,22 @@ private fun ConnectPage(
             textAlign = TextAlign.Center,
         )
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.size(BadanSpace.s4))
 
-        // The three honest ways to start, mirroring iOS. Every one of these did the same thing
-        // before: "Connect health data" was wired to `onComplete` exactly like "Continue without
-        // connecting", so the primary button on the most important screen in onboarding was a
-        // no-op that silently left the user in fabricated data while implying their real data had
-        // been connected. The real flow existed only on the Sources screen, one tap deeper.
+        FamilyBundlePicker(
+            selected = selected,
+            onToggle = { family ->
+                selected = if (family in selected) selected - family else selected + family
+            },
+        )
+
+        Spacer(modifier = Modifier.size(BadanSpace.s3))
+
+        // The Android-specific honesty obligation, stated before the request rather than after it.
+        InlineNotice(text = s(historyWindowNotice), icon = Icons.Filled.History)
+
+        Spacer(modifier = Modifier.size(BadanSpace.s4))
+
         if (connectError != null) {
             Text(
                 text = s(connectError!!),
@@ -631,9 +718,24 @@ private fun ConnectPage(
                 modifier = Modifier.padding(bottom = BadanSpace.s3),
             )
         }
+        // Progress through the sequence, so five consecutive system sheets read as a designed flow
+        // rather than as the app asking again because it did not hear the answer.
+        staged.current?.let { family ->
+            Text(
+                text = s(stageProgressLabel(family, staged.completedStages, staged.totalStages)),
+                style = BadanType.caption,
+                color = colors.textSecondary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = BadanSpace.s2),
+            )
+        }
         PrimaryButton(
-            label = if (connecting) s(connectingLabel) else s(connectPrimary),
-            enabled = !connecting && !busy,
+            label = when {
+                syncing -> s(readingLabel)
+                staged.isRunning -> s(connectingLabel)
+                else -> s(connectPrimary)
+            },
+            enabled = !working,
             onClick = onConnect,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -645,7 +747,7 @@ private fun ConnectPage(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = BadanSpace.touchMin)
-                .clickable(enabled = !busy, onClick = onExploreSample),
+                .clickable(enabled = !working, onClick = onExploreSample),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -666,7 +768,7 @@ private fun ConnectPage(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = BadanSpace.touchMin)
-                .clickable(enabled = !busy, onClick = onStartEmpty),
+                .clickable(enabled = !working, onClick = onStartEmpty),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -803,6 +905,46 @@ private val connectSubtitle = LocalizedString(
 
 private val connectPrimary = LocalizedString(en = "Connect health data", ar = "ربط البيانات الصحية")
 private val connectingLabel = LocalizedString(en = "Connecting…", ar = "جارٍ الربط…")
+private val readingLabel = LocalizedString(en = "Reading your data…", ar = "جارٍ قراءة بياناتك…")
+
+/** Deselecting everything is a coherent choice, so it gets a nudge rather than a disabled button
+ *  the user has to reverse-engineer. */
+private val connectNothingSelectedNotice = LocalizedString(
+    en = "Nothing is selected. Pick at least one kind of data, or continue with one of the options below.",
+    ar = "لم يُحدَّد شيء. اختر نوعاً واحداً على الأقل من البيانات، أو تابع بأحد الخيارين أدناه.",
+)
+
+/**
+ * The 30-day statement in its shortest honest form (plan §14 Phase-0 exit criterion). The full
+ * version, with the per-type breakdown, lives on the Sources screen — this one has to fit on a
+ * decision screen without becoming the thing the user skims past.
+ */
+private val historyWindowNotice = LocalizedString(
+    en = "Health Connect shares the last 30 days with other apps, so that's what BADAN can read to " +
+        "start with. Everything after today is kept as it arrives.",
+    ar = "يشارك هيلث كونكت آخر ٣٠ يوماً مع التطبيقات الأخرى، وهذا ما يستطيع بدن قراءته في البداية. " +
+        "أما ما يأتي بعد اليوم فيُحفَظ فور وصوله.",
+)
+
+private val neverTitle = LocalizedString(en = "What BADAN never does", ar = "ما لا يفعله بدن أبداً")
+
+private val neverSellTitle = LocalizedString(en = "Never sells your data", ar = "لا يبيع بياناتك أبداً")
+private val neverSellBody = LocalizedString(
+    en = "There is no account, no advertising and nobody to sell to. BADAN has no server that holds your health data.",
+    ar = "لا يوجد حساب ولا إعلانات ولا جهة تُباع لها البيانات. ليس لبدن خادم يحتفظ ببياناتك الصحية.",
+)
+
+private val neverDiagnoseTitle = LocalizedString(en = "Never diagnoses", ar = "لا يشخّص أبداً")
+private val neverDiagnoseBody = LocalizedString(
+    en = "BADAN describes what your data shows and how it worked that out. It doesn't tell you what's wrong with you, and it isn't a substitute for a clinician.",
+    ar = "يصف بدن ما تُظهره بياناتك وكيف توصّل إليه. لا يخبرك بما تعاني منه، وليس بديلاً عن الطبيب.",
+)
+
+private val neverCloudTitle = LocalizedString(en = "Never uploads on its own", ar = "لا يرفع شيئاً من تلقاء نفسه")
+private val neverCloudBody = LocalizedString(
+    en = "Nothing leaves this device unless you export or share it yourself.",
+    ar = "لا يغادر أي شيء هذا الجهاز إلا إذا صدّرته أو شاركته بنفسك.",
+)
 
 /** Denial is a legitimate answer, not a failure — no scolding, no dead end. */
 private val connectDeniedNotice = LocalizedString(

@@ -13,7 +13,13 @@ final class MetricRegistry {
     /// legitimately small. `assertionFailure` alone is a no-op in Release, so a broken
     /// `scripts/sync_ios_resources.sh` mirror step could otherwise ship an empty registry with
     /// no runtime signal — this logs the failure via `Logger` so it's visible in Release too.
-    private static let minimumHealthyMetricCount = 40
+    ///
+    /// Raised 40 -> 60 with registry v0.2.0 (EPIC-07), which took the catalog from 44 to 72
+    /// metrics. This is deliberately a floor well BELOW the real count, not an equality check:
+    /// it exists to catch a truncated/empty/missing mirror, and pinning it to the exact count
+    /// would turn every legitimate registry addition into a code change in two apps — which is
+    /// exactly the coupling the data-driven ontology exists to avoid.
+    private static let minimumHealthyMetricCount = 60
     private static let logger = Logger(subsystem: "net.albayyan.badan", category: "Ontology")
 
     let all: [MetricDefinition]

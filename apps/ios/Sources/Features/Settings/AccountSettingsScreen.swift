@@ -39,8 +39,16 @@ private enum AccountStrings {
 /// So this page shows what IS true today (your data is on this device, no account needed) and
 /// names what isn't built, rather than a sign-in button that would do nothing. See
 /// `docs/MONETIZATION.md` for the proposed free/premium line and the sequencing — chiefly that
-/// only 4 of the ontology's 44 metrics are ingested today, so the features a subscription would
-/// sell do not yet have data to run on.
+/// only a fraction of the ontology's metrics are actually ingested today, so the features a
+/// subscription would sell do not yet have data to run on.
+///
+/// Both figures are deliberately left unwritten here (audit finding #9): this line used to read
+/// "only 4 of the ontology's 44 metrics", and both halves had gone stale — the registry is well
+/// past 44 and the ingested set has grown several times since. Two numbers that move on different
+/// schedules, hand-copied into a doc comment, are two numbers that will be wrong again. The live
+/// counts are `MetricRegistry.shared.all.count` for the catalogue and the `HKTypeMap` entries
+/// carrying a non-nil `metricId` for the ingested set; read them there rather than restoring a
+/// literal.
 ///
 /// The "free, always" card is not marketing. It is the guardrail (`CLAUDE.md`: raw data is not
 /// paywalled) stated where a user would come looking for the catch, and it should survive

@@ -1,4 +1,4 @@
-/* (C9) The Arabic HealthKit permission sheet.
+/* (C9) The Arabic HealthKit and location permission sheets.
  *
  * Without this file the app declared CFBundleLocalizations [en, ar] and translated every string
  * it draws itself, while the one dialog it does NOT draw — the system's "allow BADAN to read
@@ -6,9 +6,18 @@
  * an app whose whole promise is that your health data stays yours, and an Arabic-first user met
  * it in a language the rest of the app had already agreed not to use.
  *
- * Mirrors the English text exactly, naming the same four read types the code requests
- * (sleep, heart rate, resting heart rate, steps) and making the same "nothing leaves your phone"
- * promise — a usage description that over- or under-states the read set is an App Store review
- * problem as well as an honesty one (COMP-08).
+ * Mirrors the English text meaning-for-meaning, naming the same read set and making the same
+ * "nothing leaves your phone" promise — a usage description that over- or under-states the read
+ * set is an App Store review problem as well as an honesty one (COMP-08).
  */
-"NSHealthShareUsageDescription" = "يقرأ بدن بيانات نومك ونبض قلبك ونبضك أثناء الراحة وخطواتك على جهازك لبناء سجلّك الصحي الشخصي والخاص. ولا يغادر أي شيء هاتفك.";
+
+/* Widened for A2 (ADR-0009). Term choices follow Apple Health's own Arabic vocabulary so the
+ * sheet reads as continuous with the Health app the user already knows: تغيّر معدل نبض القلب
+ * (HRV), أكسجين الدم (blood oxygen), لياقة القلب والرئتين (cardio fitness / VO2 max). Routes are
+ * deliberately absent here too — they have their own consent screen (plan §13.1). */
+"NSHealthShareUsageDescription" = "يقرأ بدن على جهازك بيانات نومك، ونبض قلبك، ونبضك أثناء الراحة، وتغيّر معدل نبض القلب، ومعدل تنفّسك، وأكسجين الدم، ودرجة حرارة معصمك، وخطواتك، والمسافة، والطوابق التي صعدتها، والطاقة المحروقة، ولياقة القلب والرئتين، وقياسات جسمك، وتمارينك، لبناء سجلّك الصحي الشخصي والخاص. ولا يغادر أي شيء هاتفك.";
+
+/* Workout routes only. Phrased as reading back a path that was already saved (مسارات حفظتها
+ * ساعتك أو هاتفك) rather than "using your location", so the Arabic sheet makes the same narrow
+ * promise as the English one and does not imply live tracking. */
+"NSLocationWhenInUseUsageDescription" = "يستخدم بدن إذن الموقع فقط لقراءة المسارات التي سبق أن حفظتها ساعتك أو هاتفك مع تمارين أنهيتها من قبل. لا يتتبّع بدن مكانك أبداً، ولا يسجّل أي مسار جديد. ولا يغادر أي شيء هاتفك.";

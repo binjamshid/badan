@@ -1,0 +1,5 @@
+# The fixtures in this directory are hashed byte-for-byte (see manifest.json) by both test
+# suites and by scripts/check_fixture_hashes.sh. A checkout that rewrote LF to CRLF would change
+# the digest of a file nobody edited, and the failure would read as "the platforms disagree"
+# rather than "your checkout mangled the fixture". -text pins the bytes on every platform.
+*.json -text

@@ -102,6 +102,42 @@ class FakeHealthStore(
                 ),
             )
 
+            // --- Ingested workout, every third day (watch) ---
+            // Totals are carried on the DTO rather than emitted as extra energy/distance interval
+            // rows deliberately: this generator already writes one daily row per metric, and a
+            // second contained row for the same metric and day would double-count in every daily
+            // sum downstream. A real HealthKit workout also arrives with its totals attached, so
+            // the DTO path is the honest shape to exercise here; Health Connect's assemble-from-
+            // overlapping-records path is exercised by `WorkoutLinkage`'s own fixtures.
+            //
+            // Note what is NOT generated: routes. Sample mode must never invent GPS coordinates.
+            // Every other fabricated value here is a number in a plausible range; a coordinate is
+            // a *place*, and a fake trace would put the user somewhere they have never been, in a
+            // map view, flagged only by a banner. Route ingestion is covered by tests that build
+            // their own points, which is where invented coordinates belong.
+            if (dayIndex % 3 == 1) {
+                val startOffset = 17 * 3600 + (unit(dayKey, "wstart") * 3600).toLong()
+                val workoutStart = addSeconds(dayStart, startOffset.toDouble())
+                val durationMin = 30 + rounded(unit(dayKey, "wdur") * 30)
+                val workoutEnd = addSeconds(workoutStart, durationMin * 60)
+                val wEnergy = round1(clamp(900 + (unit(dayKey, "wenergy") - 0.5) * 700, 500.0, 2000.0))
+                val wDistance = rounded(clamp(4500 + (unit(dayKey, "wdist") - 0.5) * 3000, 2000.0, 9000.0))
+                val wAvgHr = rounded(clamp(138 + (unit(dayKey, "whr") - 0.5) * 20, 110.0, 165.0))
+                sessions.add(
+                    SessionDto(
+                        kind = SessionKind.WORKOUT, subtype = "Evening run",
+                        start = workoutStart, end = workoutEnd, tz = tz,
+                        sourceId = watchSource, deviceId = watchDevice,
+                        externalId = "watch-workout-$dayKey",
+                        activityType = "running",
+                        totals = WorkoutTotalsDto(
+                            energyKj = wEnergy, distanceM = wDistance,
+                            avgHrBpm = wAvgHr, maxHrBpm = wAvgHr + 18,
+                        ),
+                    ),
+                )
+            }
+
             // --- Daily interval metrics (watch) ---
             fun daily(metricId: String, unitStr: String, agg: Aggregation, value: Double) {
                 intervals.add(

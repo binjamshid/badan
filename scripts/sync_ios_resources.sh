@@ -23,4 +23,10 @@ sync_file "$ROOT/packages/metric-ontology/registry.json"        "$DEST/registry.
 sync_file "$ROOT/packages/contracts/insights/templates.json"    "$DEST/insight_templates.json"
 sync_file "$ROOT/packages/contracts/dictionaries/symptoms.json" "$DEST/symptoms.json"
 sync_file "$ROOT/packages/export-schemas/csv_columns.json"      "$DEST/csv_columns.json"
+# EPIC-07: algorithm params and the sensor-quality map are shared contracts loaded exactly like
+# registry.json — mirrored here so both platforms evaluate the same constants (plan §15) and show
+# the same honesty labels. Destination basenames are flattened (no directory) because BundleJSON
+# resolves resources by bare name.
+sync_file "$ROOT/packages/contracts/algorithms/algorithms.json" "$DEST/algorithms.json"
+sync_file "$ROOT/packages/contracts/sensor_quality.json"        "$DEST/sensor_quality.json"
 echo "Synced canonical data -> $DEST"

@@ -7,4 +7,34 @@
 -->
 <resources>
     <string name="app_name" translatable="true">BADAN</string>
+
+    <!--
+      Health Connect permission rationale copy, one string per consent family.
+
+      Health Connect has no manifest-level per-permission rationale attribute; the rationale is
+      whatever the app draws when it is launched via SHOW_PERMISSIONS_RATIONALE (Android 13 and
+      below) or VIEW_PERMISSION_USAGE (14+) — both already routed to MainActivity in the
+      manifest. These strings are also what the in-app explainer shows BEFORE each staged system
+      prompt, so the system dialog is never the first explanation the user gets (plan §13.1/§14).
+
+      One string per family, not one per permission, because the family is the unit the user is
+      asked about. Each says what is read and what BADAN does with it, in that order, and none
+      of them promises an interpretation — wellness register only (no "detect", no "diagnose",
+      no asserting a state as fact). Adding a record type means editing its family's string here
+      and in values-ar in the same change; a permission whose rationale still describes the old
+      read set is the Play Data Safety accuracy risk in plan §17's register.
+    -->
+    <string name="hc_rationale_intro">BADAN reads your health data from Health Connect and keeps it on this phone, so you have one place that holds your own history. You choose what to share, one group at a time, and you can change your mind later.</string>
+    <string name="hc_rationale_activity">Steps, distance, floors climbed, and energy burned — so your day can be shown as it actually happened rather than as an estimate.</string>
+    <string name="hc_rationale_vitals">Heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, and skin temperature — so BADAN can show your typical ranges and how today compares to them.</string>
+    <string name="hc_rationale_sleep">Your sleep sessions and stages — so nights can be shown next to the days around them.</string>
+    <string name="hc_rationale_body">Weight, body fat, lean body mass, and cardio fitness — so long-term measurements sit alongside the rest of your history instead of in a separate app.</string>
+    <string name="hc_rationale_workouts">Your recorded workouts — so each session keeps its own summary and can be compared with how you slept and recovered around it.</string>
+    <!-- Routes are their own family with their own toggle (plan §17): they are the one record
+         that says where you were, and Health Connect asks about them one route at a time. -->
+    <string name="hc_rationale_routes">The route saved with a workout you already finished. BADAN never follows where you are and never records a new route, and routes are never included in an export unless you turn them on yourself.</string>
+    <!-- Reliability language is load-bearing (plan §4 rule 10 / §13.7): Android may say "usually
+         within the hour" because WorkManager genuinely delivers that. It still may not say
+         "every day at" or "guaranteed". -->
+    <string name="hc_rationale_background">Lets BADAN pick up new readings in the background so what you see is already up to date when you open the app. Background updates usually run within the hour; opening BADAN always refreshes right away.</string>
 </resources>

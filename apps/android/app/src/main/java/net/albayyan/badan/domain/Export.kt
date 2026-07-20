@@ -72,6 +72,21 @@ data class ExportManifest(
     val perMetricRowCounts: Map<String, Int>,
     val checksums: Map<String, String>,
     val dataQualityNote: String,
+    /**
+     * True when the files this manifest describes were wrapped into one `ExportEncryptor`
+     * container (always true for an `includeSensitive` export — see ADR-0008) rather than written
+     * as plain CSV/JSON. [checksums] above still describe the real plaintext content either way;
+     * only how it reached disk changes. Defaulted `false` so manifests persisted before EPIC-06
+     * decode unchanged.
+     */
+    val encrypted: Boolean = false,
+    /**
+     * The container's filename inside the job's `outputPath` folder (always
+     * `ExportEncryptor.CONTAINER_FILE_NAME` today; kept as a manifest field rather than a
+     * hardcoded constant lookup so export UI doesn't need to import the encryptor just to know
+     * what to look for). `null` when [encrypted] is false.
+     */
+    val encryptedContainerName: String? = null,
 )
 
 data class ExportJob(

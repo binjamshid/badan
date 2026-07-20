@@ -1,6 +1,6 @@
 # BADAN — Privacy Policy
 
-**Last updated: 2026-07-12**
+**Last updated: 2026-07-16**
 **Applies to: BADAN for iOS, version 0.1.0**
 
 BADAN is a private, on-device health repository. This policy describes exactly
@@ -133,10 +133,10 @@ and lives in this file.
 
 Questions about privacy in BADAN can be sent to:
 
-> **[CONTACT — the app owner must fill in a real support email or address before public release]**
+> **support@binjamshid.com**
 
 ---
 
-*This policy reflects BADAN for iOS version 0.1.0 as of 2026-07-12. The in-app
+*This policy reflects BADAN for iOS version 0.1.0 as of 2026-07-16. The in-app
 Privacy Policy screen (Settings → Data & privacy → Privacy Policy) presents the
 same statements in English and Arabic.*

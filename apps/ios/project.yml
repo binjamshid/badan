@@ -42,6 +42,11 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/BADAN.entitlements
         ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "NoorMono NoorQalam Mizan Hilal"
         ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
+    # `App/Info.plist` is GENERATED from this block on every `xcodegen generate` and is
+    # gitignored for exactly that reason — editing the plist directly works until the next
+    # generate silently reverts it. This block is the only authoritative copy. The same is
+    # NOT true of App/BADAN.entitlements or App/PrivacyInfo.xcprivacy: those are hand-written,
+    # tracked files that xcodegen only references.
     info:
       path: App/Info.plist
       properties:
@@ -57,11 +62,59 @@ targets:
         # Standard crypto only (HTTPS, SHA-256 checksums) — exempt from export compliance.
         # Avoids the manual encryption question on every TestFlight upload.
         ITSAppUsesNonExemptEncryption: false
-        # COMP-08: names exactly what's read (sleep, heart rate, resting heart rate, steps) and
-        # the on-device benefit, rather than a generic "your health data" description.
-        NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, and step data on your device to build your personal, private health repository. Nothing leaves your phone."
+        # A2 (ADR-0009). The two BGTaskScheduler identifiers BADAN registers. `register(
+        # forTaskWithIdentifier:)` raises if the identifier is absent here, so this list and the
+        # registration call sites are one unit — adding a task type means editing both.
+        #   .refresh    → BGAppRefreshTask:  light top-up (stale anchors, due automations).
+        #   .processing → BGProcessingTask:  heavy work (large exports, historical backfills).
+        # These read `net.albayyan.*` while PRODUCT_BUNDLE_IDENTIFIER is `net.binjamshid.badan`.
+        # That is intentional and it works — BGTaskScheduler does not require identifiers to
+        # share the bundle-id prefix — and the strings are fixed by ADR-0009, which EPIC-05's
+        # registration code is written against. Do not "correct" them to match the bundle id
+        # without amending the ADR; a rename here that misses a call site fails at runtime.
+        BGTaskSchedulerPermittedIdentifiers:
+          - net.albayyan.badan.refresh
+          - net.albayyan.badan.processing
+        # BUG-BG-01. `BGTaskSchedulerPermittedIdentifiers` shipped without this key, and the two
+        # are not interchangeable: the identifier list is what lets `register(
+        # forTaskWithIdentifier:)` succeed, while UIBackgroundModes is what lets
+        # `BGTaskScheduler.submit(_:)` succeed. Without it every submit throws
+        # `BGTaskSchedulerError.unavailable` on device — registration still succeeds, the launch
+        # handlers are simply never invoked, and `background_runs` fills with `hkObserverWake`
+        # and `foregroundSync` rows only. Nothing else in the app can detect that.
+        #   fetch      → required for BGAppRefreshTaskRequest  (.refresh, above)
+        #   processing → required for BGProcessingTaskRequest  (.processing, above)
+        # One entry per task class, and the mapping is asserted by
+        # `BackgroundSubstrateTests.testEveryPermittedTaskIdentifierHasItsBackgroundMode` so a
+        # third task type cannot be added here without its mode. Do not trim either mode to
+        # "narrow the review surface" — the entitlements file explains why HealthKit background
+        # delivery needs no background mode and why that reasoning does not extend to these.
+        UIBackgroundModes:
+          - fetch
+          - processing
+        # COMP-08: names exactly what's read and the on-device benefit, rather than a generic
+        # "your health data" description. Widened alongside A2's read-set expansion — the string
+        # is contractually tied to `HealthKitAdapter.readTypes`: a type present here but never
+        # requested overstates the ask, and a type requested but missing here is an App Store
+        # rejection. Changing that set means changing this line AND both InfoPlist.strings
+        # (en+ar) in the same commit; all three are checked together at review.
+        # Routes are deliberately absent — they are not in the initial authorization bundle and
+        # get their own consent screen (plan §13.1/§17), so naming them here would ask for
+        # something the first prompt does not request.
+        NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, and workouts on your device to build your personal, private health repository. Nothing leaves your phone."
         # COMP-10: NSHealthUpdateUsageDescription removed — HealthKitAdapter requests read-only
-        # access (`toShare: []`); a write-usage string with no write path was misleading.
+        # access (`toShare: []`); a write-usage string with no write path was misleading. The
+        # read-only posture survives the A2 widening: nothing in Phases 0–4 writes to HealthKit,
+        # so do not reintroduce this key to "round out" the pairing.
+        #
+        # Workout routes only. Present so the route-consent screen (plan §13.1, gated behind its
+        # own toggle) has honest copy when it needs CoreLocation — reading back a path the user's
+        # own watch or phone already recorded, never sampling a new position. BADAN starts no
+        # CLLocationManager for tracking. Note that the HealthKit route read itself is authorized
+        # by `HKSeriesType.workoutRoute()`, not by this key; if the shipped route implementation
+        # turns out to touch no CoreLocation-facing surface at all, delete this key rather than
+        # carrying an unused location declaration into review.
+        NSLocationWhenInUseUsageDescription: "BADAN uses location access only to read the routes your Apple Watch or iPhone already saved with workouts you finished earlier. BADAN never follows where you are and never records a new route. Nothing leaves your phone."
 
   BADANTests:
     type: bundle.unit-test

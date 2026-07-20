@@ -1,5 +1,6 @@
 package net.albayyan.badan.storage.repositories
 
+import net.albayyan.badan.core.MILLIS_PER_DAY
 import net.albayyan.badan.domain.Aggregation
 import net.albayyan.badan.domain.IntervalRecord
 import net.albayyan.badan.domain.RawSample
@@ -190,6 +191,60 @@ class MeasurementRepository(private val db: SqliteConnection) {
         sql += " ORDER BY start_at ASC;"
         return db.query(sql, listOf(localNight)).map { readSession(it) }
     }
+
+    /**
+     * Every session of one kind attributed to one local day key.
+     *
+     * Reuses `local_night` for workouts, which is the sleep-attribution column by name only — the
+     * pipeline stores each workout's *start* day there (see `IngestionPipeline.ingest`). The name
+     * is now doing double duty and that is worth knowing before writing a query against it: it is
+     * "the local day this session is filed under", and the rule for computing it differs by kind.
+     * Renaming the column would be a migration for no behavioural gain, so the meaning is
+     * documented here instead.
+     */
+    fun sessionsForDay(kind: SessionKind, dayKey: String, includeSuppressed: Boolean): List<Session> {
+        // Bounded by start_at first so the query rides `idx_session_kind_start`, then filtered to
+        // the exact day in Kotlin. The obvious query — `WHERE kind = ? AND local_night = ?` — is a
+        // full scan for workouts: `idx_session_local_night` is a PARTIAL index with
+        // `WHERE kind LIKE 'sleep%'`, so it covers sleep and deliberately does not cover this.
+        //
+        // The window is the day key parsed as UTC, padded a day either side. Padding rather than
+        // parsing in the session's own zone because sessions from different sources can carry
+        // different zones for the same day key, so there is no single correct zone to parse in;
+        // ±1 day covers every real UTC offset (max ±14h) with room to spare, and the exact match
+        // below is what actually decides membership.
+        val dayStartUtc = dayKeyToUtcMillis(dayKey) ?: return emptyList()
+        val from = dayStartUtc - MILLIS_PER_DAY
+        val to = dayStartUtc + 2 * MILLIS_PER_DAY
+
+        var sql = "SELECT * FROM sessions WHERE kind = ? AND start_at >= ? AND start_at <= ? AND deleted_at IS NULL"
+        if (!includeSuppressed) sql += " AND suppressed_by IS NULL"
+        sql += " ORDER BY start_at ASC;"
+        return db.query(sql, listOf(kind.code, from, to))
+            .map { readSession(it) }
+            .filter { it.localNight == dayKey }
+    }
+
+    /** "YYYY-MM-DD" -> that day's start instant in UTC. Null for anything not in that shape. */
+    private fun dayKeyToUtcMillis(dayKey: String): Long? {
+        val parts = dayKey.split("-").mapNotNull { it.toIntOrNull() }
+        if (parts.size != 3) return null
+        return runCatching {
+            java.time.LocalDate.of(parts[0], parts[1], parts[2])
+                .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        }.getOrNull()
+    }
+
+    /**
+     * The stored session id for one upstream identity, or null if it was never written.
+     *
+     * Exists because `upsertSession` returns only whether a row was created, not which row it
+     * touched — sufficient for counting, insufficient for anything that must then reference the
+     * row (a route needs its workout's real id, which on an update is the pre-existing one, not
+     * the caller's freshly-minted ULID).
+     */
+    fun sessionIdFor(kind: SessionKind, externalId: String, sourceId: String): String? =
+        firstSessionId(kind, externalId, sourceId)
 
     fun stages(sessionId: String): List<SessionStage> =
         db.query("SELECT * FROM session_stages WHERE session_id = ? ORDER BY seq ASC;", listOf(sessionId))

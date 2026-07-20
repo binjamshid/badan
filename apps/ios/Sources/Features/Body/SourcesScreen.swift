@@ -8,6 +8,11 @@ import os
 struct SourcesSourceInfo: Identifiable {
     let source: Source
     let devices: [Device]
+    /// Which `sensor_quality.json` class this source resolves to (EPIC-27's honesty labelling,
+    /// plan §4 principle 9). Resolved once during the off-main-actor fetch rather than per
+    /// render: classification lowercases and scans every device name, which is cheap once and
+    /// wasteful on every layout pass of a scrolling list.
+    let sourceClassId: String
     var id: String { source.id }
 }
 
@@ -96,8 +101,11 @@ final class SourcesViewModel {
             // or `CatalogRepository` change needed.
             let allDevices = try inputs.catalog.devices()
             let devicesBySource = Dictionary(grouping: allDevices, by: \.sourceId)
+            let quality = SensorQualityMap.shared
             let infos = sources.map { source in
-                SourcesSourceInfo(source: source, devices: devicesBySource[source.id] ?? [])
+                let devices = devicesBySource[source.id] ?? []
+                return SourcesSourceInfo(source: source, devices: devices,
+                                         sourceClassId: quality.classId(for: source, devices: devices))
             }
             let permissions = try inputs.catalog.permissions()
             let grouped = Dictionary(grouping: permissions, by: { $0.store })
@@ -123,6 +131,7 @@ struct SourcesScreen: View {
     @State private var vm = SourcesViewModel()
 
     private static let permissionsHeader = LocalizedString(en: "Permissions", ar: "الأذونات")
+    private static let familiesHeader = LocalizedString(en: "What BADAN reads", ar: "ما يقرأه بدن")
     private static let devicesLabel = LocalizedString(en: "Devices", ar: "الأجهزة")
     private static let noPermissions = LocalizedString(en: "No permissions requested yet.",
                                                        ar: "لم تُطلب أي أذونات بعد.")
@@ -159,8 +168,22 @@ struct SourcesScreen: View {
                             }
                         }
 
-                        SectionHeader(env.s(Self.permissionsHeader))
+                        // (EPIC-01 task 5) The widened read set added four families the Sources
+                        // screen never named. Listing them here — each opening its own explainer
+                        // — is what makes "what does BADAN actually read from me" answerable in
+                        // one place, rather than only inferable from a permission matrix full of
+                        // platform identifiers.
+                        SectionHeader(env.s(Self.familiesHeader))
                             .padding(.top, data.sources.isEmpty ? 0 : BadanSpace.space2)
+                        SourcesFamiliesCard()
+
+                        // (EPIC-03 task 6) Routes sit apart from the families above, visually and
+                        // structurally, because they gate apart: location data never rides along
+                        // with a health family.
+                        SourcesRouteRow()
+
+                        SectionHeader(env.s(Self.permissionsHeader))
+                            .padding(.top, BadanSpace.space2)
                         SourcesPermissionCard(data: data, emptyNote: Self.noPermissions)
 
                         // Shown at every depth (not just power): which source "wins" a duplicate
@@ -276,6 +299,158 @@ private struct SourcesConnectCard: View {
     }
 }
 
+// MARK: - Families (EPIC-01 task 5)
+
+/// The metric families BADAN reads, each opening its own explainer sheet.
+///
+/// Families rather than permission bundles: a bundle is a consent-flow grouping (what gets asked
+/// for together, and when), while this list answers "what kinds of thing does BADAN hold about
+/// me" — the question someone opens Sources to answer. Ordered as the registry orders them, and
+/// filtered to families that actually have metrics, so a family with nothing behind it never
+/// appears as a promise the app doesn't keep.
+private struct SourcesFamiliesCard: View {
+    @Environment(AppEnvironment.self) private var env
+    @State private var explainerFamily: MetricFamily?
+
+    /// The families the widened read set covers. `.sleep` is included even though it predates
+    /// EPIC-01 — a list of "what BADAN reads" that omitted sleep because it happened to be older
+    /// would be a list organized around our release history rather than the user's data.
+    private static let shown: [MetricFamily] = [.heart, .respiratory, .activity, .body, .sleep]
+
+    private static let metricCount = LocalizedString(en: "{n} tracked", ar: "{n} مؤشر متابَع")
+
+    var body: some View {
+        BadanCard(padding: 0) {
+            VStack(spacing: 0) {
+                ForEach(Array(families.enumerated()), id: \.element.family) { index, entry in
+                    if index > 0 {
+                        Rectangle().fill(BadanColor.separator).frame(height: 1)
+                            .padding(.leading, BadanSpace.cardPadding)
+                    }
+                    Button {
+                        explainerFamily = entry.family
+                    } label: {
+                        HStack(spacing: BadanSpace.space3) {
+                            Image(systemName: entry.family.symbolName)
+                                .font(.system(size: 17))
+                                .foregroundStyle(BadanColor.primary)
+                                .frame(width: 26)
+                                .accessibilityHidden(true)
+                            LText(entry.family.displayName)
+                                .font(BadanFont.body)
+                                .foregroundStyle(BadanColor.textPrimary)
+                            Spacer(minLength: BadanSpace.space2)
+                            Text(env.s(Self.metricCount.filling(["n": env.format.integer(entry.count)])))
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                            Image(systemName: "info.circle")
+                                .font(BadanFont.caption.weight(.semibold))
+                                .foregroundStyle(BadanColor.textSecondary)
+                                .accessibilityHidden(true)
+                        }
+                        .padding(.horizontal, BadanSpace.cardPadding)
+                        .frame(minHeight: BadanSpace.touchMin)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(Text(Self.explainerHint, language: env.language))
+                }
+            }
+        }
+        .sheet(item: $explainerFamily) { family in
+            MetricFamilyExplainerSheet(family: family)
+        }
+    }
+
+    private static let explainerHint = LocalizedString(
+        en: "Explains what this is and how it's recorded",
+        ar: "يشرح ما هذا وكيف يُسجَّل")
+
+    private var families: [(family: MetricFamily, count: Int)] {
+        Self.shown.compactMap { family in
+            let count = env.registry.metrics(in: family).count
+            return count > 0 ? (family, count) : nil
+        }
+    }
+}
+
+/// `MetricFamily` is `Hashable` but not `Identifiable`, which `.sheet(item:)` needs. Adding the
+/// conformance here rather than on the domain enum keeps a SwiftUI presentation requirement out
+/// of `Domain/Metric.swift`, which has no business knowing about sheets.
+///
+/// Deliberately NOT `@retroactive`: that attribute is only for conforming another module's type
+/// to another module's protocol, and `MetricFamily` is declared in this same target. Marking it
+/// retroactive warns today and is a hard error under the Swift 6 language mode. If this enum is
+/// ever extracted into its own module, the attribute becomes correct — until then it is noise
+/// that breaks the build on a language-mode bump.
+extension MetricFamily: Identifiable {
+    public var id: String { rawValue }
+}
+
+// MARK: - Routes (EPIC-03 task 6)
+
+/// The route-consent entry point.
+///
+/// A row of its own, outside the families card, because routes are location data and gate
+/// independently of every health family (plan §4.11/§17). Grouping it with the families would
+/// imply it travels with them — which is precisely the inference the separate toggle exists to
+/// prevent.
+private struct SourcesRouteRow: View {
+    @Environment(AppEnvironment.self) private var env
+
+    /// Mirrors `RouteConsentStore.current.granted`, refreshed in `onAppear`.
+    ///
+    /// Reading the store directly inside `body` would compile and look right, but `UserDefaults`
+    /// is not observable: after the user toggles routes on and navigates back, SwiftUI has no
+    /// reason to re-evaluate, so the row would keep saying "Off" about a switch that is on.
+    /// `onAppear` fires on return from a pushed screen, which is exactly the moment this can go
+    /// stale.
+    @State private var granted = false
+
+    private static let title = LocalizedString(en: "Workout routes", ar: "مسارات التمارين")
+    private static let subtitle = LocalizedString(
+        en: "Location data, with its own switch. Off unless you turn it on.",
+        ar: "بيانات موقع، ولها مفتاحها الخاص. متوقّفة ما لم تفعّلها.")
+    private static let on = LocalizedString(en: "On", ar: "مفعّل")
+    private static let off = LocalizedString(en: "Off", ar: "متوقّف")
+
+    var body: some View {
+        NavigationLink {
+            RouteConsentScreen()
+        } label: {
+            BadanCard {
+                HStack(spacing: BadanSpace.space3) {
+                    Image(systemName: "map")
+                        .imageScale(.large)
+                        .foregroundStyle(BadanColor.primary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                        LText(Self.title)
+                            .font(BadanFont.body.weight(.semibold))
+                            .foregroundStyle(BadanColor.textPrimary)
+                        LText(Self.subtitle)
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: BadanSpace.space2)
+                    // State is text, not colour alone — a location switch is the last place to
+                    // rely on hue to say whether something is on.
+                    PillLabel(env.s(granted ? Self.on : Self.off),
+                              systemImage: granted ? "checkmark.circle" : "minus.circle",
+                              tint: granted ? BadanColor.primary : BadanColor.textSecondary)
+                    Image(systemName: "chevron.forward")
+                        .font(BadanFont.caption.weight(.semibold))
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .onAppear { granted = RouteConsentStore.current.granted }
+    }
+}
+
 // MARK: - Source card
 
 private struct SourcesSourceCard: View {
@@ -340,6 +515,8 @@ private struct SourcesSourceCard: View {
                         detailLine(Self.bundleLabel, value: bundle)
                     }
                 }
+
+                SourcesSensorQualitySection(sourceClassId: info.sourceClassId)
 
                 if !info.devices.isEmpty {
                     Rectangle().fill(BadanColor.separator).frame(height: 1)
@@ -410,6 +587,74 @@ private struct SourcesSourceCard: View {
                 .foregroundStyle(BadanColor.textPrimary)
                 .multilineTextAlignment(.trailing)
         }
+    }
+}
+
+// MARK: - Sensor quality (plan §4 principle 9, §16 "sensor-quality labels")
+
+/// What kind of sensor this source is, and what that means per family.
+///
+/// **This is an honesty label, never a ranking or a gate.** Nothing here suppresses, hides,
+/// reorders or downweights a reading — dedup and source priority are decided by entirely separate
+/// machinery (I3/I4), and raw data is never paywalled. A `low` label says what the sensor class
+/// does, not how much the person should trust their own body.
+///
+/// Only families this class actually produces are listed. `unsupported` rows are dropped rather
+/// than shown as a wall of "not from this device": a smart scale would otherwise render ten
+/// negative rows and one useful one, which reads as a fault report about hardware that is working
+/// exactly as designed.
+private struct SourcesSensorQualitySection: View {
+    @Environment(AppEnvironment.self) private var env
+    let sourceClassId: String
+
+    private static let header = LocalizedString(en: "What this sensor is good at", ar: "ما يجيده هذا المستشعر")
+
+    /// Families worth labelling, in the order the Sources screen reads best. Deliberately not
+    /// `MetricFamily.allCases`: subjective/symptom/medication entries describe things a person
+    /// types, where "sensor quality" is a category error.
+    private static let families: [MetricFamily] = [.heart, .sleep, .activity, .respiratory, .body]
+
+    private var sourceClass: SensorSourceClass? { SensorQualityMap.shared.sourceClass(id: sourceClassId) }
+
+    var body: some View {
+        if let sourceClass, !rows.isEmpty {
+            Rectangle().fill(BadanColor.separator).frame(height: 1)
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                LText(Self.header)
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                Text(env.s(sourceClass.displayName))
+                    .font(BadanFont.bodyCompact.weight(.medium))
+                    .foregroundStyle(BadanColor.textPrimary)
+                if env.depth.showsPowerDetail {
+                    Text(env.s(sourceClass.explainer))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(rows, id: \.family) { row in
+                    HStack(spacing: BadanSpace.space2) {
+                        LText(row.family.displayName)
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                        Spacer(minLength: BadanSpace.space2)
+                        PillLabel(env.s(row.level.label), systemImage: row.level.symbolName,
+                                  tint: row.level.tint)
+                    }
+                    .frame(minHeight: BadanSpace.touchMin)
+                    // One phrase per family instead of a label stop and a chip stop, matching
+                    // `StatBox`'s combined-label convention.
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(env.s(row.family.displayName)), \(env.s(row.level.label))")
+                }
+            }
+        }
+    }
+
+    private var rows: [(family: MetricFamily, level: SensorQualityLevel)] {
+        Self.families
+            .map { ($0, SensorQualityMap.shared.level(sourceClassId: sourceClassId, family: $0)) }
+            .filter { $0.1 != .unsupported }
     }
 }
 
@@ -625,6 +870,28 @@ private func permissionTypeLabel(_ platformType: String) -> LocalizedString {
     case "respiratoryRate": return LocalizedString(en: "Respiratory rate", ar: "معدل التنفّس")
     case "oxygenSaturation", "spo2": return LocalizedString(en: "Blood oxygen", ar: "أكسجين الدم")
     case "bodyMass", "weight": return LocalizedString(en: "Weight", ar: "الوزن")
+    // (EPIC-01/03) The families the widened read set added. Without these rows the permission
+    // matrix falls through to `humanize`, which turns `HKQuantityTypeIdentifierVO2Max` into
+    // "Hkquantitytypeidentifiervo2max" in English and leaves it untranslated in Arabic — the
+    // exact case the `default` branch logs a warning for.
+    case "vo2Max", "HKQuantityTypeIdentifierVO2Max":
+        return LocalizedString(en: "Cardio fitness", ar: "اللياقة القلبية")
+    case "basalEnergyBurned", "restingEnergy", "HKQuantityTypeIdentifierBasalEnergyBurned":
+        return LocalizedString(en: "Resting energy", ar: "طاقة الراحة")
+    case "flightsClimbed", "floors", "HKQuantityTypeIdentifierFlightsClimbed":
+        return LocalizedString(en: "Flights climbed", ar: "الطوابق المصعودة")
+    case "bodyFatPercentage", "HKQuantityTypeIdentifierBodyFatPercentage":
+        return LocalizedString(en: "Body fat", ar: "نسبة الدهون")
+    case "leanBodyMass", "HKQuantityTypeIdentifierLeanBodyMass":
+        return LocalizedString(en: "Lean mass", ar: "الكتلة الصافية")
+    case "height", "HKQuantityTypeIdentifierHeight":
+        return LocalizedString(en: "Height", ar: "الطول")
+    case "appleSleepingWristTemperature", "HKQuantityTypeIdentifierAppleSleepingWristTemperature":
+        return LocalizedString(en: "Wrist temperature", ar: "حرارة المعصم")
+    case "workoutType", "HKWorkoutTypeIdentifier", "workouts":
+        return LocalizedString(en: "Workouts", ar: "التمارين")
+    case "workoutRoute", "HKWorkoutRouteTypeIdentifier", "routes":
+        return LocalizedString(en: "Workout routes", ar: "مسارات التمارين")
     default:
         let humanized = SourcesDateText.humanize(platformType)
         return LocalizedString(en: humanized, ar: humanized)

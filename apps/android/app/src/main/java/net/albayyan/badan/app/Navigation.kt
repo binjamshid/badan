@@ -22,7 +22,26 @@ sealed interface Route {
     data object WorkoutLog : Route
     data object NutritionLog : Route
 
+    /**
+     * The GPS-route consent surface (EPIC-03). A destination rather than a Settings row: it is the
+     * single place `AppEnvironment.isRouteCaptureEnabled` is written, and being addressable means
+     * every screen that has to explain a missing route — the workout detail today, export scope
+     * later — can send the user to the explanation rather than restate it badly.
+     */
+    data object RouteConsent : Route
+
     data class MetricDetail(val metricId: String) : Route
+
+    /**
+     * One ingested workout session, keyed by its BADAN session ULID (not the upstream record id):
+     * the route has to survive a re-sync that re-reads the same workout, and the session row's id
+     * is stable across that where the platform's own identity is only stable per source.
+     *
+     * Manual `workout_entries` deliberately have no detail route. They have no session row, no HR
+     * linkage and no lineage to show, so a detail screen for one would be a page of empty sections;
+     * they stay expanded in place in the unified list instead.
+     */
+    data class WorkoutDetail(val sessionId: String) : Route
 }
 
 /**

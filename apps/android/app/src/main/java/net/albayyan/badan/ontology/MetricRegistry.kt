@@ -79,8 +79,17 @@ class MetricRegistry(metrics: List<MetricDefinition>) {
     companion object {
         private const val TAG = "MetricRegistry"
 
-        /** Expected `registry.json` schema version; mirrors the `packages/metric-ontology` source. */
-        const val EXPECTED_VERSION = "0.1.0"
+        /**
+         * Expected `registry.json` schema version; mirrors the `packages/metric-ontology` source.
+         *
+         * Bumped to 0.2.0 with the registry itself. This constant is the kind that goes stale
+         * silently — it did: the asset was synced to 0.2.0 while this still said 0.1.0, so every
+         * launch logged a version-mismatch warning that was accurate about the mismatch and wrong
+         * about the cause (the schema was fine; only this line was behind).
+         * `MetricFamilyParityTest.expectedVersionMatchesTheBundledRegistry` now fails on that gap
+         * instead of leaving it to a log nobody reads — update both together.
+         */
+        const val EXPECTED_VERSION = "0.2.0"
 
         private fun loadMetrics(assets: AssetManager): List<MetricDefinition> {
             val file = BundleJson.load<RegistryFile>(assets, "registry")

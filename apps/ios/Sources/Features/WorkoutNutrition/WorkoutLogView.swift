@@ -41,6 +41,20 @@ private enum WorkoutLogStrings {
     static let quickRepeatHint = LocalizedString(
         en: "Tap to reuse these details for a new entry",
         ar: "اضغط لإعادة استخدام هذه التفاصيل في إدخال جديد")
+    static let openWorkoutHint = LocalizedString(
+        en: "Opens the full workout, with its heart rate and route",
+        ar: "يفتح التمرين كاملاً مع معدل ضربات القلب والمسار")
+    // EPIC-03: the list is no longer manual-only, so its heading no longer implies it is.
+    static let history = LocalizedString(en: "Your workouts", ar: "تمارينك")
+    static let fromDevice = LocalizedString(en: "From your device", ar: "من جهازك")
+    static let setAside = LocalizedString(en: "Set aside", ar: "موضوع جانباً")
+    static let setAsideExplanation = LocalizedString(
+        en: "You logged this by hand too. The recorded version is shown because it carries more detail — nothing was deleted, and your entry is still in your record and in every export.",
+        ar: "سجّلته يدوياً أيضاً. وتُعرض النسخة المسجَّلة تلقائياً لأنها تحمل تفاصيل أكثر — لم يُحذف شيء، وإدخالك ما زال في سجلّك وفي كل تصدير.")
+    static let overlapDetail = LocalizedString(en: "{pct}% overlap", ar: "تداخل بنسبة {pct}٪")
+    static let whyLabel = LocalizedString(en: "Why?", ar: "لماذا؟")
+    static let routeChip = LocalizedString(en: "Route", ar: "مسار")
+    static let bpm = LocalizedString(en: "bpm", ar: "ن/د")
 }
 
 // MARK: - Activity model
@@ -93,10 +107,22 @@ enum WorkoutActivity: String, CaseIterable, Identifiable {
 
 // MARK: - View model
 
+/// The thread-safe slice of `AppEnvironment` the unified-list fetch needs, mirroring
+/// `BodyFetchInputs`/`SourcesFetchInputs` (PERF-01): repository references and value types only.
+struct WorkoutListFetchInputs {
+    var logging: LoggingRepository
+    var measurements: MeasurementRepository
+    var reconciliation: ReconciliationRepository
+    var from: Date
+    var to: Date
+}
+
 @Observable
 @MainActor
 final class WorkoutLogViewModel {
-    var recent: [WorkoutEntry] = []
+    /// The unified history: device-recorded workouts and hand-logged entries in one list, with
+    /// suppressed manual twins attached to the ingested row that set them aside (EPIC-03 task 5).
+    var items: [UnifiedWorkoutList.Item] = []
     var loggedToday: Bool = false
 
     /// Snapshotted once per view-model lifetime (i.e. per screen appearance) rather than read
@@ -105,20 +131,62 @@ final class WorkoutLogViewModel {
     /// mid-flow (OPT-136, same fix family as OPT-110).
     let tz: String = TimeZone.current.identifier
 
-    /// Load the last two weeks of workouts and note whether anything is attributed to today.
-    func load(_ env: AppEnvironment) {
+    /// Load the last two weeks from BOTH stores and note whether anything is attributed to today.
+    ///
+    /// (EPIC-03) This used to read `logging.workouts` alone on the main actor. Two things changed
+    /// and they are related: the query now also reads `sessions` plus a `forSuppressed` lookup per
+    /// manual entry, which is more work than belongs on the main thread — so it moved to a
+    /// detached task like every other screen's fetch — and reading `workout_entries` alone is
+    /// exactly the bug `IngestionPipeline.dedupWorkouts`' doc warns about, where a watch-recorded
+    /// run and its hand-typed twin both appear as separate workouts.
+    func load(_ env: AppEnvironment) async {
         let now = env.now()
-        let from = now.addingTimeInterval(-14 * 86_400)
-        let all = (try? env.logging.workouts(from: from, to: now)) ?? []
-        recent = all
+        let inputs = WorkoutListFetchInputs(
+            logging: env.logging, measurements: env.measurements, reconciliation: env.reconciliation,
+            from: now.addingTimeInterval(-14 * 86_400), to: now)
+
+        let loaded = await Task.detached(priority: .userInitiated) {
+            Self.fetch(inputs)
+        }.value
+
+        guard !Task.isCancelled else { return }
+
+        items = loaded
         let startOfToday = DayAttribution.startOfDay(now, tz: tz)
-        loggedToday = all.contains { $0.startAt >= startOfToday }
+        // Counts suppressed children too: the user DID log a workout today even if an ingested
+        // twin is currently standing in for it, and telling them "nothing logged today" would be
+        // false and would invite a duplicate entry.
+        loggedToday = loaded.contains { item in
+            item.startAt >= startOfToday || item.suppressedChildren.contains { $0.entry.startAt >= startOfToday }
+        }
+    }
+
+    /// Kept `internal` (not `private`) so the list-assembly behaviour is reachable from tests,
+    /// matching `BodyViewModel.fetch`.
+    ///
+    /// A failed read yields an empty list rather than propagating: this screen's primary job is
+    /// capture, and a history query that fails must not block someone from logging a workout.
+    /// The capture path has its own explicit error handling (OPT-129).
+    nonisolated static func fetch(_ inputs: WorkoutListFetchInputs) -> [UnifiedWorkoutList.Item] {
+        let manual = (try? inputs.logging.workouts(from: inputs.from, to: inputs.to)) ?? []
+        let ingested = (try? inputs.measurements.sessions(kind: .workout, from: inputs.from, to: inputs.to)) ?? []
+        // Resolved once per entry into a dictionary rather than passing a closure that queries
+        // per lookup: `assemble` consults the lookup twice per suppressed entry (once to attach,
+        // once to check its winner is on screen), and a repository round trip per call would make
+        // that an N+1 over a list the user scrolls.
+        var decisions: [String: ReconciliationDecision] = [:]
+        for entry in manual {
+            if let decision = try? inputs.reconciliation.forSuppressed(entry.id) {
+                decisions[entry.id] = decision
+            }
+        }
+        return UnifiedWorkoutList.assemble(ingested: ingested, manual: manual) { decisions[$0] }
     }
 
     /// Insert a manual workout ending at `endAt` (usually "now", or a user-picked backdate —
-    /// FEAT-140), then reload the list in place. Throws instead of swallowing a failed write,
-    /// so the caller can keep the form intact and tell the user rather than silently clearing
-    /// it as if the save had succeeded (OPT-129).
+    /// FEAT-140). Throws instead of swallowing a failed write, so the caller can keep the form
+    /// intact and tell the user rather than silently clearing it as if the save had succeeded
+    /// (OPT-129). The caller reloads; this no longer does, since the reload is now async.
     func save(activity: WorkoutActivity, minutes: Int, rpe: Int,
               energyKcal: Double?, distanceM: Double?, endAt: Date, env: AppEnvironment) throws {
         let entry = WorkoutEntry(
@@ -135,10 +203,10 @@ final class WorkoutLogViewModel {
             originDeviceId: env.deviceId)
         try env.logging.upsertWorkout(entry)
         // (F5) A saved workout changes Timeline and Home's activity module, not just this
-        // screen's own list — `load(env)` below only refreshes this view. Without the bump those
-        // screens keep showing pre-save data until something else happens to invalidate them.
+        // screen's own list. Without the bump those screens keep showing pre-save data until
+        // something else happens to invalidate them — and since this screen's own `.task(id:)`
+        // now folds in `dataGeneration`, the bump is also what reloads the list here.
         env.bumpDataGeneration()
-        load(env)
     }
 }
 
@@ -152,6 +220,11 @@ struct WorkoutLogView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = WorkoutLogViewModel()
+    /// (EPIC-01 task 5, plan §13.1) This is the "workout surface" the staged-permission plan
+    /// names: opening it is what asks for workouts + energy + distance, each behind its own
+    /// explainer. The gate itself remembers what has already been asked, so a returning user
+    /// sees nothing.
+    @State private var permissions = HealthPermissionGate()
 
     // Capture state
     @State private var activity: WorkoutActivity = .run
@@ -198,8 +271,8 @@ struct WorkoutLogView: View {
                     optionalCard
                     whenCard
                     saveButton
-                    WorkoutRecentSection(workouts: vm.recent, loggedToday: vm.loggedToday) { workout in
-                        prefill(from: workout)
+                    WorkoutHistorySection(items: vm.items, loggedToday: vm.loggedToday) { item in
+                        prefill(from: item)
                         withAnimation { proxy.scrollTo(topAnchor, anchor: .top) }
                     }
                 }
@@ -229,19 +302,28 @@ struct WorkoutLogView: View {
         .onChange(of: focusedField) { _, newValue in
             if newValue != .minutesEntry { commitMinutesText() }
         }
-        .task {
+        .permissionExplainer(permissions)
+        // (BUG-12/13 pattern) Keyed on `dataGeneration` as well as the profile, so a background
+        // sync that ingests a workout — or suppresses a manual twin — redraws this list instead
+        // of leaving it showing the pre-sync history. This screen's own saves bump the same
+        // counter, which is what reloads after a save now that `vm.save` no longer does.
+        .task(id: WorkoutLogLoadKey(profile: env.profile, generation: env.dataGeneration)) {
             loggedAt = env.now()
             maxDate = env.now()
-            vm.load(env)
+            await vm.load(env)
         }
+        // Separate from the load task on purpose: staging must run once per appearance, not
+        // again every time a sync bumps `dataGeneration` — a permission explainer that
+        // re-evaluates on every data change is one background wake away from feeling like a nag.
+        .task { permissions.request(HealthPermissionBundle.workoutSurface) }
     }
 
     // MARK: - Logged-today summary
 
-    private var todaysWorkoutSummary: WorkoutEntry? {
+    private var todaysWorkoutSummary: UnifiedWorkoutList.Item? {
         guard vm.loggedToday else { return nil }
         let startOfToday = DayAttribution.startOfDay(env.now(), tz: vm.tz)
-        return vm.recent
+        return vm.items
             .filter { $0.startAt >= startOfToday }
             .max(by: { $0.startAt < $1.startAt })
     }
@@ -249,7 +331,7 @@ struct WorkoutLogView: View {
     /// A brief "already logged today" summary above the (otherwise always-blank) capture form,
     /// so a returning user isn't left guessing whether they already logged before filling out
     /// another entry (UIUX-150).
-    private func loggedTodayBanner(_ workout: WorkoutEntry) -> some View {
+    private func loggedTodayBanner(_ workout: UnifiedWorkoutList.Item) -> some View {
         BadanCard {
             HStack(spacing: BadanSpace.space3) {
                 Image(systemName: "checkmark.circle")
@@ -566,6 +648,10 @@ struct WorkoutLogView: View {
         }
 
         isSaving = false
+        // `vm.save` bumps `dataGeneration`, which re-fires the `.task(id:)` above; this is the
+        // belt-and-braces reload for the case where SwiftUI coalesces the two into one pass
+        // before the write is visible. Idempotent — a second load just re-reads the same rows.
+        Task { await vm.load(env) }
         // Keep the altitude and activity; clear the one-off measurements and backdate pick.
         kcalText = ""
         distanceText = ""
@@ -582,9 +668,16 @@ struct WorkoutLogView: View {
 
     // MARK: - Quick-repeat
 
-    /// Pre-fills the capture form from a past entry so a recurring routine doesn't need to be
+    /// Pre-fills the capture form from a past workout so a recurring routine doesn't need to be
     /// re-entered from scratch every session (FEAT-144).
-    private func prefill(from workout: WorkoutEntry) {
+    ///
+    /// Works from an ingested row as well as a manual one now that the list carries both — but
+    /// the activity only transfers when the stored string is one of the quick-add cases.
+    /// Ingested rows carry `HKTypeMap` slugs (`running`, `traditional_strength`), which are
+    /// deliberately NOT force-mapped onto the five-case picker: a wrong guess silently files the
+    /// new entry under the wrong activity, and duration and effort — the fields people actually
+    /// re-enter — transfer either way.
+    private func prefill(from workout: UnifiedWorkoutList.Item) {
         if let matched = WorkoutActivity(rawValue: workout.activityType) {
             activity = matched
         }
@@ -603,28 +696,29 @@ struct WorkoutLogView: View {
     }
 }
 
-// MARK: - Recent workouts
+// MARK: - Workout history (unified)
 
-/// The read-only recent-workouts list, extracted into its own view identity so RPE slider
-/// drags, activity picker taps, and text-field edits in the capture form above don't force
-/// SwiftUI to re-diff this list on every keystroke (PERF-078). Because chip/formatter work
-/// only re-runs when this view's own inputs (`workouts`/`loggedToday`) actually change, this
-/// also addresses PERF-077's repeated per-row formatting cost.
-private struct WorkoutRecentSection: View {
+/// The read-only history below the capture form: ingested workouts and hand-logged entries in
+/// one list (EPIC-03 task 5).
+///
+/// Extracted into its own view identity so RPE slider drags, activity picker taps, and text-field
+/// edits in the capture form above don't force SwiftUI to re-diff this list on every keystroke
+/// (PERF-078). Because chip/formatter work only re-runs when this view's own inputs
+/// (`items`/`loggedToday`) actually change, this also addresses PERF-077's repeated per-row
+/// formatting cost — which matters more now that a row can carry children.
+private struct WorkoutHistorySection: View {
     @Environment(AppEnvironment.self) private var env
-    let workouts: [WorkoutEntry]
+    let items: [UnifiedWorkoutList.Item]
     let loggedToday: Bool
-    let onSelect: (WorkoutEntry) -> Void
-
-    private var power: Bool { env.depth.showsPowerDetail }
+    let onSelect: (UnifiedWorkoutList.Item) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(WorkoutLogStrings.recentWorkouts))
+            SectionHeader(env.s(WorkoutLogStrings.history))
             if !loggedToday {
                 recoveryCard
             }
-            if workouts.isEmpty {
+            if items.isEmpty {
                 // `loggedToday` is derived from the very same array this empties from, so it
                 // can never be true here — the old `if loggedToday` guard around this text made
                 // it permanently unreachable, silently hiding the empty state entirely for a
@@ -636,8 +730,8 @@ private struct WorkoutRecentSection: View {
                 if let summary = weeklySummary {
                     weekSummaryCard(summary)
                 }
-                ForEach(workouts) { workout in
-                    workoutRow(workout)
+                ForEach(items) { item in
+                    WorkoutHistoryRow(item: item, onSelect: onSelect)
                 }
             }
         }
@@ -670,10 +764,14 @@ private struct WorkoutRecentSection: View {
     /// A light weekly training-load rollup (sessions + total time) above the raw list, so the
     /// screen carries a little compounding, non-alarming insight instead of only a flat history
     /// (FEAT-171).
+    ///
+    /// Counts unified items, so a workout recorded by a watch AND typed by hand contributes once
+    /// rather than twice — which is the whole reason the suppressed twin hangs off its parent
+    /// instead of sitting beside it.
     private var weeklySummary: (sessions: Int, minutes: Int)? {
         let now = env.now()
         let weekStart = now.addingTimeInterval(-7 * 86_400)
-        let recentWeek = workouts.filter { $0.startAt >= weekStart }
+        let recentWeek = items.filter { $0.startAt >= weekStart }
         guard !recentWeek.isEmpty else { return nil }
         let totalMinutes = Int((recentWeek.reduce(0.0) { $0 + $1.durationSeconds } / 60).rounded())
         return (recentWeek.count, totalMinutes)
@@ -697,74 +795,131 @@ private struct WorkoutRecentSection: View {
             }
         }
     }
+}
 
-    private func workoutRow(_ workout: WorkoutEntry) -> some View {
-        Button {
-            onSelect(workout)
-        } label: {
-            BadanCard {
-                VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                    HStack(spacing: BadanSpace.space3) {
-                        Image(systemName: WorkoutActivity.symbol(forStored: workout.activityType))
-                            .foregroundStyle(BadanColor.primary)
-                            .accessibilityHidden(true)
-                        Text(env.s(WorkoutActivity.label(forStored: workout.activityType)))
-                            .font(BadanFont.body.weight(.medium))
-                            .foregroundStyle(BadanColor.textPrimary)
-                        Spacer(minLength: BadanSpace.space2)
-                        Text(env.format.duration(seconds: workout.durationSeconds, unit: "min"))
-                            .font(BadanFont.bodyCompact.monospacedDigit())
-                            .foregroundStyle(BadanColor.textSecondary)
-                    }
+// MARK: - One history row
 
-                    let chips = detailChips(workout)
-                    if !chips.isEmpty {
-                        HStack(spacing: BadanSpace.space2) {
-                            ForEach(chips.indices, id: \.self) { index in
-                                chips[index]
-                            }
+/// One workout in the list, from either store.
+///
+/// The two origins behave differently on tap, and that difference is the point: an ingested row
+/// opens `WorkoutDetailScreen` (it has a heart-rate trace, effort bands, possibly a route), while
+/// a manual row re-fills the capture form above it (FEAT-144's quick-repeat), because a manual
+/// entry has no detail beyond what this row already shows. The accessibility hint states which
+/// one will happen rather than leaving both as an untyped tap.
+private struct WorkoutHistoryRow: View {
+    @Environment(AppEnvironment.self) private var env
+    let item: UnifiedWorkoutList.Item
+    let onSelect: (UnifiedWorkoutList.Item) -> Void
+
+    private var power: Bool { env.depth.showsPowerDetail }
+
+    private var isIngested: Bool {
+        if case .ingested = item.origin { return true }
+        return false
+    }
+
+    var body: some View {
+        if case .ingested(let sessionId, _, _, _) = item.origin {
+            NavigationLink {
+                WorkoutDetailScreen(sessionId: sessionId)
+            } label: {
+                card
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text(WorkoutLogStrings.openWorkoutHint, language: env.language))
+        } else {
+            Button { onSelect(item) } label: { card }
+                .buttonStyle(.plain)
+                .accessibilityHint(Text(WorkoutLogStrings.quickRepeatHint, language: env.language))
+        }
+    }
+
+    private var card: some View {
+        BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                HStack(spacing: BadanSpace.space3) {
+                    Image(systemName: WorkoutActivity.symbol(forStored: item.activityType))
+                        .foregroundStyle(BadanColor.primary)
+                        .accessibilityHidden(true)
+                    Text(env.s(WorkoutActivity.label(forStored: item.activityType)))
+                        .font(BadanFont.body.weight(.medium))
+                        .foregroundStyle(BadanColor.textPrimary)
+                    Spacer(minLength: BadanSpace.space2)
+                    Text(env.format.duration(seconds: item.durationSeconds, unit: "min"))
+                        .font(BadanFont.bodyCompact.monospacedDigit())
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
+
+                let chips = detailChips
+                if !chips.isEmpty {
+                    // Wraps rather than clipping: an ingested ride can carry four chips, which
+                    // do not fit on one line at larger Dynamic Type sizes.
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: BadanSpace.space2)],
+                              alignment: .leading, spacing: BadanSpace.space2) {
+                        ForEach(chips.indices, id: \.self) { index in
+                            chips[index]
                         }
                     }
+                }
 
-                    Text(relativeDateText(workout.startAt))
+                HStack(spacing: BadanSpace.space2) {
+                    Text(relativeDateText(item.startAt))
                         .font(BadanFont.caption)
                         .foregroundStyle(BadanColor.textSecondary)
-
-                    if power {
-                        // Power altitude: raw canonical values + lineage.
-                        rawLine(workout)
-                        ProvenanceRow(sourceName: env.s(WorkoutLogStrings.savedManually),
-                                      ingestionPath: workout.ingestionPath,
-                                      timestamp: workout.startAt,
-                                      language: env.language)
+                    Spacer(minLength: BadanSpace.space2)
+                    // Origin is stated on every row, at every altitude. "Where did this come
+                    // from" is the first question a mixed list provokes, and answering it only
+                    // in power mode would leave casual users looking at two visually identical
+                    // rows with different meanings.
+                    PillLabel(env.s(isIngested ? WorkoutLogStrings.fromDevice : WorkoutLogStrings.savedManually),
+                              systemImage: isIngested ? "applewatch" : "square.and.pencil",
+                              tint: BadanColor.textSecondary, filled: false)
+                    if case .ingested(_, _, _, let hasRoute) = item.origin, hasRoute {
+                        PillLabel(env.s(WorkoutLogStrings.routeChip), systemImage: "map",
+                                  tint: BadanColor.textSecondary, filled: false)
                     }
+                }
+
+                if power {
+                    rawLine
+                    ProvenanceRow(sourceName: env.s(isIngested ? WorkoutLogStrings.fromDevice
+                                                              : WorkoutLogStrings.savedManually),
+                                  ingestionPath: item.ingestionPath,
+                                  timestamp: item.startAt,
+                                  language: env.language)
+                }
+
+                ForEach(item.suppressedChildren) { child in
+                    SuppressedChildRow(child: child)
                 }
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityHint(Text(env.s(WorkoutLogStrings.quickRepeatHint)))
     }
 
-    private func detailChips(_ workout: WorkoutEntry) -> [PillLabel] {
+    private var detailChips: [PillLabel] {
         var chips: [PillLabel] = []
-        if let rpe = workout.perceivedEffort {
+        if let rpe = item.perceivedEffort {
             chips.append(PillLabel("\(env.s(WorkoutLogStrings.rpe)) \(env.format.integer(rpe))",
                                    systemImage: "gauge"))
         }
-        if let kcal = workout.energyKcal {
+        if let kcal = item.energyKcal {
             chips.append(PillLabel("\(env.format.integer(Int(kcal.rounded()))) \(env.s(WorkoutLogStrings.kcal))",
                                    systemImage: "flame"))
         }
-        if let distance = workout.distanceM {
+        if let distance = item.distanceMeters {
             chips.append(PillLabel("\(env.format.number(distance / 1000, fraction: 1)) \(env.s(WorkoutLogStrings.km))",
                                    systemImage: "ruler"))
+        }
+        if let avgHr = item.avgHeartRateBpm {
+            chips.append(PillLabel("\(env.format.integer(Int(avgHr.rounded()))) \(env.s(WorkoutLogStrings.bpm))",
+                                   systemImage: "heart"))
         }
         return chips
     }
 
-    private func rawLine(_ workout: WorkoutEntry) -> some View {
-        var parts: [String] = ["\(env.format.integer(Int(workout.durationSeconds.rounded()))) \(env.s(WorkoutLogStrings.seconds))"]
-        if let distance = workout.distanceM {
+    private var rawLine: some View {
+        var parts: [String] = ["\(env.format.integer(Int(item.durationSeconds.rounded()))) \(env.s(WorkoutLogStrings.seconds))"]
+        if let distance = item.distanceMeters {
             parts.append("\(env.format.integer(Int(distance.rounded()))) \(env.s(WorkoutLogStrings.meters))")
         }
         return Text(parts.joined(separator: " · "))
@@ -786,4 +941,93 @@ private struct WorkoutRecentSection: View {
         Self.cachedRelativeFormatter.locale = Locale(identifier: env.language.localeIdentifier)
         return Self.cachedRelativeFormatter.localizedString(for: date, relativeTo: env.now())
     }
+}
+
+// MARK: - Suppressed manual twin (I3)
+
+/// A hand-logged entry the row above it currently stands in for.
+///
+/// **This row is the I3 guarantee made visible.** The pipeline never deletes or edits the manual
+/// entry — it journals a reversible decision in `dedup_decisions` and leaves the row alone — but
+/// a list that filtered it out would show the user exactly what a deletion looks like. So it is
+/// rendered in place, indented under its twin, labelled "set aside" rather than "removed", with
+/// a "Why?" disclosure carrying the overlap the rule actually measured.
+///
+/// Muted, not hidden, and deliberately NOT behind the power-mode gate: a casual user is the one
+/// most likely to conclude their entry was thrown away.
+private struct SuppressedChildRow: View {
+    @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let child: UnifiedWorkoutList.Child
+
+    @State private var showsWhy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space2) {
+            Rectangle().fill(BadanColor.separator).frame(height: 1)
+            HStack(spacing: BadanSpace.space2) {
+                Image(systemName: "arrow.turn.down.right")
+                    .imageScale(.small)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .accessibilityHidden(true)
+                Text(env.s(WorkoutActivity.label(forStored: child.entry.activityType)))
+                    .font(BadanFont.bodyCompact)
+                    .foregroundStyle(BadanColor.textSecondary)
+                Text(env.format.duration(seconds: child.entry.durationSeconds, unit: "min"))
+                    .font(BadanFont.caption.monospacedDigit())
+                    .foregroundStyle(BadanColor.textSecondary)
+                Spacer(minLength: BadanSpace.space2)
+                PillLabel(env.s(WorkoutLogStrings.setAside), tint: BadanColor.textSecondary, filled: false)
+            }
+
+            Button {
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
+                    showsWhy.toggle()
+                }
+            } label: {
+                Text(env.s(WorkoutLogStrings.whyLabel))
+                    .font(BadanFont.link)
+                    .foregroundStyle(BadanColor.primary)
+                    .frame(minHeight: BadanSpace.touchMin, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(showsWhy ? .isSelected : [])
+
+            if showsWhy {
+                VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                    Text(env.s(WorkoutLogStrings.setAsideExplanation))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let percent = child.lineage.overlapPercent {
+                        Text(env.s(WorkoutLogStrings.overlapDetail
+                            .filling(["pct": env.format.number(percent, fraction: 0)])))
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
+                    LText(Loc.reversible)
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                    if env.depth.showsPowerDetail {
+                        // The journaled rule id, styled as the technical identifier it is and
+                        // pinned LTR in Arabic — matching how algorithm/rule strings are shown
+                        // in `MetricAnatomySheet`.
+                        Text("\(child.lineage.rule)@\(child.lineage.ruleVersion)")
+                            .font(BadanFont.caption.monospaced())
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .environment(\.layoutDirection, .leftToRight)
+                    }
+                }
+            }
+        }
+        .padding(.leading, BadanSpace.space3)
+    }
+}
+
+/// (BUG-12/13 pattern) The standardized `.task(id:)` identity — see `HomeLoadKey`
+/// (`HomeScreen.swift`). Folding in `dataGeneration` is what makes the unified list self-correct
+/// when a background sync ingests a workout that suppresses an entry already on screen.
+private struct WorkoutLogLoadKey: Equatable {
+    let profile: CustomizationProfile
+    let generation: Int
 }
