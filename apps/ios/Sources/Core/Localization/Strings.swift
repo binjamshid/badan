@@ -19,6 +19,12 @@ enum Loc {
     static let add = LocalizedString(en: "Add", ar: "إضافة")
     static let edit = LocalizedString(en: "Edit", ar: "تعديل")
     static let delete = LocalizedString(en: "Delete", ar: "حذف")
+    static let undo = LocalizedString(en: "Undo", ar: "تراجع")
+    /// The `BadanUndoToast` message after a Timeline row is swipe-deleted (ledger #34) — a
+    /// single generic sentence rather than one per entity kind, since the row itself (still
+    /// visible for the undo window on some layouts, or just recently on screen) already named
+    /// what it was.
+    static let itemDeleted = LocalizedString(en: "Deleted", ar: "تم الحذف")
     static let close = LocalizedString(en: "Close", ar: "إغلاق")
     static let next = LocalizedString(en: "Next", ar: "التالي")
     static let back = LocalizedString(en: "Back", ar: "رجوع")

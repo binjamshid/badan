@@ -6,6 +6,7 @@ import UserNotifications
 /// alerts) have no delivery mechanism and stay hidden until they do — see `notificationsSection`.
 struct NotificationsSettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var notificationsDeniedAtSystemLevel = false
     @State private var transientNotice: LocalizedString?
 
@@ -22,7 +23,7 @@ struct NotificationsSettingsScreen: View {
         .overlay(alignment: .bottom) {
             if let notice = transientNotice { SettingsTransientNotice(notice: notice) }
         }
-        .animation(.easeInOut(duration: 0.25), value: transientNotice)
+        .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: transientNotice)
     }
 
     /// (A3) Announced as well as shown — a denied-permission notice that only appears at the

@@ -17,6 +17,7 @@ final class DiagnosticsTests: XCTestCase {
 
     private func report(
         isStorageFallback: Bool = false,
+        isBackupHardened: Bool? = true,
         lastSyncAt: Date? = Date(timeIntervalSince1970: 1_783_000_000),
         isSampleDataActive: Bool = false,
         remindersTruncatedCount: Int = 0
@@ -24,7 +25,8 @@ final class DiagnosticsTests: XCTestCase {
         DiagnosticsReport(
             appVersion: "0.1.0", deviceId: "device-abc", language: "en", depth: "casual",
             schemaVersion: 3, mainBytes: 5_242_880, sensitiveBytes: 32_768,
-            isStorageFallback: isStorageFallback, isHealthKitConnected: true,
+            isStorageFallback: isStorageFallback, isBackupHardened: isBackupHardened,
+            isHealthKitConnected: true,
             lastSyncAt: lastSyncAt, isSampleDataActive: isSampleDataActive,
             remindersTruncatedCount: remindersTruncatedCount)
     }
@@ -74,6 +76,26 @@ final class DiagnosticsTests: XCTestCase {
             XCTAssertFalse(text.contains(leak),
                            "diagnostics must carry no health data — found \"\(leak)\"")
         }
+    }
+
+    // MARK: - Backup hardening read-back (ledger #20)
+
+    func testBackupHardeningConfirmedIsStatedExplicitly() {
+        let text = report(isBackupHardened: true).plainText(dateFormatter: formatter)
+        XCTAssertTrue(text.contains("backup_excluded_and_protected: true"))
+    }
+
+    /// The whole point of the read-back (see `DatabaseHardeningTests`): if it ever disagrees
+    /// with `docs/PRIVACY_POLICY.md` §3's unconditional claim, that has to be a fact someone can
+    /// see, not a silent `false` indistinguishable from "field not populated".
+    func testBackupHardeningNotConfirmedIsStatedExplicitly() {
+        let text = report(isBackupHardened: false).plainText(dateFormatter: formatter)
+        XCTAssertTrue(text.contains("backup_excluded_and_protected: false"))
+    }
+
+    func testBackupHardeningInapplicableIsStatedAsNotApplicable() {
+        let text = report(isBackupHardened: nil).plainText(dateFormatter: formatter)
+        XCTAssertTrue(text.contains("backup_excluded_and_protected: n/a"))
     }
 
     // MARK: - Byte formatting

@@ -688,9 +688,7 @@ private fun PrimaryButton(
     modifier: Modifier = Modifier,
 ) {
     val colors = BadanTheme.colors
-    // No dedicated on-primary token: white on the light-theme teal, near-black on the light
-    // dark-theme teal — legible in both.
-    val onPrimary = if (colors.isDark) Color(0xFF08201D) else Color.White
+    val onPrimary = colors.onPrimary
     Box(
         modifier = modifier
             .fillMaxWidth()

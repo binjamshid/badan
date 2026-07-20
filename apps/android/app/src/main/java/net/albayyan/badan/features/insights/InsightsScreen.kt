@@ -57,6 +57,7 @@ import net.albayyan.badan.app.Route
 import net.albayyan.badan.core.AppLanguage
 import net.albayyan.badan.core.Loc
 import net.albayyan.badan.core.LocalizedString
+import net.albayyan.badan.designsystem.BadanMotion
 import net.albayyan.badan.designsystem.BadanSpace
 import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.BadanType
@@ -380,6 +381,7 @@ private fun WhyDisclosure(insight: Insight) {
             // Material expand/collapse affordance. UIUX-285.
             val chevronRotation by animateFloatAsState(
                 targetValue = if (expanded) 180f else 0f,
+                animationSpec = BadanMotion.tween(),
                 label = "whyChevron",
             )
             Icon(

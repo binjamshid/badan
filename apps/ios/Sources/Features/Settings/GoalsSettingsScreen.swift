@@ -172,6 +172,7 @@ final class GoalsViewModel {
 /// makes it real.
 struct GoalsSettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = GoalsViewModel()
     @State private var editing: Goal?
     @State private var showAdd = false
@@ -210,7 +211,7 @@ struct GoalsSettingsScreen: View {
         .overlay(alignment: .bottom) {
             if let notice { SettingsTransientNotice(notice: notice) }
         }
-        .animation(.easeInOut(duration: 0.25), value: notice)
+        .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: notice)
         .task(id: GoalsLoadKey(profile: env.profile, generation: env.dataGeneration)) { vm.load(env) }
         .sheet(isPresented: $showAdd) {
             GoalEditorSheet(goal: nil) { saved in handleSave(saved) }

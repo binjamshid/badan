@@ -8,6 +8,15 @@ import SwiftUI
 final class TimelineViewModel {
     var state: LoadState<[TimelineEvent]> = .loading
 
+    /// A swipe-deleted row still inside its undo window — optimistically hidden from the list
+    /// (`pendingDeleteIds`) without yet touching storage. Never more than one at a time: a second
+    /// swipe while the first is pending commits the first immediately (see `requestDelete`)
+    /// (ledger #34 / dossier "No manual log can be edited or deleted anywhere in the app").
+    private(set) var pendingDelete: TimelineEvent?
+    private(set) var pendingDeleteIds: Set<String> = []
+    private var pendingDeleteTask: Task<Void, Never>?
+    private static let undoWindow: Duration = .seconds(5)
+
     /// Assembles the unified spine on a detached task (PERF-01) — Timeline's 7-store fan-out
     /// used to run synchronously on the main thread every time a relevant profile field
     /// changed. A cancelled load never clobbers state.
@@ -35,6 +44,82 @@ final class TimelineViewModel {
             state = .error(env.s(LoadErrorCopy.message))
         }
     }
+
+    // MARK: - Swipe-to-delete + undo (ledger #34)
+
+    /// Optimistically hides `event` and starts a 5-second undo window; the tombstone delete
+    /// commits only if the window elapses without `undoPendingDelete()` being called. Nothing
+    /// is written to either database until then, so "Undo" is free — it never has to reverse a
+    /// write, only cancel one that hasn't happened yet.
+    func requestDelete(_ event: TimelineEvent, env: AppEnvironment) {
+        // A second swipe while the first is still pending: commit the first now rather than
+        // silently losing it (only one undo window is ever shown at a time).
+        if let previous = pendingDelete { commit(previous, env: env) }
+
+        pendingDeleteTask?.cancel()
+        pendingDeleteIds.insert(event.id)
+        pendingDelete = event
+        pendingDeleteTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.undoWindow)
+            guard !Task.isCancelled else { return }
+            self?.finalizePendingDelete(env: env)
+        }
+    }
+
+    func undoPendingDelete() {
+        pendingDeleteTask?.cancel()
+        pendingDeleteTask = nil
+        guard let pending = pendingDelete else { return }
+        pendingDeleteIds.remove(pending.id)
+        pendingDelete = nil
+    }
+
+    private func finalizePendingDelete(env: AppEnvironment) {
+        guard let pending = pendingDelete else { return }
+        pendingDelete = nil
+        commit(pending, env: env)
+    }
+
+    /// Writes the tombstone and refreshes the spine. `logging`/`now` are extracted from `env`
+    /// synchronously here, on the main actor, before entering the detached task — `env` itself
+    /// (`@MainActor`) is never captured inside the closure, matching `load(_:)`'s own pattern
+    /// above for handing repository work to a background thread.
+    private func commit(_ event: TimelineEvent, env: AppEnvironment) {
+        guard let recordId = event.sourceRecordId else { return }
+        let logging = env.logging
+        let now = env.now()
+        Task {
+            let outcome: Result<Void, Error> = await Task.detached(priority: .utility) {
+                do {
+                    switch event.type {
+                    case .medication: try logging.deleteAdherence(id: recordId, at: now)
+                    case .meal: try logging.deleteNutrition(id: recordId, at: now)
+                    case .note: try logging.deleteNote(id: recordId, at: now)
+                    default:
+                        // Defensive: `deletable` is only ever true for the three kinds above
+                        // today (see `TimelineAssembler`); a future kind marked deletable
+                        // without a case here fails loudly in DEBUG rather than silently no-op
+                        // deleting nothing.
+                        assertionFailure("TimelineEvent.deletable event of type \(event.type) has no delete path wired")
+                    }
+                    return .success(())
+                } catch { return .failure(error) }
+            }.value
+
+            if case .failure(let error) = outcome {
+                LoadErrorLog.log(error, screen: "Timeline.delete")
+                // The optimistic hide must not become a permanent, silent loss on a write
+                // failure — put the row back and let the user see/retry it.
+                pendingDeleteIds.remove(event.id)
+                Announce.failure(env.s(LoadErrorCopy.message))
+                return
+            }
+            // Reload through the same reactive path every other write in the app uses
+            // (`dataGeneration` is part of Timeline's `.task(id:)` key) rather than reaching
+            // into `state` directly here.
+            env.bumpDataGeneration()
+        }
+    }
 }
 
 /// A day's worth of events, newest day first, newest event first within the day.
@@ -46,6 +131,7 @@ private struct TimelineDay: Identifiable {
 
 struct TimelineScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = TimelineViewModel()
     @State private var selectedTypes: Set<TimelineEventType> = []
     @State private var searchText: String = ""
@@ -107,6 +193,14 @@ struct TimelineScreen: View {
         .onChange(of: env.depth) { _, newDepth in
             if !newDepth.showsPowerDetail { selectedTypes.removeAll() }
         }
+        .overlay(alignment: .bottom) {
+            if vm.pendingDelete != nil {
+                BadanUndoToast(message: env.s(Loc.itemDeleted), undoLabel: env.s(Loc.undo)) {
+                    vm.undoPendingDelete()
+                }
+            }
+        }
+        .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: vm.pendingDelete)
     }
 
     // MARK: - Loaded content
@@ -132,6 +226,7 @@ struct TimelineScreen: View {
         .onChange(of: events, initial: true) { _, newEvents in recompute(newEvents) }
         .onChange(of: selectedTypes) { _, _ in recompute(events) }
         .onChange(of: searchText) { _, _ in recompute(events) }
+        .onChange(of: vm.pendingDeleteIds) { _, _ in recompute(events) }
     }
 
     // MARK: - Derivation (single pass: filter + search + day-bucket + type counts)
@@ -145,6 +240,11 @@ struct TimelineScreen: View {
         var present: Set<TimelineEventType> = []
 
         for event in events {   // already sorted newest-first
+            // Optimistically hidden by a swipe-delete still inside its undo window (ledger #34)
+            // — excluded from both the day buckets and the type counts/filter chips, so a
+            // pending delete disappears from the whole screen immediately, not just its own row.
+            if vm.pendingDeleteIds.contains(event.id) { continue }
+
             counts[event.type, default: 0] += 1
             present.insert(event.type)
 
@@ -208,12 +308,30 @@ struct TimelineScreen: View {
         }
     }
 
+    /// Wraps the row in `BadanSwipeToDelete` for anything `TimelineAssembler` marks
+    /// `deletable: true` (medication, meal, note today — see `TimelineViewModel.commit`) so the
+    /// swipe gesture is available regardless of whether the row itself is also a navigation
+    /// destination (ledger #34). Non-deletable kinds (sleep, workout, symptom, measurement) get
+    /// the row content directly, unchanged.
+    @ViewBuilder
+    private func eventRow(_ event: TimelineEvent) -> some View {
+        if event.deletable {
+            BadanSwipeToDelete(deleteLabel: env.s(Loc.delete)) {
+                vm.requestDelete(event, env: env)
+            } content: {
+                eventRowDestination(event)
+            }
+        } else {
+            eventRowDestination(event)
+        }
+    }
+
     /// A row is tappable when it has an obvious destination (UX-03): `.sleep`/`.measurement`
     /// events drill into the universal metric detail, `.medication` events drill into the
     /// medication log. Other kinds (workout, meal, symptom, note, insight) have no single clean
     /// destination today and stay non-tappable rather than linking somewhere misleading.
     @ViewBuilder
-    private func eventRow(_ event: TimelineEvent) -> some View {
+    private func eventRowDestination(_ event: TimelineEvent) -> some View {
         if let metricId = navigationMetricId(for: event) {
             NavigationLink { MetricDetailScreen(metricId: metricId) } label: {
                 eventRowContent(event, tappable: true)

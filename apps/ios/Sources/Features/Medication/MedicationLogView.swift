@@ -377,6 +377,7 @@ final class MedicationLogViewModel {
 /// strip. A pushed screen (a parent NavigationStack is provided by the app shell).
 struct MedicationLogView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var vm = MedicationLogViewModel()
     @State private var showingAdd = false
@@ -438,7 +439,7 @@ struct MedicationLogView: View {
             SectionHeader(env.s(MedStrings.dueToday)) {
                 if data.hasPending {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
                             skippingSlotId = nil
                             editingSlotId = nil
                             vm.takeAll(env: env)
@@ -547,14 +548,14 @@ struct MedicationLogView: View {
         switch slot.status {
         case .taken:
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { editingSlotId = slot.id }
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { editingSlotId = slot.id }
             } label: {
                 StatusChip(.inBand, label: env.s(Loc.taken), language: env.language)
             }
             .buttonStyle(.plain)
         case .skipped:
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { editingSlotId = slot.id }
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { editingSlotId = slot.id }
             } label: {
                 skippedPill(reason: slot.skipReason)
             }
@@ -594,7 +595,7 @@ struct MedicationLogView: View {
     private func actionRow(for slot: MedicationLogViewModel.DueSlot) -> some View {
         HStack(spacing: BadanSpace.space2) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
                     editingSlotId = nil
                     vm.take(slot, env: env)
                 }
@@ -609,7 +610,7 @@ struct MedicationLogView: View {
             .buttonStyle(.plain)
 
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { skippingSlotId = slot.id }
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { skippingSlotId = slot.id }
             } label: {
                 Text(env.s(Loc.skip_))
                     .font(BadanFont.body.weight(.medium))
@@ -635,7 +636,7 @@ struct MedicationLogView: View {
                       alignment: .leading, spacing: BadanSpace.space2) {
                 ForEach(SkipReason.allCases, id: \.self) { reason in
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
                             vm.skip(slot, reason: reason, env: env)
                             skippingSlotId = nil
                             editingSlotId = nil
@@ -659,7 +660,7 @@ struct MedicationLogView: View {
                 }
             }
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { skippingSlotId = nil }
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { skippingSlotId = nil }
             } label: {
                 Text(env.s(Loc.cancel))
                     .font(BadanFont.bodyCompact)
@@ -737,7 +738,7 @@ struct MedicationLogView: View {
 
                     if case .asNeeded = regimen.schedule {
                         Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { vm.logNow(regimen, env: env) }
+                            withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { vm.logNow(regimen, env: env) }
                         } label: {
                             Text(env.s(MedStrings.logNow))
                                 .font(BadanFont.bodyCompact.weight(.medium))
@@ -1016,6 +1017,7 @@ private struct MedicationHistorySheet: View {
 /// (as-needed or daily times). No dosing guidance — BADAN records, it never prescribes.
 private struct AddMedicationSheet: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
 
     /// (name, strength?, schedule) -> whether the save actually succeeded.
@@ -1148,7 +1150,7 @@ private struct AddMedicationSheet: View {
     private func modeButton(_ target: Mode, label: LocalizedString) -> some View {
         let isSelected = mode == target
         return Button {
-            withAnimation(.easeInOut(duration: 0.2)) { mode = target }
+            withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { mode = target }
         } label: {
             HStack(spacing: BadanSpace.space1) {
                 if isSelected {

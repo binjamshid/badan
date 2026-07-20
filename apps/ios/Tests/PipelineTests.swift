@@ -308,9 +308,16 @@ final class PipelineTests: XCTestCase {
         let excludedText = try String(contentsOf: excludedURL, encoding: .utf8)
         XCTAssertFalse(excludedText.contains("headache"), "symptoms must not appear when includeSensitive is false")
 
-        let withSensitive = try runner.run(scope: ExportScope(includeSensitive: true), format: .json)
-        let includedURL = try XCTUnwrap(withSensitive.fileURLs.first { $0.pathExtension == "json" })
-        let includedText = try String(contentsOf: includedURL, encoding: .utf8)
+        // An `includeSensitive` export is now encrypted end-to-end (review ledger #19, deferred
+        // fix 3 / FEAT-185; ADR-0008) — `withSensitive.fileURLs` holds one `.badanenc` container,
+        // not a plain `bundle.json`, so this decrypts it before checking the content is there.
+        let passphrase = "correct horse battery staple"
+        let withSensitive = try runner.run(scope: ExportScope(includeSensitive: true), format: .json,
+                                           passphrase: passphrase)
+        let containerURL = try XCTUnwrap(withSensitive.fileURLs.first)
+        let decrypted = try ExportEncryptor.decrypt(Data(contentsOf: containerURL), passphrase: passphrase)
+        let bundleFile = try XCTUnwrap(decrypted.first { $0.name == "bundle.json" })
+        let includedText = try XCTUnwrap(String(data: bundleFile.data, encoding: .utf8))
         XCTAssertTrue(includedText.contains("headache"), "symptoms must appear when includeSensitive is true")
     }
 

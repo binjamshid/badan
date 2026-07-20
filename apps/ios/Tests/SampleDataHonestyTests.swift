@@ -161,4 +161,38 @@ final class SampleDataHonestyTests: XCTestCase {
                        "the sample warning must stay absent from real exports so it keeps meaning "
                            + "something when it does appear")
     }
+
+    // MARK: - The honesty layer survives encryption (review ledger #19, deferred fix 3 / FEAT-185)
+
+    /// Encrypting `includeSensitive` exports (ADR-0008) must not become a second way to lose the
+    /// sample-data disclosure — the manifest's "SAMPLE DATA" note and each row's own
+    /// `.sampleData` flag must both still be readable once the container is decrypted, exactly
+    /// as they were in a plain (non-sensitive) export before this fix.
+    func testEncryptedExportOfSampleDataStillDisclosesItAfterDecrypt() throws {
+        try makeIngestion().ingest(from: FakeHealthStore(clock: clock, historyDays: 30), range: range)
+
+        var scope = ExportScope.everything
+        scope.includeSensitive = true // the only way to exercise the encrypted path
+        let passphrase = "correct horse battery staple"
+        let result = try makeRunner().run(scope: scope, format: .csv, passphrase: passphrase)
+
+        XCTAssertEqual(result.job.manifest?.encrypted, true, "sanity: this export took the encrypted path")
+        XCTAssertGreaterThan(try XCTUnwrap(result.job.manifest).sampleDataRowCount, 0,
+                             "the persisted job's own manifest must still count sample rows post-encryption")
+
+        let containerURL = try XCTUnwrap(result.fileURLs.first)
+        let decrypted = try ExportEncryptor.decrypt(Data(contentsOf: containerURL), passphrase: passphrase)
+
+        let manifestFile = try XCTUnwrap(decrypted.first { $0.name == "manifest.json" })
+        let manifestText = try XCTUnwrap(String(data: manifestFile.data, encoding: .utf8))
+        XCTAssertTrue(manifestText.contains("SAMPLE DATA"),
+                      "the decrypted manifest.json must still carry the human-readable disclosure")
+
+        let rawFile = try XCTUnwrap(decrypted.first { $0.name == "raw.csv" })
+        let rawText = try XCTUnwrap(String(data: rawFile.data, encoding: .utf8))
+        XCTAssertTrue(rawText.contains(QualityFlag.sampleData.rawValue),
+                      "decrypted rows must still carry the per-row sampleData quality flag")
+        XCTAssertFalse(rawText.contains("com.apple.health"),
+                       "no decrypted sample row may be attributed to Apple Health")
+    }
 }

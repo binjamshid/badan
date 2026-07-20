@@ -44,9 +44,11 @@ struct OnboardingView: View {
         case factUnavailable
     }
 
-    // FEAT-239/FEAT-248: onboarding is the first screen every user sees, so its page
-    // transitions and toggle animations are the highest-visibility instance of the app's
-    // (otherwise unimplemented) reduce-motion support — honour it locally here.
+    // FEAT-239/FEAT-248: onboarding was the first (and originally only) screen honouring Reduce
+    // Motion — every animation on this screen now routes through `BadanMotion`, the shared
+    // helper FEAT-239 asked for, which every other animated screen in the app also uses (ledger
+    // #36). A vestibular-sensitive user no longer gets a calm first screen and a fully-animated
+    // app after it.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let lastStep = 3
@@ -66,7 +68,7 @@ struct OnboardingView: View {
                     connectPage.tag(3)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: step)
+                .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: step)
 
                 footer
             }
@@ -97,7 +99,7 @@ struct OnboardingView: View {
             HStack {
                 if step > 0 {
                     Button {
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { step -= 1 }
+                        withAnimation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion)) { step -= 1 }
                     } label: {
                         Label(env.s(Loc.back), systemImage: "chevron.backward")
                             .labelStyle(.titleAndIcon)
@@ -142,7 +144,7 @@ struct OnboardingView: View {
                     .frame(width: index == step ? 22 : 7, height: 7)
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: step)
+        .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: step)
         // EASE-109/OPT-164/UIUX-192: the dots are a purely visual progress cue — rather than
         // hiding progress from VoiceOver entirely, expose an accessible "Step N of total"
         // equivalent so screen-reader users keep the same orientation sighted users get.
@@ -201,7 +203,7 @@ struct OnboardingView: View {
             ForEach(AppLanguage.allCases) { lang in
                 let isSelected = env.language == lang
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                    withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
                         env.update { $0.language = lang }
                     }
                 } label: {
@@ -305,7 +307,7 @@ struct OnboardingView: View {
                              title: LocalizedString, body: LocalizedString) -> some View {
         let isSelected = selectedDepth == policy
         return Button {
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
                 selectedDepth = policy
                 env.update { $0.depthPolicy = policy }
             }
@@ -477,7 +479,7 @@ struct OnboardingView: View {
                 // guard could never actually trigger. Removed rather than left as
                 // never-true-but-still-evaluated logic.
                 primaryButton(Loc.next) {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { step += 1 }
+                    withAnimation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion)) { step += 1 }
                 }
             }
             .padding(.horizontal, BadanSpace.space5)
@@ -514,7 +516,7 @@ struct OnboardingView: View {
     }
 
     private func setConnectState(_ newValue: ConnectState) {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { connectState = newValue }
+        withAnimation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion)) { connectState = newValue }
     }
 
     /// ONB-01: every path off this screen goes through here so the persisted step (see the

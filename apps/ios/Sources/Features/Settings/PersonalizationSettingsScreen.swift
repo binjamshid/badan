@@ -9,6 +9,7 @@ import UserNotifications
 /// unchanged; only where it lives is.
 struct PersonalizationSettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showUnitsInfo = false
     @State private var sortedHomeModules: [HomeModule] = []
     @State private var iconController = AppIconController()
@@ -36,7 +37,7 @@ struct PersonalizationSettingsScreen: View {
         .overlay(alignment: .bottom) {
             if let notice = transientNotice { SettingsTransientNotice(notice: notice) }
         }
-        .animation(.easeInOut(duration: 0.25), value: transientNotice)
+        .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: transientNotice)
         .sheet(isPresented: $showUnitsInfo) { UnitsExplainerSheet() }
     }
 
@@ -60,7 +61,7 @@ struct PersonalizationSettingsScreen: View {
                 subtitle: { SettingsStrings.themeSubtitle($0).resolved(env.language) },
                 isOn: { $0 == env.profile.theme }
             ) { theme in
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
                     env.update { $0.theme = theme }
                 }
             }
@@ -150,7 +151,7 @@ struct PersonalizationSettingsScreen: View {
                         subtitle: { SettingsStrings.languageSubtitle($0).resolved(env.language) },
                         isOn: { $0 == env.language },
                         onSelect: { lang in
-                            withAnimation(.easeInOut(duration: 0.25)) {
+                            withAnimation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion)) {
                                 env.update { $0.language = lang }
                             }
                         },
@@ -185,7 +186,7 @@ struct PersonalizationSettingsScreen: View {
                 subtitle: { SettingsStrings.depthSubtitle($0).resolved(env.language) },
                 isOn: { $0 == env.depth }
             ) { depth in
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) {
                     env.update { $0.depthPolicy = depth }
                 }
                 // The whole value of this choice is visible on Home/Body/MetricDetail, not here.

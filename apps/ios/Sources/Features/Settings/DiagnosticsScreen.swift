@@ -24,6 +24,13 @@ private enum DiagnosticsStrings {
     static let storageTemporary = LocalizedString(
         en: "Temporary — nothing is being saved",
         ar: "مؤقت — لا يُحفَظ أي شيء")
+    /// Read-back confirmation of the claim `docs/PRIVACY_POLICY.md` §3 makes unconditionally —
+    /// see `Database.HardeningStatus` (ledger #20).
+    static let backupProtection = LocalizedString(en: "Backup exclusion & protection", ar: "الاستثناء من النسخ الاحتياطي والحماية")
+    static let backupProtectionConfirmed = LocalizedString(en: "Confirmed", ar: "مؤكَّد")
+    static let backupProtectionNotConfirmed = LocalizedString(
+        en: "Not confirmed on this device — data may be included in iCloud backup",
+        ar: "غير مؤكَّد على هذا الجهاز — قد تُضمَّن البيانات في النسخة الاحتياطية على آي كلاود")
     static let connected = LocalizedString(en: "Apple Health", ar: "صحة آبل")
     static let connectedYes = LocalizedString(en: "Connected", ar: "متصل")
     static let connectedNo = LocalizedString(en: "Not connected", ar: "غير متصل")
@@ -66,6 +73,10 @@ struct DiagnosticsReport: Equatable {
     var mainBytes: Int64
     var sensitiveBytes: Int64
     var isStorageFallback: Bool
+    /// `nil` when hardening was never applicable (in-memory fallback); otherwise the read-back
+    /// result of `Database.applyHardening` — whether the backup-exclusion and file-protection
+    /// writes `docs/PRIVACY_POLICY.md` §3 promises actually took effect on this device.
+    var isBackupHardened: Bool?
     var isHealthKitConnected: Bool
     var lastSyncAt: Date?
     var isSampleDataActive: Bool
@@ -83,6 +94,7 @@ struct DiagnosticsReport: Equatable {
         lines.append("main_db_bytes: \(mainBytes)")
         lines.append("sensitive_db_bytes: \(sensitiveBytes)")
         lines.append("storage_mode: \(isStorageFallback ? "TEMPORARY (not persisting)" : "normal")")
+        lines.append("backup_excluded_and_protected: \(isBackupHardened.map(String.init) ?? "n/a")")
         lines.append("healthkit_connected: \(isHealthKitConnected)")
         lines.append("last_sync_attempt: \(lastSyncAt.map { dateFormatter.string(from: $0) } ?? "none this session")")
         lines.append("sample_data_active: \(isSampleDataActive)")
@@ -163,6 +175,16 @@ struct DiagnosticsScreen: View {
                     row(DiagnosticsStrings.mainSize, Self.formatBytes(report.mainBytes))
                     rowDivider
                     row(DiagnosticsStrings.sensitiveSize, Self.formatBytes(report.sensitiveBytes))
+                    if let isBackupHardened = report.isBackupHardened {
+                        rowDivider
+                        // The one row here that can falsify docs/PRIVACY_POLICY.md §3's
+                        // unconditional claim — emphasised only when the read-back actually
+                        // disagrees with it (ledger #20).
+                        row(DiagnosticsStrings.backupProtection,
+                            env.s(isBackupHardened ? DiagnosticsStrings.backupProtectionConfirmed
+                                                   : DiagnosticsStrings.backupProtectionNotConfirmed),
+                            emphasised: !isBackupHardened)
+                    }
                 }
             }
         }
@@ -271,6 +293,7 @@ struct DiagnosticsScreen: View {
             mainBytes: storage.main,
             sensitiveBytes: storage.sensitive,
             isStorageFallback: env.isStorageFallback,
+            isBackupHardened: database.hardeningStatus?.isFullyHardened,
             isHealthKitConnected: env.isHealthKitConnected,
             lastSyncAt: env.lastSyncAt,
             isSampleDataActive: SeedController.isDemoDataActive,

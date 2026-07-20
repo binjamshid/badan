@@ -826,7 +826,7 @@ private fun SaveButtons(isSaving: Boolean, onSave: (Boolean) -> Unit) {
             Text(
                 text = env.s(Loc.save),
                 style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
-                color = Color.White,
+                color = colors.onPrimary,
             )
         }
         Box(

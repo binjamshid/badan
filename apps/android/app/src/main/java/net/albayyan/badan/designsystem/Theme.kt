@@ -47,7 +47,7 @@ object BadanTheme {
 private fun BadanColors.toMaterialColorScheme() = if (isDark) {
     darkColorScheme(
         primary = primary,
-        onPrimary = background,
+        onPrimary = onPrimary,
         secondary = primary,
         onSecondary = background,
         background = background,

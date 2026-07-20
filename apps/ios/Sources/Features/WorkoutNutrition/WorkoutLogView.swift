@@ -150,6 +150,7 @@ final class WorkoutLogViewModel {
 /// never a nag.
 struct WorkoutLogView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = WorkoutLogViewModel()
 
     // Capture state
@@ -223,7 +224,7 @@ struct WorkoutLogView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: showSavedToast)
+        .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: showSavedToast)
         .sensoryFeedback(.success, trigger: savedTick)
         .onChange(of: focusedField) { _, newValue in
             if newValue != .minutesEntry { commitMinutesText() }

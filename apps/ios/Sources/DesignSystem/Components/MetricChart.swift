@@ -25,6 +25,8 @@ struct MetricChart: View {
     var language: AppLanguage
     var arabicDigits: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// Copy local to this component — kept self-contained rather than reaching into a
     /// shared strings file, matching how `ProvisionalBadge` keeps its own label.
     private enum Copy {
@@ -114,7 +116,7 @@ struct MetricChart: View {
         .accessibilityChartDescriptor(
             ChartAccessibilityRepresentable(points: points, unit: unit, language: language, arabicDigits: arabicDigits)
         )
-        .animation(.easeInOut(duration: 0.25), value: points)
+        .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: points)
     }
 
     private var unscaledChart: some View {

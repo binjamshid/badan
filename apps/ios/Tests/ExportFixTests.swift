@@ -144,11 +144,18 @@ final class ExportFixTests: XCTestCase {
         var scope = ExportScope.everything
         scope.includeSensitive = true
         scope.language = .en
-        let result = try runner.run(scope: scope, format: .csv)
+        // `includeSensitive` now requires (and produces) an encrypted export (review ledger #19,
+        // deferred fix 3 / FEAT-185; ADR-0008) — decrypt the single `.badanenc` container back
+        // into its constituent files before asserting on `events.csv`'s content.
+        let passphrase = "correct horse battery staple"
+        let result = try runner.run(scope: scope, format: .csv, passphrase: passphrase)
 
-        let eventsURL = try XCTUnwrap(result.fileURLs.first { $0.lastPathComponent == "events.csv" },
-                                     "CSV export must produce an events.csv file")
-        let text = try String(contentsOf: eventsURL, encoding: .utf8)
+        XCTAssertEqual(result.job.manifest?.encrypted, true, "a sensitive CSV export must be encrypted")
+        let containerURL = try XCTUnwrap(result.fileURLs.first { $0.lastPathComponent == ExportEncryptor.containerFileName })
+        let decrypted = try ExportEncryptor.decrypt(Data(contentsOf: containerURL), passphrase: passphrase)
+        let eventsFile = try XCTUnwrap(decrypted.first { $0.name == "events.csv" },
+                                       "the decrypted container must hold an events.csv file")
+        let text = try XCTUnwrap(String(data: eventsFile.data, encoding: .utf8))
 
         XCTAssertTrue(text.contains("symptoms.entry"), "symptom entries must appear as events")
         XCTAssertTrue(text.contains("medications.adherence"), "adherence events must appear as events")
@@ -180,5 +187,95 @@ final class ExportFixTests: XCTestCase {
         let text = try String(contentsOf: eventsURL, encoding: .utf8)
         XCTAssertFalse(text.contains("symptoms.entry"),
                        "sensitive-class logs must be excluded from events.csv without includeSensitive")
+    }
+
+    // MARK: - review ledger #19, deferred fix 3 / FEAT-185: includeSensitive exports are encrypted
+
+    private func makeRunnerForEncryptionTests() -> ExportRunner {
+        ExportRunner(measurements: MeasurementRepository(db.main), derivation: DerivationRepository(db.main),
+                     logging: LoggingRepository(main: db.main, sensitive: db.sensitive),
+                     exportJobs: ExportJobRepository(db.main), registry: .shared,
+                     clock: clock, appVersion: "test", deviceId: deviceId)
+    }
+
+    func testRunThrowsWhenSensitiveScopeHasNoPassphrase() throws {
+        let runner = makeRunnerForEncryptionTests()
+        var scope = ExportScope.everything
+        scope.includeSensitive = true
+
+        XCTAssertThrowsError(try runner.run(scope: scope, format: .csv)) { error in
+            XCTAssertEqual(error as? ExportRunError, .sensitiveExportRequiresPassphrase)
+        }
+    }
+
+    func testRunThrowsWhenSensitiveScopePassphraseIsTooShort() throws {
+        let runner = makeRunnerForEncryptionTests()
+        var scope = ExportScope.everything
+        scope.includeSensitive = true
+
+        let tooShort = String(repeating: "x", count: ExportPassphrasePolicy.minimumLength - 1)
+        XCTAssertThrowsError(try runner.run(scope: scope, format: .csv, passphrase: tooShort)) { error in
+            XCTAssertEqual(error as? ExportRunError, .sensitiveExportRequiresPassphrase)
+        }
+    }
+
+    /// The core fix: a sensitive export leaves `ExportRunner` as one encrypted container, with
+    /// the plaintext files it was briefly built from gone from disk — not sitting in `tmp/`
+    /// waiting for the share sheet (ledger #19 / dossier "Sensitive health data is exported as
+    /// plaintext to the temp directory").
+    func testRunEncryptsSensitiveCSVExportAndDeletesThePlaintextFiles() throws {
+        let logging = LoggingRepository(main: db.main, sensitive: db.sensitive)
+        let now = clock.now()
+        try logging.insertSymptom(SymptomEntry(id: ULID.newID(), symptomId: "headache", severity: 5,
+                                               occurredAt: now, tzId: "UTC", updatedAt: now, originDeviceId: deviceId))
+        let runner = makeRunnerForEncryptionTests()
+        var scope = ExportScope.everything
+        scope.includeSensitive = true
+        let passphrase = "correct horse battery staple"
+
+        let result = try runner.run(scope: scope, format: .csv, passphrase: passphrase)
+
+        XCTAssertEqual(result.fileURLs.count, 1, "an encrypted export replaces the file list with one container")
+        let containerURL = try XCTUnwrap(result.fileURLs.first)
+        XCTAssertEqual(containerURL.lastPathComponent, ExportEncryptor.containerFileName)
+        XCTAssertEqual(result.job.manifest?.encrypted, true)
+        XCTAssertEqual(result.job.manifest?.encryptedContainerName, ExportEncryptor.containerFileName)
+
+        let folder = containerURL.deletingLastPathComponent()
+        for plaintextName in ["raw.csv", "derived.csv", "events.csv", "manifest.json"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(plaintextName).path),
+                           "\(plaintextName) must not remain on disk once the encrypted container exists")
+        }
+
+        let decrypted = try ExportEncryptor.decrypt(Data(contentsOf: containerURL), passphrase: passphrase)
+        XCTAssertTrue(decrypted.contains { $0.name == "raw.csv" })
+        XCTAssertTrue(decrypted.contains { $0.name == "derived.csv" })
+        XCTAssertTrue(decrypted.contains { $0.name == "events.csv" })
+        XCTAssertTrue(decrypted.contains { $0.name == "manifest.json" })
+    }
+
+    /// The counterpart that keeps `includeSensitive` meaningful: a non-sensitive export's
+    /// behavior must be completely unchanged — still plain files, no passphrase needed.
+    func testRunLeavesNonSensitiveExportUnencrypted() throws {
+        let runner = makeRunnerForEncryptionTests()
+        let result = try runner.run(scope: .everything, format: .csv)
+
+        XCTAssertEqual(result.job.manifest?.encrypted, false)
+        XCTAssertNil(result.job.manifest?.encryptedContainerName)
+        XCTAssertTrue(result.fileURLs.contains { $0.lastPathComponent == "raw.csv" })
+    }
+
+    /// The manifest's checksums describe the real plaintext content either way (so a user who
+    /// decrypts can still verify against them) — encryption must not blank them out.
+    func testEncryptedExportManifestChecksumsStillDescribePlaintextContent() throws {
+        let runner = makeRunnerForEncryptionTests()
+        var scope = ExportScope.everything
+        scope.includeSensitive = true
+        let passphrase = "correct horse battery staple"
+
+        let result = try runner.run(scope: scope, format: .csv, passphrase: passphrase)
+        let checksums = try XCTUnwrap(result.job.manifest?.checksums)
+        XCTAssertFalse(checksums.isEmpty)
+        XCTAssertNotNil(checksums["raw.csv"])
     }
 }

@@ -613,13 +613,13 @@ private fun SelectPill(selected: Boolean, icon: ImageVector, label: String, onCl
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (selected) Color.White else colors.textPrimary,
+            tint = if (selected) colors.onPrimary else colors.textPrimary,
             modifier = Modifier.size(18.dp),
         )
         Text(
             text = label,
             style = BadanType.chip,
-            color = if (selected) Color.White else colors.textPrimary,
+            color = if (selected) colors.onPrimary else colors.textPrimary,
             maxLines = 1,
         )
     }
@@ -715,7 +715,7 @@ private fun PrimaryButton(label: String, enabled: Boolean = true, onClick: () ->
         Text(
             text = label,
             style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
-            color = Color.White,
+            color = colors.onPrimary,
         )
     }
 }

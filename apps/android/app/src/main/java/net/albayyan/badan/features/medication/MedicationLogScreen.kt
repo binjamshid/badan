@@ -590,7 +590,7 @@ private fun SkippedPill(reason: SkipReason?) {
 private fun ActionRow(slot: DueSlot, onTake: (DueSlot) -> Unit, onStartSkip: (String) -> Unit) {
     val env = LocalAppEnvironment.current
     val colors = BadanTheme.colors
-    val onPrimary = if (colors.isDark) colors.background else Color.White
+    val onPrimary = colors.onPrimary
     // Capped and centered so the pair doesn't stretch into oversized pills on large-screen
     // devices; on a typical phone the cap exceeds the available width, so nothing changes.
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1125,7 +1125,7 @@ private fun LabeledField(
 @Composable
 private fun FilledPrimaryButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val colors = BadanTheme.colors
-    val onPrimary = if (colors.isDark) colors.background else Color.White
+    val onPrimary = colors.onPrimary
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(BadanRadius.control))

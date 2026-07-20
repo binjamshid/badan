@@ -1,6 +1,15 @@
 import Foundation
 import CryptoKit
 
+/// Thrown by `ExportRunner.run` when `scope.includeSensitive` is set without a passphrase
+/// meeting `ExportPassphrasePolicy` — the runner's own defense-in-depth so a caller that bypassed
+/// `ExportCenterScreen`'s required passphrase fields (a future automation surface, a test, a
+/// bug in the UI's disable logic) still cannot produce an unencrypted sensitive export (review
+/// ledger #19, deferred fix 3 / FEAT-185; see `docs/adr/ADR-0008-*.md`).
+enum ExportRunError: Error, Equatable {
+    case sensitiveExportRequiresPassphrase
+}
+
 /// Runs a fully offline export: gathers scoped records from the repositories, renders them
 /// (CSV split into raw/derived files, or one JSON bundle), checksums every file, writes a
 /// versioned manifest, and records the completed `ExportJob`. No networking or entitlement
@@ -39,7 +48,17 @@ final class ExportRunner {
 
     // MARK: - Entry point
 
-    func run(scope: ExportScope, format: ExportFormat) throws -> ExportResult {
+    /// `passphrase` is required (and validated against `ExportPassphrasePolicy`) whenever
+    /// `scope.includeSensitive` is true — a sensitive export can no longer leave this function as
+    /// plaintext. Ignored (and may be omitted) for a non-sensitive scope, which stays exactly the
+    /// unencrypted behavior it always was.
+    func run(scope: ExportScope, format: ExportFormat, passphrase: String? = nil) throws -> ExportResult {
+        if scope.includeSensitive {
+            guard let passphrase, ExportPassphrasePolicy.isValid(passphrase) else {
+                throw ExportRunError.sensitiveExportRequiresPassphrase
+            }
+        }
+
         // Best-effort housekeeping for folders orphaned by a past interrupted export (a crash
         // or force-quit mid-run never reaches the cleanup below) — never blocks this run
         // (EDGE-02c).
@@ -49,7 +68,16 @@ final class ExportRunner {
         let exportId = ULID.newID()
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("badan-export-\(exportId)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // `tmp/` inherits no hardening from `Database.applyHardening` (that only covers
+        // Application Support), so these plaintext CSV/JSON files would otherwise sit in the
+        // weakest default protection class on disk. `.complete` is safe here specifically
+        // because export/share is a foreground-only flow — the file only needs to be readable
+        // while the user is actively running or sharing it, never from a background refresh
+        // (ledger #19 / dossier "Sensitive health data is exported as plaintext to the temp
+        // directory").
+        try FileManager.default.createDirectory(
+            at: folder, withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.complete])
 
         // Record the attempt immediately (status .running) so a crash or memory-pressure
         // termination mid-export is diagnosable via `export_jobs` rather than the attempt
@@ -134,24 +162,34 @@ final class ExportRunner {
             let adherence = (wantRaw && scope.includeSensitive && logFamilyIncluded("medications", scope))
                 ? try logging.adherence(from: rangeStart, to: rangeEnd) : []
 
+            let result: ExportResult
             switch format {
             case .csv:
-                return try runCSV(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
-                                  rawSamples: gathered.rawSamples, intervalRecords: gathered.intervalRecords,
-                                  sessions: gathered.sessions, derivedValues: gathered.derivedValues,
-                                  baselines: gathered.baselines,
-                                  derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
-                                  symptoms: symptoms, adherence: adherence,
-                                  workouts: gathered.workouts, nutrition: gathered.nutrition)
+                result = try runCSV(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
+                                    rawSamples: gathered.rawSamples, intervalRecords: gathered.intervalRecords,
+                                    sessions: gathered.sessions, derivedValues: gathered.derivedValues,
+                                    baselines: gathered.baselines,
+                                    derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
+                                    symptoms: symptoms, adherence: adherence,
+                                    workouts: gathered.workouts, nutrition: gathered.nutrition)
             case .json:
-                return try runJSON(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
-                                   rawSamples: gathered.rawSamples, intervalRecords: gathered.intervalRecords,
-                                   sessions: gathered.sessions, derivedValues: gathered.derivedValues,
-                                   baselines: gathered.baselines,
-                                   derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
-                                   symptoms: symptoms, adherence: adherence,
-                                   workouts: gathered.workouts, nutrition: gathered.nutrition)
+                result = try runJSON(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
+                                     rawSamples: gathered.rawSamples, intervalRecords: gathered.intervalRecords,
+                                     sessions: gathered.sessions, derivedValues: gathered.derivedValues,
+                                     baselines: gathered.baselines,
+                                     derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
+                                     symptoms: symptoms, adherence: adherence,
+                                     workouts: gathered.workouts, nutrition: gathered.nutrition)
             }
+
+            guard scope.includeSensitive, let passphrase else { return result }
+            // Any failure here (encryption, write, re-persist) falls through to the `catch`
+            // below exactly like a gather/write failure would — the job is marked `.failed` and
+            // the whole folder (plaintext files included) is removed, so a sensitive export
+            // never survives half-encrypted (ledger #19 / dossier "Sensitive health data is
+            // exported as plaintext to the temp directory").
+            return try encryptResult(result, exportId: exportId, folder: folder, scope: scope,
+                                     format: format, startedAt: startedAt, passphrase: passphrase)
         } catch {
             let failedJob = ExportJob(id: exportId, scope: scope, format: format, status: .failed,
                                       outputPath: folder.path, startedAt: startedAt,
@@ -161,6 +199,46 @@ final class ExportRunner {
             try? FileManager.default.removeItem(at: folder)
             throw error
         }
+    }
+
+    // MARK: - Encryption (includeSensitive only)
+
+    /// Wraps every file `runCSV`/`runJSON` just wrote into one `ExportEncryptor` container,
+    /// writes it as `ExportEncryptor.containerFileName` in the same folder, deletes the plaintext
+    /// originals, and re-persists the job with `manifest.encrypted = true` pointing at the
+    /// container instead. The manifest's checksums are left exactly as computed (they describe
+    /// the real plaintext content, the thing a user actually wants to verify after decrypting —
+    /// see the ADR) — only `encrypted`/`encryptedContainerName` change.
+    ///
+    /// Reading each file back off disk rather than threading the in-memory bytes through
+    /// `runCSV`/`runJSON` keeps this step decoupled from both writers (CSV's three files are
+    /// streamed straight to a `FileHandle` and never held as one in-memory `Data`, PERF-168/170)
+    /// at the cost of one extra read pass — acceptable for a step that already pays a ~600k-round
+    /// KDF.
+    private func encryptResult(_ result: ExportResult, exportId: String, folder: URL, scope: ExportScope,
+                               format: ExportFormat, startedAt: Date, passphrase: String) throws -> ExportResult {
+        let files = try result.fileURLs.map { url in
+            ExportContainerFile(name: url.lastPathComponent, data: try Data(contentsOf: url))
+        }
+        let containerData = try ExportEncryptor.encrypt(files: files, passphrase: passphrase)
+        let containerURL = folder.appendingPathComponent(ExportEncryptor.containerFileName)
+        try containerData.write(to: containerURL, options: .completeFileProtection)
+
+        // The plaintext files have a real, encrypted copy now — same reasoning as the
+        // share-sheet-dismissal delete below, just triggered earlier: once a durable encrypted
+        // replacement exists, the plaintext copy has no further reason to sit in `tmp/`
+        // (ledger #19).
+        for url in result.fileURLs { try? FileManager.default.removeItem(at: url) }
+
+        var manifest = result.job.manifest
+        manifest?.encrypted = true
+        manifest?.encryptedContainerName = ExportEncryptor.containerFileName
+        let finishedAt = clock.now()
+        let job = ExportJob(id: exportId, scope: scope, format: format, status: .completed,
+                            manifest: manifest, outputPath: folder.path, rowCount: result.rowCount,
+                            startedAt: startedAt, finishedAt: finishedAt, createdAt: startedAt)
+        try exportJobs.insert(job)
+        return ExportResult(job: job, fileURLs: [containerURL], rowCount: result.rowCount)
     }
 
     /// The main-DB portion of one run's gathered records — everything read inside the single
@@ -176,18 +254,44 @@ final class ExportRunner {
         let nutrition: [NutritionEntry]
     }
 
-    /// Deletes `badan-export-*` temp folders older than `days` — orphaned by an interrupted
-    /// export whose own cleanup never ran (app killed, crash). Best-effort and silent: a
-    /// failure here must never block the export this call is part of (EDGE-02c).
-    private func sweepOrphanedExportFolders(olderThan days: Int = 7) {
+    /// Deletes `badan-export-*` temp folders older than `hours` — orphaned by an interrupted
+    /// export whose own cleanup never ran (app killed, crash), or by a completed export the user
+    /// never opened the share sheet for. Best-effort and silent: a failure here must never block
+    /// the export this call is part of (EDGE-02c).
+    ///
+    /// The primary defense against a plaintext export lingering in `tmp/` is
+    /// `deleteExportedFiles(at:)`, fired the moment the share sheet dismisses — this sweep is
+    /// only the backstop for exports nobody ever shared. Was 7 days; ledger #19 / dossier
+    /// "Sensitive health data is exported as plaintext to the temp directory" calls that far too
+    /// long for unencrypted symptom/medication rows, so the backstop window is now hours, not
+    /// days.
+    private func sweepOrphanedExportFolders(olderThan hours: Double = 4) {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory
         guard let items = try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
-        let cutoff = clock.now().addingTimeInterval(-Double(days) * 86_400)
+        let cutoff = clock.now().addingTimeInterval(-hours * 3_600)
         for url in items where url.lastPathComponent.hasPrefix("badan-export-") {
             guard let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else { continue }
             if modDate < cutoff { try? fm.removeItem(at: url) }
         }
+    }
+
+    /// Deletes one export's temp folder immediately — the caller (`ExportCenterScreen`) invokes
+    /// this the moment the share sheet dismisses, rather than waiting for the next run's sweep
+    /// (ledger #19 / dossier "Sensitive health data is exported as plaintext to the temp
+    /// directory"). Once the user has handed the file to AirDrop/Files/Mail/etc. — or explicitly
+    /// dismissed without sharing — the plaintext temp copy has no further reason to exist; the
+    /// destination the user chose, if any, now holds its own copy.
+    ///
+    /// Scoped to `tmp/badan-export-*` only, so a caller passing a wrong or manipulated path can
+    /// never turn this into an arbitrary-path delete. Best-effort and silent, matching
+    /// `sweepOrphanedExportFolders`'s failure posture — a delete failure here must never surface
+    /// as a user-facing error for an export the user already successfully shared.
+    func deleteExportedFiles(at folderPath: String) {
+        let fm = FileManager.default
+        guard folderPath.hasPrefix(fm.temporaryDirectory.path),
+              URL(fileURLWithPath: folderPath).lastPathComponent.hasPrefix("badan-export-") else { return }
+        try? fm.removeItem(atPath: folderPath)
     }
 
     // MARK: - CSV
@@ -243,7 +347,7 @@ final class ExportRunner {
                                         rawSamples: rawSamples, intervalRecords: intervalRecords,
                                         sessions: sessions))
         let manifestURL = folder.appendingPathComponent("manifest.json")
-        try JSONCoding.encoder.encode(manifest).write(to: manifestURL)
+        try JSONCoding.encoder.encode(manifest).write(to: manifestURL, options: .completeFileProtection)
 
         let job = ExportJob(id: exportId, scope: scope, format: .csv, status: .completed,
                             manifest: manifest, outputPath: folder.path, rowCount: rowCount,
@@ -289,7 +393,7 @@ final class ExportRunner {
             sessions: sessions, derivedValues: derivedValues, baselines: baselines,
             symptoms: symptoms, adherence: adherence, workouts: workouts, nutrition: nutrition)
         let bundleURL = folder.appendingPathComponent("bundle.json")
-        try bundleData.write(to: bundleURL)
+        try bundleData.write(to: bundleURL, options: .completeFileProtection)
 
         let checksums = ["bundle.json": Self.sha256Hex(bundleData)]
         let persisted = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
@@ -804,7 +908,8 @@ final class ExportRunner {
     /// Creates `url`, streams `rows` to it via `writer.write(_:to:)`, and returns the
     /// incrementally-computed SHA-256 hex digest (PERF-168/170).
     private static func streamWrite(_ rows: [ExportRow], using writer: CSVWriter, to url: URL) throws -> String {
-        FileManager.default.createFile(atPath: url.path, contents: nil)
+        FileManager.default.createFile(atPath: url.path, contents: nil,
+                                       attributes: [.protectionKey: FileProtectionType.complete])
         let handle = try FileHandle(forWritingTo: url)
         defer { try? handle.close() }
         return try writer.write(rows, to: handle)

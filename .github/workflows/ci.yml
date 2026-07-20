@@ -126,14 +126,20 @@ jobs:
 
           def kt_colors(fn):
             block = re.search(fn + r'\(\): BadanColors = BadanColors\((.*?)\n\)\n', kotlin, re.S).group(1)
-            return {m.group(1): m.group(2).upper() for m in re.finditer(r'(\w+) = Color\(0xFF([0-9A-Fa-f]{6})\)', block)}
+            out = {m.group(1): m.group(2).upper() for m in re.finditer(r'(\w+) = Color\(0xFF([0-9A-Fa-f]{6})\)', block)}
+            # Color.White / Color.Black are Compose's named constants for the same hex values —
+            # match them too so a token expressed idiomatically doesn't read as "undefined".
+            out.update({m.group(1): 'FFFFFF' for m in re.finditer(r'(\w+) = Color\.White\b', block)})
+            out.update({m.group(1): '000000' for m in re.finditer(r'(\w+) = Color\.Black\b', block)})
+            return out
           kt_light, kt_dark = kt_colors('fun badanLightColors'), kt_colors('fun badanDarkColors')
           kt_nums = {m.group(1): int(m.group(2)) for m in re.finditer(r'val (\w+) = (\d+)\.dp', kotlin)}
 
           # JSON key -> shared Swift/Kotlin field name (statusColors names differ from the token names).
           color_map = {
             'background': 'background', 'surface': 'surface', 'surfaceElevated': 'surfaceElevated',
-            'primary': 'primary', 'textPrimary': 'textPrimary', 'textSecondary': 'textSecondary',
+            'primary': 'primary', 'onPrimary': 'onPrimary',
+            'textPrimary': 'textPrimary', 'textSecondary': 'textSecondary',
             'separator': 'separator',
             'withinRange': 'inBand', 'above': 'outOfBand', 'below': 'outOfBand',
             'neutral': 'info', 'critical': 'critical',
@@ -169,6 +175,113 @@ jobs:
 
           sys.exit(1 if fail else 0)
           PY
+      - name: Design token colour pairs meet WCAG AA contrast (portfolio Matrix #8)
+        run: |
+          python3 - <<'PY'
+          # Walks every (foreground, background) token pair BADAN's design system actually
+          # permits and asserts WCAG AA: >=4.5:1 for text, >=3:1 for non-text UI (icons, filled
+          # controls). This is the check that would have caught the onPrimary/Color.White defect
+          # (ledger #9): the token itself was correct, but nothing asserted the pairing, so
+          # nothing caught call sites drifting from it. Reads design-tokens.json only, since
+          # Tokens.swift/Tokens.kt are already asserted byte-identical to it by the previous step.
+          import json, sys, pathlib
+
+          root = pathlib.Path('.')
+          tokens = json.loads((root/'docs/design/design-tokens.json').read_text())
+          palette = {**tokens['palette'], **tokens['statusColors']}
+
+          def hex_of(name, theme):
+            return palette[name][theme].lstrip('#').upper()
+
+          def luminance(hex6):
+            def lin(c):
+              c = c / 255.0
+              return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+            r, g, b = int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16)
+            return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+          def contrast(fg_hex, bg_hex):
+            l1, l2 = luminance(fg_hex), luminance(bg_hex)
+            l1, l2 = max(l1, l2), min(l1, l2)
+            return (l1 + 0.05) / (l2 + 0.05)
+
+          # (foreground token, background token, kind) — every fg-on-bg pairing the design
+          # system's own components actually paint. "text" = body/label text, >=4.5:1.
+          # "ui" = icons, filled buttons/chips, graphical objects, >=3:1 (WCAG 1.4.11).
+          TEXT, UI = 'text', 'ui'
+          PAIRS = [
+            ('textPrimary', 'background', TEXT),
+            ('textPrimary', 'surface', TEXT),
+            ('textPrimary', 'surfaceElevated', TEXT),
+            ('textSecondary', 'background', TEXT),
+            ('textSecondary', 'surface', TEXT),
+            ('textSecondary', 'surfaceElevated', TEXT),
+            # The pairing item 1/ledger#9 broke: text/icon content on a primary-filled control
+            # (save buttons, selected chips) must use onPrimary, never a raw literal.
+            ('onPrimary', 'primary', TEXT),
+            ('primary', 'background', UI),
+            ('primary', 'surface', UI),
+            ('withinRange', 'background', UI),
+            ('withinRange', 'surface', UI),
+            ('above', 'background', UI),
+            ('above', 'surface', UI),
+            ('below', 'background', UI),
+            ('below', 'surface', UI),
+            ('neutral', 'background', UI),
+            ('neutral', 'surface', UI),
+            ('critical', 'background', UI),
+            ('critical', 'surface', UI),
+          ]
+          THRESHOLD = {TEXT: 4.5, UI: 3.0}
+
+          fail = False
+          for fg, bg, kind in PAIRS:
+            for theme in ('light', 'dark'):
+              ratio = contrast(hex_of(fg, theme), hex_of(bg, theme))
+              need = THRESHOLD[kind]
+              status = 'OK' if ratio >= need else 'FAIL'
+              print(f"{status:4} {theme:5} {fg} on {bg} ({kind}): {ratio:.2f}:1 (need {need}:1)")
+              if ratio < need:
+                fail = True
+
+          if fail:
+            print("::error::one or more design-token colour pairs fail WCAG AA — see FAIL lines above")
+          sys.exit(1 if fail else 0)
+          PY
+      - name: Motion durations stay tokenized (ratchet, ledger #36)
+        run: |
+          set -euo pipefail
+          # Literal animation durations outside the design system — the exact shape of the bug
+          # this ratchet exists to catch: 34 sites across 12 files, none routed through Reduce
+          # Motion, one file (onboarding) honoring the setting while every other animated screen
+          # ignored it. Baseline is honest (0, the count right after the full migration) and this
+          # gate only allows it to move down, never up — every new literal duration is a new call
+          # site that silently drops Reduce Motion, same class as ledger #9's `Color.White` bypass.
+          IOS_BASELINE=0
+          ANDROID_BASELINE=0
+          ios_count=$(grep -rnE 'duration: [0-9]' apps/ios/Sources --include='*.swift' | grep -vc '/DesignSystem/' || true)
+          android_count=$(grep -rnE 'durationMillis\s*=\s*[0-9]' apps/android/app/src/main/java --include='*.kt' | grep -vc '/designsystem/' || true)
+          echo "iOS literal durations outside DesignSystem: $ios_count (baseline $IOS_BASELINE)"
+          echo "Android literal durationMillis outside designsystem: $android_count (baseline $ANDROID_BASELINE)"
+          fail=0
+          if [ "$ios_count" -gt "$IOS_BASELINE" ]; then
+            echo "::error::iOS literal animation durations outside DesignSystem/ rose to $ios_count (baseline $IOS_BASELINE) — route new animations through BadanMotion instead of a bare duration: literal"
+            grep -rnE 'duration: [0-9]' apps/ios/Sources --include='*.swift' | grep -v '/DesignSystem/' || true
+            fail=1
+          fi
+          if [ "$android_count" -gt "$ANDROID_BASELINE" ]; then
+            echo "::error::Android literal durationMillis outside designsystem/ rose to $android_count (baseline $ANDROID_BASELINE) — route new animations through BadanMotion instead of a bare durationMillis literal"
+            grep -rnE 'durationMillis\s*=\s*[0-9]' apps/android/app/src/main/java --include='*.kt' | grep -v '/designsystem/' || true
+            fail=1
+          fi
+          exit $fail
+      - name: Android screens use the onPrimary token, not raw Color.White (UIUX-223)
+        run: |
+          set -euo pipefail
+          if grep -rn 'Color\.White' apps/android/app/src/main/java --include='*.kt' | grep -v '/designsystem/'; then
+            echo "::error::Color.White used outside net.albayyan.badan.designsystem — use BadanTheme.colors.onPrimary (or another semantic token) instead of a raw literal, or the site risks shipping unreadable text/icons on a themed fill"
+            exit 1
+          fi
       - name: App icons carry no alpha channel (ITMS-90717)
         run: |
           python3 - <<'PY'

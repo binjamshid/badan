@@ -320,6 +320,7 @@ private struct InsightsFeedCard: View {
 
 private struct InsightsWhyDisclosure: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let insight: Insight
     @State private var expanded: Bool
 
@@ -334,7 +335,7 @@ private struct InsightsWhyDisclosure: View {
     var body: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space2) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { expanded.toggle() }
             } label: {
                 HStack(spacing: BadanSpace.space2) {
                     Text(env.s(InsightsLoc.whyTitle))
