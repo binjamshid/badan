@@ -113,6 +113,8 @@ fun SettingsScreen() {
         // Notifications are deliberately not shown on Android — see [NotificationsSection].
         SensitiveSection(onRequestPurge = { showPurgeConfirm = true })
         PrivacySection()
+        // EPIC-18: preview & verify a backup file (writing back is not wired yet — see the section).
+        BackupRestoreSection()
         DataManagementSection(onRequestReset = { showResetConfirm = true })
     }
 

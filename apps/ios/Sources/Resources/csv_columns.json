@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0",
-  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§20/56 Export subsystem)",
+  "version": "1.0.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§20/56 Export subsystem). Widened 0.1.0 -> 1.0.0 by EPIC-08 under approval A1 (docs/adr/ADR-0009): the 24 columns below are unchanged and un-reordered, and `granularity` + `aggregation_method` are APPENDED at positions 25 and 26. A consumer pinned to the 24-column read parses a 26-column file correctly by name. See CHANGELOG.md.",
   "csvColumns": [
     {
       "name": "record_id",
@@ -10,6 +10,7 @@
     {
       "name": "record_kind",
       "type": "enum",
+      "enumValues": ["sample", "interval", "session", "event", "derived", "baseline"],
       "description": "Record shape: sample | interval | session | event | derived | baseline (instant vs aggregate vs typed-event vs computed)."
     },
     {
@@ -45,6 +46,7 @@
     {
       "name": "value_type",
       "type": "enum",
+      "enumValues": ["raw", "derived", "aggregate"],
       "description": "raw | derived | aggregate — separates measured rows from computed/rolled-up rows."
     },
     {
@@ -85,7 +87,8 @@
     {
       "name": "ingestion_path",
       "type": "enum",
-      "description": "platform | vendor_direct | broker | import | manual — how the record entered BADAN."
+      "enumValues": ["platformStore", "manual", "import", "derived", "vendor"],
+      "description": "How the record entered BADAN. Emitted as the domain IngestionPath token (platformStore | manual | import | derived | vendor); the blueprint's prose spelling 'platform | vendor_direct | broker | import | manual' names the same five paths."
     },
     {
       "name": "source_external_id",
@@ -121,11 +124,25 @@
       "name": "suppressed_by",
       "type": "string (nullable)",
       "description": "record_id of the winning record when this row was dedup-suppressed; present only when scope includes suppressed duplicates."
+    },
+    {
+      "name": "granularity",
+      "type": "enum (nullable)",
+      "enumValues": ["raw", "second", "minute", "hour", "day", "week", "month", "year"],
+      "since": "1.0.0",
+      "description": "The time resolution the row's value describes: 'raw' for an as-measured sample, otherwise the whole calendar unit the row covers. Empty when the emitting path has not declared one — an arbitrary-length interval is not a calendar unit, and no value is preferable to a rounded-off claim. Appended at position 25 by A1; never reorder ahead of an existing column."
+    },
+    {
+      "name": "aggregation_method",
+      "type": "enum (nullable)",
+      "enumValues": ["none", "sum", "mean", "min", "max", "min_avg_max", "duration", "latest"],
+      "since": "1.0.0",
+      "description": "How multiple underlying readings were combined into this row's value. 'none' means the value is a single reading (or an algorithm output that is not an aggregation of like readings), not that the question is unanswered — an unanswered one is empty. Appended at position 26 by A1."
     }
   ],
   "manifestFields": [
     "export_id (ULID) — names the artifact and echoes into every file",
-    "generated_at (ISO-8601) — generation timestamp",
+    "generated_at (ISO-8601 w/ numeric offset) — generation timestamp",
     "app_version — emitting app version",
     "platform — emitting platform (iOS/Android)",
     "export_schema_version (semver, per-format) — the schemaVersion; frozen contract with changelog",
@@ -136,15 +153,25 @@
     "timezone_policy (string) — 'timestamps carry original offsets; day boundaries computed in tz-at-measurement' + notes",
     "dedup_policy (string) — policy description + version, and whether suppressed rows are included",
     "per_metric_row_counts (map metric_id → count) — makes truncation detectable",
+    "row_counts (map array-or-file → count) — per-artifact totals; the §22.5 sibling of per_metric_row_counts",
     "methodology_links (map algorithm_id → public methodology URL) — for every derived metric present",
     "checksums (map file → sha256) — canonical-serialization integrity per file",
-    "data_quality_note (string) — coverage-gap summary for the period"
+    "data_quality_note (string) — coverage-gap summary for the period",
+    "sample_data_row_count (int) — rows fabricated by sample/demo mode; 0 on a purely real export (honesty field, §22.5)",
+    "is_delta (bool) — true when the run exported only rows newer than cursor_before (§22.6)",
+    "cursor_before (ISO-8601 w/ numeric offset, nullable) — the incremental cursor this run started from; null on a full run",
+    "cursor_after (ISO-8601 w/ numeric offset, nullable) — the cursor a subsequent delta run should start from",
+    "previous_manifest_sha (sha256, nullable) — the prior manifest's bundle sha; chains delta runs (§22.6)",
+    "destination (object, nullable) — {name, kind} of where the artifact was written. NEVER credentials, tokens, paths with secrets, or account identifiers",
+    "encryption (enum: none | badanenc-v1) — how the artifact reached disk; checksums always describe the plaintext either way"
   ],
   "notes": [
     "Raw and derived are physically separated, never merged into shared columns: ExportScope.payloadKinds {RAW, DERIVED} are 'separated in output, never merged columns' — CSV routes measured rows to per-metric-family files (sleep.csv, vitals.csv) and computed scores/baselines to derived.csv, and every row is tagged with value_type + is_derived. (Column authority: §20.2's full contract governs; §56.2's CsvWriter parenthetical lists only an abbreviated subset — the fuller §20.2/§20.5 set is the frozen contract.)",
     "Canonical value survives unit-profile changes: canonical_value/canonical_unit always carry the metric's canonical unit regardless of the display/custom unit profile applied to value/unit, so raw provenance is preserved and conversions (mmol/L vs mg/dL) live only in ExportMapping — impossible-by-construction unit errors, tested per-locale.",
     "Derived rows are self-documenting and auditable: algorithm_id + algorithm_version on each derived row key into manifest.methodology_links (and the JSON bundle's derived_values[] carry input_manifest refs to their contributing inputs), so every computed value traces back to method + version + inputs and is never presented as if it were raw.",
     "Suppressed duplicates are excluded by default and opt-in only, as lineage not deletion: ExportScope.includeSuppressedDuplicates defaults false; when included, each suppressed row keeps suppressed_by = winning record_id (chain preserved), manifest.dedup_policy records the policy/version and inclusion state, and the on/off row-count delta equals exactly the count of suppressed_by IS NOT NULL rows.",
-    "Provenance is complete and row-level: every row carries source_app, source_device, ingestion_path, source_external_id, import_batch_id, recorded_at and timezone so the source chain → dedup decision is fully reconstructable, while manifest per_metric_row_counts + checksums make truncation and tampering detectable."
+    "Provenance is complete and row-level: every row carries source_app, source_device, ingestion_path, source_external_id, import_batch_id, recorded_at and timezone so the source chain → dedup decision is fully reconstructable, while manifest per_metric_row_counts + checksums make truncation and tampering detectable.",
+    "granularity and aggregation_method (1.0.0, A1) answer the two questions the 24-column set left to inference: what window does this number describe, and how were the underlying readings combined. Before them a daily step total and a single step sample were distinguishable only by reading record_kind and guessing at timestamp_end - timestamp_start. Both are nullable rather than defaulted, because a wrong claim about a row's resolution is worse than an absent one.",
+    "Line endings are CRLF (RFC 4180) and the header is always emitted, even for zero rows. Numbers are locale-independent, never exponential, and rounded to 6 decimal places below 1e9 so unit-conversion float residue does not leak into a column as spurious precision. Both platforms share these rules exactly — packages/fixtures/export/ is the artifact that proves it."
   ]
 }

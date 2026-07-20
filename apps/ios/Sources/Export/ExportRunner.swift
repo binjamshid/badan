@@ -22,6 +22,16 @@ final class ExportRunner {
         let job: ExportJob
         let fileURLs: [URL]
         let rowCount: Int
+        /// The largest `provenance.ingestedAt` among the raw/interval/session rows this export
+        /// actually wrote — the cursor watermark a successful `sinceLastRun` delivery advances to
+        /// (EPIC-17). `nil` when the export contained no ingested measurement rows (e.g. a
+        /// derived-only or log-only scope), in which case a delta run leaves the cursor untouched
+        /// rather than inventing a watermark from a non-ingested axis. Defaulted so the many
+        /// existing `ExportResult(job:fileURLs:rowCount:)` call sites are unaffected.
+        var maxIngestedAt: Date? = nil
+        /// Row counts by record class, for the `ExportRun` ledger (§9.5). By class, never by
+        /// metric — see `ExportRowCounts`. Defaulted for the same reason as `maxIngestedAt`.
+        var rowCounts: ExportRowCounts? = nil
     }
 
     private let measurements: MeasurementRepository
@@ -33,9 +43,28 @@ final class ExportRunner {
     private let appVersion: String
     private let deviceId: String
 
+    // EPIC-09/13/14/17 template-run collaborators. All optional and defaulted to nil/[] so the
+    // existing `ExportRunner(measurements:…:deviceId:)` construction — used by `AppEnvironment`
+    // and every Phase-0/1 test — compiles and behaves exactly as before. `runTemplate` guards on
+    // their presence; the plain `run(scope:format:)` path never touches them, so a runner built
+    // without them keeps producing artifacts and `ExportJob` rows unchanged.
+    private let templates: ExportTemplateRepository?
+    private let destinations: ExportDestinationRepository?
+    private let runs: ExportRunRepository?
+    private let cursors: ExportCursorRepository?
+    private let routes: RouteRepository?
+    /// One `ExportDestinationDelivering` per non-local destination kind. `shareSheet` is handled
+    /// in-process (the artifacts stay in the temp folder for the UI's share sheet) and needs no
+    /// entry here; a kind with no registered deliverer fails loudly as `failedDelivery` rather
+    /// than silently writing the user's data nowhere.
+    private let deliverers: [ExportDestinationDelivering]
+
     init(measurements: MeasurementRepository, derivation: DerivationRepository,
          logging: LoggingRepository, exportJobs: ExportJobRepository,
-         registry: MetricRegistry, clock: Clock, appVersion: String, deviceId: String) {
+         registry: MetricRegistry, clock: Clock, appVersion: String, deviceId: String,
+         templates: ExportTemplateRepository? = nil, destinations: ExportDestinationRepository? = nil,
+         runs: ExportRunRepository? = nil, cursors: ExportCursorRepository? = nil,
+         routes: RouteRepository? = nil, deliverers: [ExportDestinationDelivering] = []) {
         self.measurements = measurements
         self.derivation = derivation
         self.logging = logging
@@ -44,6 +73,12 @@ final class ExportRunner {
         self.clock = clock
         self.appVersion = appVersion
         self.deviceId = deviceId
+        self.templates = templates
+        self.destinations = destinations
+        self.runs = runs
+        self.cursors = cursors
+        self.routes = routes
+        self.deliverers = deliverers
     }
 
     // MARK: - Entry point
@@ -52,7 +87,19 @@ final class ExportRunner {
     /// `scope.includeSensitive` is true — a sensitive export can no longer leave this function as
     /// plaintext. Ignored (and may be omitted) for a non-sensitive scope, which stays exactly the
     /// unencrypted behavior it always was.
-    func run(scope: ExportScope, format: ExportFormat, passphrase: String? = nil) throws -> ExportResult {
+    ///
+    /// `ingestedSince` is the incremental-export delta filter (EPIC-17). When set, a row is
+    /// included only if it arrived on THIS device after the watermark — `provenance.ingestedAt`
+    /// for the measurement chain, `updatedAt`/`computedAt` for derived/baseline/log rows. This is
+    /// deliberately the ingested axis, never the measured one: a watch that syncs Saturday's
+    /// workout on Monday has `measured_at` behind an existing Sunday watermark, and filtering by
+    /// measured time would drop it forever (the exact silent-loss failure `ExportCursor`'s doc
+    /// and DATA-08 warn against). `nil` — the only value the plain UI export path passes — is a
+    /// no-op, so a non-delta run is byte-identical to before. The caller that sets `ingestedSince`
+    /// (`runTemplate`'s `sinceLastRun` path) also passes a scope with no measured-date window, so
+    /// only the ingested filter narrows the set.
+    func run(scope: ExportScope, format: ExportFormat, passphrase: String? = nil,
+             ingestedSince: Date? = nil) throws -> ExportResult {
         if scope.includeSensitive {
             guard let passphrase, ExportPassphrasePolicy.isValid(passphrase) else {
                 throw ExportRunError.sensitiveExportRequiresPassphrase
@@ -110,10 +157,10 @@ final class ExportRunner {
                     for id in ids where metricAllowed(id, scope) {
                         rawSamples += try measurements
                             .rawSamples(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                            .filter { sourceAllowed($0.provenance, scope) }
+                            .filter { sourceAllowed($0.provenance, scope) && Self.ingestedAfter($0.provenance.ingestedAt, ingestedSince) }
                         intervalRecords += try measurements
                             .intervalRecords(metricId: id, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                            .filter { sourceAllowed($0.provenance, scope) }
+                            .filter { sourceAllowed($0.provenance, scope) && Self.ingestedAfter($0.provenance.ingestedAt, ingestedSince) }
                     }
                 }
 
@@ -121,7 +168,8 @@ final class ExportRunner {
                 if scope.includeRaw {
                     sessions = try measurements
                         .sessions(kind: nil, from: scope.startDate, to: scope.endDate, includeSuppressed: scope.includeSuppressed)
-                        .filter { sessionInScope($0, scope) && sourceAllowed($0.provenance, scope) }
+                        .filter { sessionInScope($0, scope) && sourceAllowed($0.provenance, scope)
+                            && Self.ingestedAfter($0.provenance.ingestedAt, ingestedSince) }
                 }
 
                 // Rows whose period key couldn't be parsed as a `day:` key are still included
@@ -132,12 +180,19 @@ final class ExportRunner {
                 var derivedRangeFallbackCount = 0
                 if scope.includeDerived {
                     for id in ids where metricAllowed(id, scope) {
-                        for v in try derivation.latestDerivedSeries(metricId: id) where derivedInRange(v, scope) {
+                        for v in try derivation.latestDerivedSeries(metricId: id)
+                        where derivedInRange(v, scope) && Self.ingestedAfter(v.updatedAt, ingestedSince) {
                             derivedValues.append(v)
                             if derivedIncludedByRangeFallback(v, scope) { derivedRangeFallbackCount += 1 }
                         }
+                        // A derived value carries no `ingested_at` (it was computed here, not
+                        // ingested), so its delta axis is `updatedAt`/`computedAt` — "recomputed
+                        // since the last run" — never the raw watermark. The cursor itself only
+                        // ever advances on the raw ingested axis (see `maxIngestedAt`), so a
+                        // baseline recomputation cannot drag the watermark past unexported raw rows.
                         if registry.definition(id)?.baselineEligible == true,
-                           let baseline = try derivation.latestBaseline(metricId: id) {
+                           let baseline = try derivation.latestBaseline(metricId: id),
+                           Self.ingestedAfter(baseline.computedAt, ingestedSince) {
                             baselines.append(baseline)
                         }
                     }
@@ -145,9 +200,11 @@ final class ExportRunner {
 
                 // Structured logs kept in the main DB (workouts/nutrition are normal-class).
                 let workouts = (wantRaw && logFamilyIncluded("activity", scope))
-                    ? try logging.workouts(from: rangeStart, to: rangeEnd) : []
+                    ? try logging.workouts(from: rangeStart, to: rangeEnd)
+                        .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) } : []
                 let nutrition = (wantRaw && logFamilyIncluded("nutrition", scope))
-                    ? try logging.nutrition(from: rangeStart, to: rangeEnd) : []
+                    ? try logging.nutrition(from: rangeStart, to: rangeEnd)
+                        .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) } : []
 
                 return GatheredMainDB(rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
                                       derivedValues: derivedValues, baselines: baselines,
@@ -158,9 +215,11 @@ final class ExportRunner {
             // Sensitive-class logs (medications/symptoms) — separate `sensitive` DB connection,
             // additionally gated by `includeSensitive` (matches the JSON bundle's existing gate).
             let symptoms = (wantRaw && scope.includeSensitive && logFamilyIncluded("symptoms", scope))
-                ? try logging.symptoms(from: rangeStart, to: rangeEnd) : []
+                ? try logging.symptoms(from: rangeStart, to: rangeEnd)
+                    .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) } : []
             let adherence = (wantRaw && scope.includeSensitive && logFamilyIncluded("medications", scope))
-                ? try logging.adherence(from: rangeStart, to: rangeEnd) : []
+                ? try logging.adherence(from: rangeStart, to: rangeEnd)
+                    .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) } : []
 
             let result: ExportResult
             switch format {
@@ -182,14 +241,40 @@ final class ExportRunner {
                                      workouts: gathered.workouts, nutrition: gathered.nutrition)
             }
 
-            guard scope.includeSensitive, let passphrase else { return result }
-            // Any failure here (encryption, write, re-persist) falls through to the `catch`
-            // below exactly like a gather/write failure would — the job is marked `.failed` and
-            // the whole folder (plaintext files included) is removed, so a sensitive export
-            // never survives half-encrypted (ledger #19 / dossier "Sensitive health data is
-            // exported as plaintext to the temp directory").
-            return try encryptResult(result, exportId: exportId, folder: folder, scope: scope,
-                                     format: format, startedAt: startedAt, passphrase: passphrase)
+            // The delta watermark and ledger row counts, computed once over the rows that were
+            // actually gathered (post source/metric/ingested filters) so they describe the FILE,
+            // not the query. `maxIngestedAt` is taken over the raw/interval/session rows only —
+            // the ingested axis a `sinceLastRun` cursor advances on — so a derived-only or
+            // log-only export reports `nil` and leaves the cursor untouched rather than moving it
+            // on an axis it never measured.
+            let ingestMax = ([gathered.rawSamples.map(\.provenance.ingestedAt),
+                              gathered.intervalRecords.map(\.provenance.ingestedAt),
+                              gathered.sessions.map(\.provenance.ingestedAt)].flatMap { $0 }).max()
+            let suppressedCount = gathered.rawSamples.filter { $0.provenance.isSuppressed }.count
+                + gathered.intervalRecords.filter { $0.provenance.isSuppressed }.count
+                + gathered.sessions.filter { $0.provenance.isSuppressed }.count
+            let counts = ExportRowCounts(
+                measurements: gathered.rawSamples.count, intervals: gathered.intervalRecords.count,
+                sessions: gathered.sessions.count,
+                logs: symptoms.count + adherence.count + gathered.workouts.count + gathered.nutrition.count,
+                derived: gathered.derivedValues.count + gathered.baselines.count,
+                suppressed: suppressedCount)
+
+            var finalResult: ExportResult
+            if scope.includeSensitive, let passphrase {
+                // Any failure here (encryption, write, re-persist) falls through to the `catch`
+                // below exactly like a gather/write failure would — the job is marked `.failed`
+                // and the whole folder (plaintext files included) is removed, so a sensitive
+                // export never survives half-encrypted (ledger #19 / dossier "Sensitive health
+                // data is exported as plaintext to the temp directory").
+                finalResult = try encryptResult(result, exportId: exportId, folder: folder, scope: scope,
+                                                format: format, startedAt: startedAt, passphrase: passphrase)
+            } else {
+                finalResult = result
+            }
+            finalResult.maxIngestedAt = ingestMax
+            finalResult.rowCounts = counts
+            return finalResult
         } catch {
             let failedJob = ExportJob(id: exportId, scope: scope, format: format, status: .failed,
                                       outputPath: folder.path, startedAt: startedAt,
@@ -901,6 +986,18 @@ final class ExportRunner {
         for id in metricIds { counts[id, default: 0] += 1 }
     }
 
+    /// The incremental-export inclusion test (EPIC-17). A `nil` watermark (every non-delta run)
+    /// includes everything, so the plain export path is unchanged. Strictly greater than the
+    /// watermark, matching `ExportCursorRepository.advance`'s forward-only guard: the cursor is
+    /// advanced to the max `ingested_at` this run *included*, so the next run's `> watermark`
+    /// window starts exactly one past the last row already delivered — a row can neither be
+    /// skipped (the query has no upper bound, so nothing ingested after the watermark is missed)
+    /// nor duplicated (the boundary row is `== watermark`, not `>`).
+    private static func ingestedAfter(_ ingestedAt: Date, _ watermark: Date?) -> Bool {
+        guard let watermark else { return true }
+        return ingestedAt > watermark
+    }
+
     private static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -913,5 +1010,715 @@ final class ExportRunner {
         let handle = try FileHandle(forWritingTo: url)
         defer { try? handle.close() }
         return try writer.write(rows, to: handle)
+    }
+}
+
+// MARK: - EPIC-09/13/14/15/17: template-driven runs, delivery, and the ExportRun ledger
+//
+// Everything below turns a saved `ExportTemplate` into an artifact that has actually been
+// delivered and recorded. It sits ON TOP of `run(scope:format:passphrase:ingestedSince:)` above —
+// that function is still the one place gather + generation + encryption + cleanup happen, and it
+// is unchanged for the plain UI export path. This layer only adds what a *template* run needs:
+// range/cursor resolution, run-time sensitive re-confirmation, delivery to a destination, the
+// `ExportRun` trust ledger, and the incremental cursor.
+//
+// Two disciplines run through all of it and are load-bearing, not stylistic:
+//
+//  1. EVERY attempt writes exactly one `ExportRun` (§9.5), including an attempt refused before a
+//     single byte was generated. A run that leaves no ledger row is the precise HAE failure this
+//     subsystem exists to make impossible — "it just never happened and nothing said so."
+//
+//  2. The cursor advances ONLY after a delta run has both succeeded AND been delivered, and only
+//     to the max `ingested_at` this run actually wrote. This is the same two-phase-commit
+//     discipline as Phase 0's HealthKit anchors (DATA-08) and Health Connect change tokens: never
+//     move a watermark past data you have not durably handed off. Phase 0's audit found a
+//     HIGH-severity bug where Android advanced a cursor past records it had dropped; the guard
+//     here — advance to `result.maxIngestedAt`, which is computed over the rows the file contains,
+//     never over the rows the query could have returned — is what keeps that from recurring.
+extension ExportRunner {
+
+    /// The outcome of one template run.
+    ///
+    /// `run` is ALWAYS present and already persisted — see discipline (1) above.
+    struct TemplateRunResult {
+        let run: ExportRun
+        /// The generated artifact, when generation got that far. `nil` for a pre-generation refusal.
+        let result: ExportResult?
+        /// The delivery receipt, when a delivery was attempted. `nil` for a pre-generation refusal
+        /// and for the share-sheet destination (whose "delivery" is the UI presenting a share
+        /// sheet over the temp files, not a copy this layer performs).
+        let receipt: ExportDeliveryReceipt?
+        /// Set when a `sinceLastRun` template ran with no cursor and fell back to `lastNDays`.
+        /// The caller MUST surface this — a silent fallback is exactly the HAE failure mode §12
+        /// EPIC-09's input rule forbids. It is ALSO recorded machine-readably as
+        /// `run.errorCode == .cursorMissing` on the (successful) ledger row, so the notice reaches
+        /// Export Health and a backup, not only this return value.
+        var cursorFallbackNotice: Bool = false
+    }
+
+    /// How many days a `sinceLastRun` template falls back to when it has no cursor yet. Matches the
+    /// Last-30 Quick Export preset (and `ExportManageService`'s own fallback) so a first delta run
+    /// produces a familiar-sized file rather than all of history — a safety net, not a full backfill.
+    static let cursorMissingFallbackDays = 30
+
+    /// Run one template end to end: resolve → deliver → record. Never throws — every failure mode
+    /// is a recorded `ExportRun`, because a thrown error a caller might swallow is the opposite of
+    /// the trust ledger this returns.
+    ///
+    /// - Parameters:
+    ///   - consent: the run-time sensitive re-confirmation (§9.3). Required, and freshly checked
+    ///     HERE — not at template-save time — whenever `template.scope.includeSensitive` is true.
+    ///     A template that will one day fire from a schedule or a Shortcut must not carry standing
+    ///     permission to export meds/symptoms.
+    ///   - passphrase: the encryption passphrase, forwarded to `run` unchanged. A sensitive scope
+    ///     needs BOTH a fresh `consent` and a valid passphrase; they gate independently.
+    ///   - attempt: 0 for a first attempt, incremented by a caller retrying a failed run. A retry
+    ///     is idempotent by construction: the cursor only advanced on the prior run if it
+    ///     succeeded, so a retry re-reads the SAME watermark and re-exports the SAME window — it
+    ///     can neither skip nor duplicate rows.
+    func runTemplate(_ template: ExportTemplate, trigger: ExportTrigger,
+                     consent: SensitiveRunConsent? = nil, passphrase: String? = nil,
+                     timeZone: TimeZone = .current, attempt: Int = 0) async -> TemplateRunResult {
+        let startedAt = clock.now()
+        let runId = ULID.newID()
+
+        guard let runs = self.runs, let cursors = self.cursors, let destinations = self.destinations else {
+            // A runner built without the template collaborators cannot honor this call. Returned
+            // as a synthetic (unpersisted) failed result rather than crashing, so a misconfigured
+            // call site is diagnosable; there is no ledger to write it to by definition.
+            let run = ExportRun(id: runId, templateId: template.id, trigger: trigger,
+                                startedAt: startedAt, finishedAt: clock.now(),
+                                outcome: .failedGeneration, errorCode: .unknown,
+                                errorDetail: ExportErrorDetail(stage: .finalizing, attempt: attempt))
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        }
+
+        // Reconcile any job stranded `running` by a past crash before starting a new one — the
+        // same two observation points `ExportJobRepository.markStaleRunningAsFailed` is documented
+        // to be called from (EDGE-02a).
+        try? exportJobs.markStaleRunningAsFailed()
+
+        // 1. Destination. A template need not pin one (the user picks at run time); absent, it is
+        //    the share sheet — a real destination row, not "no destination" (§9.4).
+        let destinationId = template.destinationId ?? ExportDestination.shareSheetId
+        let destination = (try? destinations.destination(id: destinationId)) ?? nil
+        guard let destination else {
+            // The row was deleted out from under the template. Fail loudly in the ledger rather
+            // than silently redirecting the user's data somewhere they did not choose
+            // (`ExportDestinationRepository.softDelete`'s stated contract). No `destinationMissing`
+            // code exists, and `.destinationUnreachable` is the honest reading: BADAN cannot reach
+            // a destination that is not there.
+            let run = record(runs, id: runId, template: template, trigger: trigger, jobId: nil,
+                             startedAt: startedAt, outcome: .failedGeneration,
+                             errorCode: .destinationUnreachable, stage: .finalizing, attempt: attempt,
+                             destinationId: destinationId)
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        }
+
+        // 2. Run-time sensitive re-confirmation (§9.3). `scopeForRun` is the ONLY way to get a
+        //    sensitive scope out of a template, and it throws rather than silently narrowing — a
+        //    quietly de-sensitized export would hand the user a file missing the records they
+        //    asked for, with nothing saying so.
+        let resolvedScope: ExportScope
+        do {
+            resolvedScope = try template.scopeForRun(consent: consent, now: startedAt)
+        } catch {
+            let run = record(runs, id: runId, template: template, trigger: trigger, jobId: nil,
+                             startedAt: startedAt, outcome: .failedGeneration,
+                             errorCode: .sensitiveConfirmationMissing, stage: .gathering, attempt: attempt,
+                             destinationId: destinationId)
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        }
+
+        // 3. Range + cursor. `sinceLastRun` with no cursor falls back to `lastNDays` WITH A NOTICE
+        //    (never a silent all-history dump).
+        let cursor = (try? cursors.cursor(templateId: template.id, destinationId: destinationId)) ?? nil
+        let plan = resolveRange(template.rangeRule, scope: resolvedScope, cursor: cursor, now: startedAt)
+
+        // 4. Generate. `.raw` templates reuse `run` verbatim; `.bucketed` templates route through
+        //    the aggregation path. A `sinceLastRun` delta passes its ingested watermark to `run`
+        //    (and a date-less scope), so the delta is taken on the ingested axis, never the
+        //    measured one (see `run`'s `ingestedSince` doc).
+        let result: ExportResult
+        do {
+            switch template.aggregation {
+            case .raw:
+                result = try run(scope: plan.scope, format: template.format,
+                                 passphrase: passphrase, ingestedSince: plan.ingestedSince)
+            case .bucketed(let bucket, let method):
+                result = try runAggregated(scope: plan.scope, template: template, bucket: bucket,
+                                           method: method, passphrase: passphrase,
+                                           ingestedSince: plan.ingestedSince, startedAt: startedAt)
+            }
+        } catch let error as ExportRunError where error == .sensitiveExportRequiresPassphrase {
+            let run = record(runs, id: runId, template: template, trigger: trigger, jobId: nil,
+                             startedAt: startedAt, outcome: .failedGeneration,
+                             errorCode: .passphraseMissing, stage: .encrypting, attempt: attempt,
+                             destinationId: destinationId, cursorBefore: plan.cursorBefore)
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        } catch {
+            // Generation itself failed (gather, write, encrypt). `run` already marked the
+            // `export_jobs` row `.failed` and removed the folder; this records the ledger side.
+            let run = record(runs, id: runId, template: template, trigger: trigger, jobId: nil,
+                             startedAt: startedAt, outcome: .failedGeneration,
+                             errorCode: .writeFailed, stage: .writing, attempt: attempt,
+                             destinationId: destinationId, cursorBefore: plan.cursorBefore)
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        }
+
+        // 5. Deliver.
+        let receipt = await deliver(result: result, template: template, destination: destination,
+                                    plan: plan, runDate: startedAt, timeZone: timeZone, attempt: attempt)
+
+        // Persist the destination's concluded status (a delivery is also a reachability signal).
+        if destination.kind.leavesDevice || receipt.destinationStatus != .ok {
+            try? destinations.updateStatus(id: destinationId, status: receipt.destinationStatus,
+                                           checkedAt: clock.now())
+        }
+
+        // 6. Ledger + cursor (two-phase commit).
+        let manifestSha = result.job.manifest.flatMap { manifest in
+            ManifestDigest(hex: Self.sha256Hex(Data(JSONCoding.encode(manifest).utf8)))
+        }
+        // A delivered run that carried no rows is "there was nothing to export" (§9.5
+        // `skippedNoData`), not a plain success — so an automation that legitimately had nothing to
+        // do is distinguishable in Export Health from one that moved data. Matches
+        // `ExportManageService`'s rowCount==0 mapping.
+        let effectiveOutcome: ExportOutcome =
+            (receipt.outcome == .success && result.rowCount == 0) ? .skippedNoData : receipt.outcome
+
+        var cursorAfter: Date?
+        let advanced = effectiveOutcome == .success
+            && template.rangeRule == .sinceLastRun
+            && !plan.fellBackFromSinceLastRun
+        if advanced, let watermark = result.maxIngestedAt {
+            // TWO-PHASE COMMIT (the DATA-08 parallel): the watermark moves only now, after a
+            // delivery that fully succeeded, and only to a value computed over the rows the file
+            // actually contains (`result.maxIngestedAt`). `advance` is itself forward-only, so an
+            // out-of-order retry reporting an older watermark is refused, not obeyed. Nothing here
+            // can move the cursor past a row this run dropped.
+            _ = try? cursors.advance(templateId: template.id, destinationId: destinationId,
+                                     to: watermark, lastRunId: runId, manifestSha: manifestSha,
+                                     now: clock.now())
+            cursorAfter = watermark
+        }
+
+        // A `sinceLastRun` fallback rides a SUCCESS row as `.cursorMissing` — a note, not a
+        // failure (`ExportOutcome.isFailure` excludes it). The run genuinely succeeded; the code
+        // records that it did so via the fallback so the notice is durable, not just returned.
+        let noticeCode: ExportErrorCode? = plan.fellBackFromSinceLastRun ? .cursorMissing : receipt.errorCode
+        let run = ExportRun(
+            id: runId, templateId: template.id, jobId: result.job.id, trigger: trigger,
+            startedAt: startedAt, finishedAt: clock.now(), outcome: effectiveOutcome,
+            errorCode: noticeCode, errorDetail: receipt.errorDetail,
+            bytesWritten: receipt.bytesDelivered, rowCounts: result.rowCounts,
+            destinationId: destinationId, deliveredAt: receipt.deliveredAt,
+            cursorBefore: plan.cursorBefore, cursorAfter: cursorAfter, manifestSha256: manifestSha)
+        try? runs.insert(run)
+
+        return TemplateRunResult(run: run, result: result, receipt: receipt,
+                                 cursorFallbackNotice: plan.fellBackFromSinceLastRun)
+    }
+
+    // MARK: - Range resolution
+
+    /// The concrete window one run will use, plus the delta filter and the cursor bookkeeping.
+    struct ResolvedRun {
+        /// The scope handed to generation — a copy of the template scope with its date window set
+        /// per the range rule. For a delta run this window is CLEARED (nil/nil) so only the
+        /// ingested watermark narrows the set.
+        var scope: ExportScope
+        /// The incremental delta watermark, or `nil` for a whole-window run.
+        var ingestedSince: Date?
+        /// The watermark the run started from, recorded on the ledger row for reconstruction.
+        var cursorBefore: Date?
+        /// True when `sinceLastRun` had no cursor and fell back to `lastNDays`.
+        var fellBackFromSinceLastRun: Bool
+    }
+
+    private func resolveRange(_ rule: ExportRangeRule, scope: ExportScope,
+                             cursor: ExportCursor?, now: Date) -> ResolvedRun {
+        var scope = scope
+        switch rule {
+        case .fixed:
+            // The window the user pinned deliberately — the scope's own dates, verbatim.
+            return ResolvedRun(scope: scope, ingestedSince: nil, cursorBefore: nil,
+                               fellBackFromSinceLastRun: false)
+        case .lastNDays(let n):
+            scope.startDate = now.addingTimeInterval(-Double(max(1, n)) * 86_400)
+            scope.endDate = now
+            return ResolvedRun(scope: scope, ingestedSince: nil, cursorBefore: nil,
+                               fellBackFromSinceLastRun: false)
+        case .allTime:
+            scope.startDate = nil
+            scope.endDate = nil
+            return ResolvedRun(scope: scope, ingestedSince: nil, cursorBefore: nil,
+                               fellBackFromSinceLastRun: false)
+        case .sinceLastRun:
+            guard let cursor else {
+                // No cursor yet: fall back to a bounded window rather than dumping all of history,
+                // and flag it so the caller surfaces a notice. This is the one place the plan
+                // singles out — a silent fallback here is the HAE failure the whole subsystem
+                // exists to avoid.
+                scope.startDate = now.addingTimeInterval(-Double(Self.cursorMissingFallbackDays) * 86_400)
+                scope.endDate = now
+                return ResolvedRun(scope: scope, ingestedSince: nil, cursorBefore: nil,
+                                   fellBackFromSinceLastRun: true)
+            }
+            // Delta: clear the measured-date window entirely and filter on the ingested axis, so a
+            // late-arriving row (measured before the watermark, ingested after it) is included
+            // rather than dropped forever.
+            scope.startDate = nil
+            scope.endDate = nil
+            return ResolvedRun(scope: scope, ingestedSince: cursor.highWatermark,
+                               cursorBefore: cursor.highWatermark, fellBackFromSinceLastRun: false)
+        }
+    }
+
+    // MARK: - Delivery
+
+    private func deliver(result: ExportResult, template: ExportTemplate, destination: ExportDestination,
+                         plan: ResolvedRun, runDate: Date, timeZone: TimeZone,
+                         attempt: Int) async -> ExportDeliveryReceipt {
+        let artifacts = destinationArtifacts(from: result, label: template.name, plan: plan,
+                                             runDate: runDate, timeZone: timeZone)
+
+        // The share sheet is delivered in-process: the artifacts stay in the runner's temp folder
+        // for the UI to hand to AirDrop/Files/Mail. There is nothing for this layer to copy, and
+        // no network deliverer is (or should be) registered for it — a share-sheet "delivery" that
+        // reached a deliverer would be a category error.
+        if destination.kind == .shareSheet {
+            let bytes = artifacts.reduce(0) { $0 + $1.byteCount }
+            return ExportDeliveryReceipt(
+                outcome: .success,
+                errorDetail: ExportErrorDetail(stage: .delivering, filesWritten: artifacts.count,
+                                               filesExpected: artifacts.count, attempt: attempt),
+                bytesDelivered: bytes, deliveredAt: clock.now(), destinationStatus: .ok,
+                // Inline en+ar, sanctioned for this module (see `DestinationMessages`' doc): the
+                // share sheet is delivered by the UI, so the "receipt" only says the files are
+                // ready to hand off — never that they arrived anywhere, which for a share sheet
+                // BADAN cannot know.
+                message: LocalizedString(en: "Your export is ready to share.",
+                                         ar: "تصديرك جاهز للمشاركة."))
+        }
+
+        guard let deliverer = deliverers.first(where: { $0.kind == destination.kind }) else {
+            // A destination kind with no registered deliverer (a Phase-3 REST/cloud row reached on
+            // a Phase-2 build) fails loudly rather than silently writing nowhere.
+            return ExportDeliveryReceipt(
+                outcome: .failedDelivery, errorCode: .destinationUnreachable,
+                errorDetail: ExportErrorDetail(stage: .delivering, filesWritten: 0,
+                                               filesExpected: artifacts.count, attempt: attempt),
+                bytesDelivered: 0, destinationStatus: destination.status,
+                message: DestinationMessages.destinationNotConfigured)
+        }
+
+        let request = ExportDeliveryRequest(destination: destination, artifacts: artifacts,
+                                            runDate: runDate, timeZone: timeZone)
+        return await deliverer.deliver(request, now: clock.now())
+    }
+
+    /// Maps the runner's temp files onto the names they carry at the destination.
+    ///
+    /// A single-file export (a JSON bundle, or the one encrypted `.badanenc` container) uses the
+    /// bare house name `BADAN_<slug>_<start>-<end>.<ext>` (`ExportArtifactNaming.fileName`). A
+    /// multi-file export (CSV's raw/derived/events + manifest) keeps each file's role as a
+    /// discriminator — `…_raw.csv`, `…_manifest.json` — because raw and derived must never
+    /// collapse into one name (I5) and three files sharing one `.csv` name would do exactly that.
+    /// The role suffix reuses the same `slug`/`dateStamp` atoms `fileName` is built from, so it
+    /// cannot drift from the house convention the parity fixtures pin.
+    private func destinationArtifacts(from result: ExportResult, label: String, plan: ResolvedRun,
+                                      runDate: Date, timeZone: TimeZone) -> [ExportArtifact] {
+        let start = plan.scope.startDate ?? Date(timeIntervalSince1970: 0)
+        let end = plan.scope.endDate ?? runDate
+        let single = result.fileURLs.count == 1
+        let slug = ExportArtifactNaming.slug(label)
+        let startStamp = ExportArtifactNaming.dateStamp(start, timeZone: timeZone)
+        let endStamp = ExportArtifactNaming.dateStamp(end, timeZone: timeZone)
+
+        return result.fileURLs.map { url in
+            let ext = url.pathExtension
+            let name: String
+            if single {
+                name = ExportArtifactNaming.fileName(label: label, start: start, end: end,
+                                                     fileExtension: ext, timeZone: timeZone)
+            } else {
+                let role = url.deletingPathExtension().lastPathComponent // raw | derived | events | manifest
+                name = "\(ExportArtifactNaming.rootFolder)_\(slug)_\(startStamp)-\(endStamp)_\(role).\(ext)"
+            }
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+            return ExportArtifact(sourceURL: url, fileName: name, byteCount: size ?? 0)
+        }
+    }
+
+    // MARK: - Ledger helper
+
+    /// Append one pre-generation or failed `ExportRun` and return it. Keeps the several early-exit
+    /// paths in `runTemplate` from each hand-rolling the same 12-field initializer differently.
+    private func record(_ runs: ExportRunRepository, id: String, template: ExportTemplate,
+                        trigger: ExportTrigger, jobId: String?, startedAt: Date,
+                        outcome: ExportOutcome, errorCode: ExportErrorCode?, stage: ExportStage,
+                        attempt: Int, destinationId: String?, cursorBefore: Date? = nil) -> ExportRun {
+        let run = ExportRun(id: id, templateId: template.id, jobId: jobId, trigger: trigger,
+                            startedAt: startedAt, finishedAt: clock.now(), outcome: outcome,
+                            errorCode: errorCode,
+                            errorDetail: ExportErrorDetail(stage: stage, attempt: attempt),
+                            destinationId: destinationId, cursorBefore: cursorBefore)
+        try? runs.insert(run)
+        return run
+    }
+}
+
+// MARK: - EPIC-13: aggregated CSV generation (bucketed templates)
+//
+// A `.bucketed` template rolls raw measurements up into hour/day/week/month buckets instead of
+// emitting one row per reading. This is the CSV analysis convenience EPIC-13 specifies; it is
+// deliberately CSV-only:
+//
+//   - The JSON bundle is BADAN's full-fidelity archival format and its schema defines no bucketed
+//     shape, so a `.bucketed` template whose format is JSON produces the ordinary raw+derived
+//     bundle (raw data is never withheld). That routing lives in `runTemplate` — this path is
+//     reached only for CSV.
+//   - Aggregation is over the measurement chain (raw samples + interval records) only. Derived
+//     values are already period-keyed and are not re-bucketed here; the sensitive namespace is
+//     logs, not measurements, so an aggregated file never contains meds/symptoms regardless of
+//     `includeSensitive`. `includeSensitive` still triggers encryption (defense in depth, matching
+//     `run`) even though the content is measurement buckets.
+//
+// The bucketing itself is `MetricAggregator` (DST-correct, tz-at-measurement, byte-parity with
+// Android) and the wide pivot is `WideCSVProjector` — this method only gathers the inputs, stamps
+// each produced record with its `granularity`+`aggregation_method` (CSV columns 25/26, the
+// ambiguity-closing pair EPIC-08 left for the runner to fill), writes the file + manifest + job,
+// and hands the result back to `runTemplate` for delivery.
+extension ExportRunner {
+
+    func runAggregated(scope: ExportScope, template: ExportTemplate, bucket: ExportBucket,
+                       method: ExportAggregationMethod, passphrase: String?,
+                       ingestedSince: Date?, startedAt: Date) throws -> ExportResult {
+        if scope.includeSensitive {
+            guard let passphrase, ExportPassphrasePolicy.isValid(passphrase) else {
+                throw ExportRunError.sensitiveExportRequiresPassphrase
+            }
+        }
+
+        sweepOrphanedExportFolders()
+        let exportId = ULID.newID()
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("badan-export-\(exportId)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: folder, withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.complete])
+
+        let runningJob = ExportJob(id: exportId, scope: scope, format: .csv, status: .running,
+                                   outputPath: folder.path, startedAt: startedAt, createdAt: startedAt)
+        try exportJobs.insert(runningJob)
+
+        do {
+            let inputs = try gatherAggregateInputs(scope: scope, ingestedSince: ingestedSince)
+            let ingestMax = inputs.maxIngestedAt
+            let granularity = Self.aggregateGranularity(bucket)
+            let definitions = Dictionary(uniqueKeysWithValues: registry.all.map { ($0.metricId, $0) })
+            let records = MetricAggregator().aggregate(rows: inputs.rows, granularity: granularity,
+                                                       method: method, definitions: definitions)
+
+            let generatedAt = clock.now()
+            let fileURL = folder.appendingPathComponent("aggregated.csv")
+            let checksum: String
+            if template.layout == .wide {
+                // Wide is a pure pivot of the tidy records — one file, its own `#`-comment header.
+                let wide = WideCSVProjector().render(records)
+                let data = Data(wide.utf8)
+                FileManager.default.createFile(atPath: fileURL.path, contents: nil,
+                                               attributes: [.protectionKey: FileProtectionType.complete])
+                try data.write(to: fileURL, options: .completeFileProtection)
+                checksum = Self.sha256Hex(data)
+            } else {
+                let rows = records.map { aggregateRow($0, scope) }
+                checksum = try Self.streamWrite(rows, using: CSVWriter(), to: fileURL)
+            }
+
+            var counts: [String: Int] = [:]
+            for record in records { counts[record.metricId, default: 0] += 1 }
+
+            let manifest = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
+                                        checksums: ["aggregated.csv": checksum], perMetricRowCounts: counts)
+            let manifestURL = folder.appendingPathComponent("manifest.json")
+            try JSONCoding.encoder.encode(manifest).write(to: manifestURL, options: .completeFileProtection)
+
+            let job = ExportJob(id: exportId, scope: scope, format: .csv, status: .completed,
+                                manifest: manifest, outputPath: folder.path, rowCount: records.count,
+                                startedAt: startedAt, finishedAt: generatedAt, createdAt: startedAt)
+            try exportJobs.insert(job)
+
+            // Aggregate buckets are neither measurements, intervals, sessions, logs nor engine
+            // derivations — they are a rollup of raw. `ExportRowCounts` has no aggregate class, so
+            // they are reported under `intervals` (the closest existing class: a bucket IS an
+            // interval aggregate) rather than invented into a class that would misdescribe them.
+            let rowCounts = ExportRowCounts(intervals: records.count)
+            var result = ExportResult(job: job, fileURLs: [fileURL, manifestURL], rowCount: records.count,
+                                      maxIngestedAt: ingestMax, rowCounts: rowCounts)
+
+            if scope.includeSensitive, let passphrase {
+                result = try encryptResult(result, exportId: exportId, folder: folder, scope: scope,
+                                           format: .csv, startedAt: startedAt, passphrase: passphrase)
+                result.maxIngestedAt = ingestMax
+                result.rowCounts = rowCounts
+            }
+            return result
+        } catch {
+            let failedJob = ExportJob(id: exportId, scope: scope, format: .csv, status: .failed,
+                                      outputPath: folder.path, startedAt: startedAt,
+                                      finishedAt: clock.now(), createdAt: startedAt)
+            try? exportJobs.insert(failedJob)
+            try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
+    }
+
+    /// The raw + interval rows in scope, projected onto `AggregateInputRow` for `MetricAggregator`.
+    /// Applies the same metric/source/ingested filters as `run`'s gather. Aggregation happens in
+    /// canonical units only (the aggregator's contract), so `value`/`unit` are the canonical ones.
+    private func gatherAggregateInputs(scope: ExportScope,
+                                       ingestedSince: Date?) throws -> (rows: [AggregateInputRow], maxIngestedAt: Date?) {
+        let ids = metricIdsInScope(scope)
+        var rows: [AggregateInputRow] = []
+        var ingestMax: Date?
+        func note(_ ingestedAt: Date) { if ingestMax == nil || ingestedAt > ingestMax! { ingestMax = ingestedAt } }
+
+        try measurements.transaction {
+            for id in ids where metricAllowed(id, scope) {
+                for s in try measurements.rawSamples(metricId: id, from: scope.startDate, to: scope.endDate,
+                                                     includeSuppressed: scope.includeSuppressed)
+                where sourceAllowed(s.provenance, scope) && Self.ingestedAfter(s.provenance.ingestedAt, ingestedSince) {
+                    rows.append(AggregateInputRow(metricId: s.metricId, value: s.value, unit: s.unit,
+                                                  startAt: s.startAt, endAt: s.endAt, tzId: s.tzId))
+                    note(s.provenance.ingestedAt)
+                }
+                for r in try measurements.intervalRecords(metricId: id, from: scope.startDate, to: scope.endDate,
+                                                          includeSuppressed: scope.includeSuppressed)
+                where sourceAllowed(r.provenance, scope) && Self.ingestedAfter(r.provenance.ingestedAt, ingestedSince) {
+                    rows.append(AggregateInputRow(metricId: r.metricId, value: r.value, unit: r.unit,
+                                                  startAt: r.startAt, endAt: r.endAt, tzId: r.tzId,
+                                                  storedAggregation: r.aggregation))
+                    note(r.provenance.ingestedAt)
+                }
+            }
+        }
+        return (rows, ingestMax)
+    }
+
+    /// One aggregated bucket as a tidy CSV row. `record_kind`/`value_type` are `aggregate` and
+    /// `ingestion_path` is `derived` — the bucket was computed by BADAN, not ingested — while
+    /// `is_derived` stays false: it is a rollup of RAW, kept separable from engine-derived values
+    /// like baselines (I5). Columns 25/26 carry the granularity and method that make the number
+    /// self-describing (the whole point of EPIC-13). `sample_count` and the multi-zone flag have no
+    /// column in the 26-column contract and are dropped here (present in a future bundle shape).
+    private func aggregateRow(_ record: AggregateRecord, _ scope: ExportScope) -> ExportRow {
+        let (value, unit) = displayValueUnit(metricId: record.metricId, canonicalValue: record.value,
+                                             canonicalUnit: record.unit, scope)
+        return ExportRow(
+            recordId: "\(record.metricId)|\(record.bucketKey)|\(record.stat.rawValue)",
+            // `interval`, not `aggregate`: a bucket IS an interval aggregate, and the frozen
+            // record_kind vocabulary (`sample|interval|session|event|derived|baseline`) has no
+            // `aggregate`. `value_type` = aggregate + columns 25/26 are what distinguish this
+            // computed rollup from a source interval record.
+            recordKind: "interval",
+            metricId: record.metricId,
+            metricDisplay: metricDisplay(record.metricId, scope),
+            value: CSVWriter.decimal(value),
+            unit: unit,
+            canonicalValue: CSVWriter.decimal(record.value),
+            canonicalUnit: record.unit,
+            valueType: "aggregate",
+            isDerived: false,
+            timestampStart: CSVWriter.iso8601(record.bucketStart, tzId: record.tzId),
+            timestampEnd: CSVWriter.iso8601(record.bucketEnd, tzId: record.tzId),
+            timezone: record.tzId,
+            recordedAt: CSVWriter.iso8601(record.bucketStart, tzId: record.tzId),
+            ingestionPath: IngestionPath.derived.rawValue,
+            granularity: record.granularity.csvGranularity,
+            aggregationMethod: record.stat.csvMethod)
+    }
+
+    private static func aggregateGranularity(_ bucket: ExportBucket) -> AggregateGranularity {
+        switch bucket {
+        case .hour: return .hour
+        case .day: return .day
+        case .week: return .week
+        case .month: return .month
+        }
+    }
+}
+
+// MARK: - EPIC-12: GPX route export
+//
+// Routes are the one thing that can NOT ride the template path: `ExportFormat` deliberately has no
+// `gpx` case (see `ExportTemplate.format`'s doc — no template may request a format no writer can
+// silently produce), and routes are excluded from Quick Export structurally. So GPX gets its own
+// entry point, gated the way §22.4 / §4.11 require: the route-export toggle AND a per-run
+// confirmation that fingerprints the exact routes being written. Both gates live in
+// `GPXWriter.artifacts`; this method's job is to turn its output into a recorded, delivered export
+// — an `ExportJob` and an `ExportRun` — exactly like the template path does for CSV/JSON.
+//
+// The caller assembles the `GPXWorkout`s (from `RouteRepository`) and the `RouteExportConfirmation`
+// over the SAME list, so the confirmation the user saw and the routes actually written cannot
+// drift; ExportRunner does not re-read routes here, precisely so it cannot substitute a different
+// set behind the confirmation. Delivery is the share sheet (the explicit, foreground route-export
+// flow); a folder destination for routes is a later follow-up.
+extension ExportRunner {
+
+    /// The Advanced Export Builder's ad-hoc path (no template) — the "just run this scope now"
+    /// button. It exists as a runner entry point, rather than the view model calling `run(...)`
+    /// directly, for one reason that matters to trust: it records an `ExportRun` on both success
+    /// AND failure, exactly like `runTemplate` and `runRouteExport` do.
+    ///
+    /// (BUG-EXPORT-P1a) Before this, the builder called `ExportRunner.run` straight through and
+    /// wrote only an `ExportJob`, never a run. `ExportRunRepository.jobIdsWithoutRun` then counted
+    /// every such job, and `ExportHealthScreen` rendered it as "started but left no record — likely
+    /// the app was closed mid-export": a *successful, deliberately-run* custom export was reported
+    /// to the user as a probable crash, in the one surface whose whole job is honest run history.
+    /// Android never had the gap (every export there goes through `runAndRecordExport`), so this was
+    /// also a cross-platform parity break (I6/§4.6). Writing the run here closes both, and lights up
+    /// the previously-dead `templateId == nil` -> `ExportHealthCopy.customExport` title branch, which
+    /// is exactly what `ExportRun.templateId`'s own doc means by "an ad-hoc export from the builder".
+    ///
+    /// A ledger-write failure is swallowed (`try?`): the artifact is already on disk, so raising a
+    /// scary error after the export plainly worked would be its own small dishonesty. The run just
+    /// won't appear in Export Health — the same tradeoff `runRouteExport` and Android's helper make.
+    @discardableResult
+    func runAdHoc(scope: ExportScope, format: ExportFormat, passphrase: String? = nil,
+                  trigger: ExportTrigger = .manual) throws -> ExportResult {
+        let startedAt = clock.now()
+        let runId = ULID.newID()
+        do {
+            let result = try run(scope: scope, format: format, passphrase: passphrase)
+            var bytes = 0
+            for url in result.fileURLs {
+                if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int {
+                    bytes += size
+                }
+            }
+            // `manifestSha256` mirrors the route path: the sha of the manifest JSON, or nil when
+            // the job carries no manifest (never on the success path, but the optional is honest).
+            let digest = result.job.manifest.map {
+                ManifestDigest(hex: Self.sha256Hex(Data(JSONCoding.encode($0).utf8)))
+            } ?? nil
+            let run = ExportRun(id: runId, templateId: nil, jobId: result.job.id, trigger: trigger,
+                                startedAt: startedAt, finishedAt: clock.now(), outcome: .success,
+                                bytesWritten: bytes, rowCounts: result.rowCounts,
+                                destinationId: ExportDestination.shareSheetId,
+                                deliveredAt: clock.now(), manifestSha256: digest)
+            try? runs?.insert(run)
+            return result
+        } catch {
+            // Generation threw before (or during) the job write. The ledger row is keyed to the
+            // attempt, not an artifact that may not exist — jobId nil, like the route gate failures.
+            let run = ExportRun(id: runId, templateId: nil, jobId: nil, trigger: trigger,
+                                startedAt: startedAt, finishedAt: clock.now(), outcome: .failedGeneration,
+                                errorCode: .writeFailed,
+                                errorDetail: ExportErrorDetail(stage: .writing, attempt: 0),
+                                destinationId: ExportDestination.shareSheetId)
+            try? runs?.insert(run)
+            throw error
+        }
+    }
+
+    func runRouteExport(workouts: [GPXWorkout], routeExportEnabled: Bool,
+                        confirmation: RouteExportConfirmation, trigger: ExportTrigger = .manual,
+                        attempt: Int = 0) -> TemplateRunResult {
+        let startedAt = clock.now()
+        let runId = ULID.newID()
+        // Routes are location data; the manifest records a raw, non-sensitive-namespace scope
+        // (the sensitive namespace is meds/symptoms — routes are their own class, gated above).
+        let scope = ExportScope(includeRaw: true, includeDerived: false)
+
+        guard let runs = self.runs else {
+            let run = ExportRun(id: runId, trigger: trigger, startedAt: startedAt,
+                                finishedAt: clock.now(), outcome: .failedGeneration, errorCode: .unknown,
+                                errorDetail: ExportErrorDetail(stage: .finalizing, attempt: attempt))
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        }
+
+        try? exportJobs.markStaleRunningAsFailed()
+
+        let artifacts: [GPXWriter.Artifact]
+        do {
+            artifacts = try GPXWriter(appVersion: appVersion, generatedAt: startedAt)
+                .artifacts(for: workouts, routeExportEnabled: routeExportEnabled, confirmation: confirmation)
+        } catch {
+            // Map the two gate failures onto the closed ledger vocabulary: the toggle being off is
+            // a permission refusal; a stale confirmation is a missing run-time confirmation (the
+            // routes changed under the user's acknowledgement). An empty route is a generation
+            // problem. None of these produced a job.
+            let code: ExportErrorCode
+            switch error {
+            case GPXExportError.routeExportNotEnabled: code = .permissionDenied
+            case GPXExportError.confirmationStale: code = .sensitiveConfirmationMissing
+            default: code = .writeFailed
+            }
+            let run = ExportRun(id: runId, trigger: trigger, startedAt: startedAt,
+                                finishedAt: clock.now(), outcome: .failedGeneration, errorCode: code,
+                                errorDetail: ExportErrorDetail(stage: .gathering, attempt: attempt))
+            try? runs.insert(run)
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        }
+
+        let exportId = ULID.newID()
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("badan-export-\(exportId)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: folder, withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.complete])
+            try exportJobs.insert(ExportJob(id: exportId, scope: scope, format: .csv, status: .running,
+                                            outputPath: folder.path, startedAt: startedAt, createdAt: startedAt))
+
+            var fileURLs: [URL] = []
+            var checksums: [String: String] = [:]
+            var bytes = 0
+            for artifact in artifacts {
+                let url = folder.appendingPathComponent(artifact.fileName)
+                let data = Data(artifact.gpx.utf8)
+                FileManager.default.createFile(atPath: url.path, contents: nil,
+                                               attributes: [.protectionKey: FileProtectionType.complete])
+                try data.write(to: url, options: .completeFileProtection)
+                checksums[artifact.fileName] = Self.sha256Hex(data)
+                bytes += data.count
+                fileURLs.append(url)
+            }
+
+            let generatedAt = clock.now()
+            let manifest = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
+                                        checksums: checksums, perMetricRowCounts: [:])
+            let manifestURL = folder.appendingPathComponent("manifest.json")
+            try JSONCoding.encoder.encode(manifest).write(to: manifestURL, options: .completeFileProtection)
+            fileURLs.append(manifestURL)
+
+            let pointCount = workouts.reduce(0) { $0 + $1.routes.reduce(0) { $0 + $1.points.count } }
+            let job = ExportJob(id: exportId, scope: scope, format: .csv, status: .completed,
+                                manifest: manifest, outputPath: folder.path, rowCount: pointCount,
+                                startedAt: startedAt, finishedAt: generatedAt, createdAt: startedAt)
+            try exportJobs.insert(job)
+
+            let result = ExportResult(job: job, fileURLs: fileURLs, rowCount: pointCount)
+            // Route traces are sessions in `ExportRowCounts`' vocabulary (one per workout).
+            let rowCounts = ExportRowCounts(sessions: workouts.count)
+            let run = ExportRun(id: runId, jobId: exportId, trigger: trigger, startedAt: startedAt,
+                                finishedAt: generatedAt, outcome: .success, bytesWritten: bytes,
+                                rowCounts: rowCounts, deliveredAt: generatedAt,
+                                manifestSha256: ManifestDigest(hex: Self.sha256Hex(Data(JSONCoding.encode(manifest).utf8))))
+            try? runs.insert(run)
+            return TemplateRunResult(run: run, result: result, receipt: nil)
+        } catch {
+            try? exportJobs.insert(ExportJob(id: exportId, scope: scope, format: .csv, status: .failed,
+                                             outputPath: folder.path, startedAt: startedAt,
+                                             finishedAt: clock.now(), createdAt: startedAt))
+            try? FileManager.default.removeItem(at: folder)
+            let run = ExportRun(id: runId, jobId: exportId, trigger: trigger, startedAt: startedAt,
+                                finishedAt: clock.now(), outcome: .failedGeneration, errorCode: .writeFailed,
+                                errorDetail: ExportErrorDetail(stage: .writing, attempt: attempt))
+            try? runs.insert(run)
+            return TemplateRunResult(run: run, result: nil, receipt: nil)
+        }
     }
 }

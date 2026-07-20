@@ -1,0 +1,11 @@
+# The fixtures in this directory are hashed byte-for-byte (see manifest.json) by both test suites
+# and by scripts/check_fixture_hashes.sh. A checkout that rewrote line endings would change the
+# digest of a file nobody edited, and the failure would read as "the platforms disagree" rather
+# than "your checkout mangled the fixture". -text pins the bytes on every platform.
+#
+# The .csv goldens make this load-bearing rather than defensive: they are RFC-4180 and therefore
+# genuinely CRLF-terminated. Under git's text handling those are the exact bytes a checkout would
+# "helpfully" normalize, and the resulting failure would point at the CSV writer of whichever
+# platform ran second.
+*.json -text
+*.csv -text

@@ -1,0 +1,23 @@
+/* EPIC-19 — App Intents STATIC metadata (Arabic).
+ *
+ * Mirrors en.lproj/AppIntents.strings meaning-for-meaning. Rendered by the Shortcuts editor and
+ * Siri in the system language when that is Arabic. Same register as the rest of the app: wellness
+ * language only, and no wall-clock promise anywhere. Keep key-for-key in step with the English. */
+
+/* Run export template */
+"intent.run_export.title" = "تشغيل قالب تصدير";
+"intent.run_export.description" = "صدّر بياناتك باستخدام أحد قوالبك المحفوظة، وأعِد الملف. القوالب التي تشمل الأدوية أو الأعراض أو المسارات لا يمكن تشغيلها بهذه الطريقة — فهي تتطلّب حضورك داخل التطبيق.";
+"intent.run_export.param.template" = "القالب";
+
+/* Get latest score */
+"intent.get_score.title" = "الحصول على أحدث قيمة";
+"intent.get_score.description" = "أعِد أحدث قيمة جاهزية أو كفاءة نوم من بدن، محسوبة من سجلّك الخاص. ولا يُعاد شيء إن لم يكن السجلّ كافياً بعد.";
+"intent.get_score.param.score" = "القيمة";
+"intent.score.type" = "القيمة";
+"intent.score.readiness" = "الجاهزية";
+"intent.score.sleep_efficiency" = "كفاءة النوم";
+
+/* Log water */
+"intent.log_water.title" = "تسجيل الماء";
+"intent.log_water.description" = "أضف إدخال ماء إلى سجلّك، بالمليلترات.";
+"intent.log_water.param.amount" = "المليلترات";

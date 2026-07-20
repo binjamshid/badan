@@ -1,0 +1,27 @@
+/* EPIC-19 — App Intents STATIC metadata (English).
+ *
+ * These strings are extracted at build time and rendered by the Shortcuts editor and Siri in the
+ * SYSTEM language, before BADAN's own code runs — which is why they live in a .strings table and
+ * NOT in the code-based `Loc`/`IntentStrings` catalog. Everything an intent produces at RUN time
+ * (confirmations, error sentences) follows the app's own language toggle and lives in
+ * `IntentStrings.swift` instead; do not move copy between the two files.
+ *
+ * Keep this table in step with ar.lproj/AppIntents.strings, key for key. */
+
+/* Run export template */
+"intent.run_export.title" = "Run export template";
+"intent.run_export.description" = "Export your data using one of your saved templates, and return the file. Templates that include medications, symptoms or routes can't run this way — those need you present in the app.";
+"intent.run_export.param.template" = "Template";
+
+/* Get latest score */
+"intent.get_score.title" = "Get latest score";
+"intent.get_score.description" = "Return BADAN's latest readiness or sleep-efficiency score, worked out from your own history. Returns nothing if there isn't enough history yet.";
+"intent.get_score.param.score" = "Score";
+"intent.score.type" = "Score";
+"intent.score.readiness" = "Readiness";
+"intent.score.sleep_efficiency" = "Sleep efficiency";
+
+/* Log water */
+"intent.log_water.title" = "Log water";
+"intent.log_water.description" = "Add a water entry to your log, in millilitres.";
+"intent.log_water.param.amount" = "Millilitres";

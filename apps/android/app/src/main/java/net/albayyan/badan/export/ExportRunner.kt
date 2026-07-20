@@ -2,24 +2,51 @@ package net.albayyan.badan.export
 
 import net.albayyan.badan.core.AppLanguage
 import net.albayyan.badan.core.Clock
+import net.albayyan.badan.core.LocalizedString
 import net.albayyan.badan.core.Ulid
 import net.albayyan.badan.core.Units
 import net.albayyan.badan.domain.Baseline
 import net.albayyan.badan.domain.DerivedValue
+import net.albayyan.badan.domain.ExportAggregation
+import net.albayyan.badan.domain.ExportAggregationMethod
+import net.albayyan.badan.domain.ExportBucket
+import net.albayyan.badan.domain.ExportCursor
+import net.albayyan.badan.domain.ExportDestination
+import net.albayyan.badan.domain.ExportDestinationKind
+import net.albayyan.badan.domain.ExportDestinationStatus
+import net.albayyan.badan.domain.ExportErrorCode
+import net.albayyan.badan.domain.ExportErrorDetail
 import net.albayyan.badan.domain.ExportFormat
 import net.albayyan.badan.domain.ExportJob
 import net.albayyan.badan.domain.ExportJobStatus
+import net.albayyan.badan.domain.ExportLayout
 import net.albayyan.badan.domain.ExportManifest
+import net.albayyan.badan.domain.ExportOutcome
+import net.albayyan.badan.domain.ExportRangeRule
+import net.albayyan.badan.domain.ExportRowCounts
+import net.albayyan.badan.domain.ExportRun
 import net.albayyan.badan.domain.ExportScope
+import net.albayyan.badan.domain.ExportStage
+import net.albayyan.badan.domain.ExportTemplate
+import net.albayyan.badan.domain.ExportTrigger
 import net.albayyan.badan.domain.IngestionPath
 import net.albayyan.badan.domain.IntervalRecord
+import net.albayyan.badan.domain.ManifestDigest
 import net.albayyan.badan.domain.Provenance
 import net.albayyan.badan.domain.QualityFlag
 import net.albayyan.badan.domain.RawSample
 import net.albayyan.badan.domain.SensitiveClass
+import net.albayyan.badan.domain.SensitiveRunConsent
 import net.albayyan.badan.domain.Session
 import net.albayyan.badan.domain.SessionKind
 import net.albayyan.badan.domain.UnitProfileMode
+import net.albayyan.badan.export.destinations.ExportArtifact
+import net.albayyan.badan.export.destinations.ExportArtifactNaming
+import net.albayyan.badan.export.destinations.ExportDeliveryReceipt
+import net.albayyan.badan.export.destinations.ExportDeliveryRequest
+import net.albayyan.badan.export.destinations.ExportDestinationDelivering
+import net.albayyan.badan.export.destinations.DestinationMessages
+import net.albayyan.badan.export.destinations.deliveringDetail
 import net.albayyan.badan.ontology.MetricRegistry
 import net.albayyan.badan.domain.SymptomEntry
 import net.albayyan.badan.domain.AdherenceEvent
@@ -28,9 +55,14 @@ import net.albayyan.badan.domain.NutritionEntry
 import net.albayyan.badan.domain.MealType
 import net.albayyan.badan.storage.JsonCoding
 import net.albayyan.badan.storage.repositories.DerivationRepository
+import net.albayyan.badan.storage.repositories.ExportCursorRepository
+import net.albayyan.badan.storage.repositories.ExportDestinationRepository
 import net.albayyan.badan.storage.repositories.ExportJobRepository
+import net.albayyan.badan.storage.repositories.ExportRunRepository
+import net.albayyan.badan.storage.repositories.ExportTemplateRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
+import net.albayyan.badan.storage.repositories.RouteRepository
 import java.io.File
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
@@ -70,6 +102,23 @@ class ExportRunner(
     private val clock: Clock,
     private val appVersion: String,
     private val deviceId: String,
+    // EPIC-09/13/14/17 template-run collaborators. All nullable/defaulted so the existing
+    // `ExportRunner(measurements, …, deviceId)` construction — `AppEnvironment` and every Phase-0/1
+    // test — compiles and behaves exactly as before. `runTemplate` guards on their presence; the
+    // plain `run(scope, format, outputDir)` path never touches them, so a runner built without them
+    // keeps producing artifacts and `ExportJob` rows unchanged. Mirror of iOS's optional deps.
+    private val templates: ExportTemplateRepository? = null,
+    private val destinations: ExportDestinationRepository? = null,
+    private val runs: ExportRunRepository? = null,
+    private val cursors: ExportCursorRepository? = null,
+    private val routes: RouteRepository? = null,
+    /**
+     * One [ExportDestinationDelivering] per non-local destination kind. `shareSheet` is handled
+     * in-process (the artifacts stay in the temp folder for the UI's share sheet) and needs no
+     * entry here; a kind with no registered deliverer fails loudly as `failedDelivery` rather than
+     * silently writing the user's data nowhere.
+     */
+    private val deliverers: List<ExportDestinationDelivering> = emptyList(),
 ) {
 
     /**
@@ -80,6 +129,15 @@ class ExportRunner(
         val job: ExportJob,
         val files: List<File>,
         val rowCount: Int,
+        /**
+         * The largest `provenance.ingestedAt` among the raw/interval/session rows this export
+         * actually wrote — the cursor watermark a successful `sinceLastRun` delivery advances to
+         * (EPIC-17). null when the export contained no ingested measurement rows, so a delta run
+         * leaves the cursor untouched rather than inventing a watermark from a non-ingested axis.
+         */
+        val maxIngestedAt: Long? = null,
+        /** Row counts by record class for the `ExportRun` ledger (§9.5) — by class, never metric. */
+        val rowCounts: ExportRowCounts? = null,
     )
 
     // MARK: - Entry point
@@ -95,6 +153,7 @@ class ExportRunner(
         format: ExportFormat,
         outputDir: File,
         passphrase: String? = null,
+        ingestedSince: Long? = null,
     ): ExportResult {
         if (scope.includeSensitive && (passphrase == null || !ExportPassphrasePolicy.isValid(passphrase))) {
             throw ExportRunException.SensitiveExportRequiresPassphrase
@@ -117,17 +176,20 @@ class ExportRunner(
                 if (!metricAllowed(id, scope)) continue
                 rawSamples += measurements
                     .rawSamples(id, scope.startDate, scope.endDate, scope.includeSuppressed)
-                    .filter { sourceAllowed(it.provenance, scope) }
+                    .filter { sourceAllowed(it.provenance, scope) && ingestedAfter(it.provenance.ingestedAt, ingestedSince) }
                 intervalRecords += measurements
                     .intervalRecords(id, scope.startDate, scope.endDate, scope.includeSuppressed)
-                    .filter { sourceAllowed(it.provenance, scope) }
+                    .filter { sourceAllowed(it.provenance, scope) && ingestedAfter(it.provenance.ingestedAt, ingestedSince) }
             }
         }
 
         val sessions: List<Session> = if (scope.includeRaw) {
             measurements
                 .sessions(null, scope.startDate, scope.endDate, scope.includeSuppressed)
-                .filter { sessionInScope(it, scope) && sourceAllowed(it.provenance, scope) }
+                .filter {
+                    sessionInScope(it, scope) && sourceAllowed(it.provenance, scope) &&
+                        ingestedAfter(it.provenance.ingestedAt, ingestedSince)
+                }
         } else {
             emptyList()
         }
@@ -138,9 +200,15 @@ class ExportRunner(
             for (id in ids) {
                 coroutineContext.ensureActive()
                 if (!metricAllowed(id, scope)) continue
-                derivedValues += derivation.latestDerivedSeries(id).filter { derivedInRange(it, scope) }
+                // A derived value carries no `ingested_at` (computed here, not ingested), so its
+                // delta axis is `updatedAt`/`computedAt` — "recomputed since the last run" — never
+                // the raw watermark. The cursor only ever advances on the raw ingested axis (see
+                // `maxIngestedAt`), so a baseline recomputation cannot drag the watermark forward.
+                derivedValues += derivation.latestDerivedSeries(id)
+                    .filter { derivedInRange(it, scope) && ingestedAfter(it.updatedAt, ingestedSince) }
                 if (registry.definition(id)?.baselineEligible == true) {
-                    derivation.latestBaseline(id)?.let { baselines.add(it) }
+                    derivation.latestBaseline(id)?.takeIf { ingestedAfter(it.computedAt, ingestedSince) }
+                        ?.let { baselines.add(it) }
                 }
             }
         }
@@ -152,13 +220,33 @@ class ExportRunner(
             )
             ExportFormat.JSON -> runJson(
                 scope, exportId, outputDir, startedAt,
-                rawSamples, intervalRecords, sessions, derivedValues, baselines,
+                rawSamples, intervalRecords, sessions, derivedValues, baselines, ingestedSince,
             )
         }
 
-        if (!scope.includeSensitive || passphrase == null) return result
+        // The delta watermark and ledger row counts, over the rows the file actually contains.
+        // `maxIngestedAt` is the ingested axis a `sinceLastRun` cursor advances on (raw/interval/
+        // session only); logs are derived from the total so the JSON path's log rows are counted.
+        val ingestMax = (rawSamples.map { it.provenance.ingestedAt } +
+            intervalRecords.map { it.provenance.ingestedAt } +
+            sessions.map { it.provenance.ingestedAt }).maxOrNull()
+        val suppressedCount = rawSamples.count { it.provenance.isSuppressed } +
+            intervalRecords.count { it.provenance.isSuppressed } +
+            sessions.count { it.provenance.isSuppressed }
+        val chainCount = rawSamples.size + intervalRecords.size + sessions.size +
+            derivedValues.size + baselines.size
+        val counts = ExportRowCounts(
+            measurements = rawSamples.size, intervals = intervalRecords.size, sessions = sessions.size,
+            logs = maxOf(0, result.rowCount - chainCount),
+            derived = derivedValues.size + baselines.size, suppressed = suppressedCount,
+        )
+
+        if (!scope.includeSensitive || passphrase == null) {
+            return result.copy(maxIngestedAt = ingestMax, rowCounts = counts)
+        }
         return try {
             encryptResult(result, exportId, outputDir, scope, format, startedAt, passphrase)
+                .copy(maxIngestedAt = ingestMax, rowCounts = counts)
         } catch (e: Throwable) {
             // A sensitive export must never survive half-encrypted: the plaintext files are on
             // disk at this point, so a failure between here and the container write would leave
@@ -305,31 +393,34 @@ class ExportRunner(
         sessions: List<Session>,
         derivedValues: List<DerivedValue>,
         baselines: List<Baseline>,
+        ingestedSince: Long? = null,
     ): ExportResult {
         val generatedAt = clock.now()
 
         // Structured logs travel only in the JSON bundle's dedicated logs section. Symptoms and
-        // adherence are sensitive-class and additionally gated by includeSensitive.
+        // adherence are sensitive-class and additionally gated by includeSensitive. Each is also
+        // held to the incremental delta filter (EPIC-17) on its `updatedAt` — the log analog of
+        // the ingested axis, since manual log entries carry no `provenance.ingestedAt`.
         val rangeStart = scope.startDate ?: 0L
         val rangeEnd = scope.endDate ?: generatedAt
         val wantRaw = scope.includeRaw
         val symptoms = if (wantRaw && scope.includeSensitive && logFamilyIncluded("symptoms", scope)) {
-            logging.symptoms(rangeStart, rangeEnd)
+            logging.symptoms(rangeStart, rangeEnd).filter { ingestedAfter(it.updatedAt, ingestedSince) }
         } else {
             emptyList()
         }
         val adherence = if (wantRaw && scope.includeSensitive && logFamilyIncluded("medications", scope)) {
-            logging.adherence(rangeStart, rangeEnd)
+            logging.adherence(rangeStart, rangeEnd).filter { ingestedAfter(it.updatedAt, ingestedSince) }
         } else {
             emptyList()
         }
         val workouts = if (wantRaw && logFamilyIncluded("activity", scope)) {
-            logging.workouts(rangeStart, rangeEnd)
+            logging.workouts(rangeStart, rangeEnd).filter { ingestedAfter(it.updatedAt, ingestedSince) }
         } else {
             emptyList()
         }
         val nutrition = if (wantRaw && logFamilyIncluded("nutrition", scope)) {
-            logging.nutrition(rangeStart, rangeEnd)
+            logging.nutrition(rangeStart, rangeEnd).filter { ingestedAfter(it.updatedAt, ingestedSince) }
         } else {
             emptyList()
         }
@@ -688,7 +779,581 @@ class ExportRunner(
     private fun hex(digestBytes: ByteArray): String =
         buildString { for (b in digestBytes) append("%02x".format(b.toInt() and 0xFF)) }
 
+    private fun sha256Hex(bytes: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+
+    // MARK: - EPIC-09/13/14/15/17: template-driven runs, delivery, and the ExportRun ledger
+    //
+    // Everything below turns a saved `ExportTemplate` into an artifact that has actually been
+    // delivered and recorded. It sits ON TOP of `run(scope, format, outputDir, passphrase,
+    // ingestedSince)` above — that function is still the one place gather + generation + encryption
+    // happen, unchanged for the plain UI export path. This layer adds what a *template* run needs:
+    // range/cursor resolution, run-time sensitive re-confirmation, delivery, the `ExportRun` trust
+    // ledger, and the incremental cursor. Mirror of iOS `ExportRunner`'s template-run extension.
+    //
+    // Two disciplines run through all of it and are load-bearing, not stylistic:
+    //  1. EVERY attempt writes exactly one `ExportRun` (§9.5), including one refused before a byte
+    //     was generated — a run that leaves no ledger row is the HAE failure this exists to prevent.
+    //  2. The cursor advances ONLY after a delta run both succeeded AND was delivered, and only to
+    //     the max `ingested_at` this run actually wrote (`result.maxIngestedAt`). Same two-phase
+    //     commit as Phase 0's HealthKit anchors (DATA-08) / Health Connect change tokens: never
+    //     move a watermark past data not durably handed off. Phase 0's audit found Android advancing
+    //     a cursor past dropped records — the guard here is what keeps that from recurring.
+
+    /**
+     * The outcome of one template run. `run` is ALWAYS present and already persisted (discipline 1).
+     */
+    data class TemplateRunResult(
+        val run: ExportRun,
+        val result: ExportResult?,
+        val receipt: ExportDeliveryReceipt?,
+        /**
+         * Set when a `sinceLastRun` template ran with no cursor and fell back to `lastNDays`. The
+         * caller MUST surface this — a silent fallback is exactly the HAE failure §12 EPIC-09's
+         * input rule forbids. Also recorded machine-readably as `run.errorCode == CURSOR_MISSING`
+         * on the (successful) ledger row, so the notice reaches Export Health and a backup.
+         */
+        val cursorFallbackNotice: Boolean = false,
+    )
+
+    /**
+     * Run one template end to end: resolve → deliver → record. Never throws — every failure mode is
+     * a recorded `ExportRun`, because a thrown error a caller might swallow is the opposite of the
+     * trust ledger this returns.
+     */
+    suspend fun runTemplate(
+        template: ExportTemplate,
+        trigger: ExportTrigger,
+        baseDir: File,
+        consent: SensitiveRunConsent? = null,
+        passphrase: String? = null,
+        timeZone: TimeZone = TimeZone.getDefault(),
+        attempt: Int = 0,
+    ): TemplateRunResult {
+        val startedAt = clock.now()
+        val runId = Ulid.newId()
+        val runs = this.runs
+        val cursors = this.cursors
+        val destinations = this.destinations
+        if (runs == null || cursors == null || destinations == null) {
+            val run = ExportRun(
+                id = runId, templateId = template.id, trigger = trigger, startedAt = startedAt,
+                finishedAt = clock.now(), outcome = ExportOutcome.FAILED_GENERATION,
+                errorCode = ExportErrorCode.UNKNOWN,
+                errorDetail = ExportErrorDetail(ExportStage.FINALIZING, attempt = attempt),
+            )
+            return TemplateRunResult(run, null, null)
+        }
+
+        // 1. Destination. A template need not pin one; absent, it is the share sheet (§9.4).
+        val destinationId = template.destinationId ?: ExportDestination.SHARE_SHEET_ID
+        val destination = destinations.destination(destinationId)
+        if (destination == null) {
+            // The row was deleted out from under the template. Fail loudly rather than silently
+            // redirecting the user's data. No `destinationMissing` code exists; UNREACHABLE is the
+            // honest reading — BADAN cannot reach a destination that is not there.
+            val run = record(runs, runId, template, trigger, jobId = null, startedAt = startedAt,
+                outcome = ExportOutcome.FAILED_GENERATION, errorCode = ExportErrorCode.DESTINATION_UNREACHABLE,
+                stage = ExportStage.FINALIZING, attempt = attempt, destinationId = destinationId)
+            return TemplateRunResult(run, null, null)
+        }
+
+        // 2. Run-time sensitive re-confirmation (§9.3). `scopeForRun` throws rather than silently
+        //    narrowing — a quietly de-sensitized export would hand the user a file missing exactly
+        //    the records they asked for, with nothing saying so.
+        val resolvedScope: ExportScope = try {
+            template.scopeForRun(consent, startedAt)
+        } catch (e: Throwable) {
+            val run = record(runs, runId, template, trigger, jobId = null, startedAt = startedAt,
+                outcome = ExportOutcome.FAILED_GENERATION,
+                errorCode = ExportErrorCode.SENSITIVE_CONFIRMATION_MISSING, stage = ExportStage.GATHERING,
+                attempt = attempt, destinationId = destinationId)
+            return TemplateRunResult(run, null, null)
+        }
+
+        // 3. Range + cursor. `sinceLastRun` with no cursor falls back to `lastNDays` WITH A NOTICE.
+        val cursor = cursors.cursor(template.id, destinationId)
+        val plan = resolveRange(template.rangeRule, resolvedScope, cursor, startedAt)
+
+        // 4. Generate. `.raw` templates reuse `run` verbatim; `.bucketed` route through the
+        //    aggregation path. A `sinceLastRun` delta passes its ingested watermark (and a date-less
+        //    scope) so the delta is taken on the ingested axis, never the measured one.
+        val folder = File(baseDir, "badan-export-$runId")
+        val result: ExportResult = try {
+            when (val agg = template.aggregation) {
+                is ExportAggregation.Raw ->
+                    run(plan.scope, template.format, folder, passphrase, plan.ingestedSince)
+                is ExportAggregation.Bucketed ->
+                    runAggregated(plan.scope, template, agg.bucket, agg.method, passphrase,
+                        plan.ingestedSince, folder, startedAt)
+            }
+        } catch (e: ExportRunException.SensitiveExportRequiresPassphrase) {
+            val run = record(runs, runId, template, trigger, jobId = null, startedAt = startedAt,
+                outcome = ExportOutcome.FAILED_GENERATION, errorCode = ExportErrorCode.PASSPHRASE_MISSING,
+                stage = ExportStage.ENCRYPTING, attempt = attempt, destinationId = destinationId,
+                cursorBefore = plan.cursorBefore)
+            return TemplateRunResult(run, null, null)
+        } catch (e: Throwable) {
+            val run = record(runs, runId, template, trigger, jobId = null, startedAt = startedAt,
+                outcome = ExportOutcome.FAILED_GENERATION, errorCode = ExportErrorCode.WRITE_FAILED,
+                stage = ExportStage.WRITING, attempt = attempt, destinationId = destinationId,
+                cursorBefore = plan.cursorBefore)
+            return TemplateRunResult(run, null, null)
+        }
+
+        // 5. Deliver.
+        val receipt = deliver(result, template, destination, plan, startedAt, timeZone, attempt)
+
+        if (destination.kind.leavesDevice || receipt.destinationStatus != ExportDestinationStatus.OK) {
+            destinations.updateStatus(destinationId, receipt.destinationStatus, clock.now())
+        }
+
+        // 6. Ledger + cursor (two-phase commit).
+        val manifestSha = result.job.manifest?.let { ManifestDigest.of(sha256Hex(JsonCoding.encode(it).toByteArray())) }
+        // A delivered run that carried no rows is "there was nothing to export" (§9.5
+        // skippedNoData), not a plain success — so an automation that legitimately had nothing to do
+        // is distinguishable in Export Health from one that moved data. Matches
+        // `ExportManageService`'s rowCount==0 mapping.
+        val effectiveOutcome =
+            if (receipt.outcome == ExportOutcome.SUCCESS && result.rowCount == 0) ExportOutcome.SKIPPED_NO_DATA
+            else receipt.outcome
+
+        var cursorAfter: Long? = null
+        val advanced = effectiveOutcome == ExportOutcome.SUCCESS &&
+            template.rangeRule is ExportRangeRule.SinceLastRun &&
+            !plan.fellBackFromSinceLastRun
+        val ingestMax = result.maxIngestedAt
+        if (advanced && ingestMax != null) {
+            // TWO-PHASE COMMIT (the DATA-08 parallel): the watermark moves only now, after a
+            // delivery that fully succeeded, and only to a value computed over the rows the file
+            // actually contains. `advance` is itself forward-only, so an out-of-order retry
+            // reporting an older watermark is refused, not obeyed.
+            cursors.advance(template.id, destinationId, ingestMax, runId, manifestSha, clock.now())
+            cursorAfter = ingestMax
+        }
+
+        // A `sinceLastRun` fallback rides a SUCCESS row as CURSOR_MISSING — a note, not a failure
+        // (`ExportOutcome.isFailure` excludes it) — so the notice is durable, not just returned.
+        val noticeCode = if (plan.fellBackFromSinceLastRun) ExportErrorCode.CURSOR_MISSING else receipt.errorCode
+        val run = ExportRun(
+            id = runId, templateId = template.id, jobId = result.job.id, trigger = trigger,
+            startedAt = startedAt, finishedAt = clock.now(), outcome = effectiveOutcome,
+            errorCode = noticeCode, errorDetail = receipt.errorDetail,
+            bytesWritten = receipt.bytesDelivered, rowCounts = result.rowCounts,
+            destinationId = destinationId, deliveredAt = receipt.deliveredAt,
+            cursorBefore = plan.cursorBefore, cursorAfter = cursorAfter, manifestSha256 = manifestSha,
+        )
+        runs.insert(run)
+        return TemplateRunResult(run, result, receipt, plan.fellBackFromSinceLastRun)
+    }
+
+    /**
+     * The concrete window one run uses, plus the delta filter and cursor bookkeeping. `internal`
+     * (with [resolveRange] and [ingestedAfter] in the companion) so the delta/fallback decision —
+     * the safety-critical half of EPIC-17 — is unit-testable without a database, which this module's
+     * JVM test source set cannot open. The DB-backed end-to-end path is covered on iOS by
+     * `ExportRunnerTemplateTests`.
+     */
+    internal data class ResolvedRun(
+        val scope: ExportScope,
+        val ingestedSince: Long?,
+        val cursorBefore: Long?,
+        val fellBackFromSinceLastRun: Boolean,
+    )
+
+    private suspend fun deliver(
+        result: ExportResult,
+        template: ExportTemplate,
+        destination: ExportDestination,
+        plan: ResolvedRun,
+        runDate: Long,
+        timeZone: TimeZone,
+        attempt: Int,
+    ): ExportDeliveryReceipt {
+        val artifacts = destinationArtifacts(result, template.name, plan, runDate, timeZone)
+
+        // The share sheet is delivered in-process: the artifacts stay in the runner's temp folder
+        // for the UI to hand off. Nothing for this layer to copy, and no network deliverer is (or
+        // should be) registered for it.
+        if (destination.kind == ExportDestinationKind.SHARE_SHEET) {
+            val bytes = artifacts.sumOf { it.byteCount }
+            return ExportDeliveryReceipt(
+                outcome = ExportOutcome.SUCCESS,
+                errorDetail = deliveringDetail(filesWritten = artifacts.size, filesExpected = artifacts.size),
+                bytesDelivered = bytes, deliveredAt = clock.now(),
+                destinationStatus = ExportDestinationStatus.OK,
+                // Inline en+ar (sanctioned for this module): the share sheet is delivered by the UI,
+                // so the receipt only says the files are ready — never that they arrived anywhere.
+                message = LocalizedString(en = "Your export is ready to share.", ar = "تصديرك جاهز للمشاركة."),
+            )
+        }
+
+        val deliverer = deliverers.firstOrNull { it.kind == destination.kind }
+            ?: return ExportDeliveryReceipt(
+                outcome = ExportOutcome.FAILED_DELIVERY, errorCode = ExportErrorCode.DESTINATION_UNREACHABLE,
+                errorDetail = deliveringDetail(filesWritten = 0, filesExpected = artifacts.size),
+                bytesDelivered = 0, destinationStatus = destination.status,
+                message = DestinationMessages.destinationNotConfigured,
+            )
+
+        return deliverer.deliver(
+            ExportDeliveryRequest(destination, artifacts, runDate, timeZone), clock.now())
+    }
+
+    /**
+     * Maps the runner's temp files onto the names they carry at the destination. A single-file
+     * export (a JSON bundle, or the one encrypted container) uses the bare house name; a multi-file
+     * export keeps each file's role as a discriminator (`…_raw.csv`, `…_manifest.json`) because raw
+     * and derived must never collapse into one name (I5). The role suffix reuses the same
+     * `slug`/`dateStamp` atoms `fileName` is built from, so it cannot drift from the house convention
+     * the parity fixtures pin.
+     */
+    private fun destinationArtifacts(
+        result: ExportResult,
+        label: String,
+        plan: ResolvedRun,
+        runDate: Long,
+        timeZone: TimeZone,
+    ): List<ExportArtifact> {
+        val start = plan.scope.startDate ?: 0L
+        val end = plan.scope.endDate ?: runDate
+        val single = result.files.size == 1
+        val slug = ExportArtifactNaming.slug(label)
+        val startStamp = ExportArtifactNaming.dateStamp(start, timeZone)
+        val endStamp = ExportArtifactNaming.dateStamp(end, timeZone)
+        return result.files.map { file ->
+            val ext = file.extension
+            val name = if (single) {
+                ExportArtifactNaming.fileName(label, start, end, ext, timeZone)
+            } else {
+                val role = file.nameWithoutExtension // raw | derived | events | manifest | bundle
+                "${ExportArtifactNaming.ROOT_FOLDER}_${slug}_$startStamp-${endStamp}_$role.$ext"
+            }
+            ExportArtifact(source = file, fileName = name, byteCount = file.length())
+        }
+    }
+
+    /** Append one pre-generation or failed `ExportRun` and return it. */
+    private fun record(
+        runs: ExportRunRepository, id: String, template: ExportTemplate, trigger: ExportTrigger,
+        jobId: String?, startedAt: Long, outcome: ExportOutcome, errorCode: ExportErrorCode?,
+        stage: ExportStage, attempt: Int, destinationId: String?, cursorBefore: Long? = null,
+    ): ExportRun {
+        val run = ExportRun(
+            id = id, templateId = template.id, jobId = jobId, trigger = trigger, startedAt = startedAt,
+            finishedAt = clock.now(), outcome = outcome, errorCode = errorCode,
+            errorDetail = ExportErrorDetail(stage, attempt = attempt),
+            destinationId = destinationId, cursorBefore = cursorBefore,
+        )
+        runs.insert(run)
+        return run
+    }
+
+    // MARK: - EPIC-13: aggregated CSV generation (bucketed templates)
+    //
+    // A `.bucketed` template rolls raw measurements up into hour/day/week/month buckets instead of
+    // one row per reading. CSV-only: the JSON bundle is the full-fidelity archival format and its
+    // schema defines no bucketed shape, so `runTemplate` routes a bucketed JSON template through
+    // ordinary raw generation (raw data is never withheld). Aggregation is over the measurement
+    // chain (raw + interval) only; the sensitive namespace is logs, not measurements, so an
+    // aggregated file never contains meds/symptoms regardless of `includeSensitive` (which still
+    // triggers encryption for defense in depth, matching `run`).
+
+    private fun runAggregated(
+        scope: ExportScope,
+        template: ExportTemplate,
+        bucket: ExportBucket,
+        method: ExportAggregationMethod,
+        passphrase: String?,
+        ingestedSince: Long?,
+        folder: File,
+        startedAt: Long,
+    ): ExportResult {
+        if (scope.includeSensitive && (passphrase == null || !ExportPassphrasePolicy.isValid(passphrase))) {
+            throw ExportRunException.SensitiveExportRequiresPassphrase
+        }
+        val exportId = Ulid.newId()
+        folder.mkdirs()
+        exportJobs.insert(
+            ExportJob(id = exportId, scope = scope, format = ExportFormat.CSV,
+                status = ExportJobStatus.RUNNING, outputPath = folder.path, startedAt = startedAt,
+                createdAt = startedAt))
+
+        try {
+            val gathered = gatherAggregateInputs(scope, ingestedSince)
+            val granularity = when (bucket) {
+                ExportBucket.HOUR -> AggregateGranularity.HOUR
+                ExportBucket.DAY -> AggregateGranularity.DAY
+                ExportBucket.WEEK -> AggregateGranularity.WEEK
+                ExportBucket.MONTH -> AggregateGranularity.MONTH
+            }
+            val definitions = registry.all.associateBy { it.metricId }
+            val records = MetricAggregator().aggregate(gathered.first, granularity, method, definitions)
+
+            val generatedAt = clock.now()
+            val file = File(folder, "aggregated.csv")
+            val checksum: String = if (template.layout == ExportLayout.WIDE) {
+                val bytes = WideCsvProjector().render(records).toByteArray()
+                file.writeBytes(bytes)
+                sha256Hex(bytes)
+            } else {
+                val digest = MessageDigest.getInstance("SHA-256")
+                file.outputStream().use { CsvWriter().writeTo(records.map { r -> aggregateRow(r, scope) }, it, digest) }
+                hex(digest.digest())
+            }
+
+            val counts = HashMap<String, Int>()
+            for (record in records) counts.bump(record.metricId)
+            val manifest = makeManifest(exportId, scope, generatedAt, mapOf("aggregated.csv" to checksum), counts)
+            val manifestFile = File(folder, "manifest.json")
+            manifestFile.writeText(JsonCoding.encode(manifest))
+
+            val job = ExportJob(
+                id = exportId, scope = scope, format = ExportFormat.CSV, status = ExportJobStatus.COMPLETED,
+                manifest = manifest, outputPath = folder.path, rowCount = records.size,
+                startedAt = startedAt, finishedAt = generatedAt, createdAt = startedAt)
+            exportJobs.insert(job)
+
+            // Aggregate buckets are interval aggregates in `ExportRowCounts`' vocabulary (a bucket
+            // IS an interval aggregate), reported under `intervals` rather than an invented class.
+            val rowCounts = ExportRowCounts(intervals = records.size)
+            var result = ExportResult(job, listOf(file, manifestFile), records.size,
+                maxIngestedAt = gathered.second, rowCounts = rowCounts)
+            if (scope.includeSensitive && passphrase != null) {
+                result = encryptResult(result, exportId, folder, scope, ExportFormat.CSV, startedAt, passphrase)
+                    .copy(maxIngestedAt = gathered.second, rowCounts = rowCounts)
+            }
+            return result
+        } catch (e: Throwable) {
+            runCatching {
+                exportJobs.insert(ExportJob(id = exportId, scope = scope, format = ExportFormat.CSV,
+                    status = ExportJobStatus.FAILED, outputPath = folder.path, startedAt = startedAt,
+                    finishedAt = clock.now(), createdAt = startedAt))
+            }
+            for (f in folder.listFiles() ?: emptyArray()) f.delete()
+            throw e
+        }
+    }
+
+    /**
+     * The raw + interval rows in scope, projected onto `AggregateInputRow` for `MetricAggregator`,
+     * plus the max `ingested_at` over them (the delta watermark). Aggregation happens in canonical
+     * units only (the aggregator's contract), so `value`/`unit` are the canonical ones.
+     */
+    private fun gatherAggregateInputs(scope: ExportScope, ingestedSince: Long?): Pair<List<AggregateInputRow>, Long?> {
+        val rows = mutableListOf<AggregateInputRow>()
+        var ingestMax: Long? = null
+        fun note(t: Long) { if (ingestMax == null || t > ingestMax!!) ingestMax = t }
+        for (id in metricIdsInScope(scope)) {
+            if (!metricAllowed(id, scope)) continue
+            for (s in measurements.rawSamples(id, scope.startDate, scope.endDate, scope.includeSuppressed)) {
+                if (!sourceAllowed(s.provenance, scope) || !ingestedAfter(s.provenance.ingestedAt, ingestedSince)) continue
+                rows += AggregateInputRow(s.metricId, s.value, s.unit, s.startAt, s.endAt, s.tzId)
+                note(s.provenance.ingestedAt)
+            }
+            for (r in measurements.intervalRecords(id, scope.startDate, scope.endDate, scope.includeSuppressed)) {
+                if (!sourceAllowed(r.provenance, scope) || !ingestedAfter(r.provenance.ingestedAt, ingestedSince)) continue
+                rows += AggregateInputRow(r.metricId, r.value, r.unit, r.startAt, r.endAt, r.tzId, r.aggregation)
+                note(r.provenance.ingestedAt)
+            }
+        }
+        return rows to ingestMax
+    }
+
+    /**
+     * One aggregated bucket as a tidy CSV row. `record_kind` is `interval` and `value_type` is
+     * `aggregate` — a bucket IS an interval aggregate, and `interval` keeps the row inside the
+     * frozen 6-value record_kind vocabulary — while `ingestion_path` is `derived` (the bucket was
+     * computed by BADAN) and `is_derived` stays false (a rollup of RAW, kept separable from
+     * engine-derived values — I5). Columns 25/26 carry the granularity and method that make the
+     * number self-describing. `sample_count` and the multi-zone flag have no column in the 26-column
+     * contract and are dropped here.
+     */
+    private fun aggregateRow(record: AggregateRecord, scope: ExportScope): ExportRow {
+        val (value, unit) = displayValueUnit(record.metricId, record.value, record.unit, scope)
+        return ExportRow(
+            recordId = "${record.metricId}|${record.bucketKey}|${record.stat.name.lowercase()}",
+            recordKind = RecordKind.INTERVAL,
+            metricId = record.metricId,
+            metricDisplay = metricDisplay(record.metricId, scope),
+            value = CsvWriter.decimal(value),
+            unit = unit,
+            canonicalValue = CsvWriter.decimal(record.value),
+            canonicalUnit = record.unit,
+            valueType = ValueType.AGGREGATE,
+            isDerived = false,
+            timestampStart = CsvWriter.iso8601(record.bucketStartMillis, record.tzId),
+            timestampEnd = CsvWriter.iso8601(record.bucketEndMillis, record.tzId),
+            timezone = record.tzId,
+            recordedAt = CsvWriter.iso8601(record.bucketStartMillis, record.tzId),
+            ingestionPath = IngestionPath.DERIVED.code,
+            granularity = record.granularity.csvGranularity,
+            aggregationMethod = record.stat.csvMethod,
+        )
+    }
+
+    // MARK: - EPIC-12: GPX route export
+    //
+    // Routes can NOT ride the template path: `ExportFormat` has no `gpx` case, and routes are
+    // excluded from Quick Export structurally. GPX gets its own entry point, gated the way §22.4 /
+    // §4.11 require: the route-export toggle AND a per-run confirmation that fingerprints the exact
+    // routes being written (both in `GpxWriter.artifacts`). This turns that output into a recorded
+    // export — an `ExportJob` and an `ExportRun`. Delivery is the share sheet (the explicit route
+    // flow); a folder destination for routes is a later follow-up.
+
+    fun runRouteExport(
+        workouts: List<GpxWorkout>,
+        routeExportEnabled: Boolean,
+        confirmation: RouteExportConfirmation,
+        baseDir: File,
+        trigger: ExportTrigger = ExportTrigger.MANUAL,
+        attempt: Int = 0,
+    ): TemplateRunResult {
+        val startedAt = clock.now()
+        val runId = Ulid.newId()
+        // Routes are location data; the manifest records a raw, non-sensitive-namespace scope (the
+        // sensitive namespace is meds/symptoms — routes are their own class, gated above).
+        val scope = ExportScope(includeRaw = true, includeDerived = false)
+        val runs = this.runs
+            ?: return TemplateRunResult(
+                ExportRun(id = runId, trigger = trigger, startedAt = startedAt, finishedAt = clock.now(),
+                    outcome = ExportOutcome.FAILED_GENERATION, errorCode = ExportErrorCode.UNKNOWN,
+                    errorDetail = ExportErrorDetail(ExportStage.FINALIZING, attempt = attempt)),
+                null, null)
+
+        val artifacts = try {
+            GpxWriter(appVersion, startedAt).artifacts(workouts, routeExportEnabled, confirmation)
+        } catch (e: Throwable) {
+            // Map the two gate failures onto the closed ledger vocabulary: the toggle being off is a
+            // permission refusal; a stale confirmation is a missing run-time confirmation.
+            val code = when (e) {
+                is GpxExportException.RouteExportNotEnabled -> ExportErrorCode.PERMISSION_DENIED
+                is GpxExportException.ConfirmationStale -> ExportErrorCode.SENSITIVE_CONFIRMATION_MISSING
+                else -> ExportErrorCode.WRITE_FAILED
+            }
+            val run = ExportRun(id = runId, trigger = trigger, startedAt = startedAt, finishedAt = clock.now(),
+                outcome = ExportOutcome.FAILED_GENERATION, errorCode = code,
+                errorDetail = ExportErrorDetail(ExportStage.GATHERING, attempt = attempt))
+            runs.insert(run)
+            return TemplateRunResult(run, null, null)
+        }
+
+        val exportId = Ulid.newId()
+        val folder = File(baseDir, "badan-export-$runId")
+        try {
+            folder.mkdirs()
+            exportJobs.insert(ExportJob(id = exportId, scope = scope, format = ExportFormat.CSV,
+                status = ExportJobStatus.RUNNING, outputPath = folder.path, startedAt = startedAt,
+                createdAt = startedAt))
+
+            val files = mutableListOf<File>()
+            val checksums = HashMap<String, String>()
+            var bytes = 0L
+            for (artifact in artifacts) {
+                val file = File(folder, artifact.fileName)
+                val data = artifact.gpx.toByteArray()
+                file.writeBytes(data)
+                checksums[artifact.fileName] = sha256Hex(data)
+                bytes += data.size
+                files += file
+            }
+
+            val generatedAt = clock.now()
+            val manifest = makeManifest(exportId, scope, generatedAt, checksums, emptyMap())
+            val manifestFile = File(folder, "manifest.json")
+            manifestFile.writeText(JsonCoding.encode(manifest))
+            files += manifestFile
+
+            val pointCount = workouts.sumOf { w -> w.routes.sumOf { it.points.size } }
+            val job = ExportJob(id = exportId, scope = scope, format = ExportFormat.CSV,
+                status = ExportJobStatus.COMPLETED, manifest = manifest, outputPath = folder.path,
+                rowCount = pointCount, startedAt = startedAt, finishedAt = generatedAt, createdAt = startedAt)
+            exportJobs.insert(job)
+
+            val result = ExportResult(job, files, pointCount)
+            val run = ExportRun(id = runId, jobId = exportId, trigger = trigger, startedAt = startedAt,
+                finishedAt = generatedAt, outcome = ExportOutcome.SUCCESS, bytesWritten = bytes,
+                rowCounts = ExportRowCounts(sessions = workouts.size), deliveredAt = generatedAt,
+                manifestSha256 = ManifestDigest.of(sha256Hex(JsonCoding.encode(manifest).toByteArray())))
+            runs.insert(run)
+            return TemplateRunResult(run, result, null)
+        } catch (e: Throwable) {
+            runCatching {
+                exportJobs.insert(ExportJob(id = exportId, scope = scope, format = ExportFormat.CSV,
+                    status = ExportJobStatus.FAILED, outputPath = folder.path, startedAt = startedAt,
+                    finishedAt = clock.now(), createdAt = startedAt))
+            }
+            for (f in folder.listFiles() ?: emptyArray()) f.delete()
+            val run = ExportRun(id = runId, jobId = exportId, trigger = trigger, startedAt = startedAt,
+                finishedAt = clock.now(), outcome = ExportOutcome.FAILED_GENERATION,
+                errorCode = ExportErrorCode.WRITE_FAILED,
+                errorDetail = ExportErrorDetail(ExportStage.WRITING, attempt = attempt))
+            runs.insert(run)
+            return TemplateRunResult(run, null, null)
+        }
+    }
+
     companion object {
+        private const val DAY_MS = 86_400_000L
+
+        /**
+         * How many days a `sinceLastRun` template falls back to when it has no cursor yet. Matches
+         * the Last-30 Quick Export preset (and `ExportManageService`'s own fallback) so a first
+         * delta run produces a familiar-sized file rather than all of history.
+         */
+        const val CURSOR_MISSING_FALLBACK_DAYS = 30
+
+        /**
+         * The incremental-export inclusion test (EPIC-17). A null watermark (every non-delta run)
+         * includes everything, so the plain export path is unchanged. Strictly greater than the
+         * watermark, matching `ExportCursorRepository.advance`'s forward-only guard: the cursor is
+         * advanced to the max `ingested_at` this run *included*, so the next run's `> watermark`
+         * window starts exactly one past the last row already delivered — a row can neither be
+         * skipped (the query has no upper bound) nor duplicated (the boundary row is `== watermark`,
+         * not `>`).
+         */
+        internal fun ingestedAfter(ingestedAt: Long, watermark: Long?): Boolean =
+            watermark == null || ingestedAt > watermark
+
+        /**
+         * Resolve a template's [ExportRangeRule] into one run's concrete window + delta filter.
+         * Pure and static so it is unit-testable without a database (see [ResolvedRun]).
+         *
+         * `sinceLastRun` with no cursor falls back to `lastNDays` WITH A NOTICE (never a silent
+         * all-history dump) and, crucially, does NOT establish a delta watermark: the bounded
+         * fallback filters on the MEASURED axis, so advancing an ingested-axis cursor from it could
+         * skip a historical row ingested recently but measured outside the window — the exact
+         * DATA-08 loss. The cursor is only ever established/advanced by a run that already had one
+         * (`runTemplate`'s two-phase commit), so a first `sinceLastRun` stays disclosed-bounded
+         * until an explicit checkpoint exists.
+         */
+        internal fun resolveRange(
+            rule: ExportRangeRule,
+            scope: ExportScope,
+            cursor: ExportCursor?,
+            now: Long,
+        ): ResolvedRun = when (rule) {
+            is ExportRangeRule.Fixed ->
+                ResolvedRun(scope, null, null, false)
+            is ExportRangeRule.LastNDays ->
+                ResolvedRun(
+                    scope.copy(startDate = now - rule.safeDays.toLong() * DAY_MS, endDate = now),
+                    null, null, false)
+            is ExportRangeRule.AllTime ->
+                ResolvedRun(scope.copy(startDate = null, endDate = null), null, null, false)
+            is ExportRangeRule.SinceLastRun ->
+                if (cursor == null) {
+                    ResolvedRun(
+                        scope.copy(startDate = now - CURSOR_MISSING_FALLBACK_DAYS.toLong() * DAY_MS, endDate = now),
+                        null, null, true)
+                } else {
+                    // Delta: clear the measured-date window entirely and filter on the ingested
+                    // axis, so a late-arriving row (measured before the watermark, ingested after
+                    // it) is included rather than dropped forever.
+                    ResolvedRun(scope.copy(startDate = null, endDate = null), cursor.highWatermark,
+                        cursor.highWatermark, false)
+                }
+        }
+
         private const val DATA_QUALITY_NOTE =
             "Rows reflect stored records only; coverage gaps are not backfilled. Interval aggregates " +
                 "carry a 0–1 coverage fraction in the JSON bundle. Derived values and baselines are " +

@@ -3,9 +3,12 @@ import UIKit
 
 // MARK: - Copy
 
-/// Screen-local bilingual strings that don't belong in the shared catalog. Every string in the
-/// app carries both languages; these are the ones specific to the export cockpit.
-private enum ExportCopy {
+/// Screen-local bilingual strings shared across the export surfaces (the hub, the advanced
+/// builder, the success/history cards). Internal rather than `private` so
+/// `AdvancedExportBuilderScreen` reads the same scope/format/passphrase copy the history cards do —
+/// one source of truth for "what to include", the passphrase warning, and the checksum notes, so
+/// the two surfaces can never drift apart in wording.
+enum ExportCopy {
     static let onDeviceOnly = LocalizedString(en: "On this device — no network", ar: "على هذا الجهاز — دون شبكة")
     /// Says what the FILE will contain, not what the screen is showing — the reader of an
     /// exported bundle never saw the in-app sample banner.
@@ -133,6 +136,25 @@ private enum ExportCopy {
     static let errorHint = LocalizedString(en: "Check available storage and try again.",
                                            ar: "تحقّق من المساحة المتوفرة وحاول مرة أخرى.")
     static let tryAgain = LocalizedString(en: "Try again", ar: "حاول مرة أخرى")
+
+    // MARK: Hub
+
+    static let hubIntro = LocalizedString(
+        en: "Your data is yours — every format, every record, free and offline. Start with Quick Export, or build exactly what you need.",
+        ar: "بياناتك ملكك — كل صيغة، وكل سجل، مجاناً وبلا اتصال. ابدأ بالتصدير السريع، أو أنشئ ما تحتاجه بالضبط.")
+    static let moreWays = LocalizedString(en: "More ways to export", ar: "طرق أخرى للتصدير")
+    static let advancedBuilderTitle = LocalizedString(en: "Advanced builder", ar: "المُنشئ المتقدّم")
+    static let advancedBuilderSubtitle = LocalizedString(
+        en: "Pick metrics, sources, ranges and more — then save it as a template.",
+        ar: "اختر المؤشرات والمصادر والنطاقات والمزيد — ثم احفظه كقالب.")
+    static let templatesTitle = LocalizedString(en: "Templates", ar: "القوالب")
+    static let templatesSubtitle = LocalizedString(
+        en: "Saved export setups you can rerun in one tap.",
+        ar: "إعدادات تصدير محفوظة يمكنك تشغيلها بنقرة واحدة.")
+    static let healthTitle = LocalizedString(en: "Export health", ar: "حالة التصدير")
+    static let healthSubtitle = LocalizedString(
+        en: "Did it run? See every export's outcome — nothing fails silently.",
+        ar: "هل جرى التشغيل؟ اطّلع على نتيجة كل تصدير — لا شيء يفشل بصمت.")
 }
 
 /// The offered windows. Maps to `ExportScope.startDate`/`endDate`; "all time" leaves both open,
@@ -254,10 +276,10 @@ final class ExportCenterViewModel {
     /// to update state once. A failure aborts any remaining formats, matching the previous
     /// single-format error behavior.
     /// `passphrase` is only used (and only meaningful) when `scope.includeSensitive` is true —
-    /// `ExportCenterScreen` gates the Run button so a sensitive scope can't reach here without a
-    /// passphrase already validated against `ExportPassphrasePolicy`, and `ExportRunner` itself
-    /// enforces the same rule again as a second line of defense (review ledger #19, deferred fix
-    /// 3 / FEAT-185; ADR-0008).
+    /// `AdvancedExportBuilderScreen` gates the Run button so a sensitive scope can't reach here
+    /// without a passphrase already validated against `ExportPassphrasePolicy`, and `ExportRunner`
+    /// itself enforces the same rule again as a second line of defense (review ledger #19,
+    /// deferred fix 3 / FEAT-185; ADR-0008).
     func run(scope: ExportScope, formats: [ExportFormat], env: AppEnvironment, passphrase: String? = nil) {
         guard !isRunning, !formats.isEmpty else { return }
         isRunning = true
@@ -269,8 +291,11 @@ final class ExportCenterViewModel {
             do {
                 var produced: [ExportResultDisplay] = []
                 for fmt in formats {
+                    // (BUG-EXPORT-P1a) `runAdHoc`, not `run`: the ad-hoc builder export must land
+                    // in the `ExportRun` ledger like every other export surface, or Export Health
+                    // reports this successful run as a probable mid-export crash. See `runAdHoc`'s doc.
                     let result = try await Task.detached(priority: .userInitiated) {
-                        try exporter.run(scope: scope, format: fmt, passphrase: passphrase)
+                        try exporter.runAdHoc(scope: scope, format: fmt, passphrase: passphrase)
                     }.value
                     let sortedIds = result.job.manifest?.perMetricRowCounts.keys.sorted() ?? []
                     produced.append(ExportResultDisplay(result: result, sortedMetricIds: sortedIds))
@@ -285,31 +310,16 @@ final class ExportCenterViewModel {
     }
 }
 
-// MARK: - Screen
+// MARK: - Screen (hub)
 
-/// The trust cockpit. Pick a format, choose exactly what to include, set a window, and create a
-/// fully offline export — then share the file or re-share any earlier one. Casual keeps it calm
-/// (format, the sensitive toggle, a window); power exposes the raw/computed/suppressed toggles,
-/// the unit profile, per-file checksums and the manifest. Same run, two altitudes.
+/// The Export Center — elevated to a first-class destination (§16). It is the calm landing:
+/// Quick Export for "just give me my data", then the three deeper doors (advanced builder, saved
+/// templates, and the trust ledger) and a list of what you've exported before. The heavy
+/// scope-building lives one tap away in `AdvancedExportBuilderScreen` so this surface stays
+/// low-density for the casual visitor.
 struct ExportCenterScreen: View {
     @Environment(AppEnvironment.self) private var env
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = ExportCenterViewModel()
-
-    @State private var scope = ExportScope()
-    @State private var selectedFormats: Set<ExportFormat> = [.csv]
-    @State private var range: ExportRange = .last30
-    @State private var customStart: Date = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
-    @State private var customEnd: Date = Date()
-    @State private var unitNoteExpanded = false
-    @State private var availableSources: [Source] = []
-
-    // Passphrase entry for `includeSensitive` exports (review ledger #19, deferred fix 3 /
-    // FEAT-185 — see ADR-0008). Never persisted anywhere, including `sessionPreferences` —
-    // unlike format/range, a passphrase is exactly the kind of state that must NOT survive past
-    // the screen that collected it.
-    @State private var passphrase = ""
-    @State private var passphraseConfirm = ""
 
     @State private var shareURLs: [URL] = []
     @State private var showShare = false
@@ -322,28 +332,8 @@ struct ExportCenterScreen: View {
             VStack(alignment: .leading, spacing: BadanSpace.space5) {
                 introCard
                 sampleDataExportNotice
-                formatSection
-                scopeSection
-                if env.depth.showsPowerDetail && !availableSources.isEmpty {
-                    sourceSection
-                }
-                dateRangeSection
-                if env.depth.showsPowerDetail {
-                    unitSection
-                }
-                trustReminder
-                runButton
-                if let error = vm.errorText {
-                    errorCard(error)
-                }
-                ForEach(vm.lastResults) { item in
-                    ExportSuccessCard(result: item.result, sortedMetricIds: item.sortedMetricIds) {
-                        shareURLs = item.result.fileURLs
-                        showShare = !item.result.fileURLs.isEmpty
-                    } onRunAgain: {
-                        handleRunAgain(item.result.job)
-                    }
-                }
+                QuickExportCard()
+                moreWaysSection
                 historySection
                 footer
             }
@@ -352,62 +342,23 @@ struct ExportCenterScreen: View {
         .background(BadanColor.background.ignoresSafeArea())
         .navigationTitle(env.s(Loc.exportTitle))
         .task {
+            ExportManageService(env: env).ensureSeeded()
             if vm.history.isEmpty { vm.loadHistory(env) }
-            if availableSources.isEmpty {
-                availableSources = ((try? env.catalog.sources()) ?? []).filter { $0.deletedAt == nil }
-            }
-            // A user who set "my display units" globally in Settings shouldn't see Export
-            // silently revert to canonical/SI every time they open it (EASE-204/OPT-156).
-            scope.unitProfile = env.profile.unitProfile
-            // Seeds the format/range pickers from last time (STUB-06b) instead of always
-            // resetting to CSV/last-30 on every visit — `sessionPreferences` was already
-            // modeled for this but nothing ever read or wrote it.
-            let prefs = env.profile.sessionPreferences
-            selectedFormats = [SessionExportMemory.rememberedFormat(prefs.lastExportFormat, fallback: .csv)]
-            range = SessionExportMemory.rememberedRange(prefs.lastExportRange, fallback: .last30)
-        }
-        .onChange(of: vm.lastResults.last?.result.job.id) { _, newValue in
-            guard newValue != nil else { return }
-            let urls = vm.lastResults.flatMap { $0.result.fileURLs }
-            guard !urls.isEmpty else { return }
-            shareURLs = urls
-            showShare = true
         }
         .sheet(isPresented: $showShare) {
             ShareSheet(activityItems: shareURLs) { completed in
                 // Only on an actual completed share (AirDrop/Files/Mail/…, not Cancel): the
                 // destination the user just chose now holds its own copy, so the plaintext temp
-                // copy has no further reason to exist (ledger #19 / dossier "Sensitive health
-                // data is exported as plaintext to the temp directory"). A cancelled sheet leaves
-                // the folder in place — the user may reopen Share for the same export a moment
-                // later — and falls back to the shortened sweep as a backstop. Reloading history
-                // afterward makes `availableFileURLs` re-resolve to empty for anything just
-                // deleted, so the UI reflects it immediately rather than on next launch.
+                // copy has no further reason to exist (ledger #19). A cancelled sheet leaves the
+                // folder in place. Reloading history afterward makes `availableFileURLs`
+                // re-resolve to empty for anything just deleted, so the UI reflects it immediately.
                 guard completed else { return }
                 deleteSharedFolders(shareURLs)
                 vm.loadHistory(env)
             }
         }
-        .sheet(isPresented: $showAllHistory) {
-            allExportsSheet
-        }
-        .sheet(item: $inspectingItem) { item in
-            historyDetailSheet(item)
-        }
-        // Write-back side of STUB-06b — the range picker has no other single mutation point
-        // (unlike `toggleFormat`, which writes back inline), so it's captured here instead.
-        .onChange(of: range) { _, newValue in
-            env.update { $0.sessionPreferences.lastExportRange = newValue.rawValue }
-        }
-        // Turning Sensitive off removes the one place a passphrase was ever needed — clearing it
-        // here (rather than leaving it in `@State` until the screen deallocates) means turning
-        // Sensitive back on always starts from a blank, freshly-typed passphrase instead of a
-        // stale one the user might not even remember setting.
-        .onChange(of: scope.includeSensitive) { _, includeSensitive in
-            guard !includeSensitive else { return }
-            passphrase = ""
-            passphraseConfirm = ""
-        }
+        .sheet(isPresented: $showAllHistory) { allExportsSheet }
+        .sheet(item: $inspectingItem) { item in historyDetailSheet(item) }
     }
 
     // MARK: Intro
@@ -423,7 +374,7 @@ struct ExportCenterScreen: View {
                     PillLabel(env.s(ExportCopy.onDeviceOnly), systemImage: "wifi.slash", tint: BadanColor.primary)
                     Spacer(minLength: BadanSpace.space2)
                 }
-                Text(Loc.exportEverything, language: env.language)
+                Text(ExportCopy.hubIntro, language: env.language)
                     .font(BadanFont.body)
                     .foregroundStyle(BadanColor.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -431,327 +382,10 @@ struct ExportCenterScreen: View {
         }
     }
 
-    // MARK: Format
-
-    private var formatSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.exportFormat))
-            HStack(spacing: BadanSpace.space3) {
-                ExportFormatCard(
-                    title: "CSV",
-                    subtitle: ExportCopy.formatCSVSubtitle,
-                    icon: "tablecells",
-                    selected: selectedFormats.contains(.csv)
-                ) { toggleFormat(.csv) }
-                ExportFormatCard(
-                    title: "JSON",
-                    subtitle: ExportCopy.formatJSONSubtitle,
-                    icon: "curlybraces",
-                    selected: selectedFormats.contains(.json)
-                ) { toggleFormat(.json) }
-            }
-        }
-    }
-
-    /// Toggles a format in/out of the multi-select (both may be selected to produce both in one
-    /// run); the last remaining format can't be deselected so there's always something to export.
-    private func toggleFormat(_ format: ExportFormat) {
-        if selectedFormats.contains(format) {
-            guard selectedFormats.count > 1 else { return }
-            selectedFormats.remove(format)
-        } else {
-            selectedFormats.insert(format)
-        }
-        UISelectionFeedbackGenerator().selectionChanged()
-        // Write-back side of STUB-06b: remembers the format most recently touched so the next
-        // visit seeds from it instead of always starting over at CSV.
-        env.update { $0.sessionPreferences.lastExportFormat = format.rawValue }
-    }
-
-    // MARK: Scope
-
-    private var scopeSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.exportScope))
-            BadanCard {
-                VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                    if env.depth.showsPowerDetail {
-                        scopeToggle(Loc.includeRaw, ExportCopy.includeRawSubtitle,
-                                    isOn: $scope.includeRaw, icon: "waveform.path.ecg")
-                        rowDivider
-                        scopeToggle(Loc.includeDerived, ExportCopy.includeDerivedSubtitle,
-                                    isOn: $scope.includeDerived, icon: "function")
-                        rowDivider
-                        scopeToggle(Loc.includeSuppressed, ExportCopy.includeSuppressedSubtitle,
-                                    isOn: $scope.includeSuppressed, icon: "square.on.square.dashed")
-                        rowDivider
-                    }
-                    scopeToggle(Loc.includeSensitive, ExportCopy.includeSensitiveSubtitle,
-                                isOn: $scope.includeSensitive, icon: "cross.case")
-                        .disabled(!env.profile.sensitiveModulesEnabled)
-                    if !env.profile.sensitiveModulesEnabled {
-                        Text(ExportCopy.sensitiveModuleDisabledNote, language: env.language)
-                            .font(BadanFont.caption)
-                            .foregroundStyle(BadanColor.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if scope.includeSensitive {
-                        sensitiveNote
-                        passphraseFields
-                    }
-                    if !env.depth.showsPowerDetail {
-                        Text(ExportCopy.casualIncludesNote, language: env.language)
-                            .font(BadanFont.caption)
-                            .foregroundStyle(BadanColor.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion), value: scope.includeSensitive)
-            }
-        }
-    }
-
-    private func scopeToggle(_ title: LocalizedString, _ subtitle: LocalizedString,
-                             isOn: Binding<Bool>, icon: String) -> some View {
-        Toggle(isOn: isOn) {
-            HStack(spacing: BadanSpace.space3) {
-                Image(systemName: icon)
-                    .imageScale(.medium)
-                    .foregroundStyle(BadanColor.primary)
-                    .frame(width: 26)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title, language: env.language)
-                        .font(BadanFont.body)
-                        .foregroundStyle(BadanColor.textPrimary)
-                    Text(subtitle, language: env.language)
-                        .font(BadanFont.caption)
-                        .foregroundStyle(BadanColor.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .tint(BadanColor.primary)
-        .frame(minHeight: BadanSpace.touchMin)
-    }
-
-    private var sensitiveNote: some View {
-        HStack(alignment: .top, spacing: BadanSpace.space2) {
-            Image(systemName: "info.circle")
-                .imageScale(.small)
-                .foregroundStyle(BadanColor.info)
-                .accessibilityHidden(true)
-            Text(ExportCopy.sensitiveNote, language: env.language)
-                .font(BadanFont.caption)
-                .foregroundStyle(BadanColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(BadanSpace.space3)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BadanColor.info.opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
-    }
-
-    // MARK: Passphrase (review ledger #19, deferred fix 3 / FEAT-185 — see ADR-0008)
-
-    /// The passphrase entry + confirm shown only while `includeSensitive` is on — `runButton`
-    /// stays disabled until `passphraseValid` (below), so this is the one place a sensitive
-    /// export's encryption key gets typed.
-    private var passphraseFields: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space2) {
-            Text(ExportCopy.passphraseIntro(env.format), language: env.language)
-                .font(BadanFont.caption)
-                .foregroundStyle(BadanColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            passphraseField(env.s(ExportCopy.passphrasePlaceholder), text: $passphrase)
-            passphraseField(env.s(ExportCopy.passphraseConfirmPlaceholder), text: $passphraseConfirm)
-            if !passphrase.isEmpty && !ExportPassphrasePolicy.isValid(passphrase) {
-                Text(ExportCopy.passphraseTooShort, language: env.language)
-                    .font(BadanFont.caption)
-                    .foregroundStyle(BadanColor.outOfBand)
-            } else if !passphraseConfirm.isEmpty
-                        && !ExportPassphrasePolicy.matches(passphrase, confirmation: passphraseConfirm) {
-                Text(ExportCopy.passphraseMismatch, language: env.language)
-                    .font(BadanFont.caption)
-                    .foregroundStyle(BadanColor.outOfBand)
-            }
-        }
-        .padding(.top, BadanSpace.space1)
-    }
-
-    /// `.newPassword` rather than leaving content type unset — this passphrase has no recovery
-    /// path (`passphraseIntro` says so plainly), so letting iOS offer to save it to the user's
-    /// password manager/Keychain is a real mitigation for the "I forgot it" failure mode, not
-    /// just an autofill nicety.
-    private func passphraseField(_ placeholder: String, text: Binding<String>) -> some View {
-        SecureField(placeholder, text: text)
-            .font(BadanFont.body)
-            .textContentType(.newPassword)
-            .autocorrectionDisabled()
-            .padding(.horizontal, BadanSpace.space3)
-            .frame(minHeight: BadanSpace.touchMin)
-            .background(BadanColor.surfaceElevated, in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
-    }
-
-    /// True once the passphrase clears both `ExportPassphrasePolicy` rules — the single gate
-    /// `runButton` checks for a sensitive scope. `ExportRunner` enforces the length rule again
-    /// independently (defense-in-depth); this is purely the UI's own gate so Run never needs to
-    /// round-trip to the runner just to reject an obviously-too-short passphrase.
-    private var passphraseValid: Bool {
-        ExportPassphrasePolicy.isValid(passphrase)
-            && ExportPassphrasePolicy.matches(passphrase, confirmation: passphraseConfirm)
-    }
-
-    // MARK: Sources (power)
-
-    private var sourceSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(ExportCopy.sources))
-            BadanCard {
-                VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                    ForEach(availableSources) { source in
-                        Button {
-                            toggleSource(source)
-                        } label: {
-                            HStack(spacing: BadanSpace.space3) {
-                                Image(systemName: sourceIncluded(source) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(sourceIncluded(source) ? BadanColor.primary : BadanColor.separator)
-                                    .accessibilityHidden(true)
-                                Text(source.displayName)
-                                    .font(BadanFont.body)
-                                    .foregroundStyle(BadanColor.textPrimary)
-                                Spacer(minLength: BadanSpace.space2)
-                            }
-                            .frame(minHeight: BadanSpace.touchMin)
-                        }
-                        .buttonStyle(.plain)
-                        // (A1) Selection was conveyed only by the hidden checkmark's colour.
-                        .accessibilityAddTraits(sourceIncluded(source) ? .isSelected : [])
-                        if source.id != availableSources.last?.id {
-                            rowDivider
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func sourceIncluded(_ source: Source) -> Bool {
-        guard let ids = scope.sourceIds else { return true }
-        return ids.contains(source.id)
-    }
-
-    private func toggleSource(_ source: Source) {
-        var current = Set(scope.sourceIds ?? availableSources.map(\.id))
-        if current.contains(source.id) {
-            current.remove(source.id)
-        } else {
-            current.insert(source.id)
-        }
-        scope.sourceIds = current.count == availableSources.count ? nil : Array(current)
-        UISelectionFeedbackGenerator().selectionChanged()
-    }
-
-    // MARK: Date range
-
-    private var dateRangeSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(ExportCopy.dateRange))
-            ExportSegmented(
-                options: ExportRange.allCases.map { (value: $0, label: env.s($0.label(env.format))) },
-                selection: $range
-            )
-            if range == .custom {
-                VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                    DatePicker(env.s(ExportCopy.customRangeStart), selection: $customStart, displayedComponents: .date)
-                    DatePicker(env.s(ExportCopy.customRangeEnd), selection: $customEnd, displayedComponents: .date)
-                }
-                .font(BadanFont.body)
-                .tint(BadanColor.primary)
-                // Non-blocking would silently export nothing; disabling Run with an explanation
-                // is the clearer UX for a picker combination that can't produce a sensible range
-                // (DATA-04).
-                if customRangeInvalid {
-                    Text(ExportCopy.customRangeInvalidNotice, language: env.language)
-                        .font(BadanFont.caption)
-                        .foregroundStyle(BadanColor.outOfBand)
-                }
-            }
-            if !env.depth.showsPowerDetail {
-                Text(scope.unitProfile == .display ? ExportCopy.casualUnitsDisplay : ExportCopy.casualUnitsSource,
-                     language: env.language)
-                    .font(BadanFont.caption)
-                    .foregroundStyle(BadanColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: Unit profile (power)
-
-    private var unitSection: some View {
-        VStack(alignment: .leading, spacing: BadanSpace.space3) {
-            SectionHeader(env.s(Loc.units))
-            ExportSegmented(
-                options: [
-                    (value: UnitProfileMode.canonical, label: env.s(ExportCopy.unitSource)),
-                    (value: UnitProfileMode.display, label: env.s(ExportCopy.unitDisplay)),
-                ],
-                selection: $scope.unitProfile
-            )
-            Button {
-                withAnimation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion)) { unitNoteExpanded.toggle() }
-            } label: {
-                HStack(spacing: BadanSpace.space1) {
-                    Text(ExportCopy.unitNoteCollapsedLabel, language: env.language)
-                        .font(BadanFont.caption.weight(.medium))
-                        .foregroundStyle(BadanColor.primary)
-                    Image(systemName: unitNoteExpanded ? "chevron.up" : "chevron.down")
-                        .imageScale(.small)
-                        .foregroundStyle(BadanColor.primary)
-                }
-            }
-            .buttonStyle(.plain)
-            if unitNoteExpanded {
-                Text(ExportCopy.unitNote, language: env.language)
-                    .font(BadanFont.caption)
-                    .foregroundStyle(BadanColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-    }
-
-    // MARK: Run
-
-    /// A short repeat of the trust badge right at the commit point (UIUX-172) — by the time a
-    /// cautious user has scrolled past format/scope/range, the top-of-screen badge is long
-    /// off-screen.
-    private var trustReminder: some View {
-        HStack(spacing: BadanSpace.space2) {
-            Image(systemName: "wifi.slash")
-                .imageScale(.small)
-                .foregroundStyle(BadanColor.textSecondary)
-                .accessibilityHidden(true)
-            Text(ExportCopy.onDeviceOnly, language: env.language)
-                .font(BadanFont.caption)
-                .foregroundStyle(BadanColor.textSecondary)
-        }
-    }
-
     /// Shown only while the sample seed is live. The global `SampleDataBanner` says "what you're
-    /// looking at is sample data", which is the right message for a screen you're reading — but
-    /// an export is the one action that takes this data OFF the device and hands it to someone
-    /// who never saw the banner, so it gets its own sentence about what the file will contain.
-    ///
-    /// A notice rather than a block: the export itself is honest now (every fabricated row
-    /// carries `sampleData` and the manifest discloses the count), and exporting sample data is a
-    /// legitimate way to see exactly what BADAN's export format looks like before trusting it
-    /// with real data.
-    ///
-    /// `info`, matching `SampleDataBanner` — not `outOfBand` (that amber means "outside your
-    /// usual range" and overloading it here would blur a reading-status signal) and emphatically
-    /// not `critical` (reserved, see its token doc). Nothing has gone wrong; this is a standing
-    /// fact about what the file will contain.
+    /// looking at is sample data", which is the right message for a screen you're reading — but an
+    /// export is the one action that takes this data OFF the device and hands it to someone who
+    /// never saw the banner, so it gets its own sentence about what the file will contain.
     @ViewBuilder
     private var sampleDataExportNotice: some View {
         if SeedController.isDemoDataActive {
@@ -768,160 +402,68 @@ struct ExportCenterScreen: View {
             }
             .padding(BadanSpace.space3)
             .background(BadanColor.surfaceElevated, in: RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
-                    .strokeBorder(BadanColor.separator, lineWidth: 1)
-            )
+            .overlay(RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
+                .strokeBorder(BadanColor.separator, lineWidth: 1))
             .accessibilityElement(children: .combine)
         }
     }
 
-    private var runButton: some View {
-        Button(action: runExport) {
-            HStack(spacing: BadanSpace.space2) {
-                if vm.isRunning {
-                    ProgressView()
-                        .tint(BadanColor.background)
-                    Text(ExportCopy.preparing, language: env.language)
-                } else {
-                    Image(systemName: "square.and.arrow.up")
-                        .accessibilityHidden(true)
-                    Text(Loc.runExport, language: env.language)
+    // MARK: More ways
+
+    private var moreWaysSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(ExportCopy.moreWays))
+            BadanCard {
+                VStack(spacing: BadanSpace.space3) {
+                    NavigationLink { AdvancedExportBuilderScreen() } label: {
+                        hubRow(icon: "slider.horizontal.3",
+                               title: ExportCopy.advancedBuilderTitle,
+                               subtitle: ExportCopy.advancedBuilderSubtitle)
+                    }
+                    .buttonStyle(.plain)
+                    rowDivider
+                    NavigationLink { ExportTemplateManagerScreen() } label: {
+                        hubRow(icon: "doc.on.doc",
+                               title: ExportCopy.templatesTitle,
+                               subtitle: ExportCopy.templatesSubtitle)
+                    }
+                    .buttonStyle(.plain)
+                    rowDivider
+                    NavigationLink { ExportHealthScreen() } label: {
+                        hubRow(icon: "checklist",
+                               title: ExportCopy.healthTitle,
+                               subtitle: ExportCopy.healthSubtitle)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .font(BadanFont.body.weight(.semibold))
-            .foregroundStyle(BadanColor.background)
-            .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin + 6)
-            .background(BadanColor.primary,
-                        in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(vm.isRunning || selectedFormats.isEmpty || customRangeInvalid || sensitiveExportBlocked)
-        .opacity(vm.isRunning ? 0.75 : 1)
-    }
-
-    /// True only for an unusable custom range (start after end) — the run button disables
-    /// itself instead of silently producing an empty export (DATA-04).
-    private var customRangeInvalid: Bool {
-        range == .custom && Self.isRangeInvalid(start: customStart, end: customEnd)
-    }
-
-    /// True when Sensitive is on but the passphrase isn't ready yet — a sensitive export cannot
-    /// leave `ExportRunner` unencrypted (review ledger #19, deferred fix 3 / FEAT-185; see
-    /// ADR-0008), so Run stays disabled rather than letting the user discover the requirement
-    /// only after tapping it and reading `errorText`.
-    private var sensitiveExportBlocked: Bool {
-        scope.includeSensitive && !passphraseValid
-    }
-
-    /// The half-open next-midnight bound for `customEnd`, so the entire final day is included
-    /// instead of silently dropping everything after whatever time-of-day the screen happened
-    /// to be open (DATA-04) — `ExportRunner`'s date filters compare against this as an upper
-    /// bound, so the instant must be at or past the last moment of `customEnd`'s calendar day.
-    private var customRangeEndBound: Date {
-        Self.endOfDayBound(for: customEnd)
-    }
-
-    /// Pure, directly testable: `start`'s calendar day falls after `end`'s (DATA-04).
-    static func isRangeInvalid(start: Date, end: Date, calendar: Calendar = .current) -> Bool {
-        calendar.startOfDay(for: start) > calendar.startOfDay(for: end)
-    }
-
-    /// Pure, directly testable: the half-open next-midnight instant after `date`'s calendar
-    /// day — the correct inclusive upper bound for a same-day-inclusive range filter (DATA-04).
-    static func endOfDayBound(for date: Date, calendar: Calendar = .current) -> Date {
-        let startOfDay = calendar.startOfDay(for: date)
-        return calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? date
-    }
-
-    /// Deletes the temp export folder(s) backing `urls` — one call may span more than one
-    /// folder when both CSV and JSON were run together (`vm.lastResults.flatMap`) or when the
-    /// user shared a file list assembled from several past jobs. Delegates the actual removal to
-    /// `ExportRunner`, which validates every path stays inside `tmp/badan-export-*` before
-    /// touching disk (ledger #19).
-    private func deleteSharedFolders(_ urls: [URL]) {
-        let folders = Set(urls.map { $0.deletingLastPathComponent().path })
-        for folder in folders {
-            env.exporter.deleteExportedFiles(at: folder)
         }
     }
 
-    private func runExport() {
-        guard !customRangeInvalid, !sensitiveExportBlocked else { return }
-        var s = scope
-        s.language = env.language
-        if range == .custom {
-            s.startDate = Calendar.current.startOfDay(for: customStart)
-            s.endDate = customRangeEndBound
-        } else {
-            s.startDate = range.startDate(now: env.now())
-            s.endDate = nil
-        }
-        vm.run(scope: s, formats: Array(selectedFormats), env: env, passphrase: scope.includeSensitive ? passphrase : nil)
-        // The passphrase has already been captured (by value) into the just-started run — there
-        // is no reason for it to keep living in this view's state a moment longer than that
-        // (same "don't outlive its purpose" reasoning as the plaintext files themselves,
-        // ledger #19). A re-run (including "Export again") always requires typing it again.
-        passphrase = ""
-        passphraseConfirm = ""
-    }
-
-    /// "Export again" / "Run again" for a past job. A non-sensitive job re-runs immediately, same
-    /// as before. A sensitive job never had its passphrase stored anywhere (by design — see
-    /// `passphraseFields`), so it cannot silently re-run: this loads the job's scope/format into
-    /// the top form instead, where the now-visible `passphraseFields` require a fresh passphrase
-    /// before Run re-enables. Quieter than surfacing `ExportRunError.sensitiveExportRequiresPassphrase`
-    /// as a raw error after a tap that looked like it should just work.
-    private func handleRunAgain(_ job: ExportJob) {
-        guard job.scope.includeSensitive else {
-            vm.run(scope: job.scope, formats: [job.format], env: env)
-            return
-        }
-        scope = job.scope
-        selectedFormats = [job.format]
-        passphrase = ""
-        passphraseConfirm = ""
-    }
-
-    private func errorCard(_ message: String) -> some View {
-        BadanCard {
-            VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                HStack(spacing: BadanSpace.space2) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(BadanColor.outOfBand)
-                        .accessibilityHidden(true)
-                    Text(ExportCopy.couldntPrepare, language: env.language)
-                        .font(BadanFont.body)
-                        .foregroundStyle(BadanColor.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Text(ExportCopy.errorHint, language: env.language)
+    private func hubRow(icon: String, title: LocalizedString, subtitle: LocalizedString) -> some View {
+        HStack(spacing: BadanSpace.space3) {
+            Image(systemName: icon)
+                .imageScale(.large)
+                .foregroundStyle(BadanColor.primary)
+                .frame(width: 30)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title, language: env.language)
+                    .font(BadanFont.body.weight(.semibold))
+                    .foregroundStyle(BadanColor.textPrimary)
+                Text(subtitle, language: env.language)
                     .font(BadanFont.caption)
                     .foregroundStyle(BadanColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if env.depth.showsPowerDetail {
-                    Text(message)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(BadanColor.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Button(action: runExport) {
-                    HStack(spacing: BadanSpace.space2) {
-                        Image(systemName: "arrow.clockwise")
-                            .accessibilityHidden(true)
-                        Text(ExportCopy.tryAgain, language: env.language)
-                    }
-                    .font(BadanFont.body.weight(.medium))
-                    .foregroundStyle(BadanColor.primary)
-                    .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
-                            .strokeBorder(BadanColor.primary, lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
             }
+            Spacer(minLength: BadanSpace.space2)
+            Image(systemName: "chevron.forward")
+                .imageScale(.small)
+                .foregroundStyle(BadanColor.textSecondary)
+                .accessibilityHidden(true)
         }
+        .frame(minHeight: BadanSpace.touchMin)
+        .contentShape(Rectangle())
     }
 
     // MARK: History
@@ -952,9 +494,7 @@ struct ExportCenterScreen: View {
                             } onInspect: {
                                 inspectingItem = item
                             }
-                            if index < vm.history.count - 1 {
-                                rowDivider
-                            }
+                            if index < vm.history.count - 1 { rowDivider }
                         }
                     }
                 }
@@ -993,8 +533,9 @@ struct ExportCenterScreen: View {
         }
     }
 
-    /// Reconstructs the trust-cockpit detail view (checksums/manifest) for a past export from
-    /// its persisted job, not only the most recently run one (UIUX-174).
+    /// Reconstructs the trust-cockpit detail view (checksums/manifest) for a past export from its
+    /// persisted job (UIUX-174). "Export again" isn't offered here — rebuilding is the advanced
+    /// builder's job; from history you inspect and re-share what already exists.
     private func historyDetailSheet(_ item: ExportHistoryItem) -> some View {
         NavigationStack {
             ScrollView {
@@ -1005,9 +546,6 @@ struct ExportCenterScreen: View {
                 ) {
                     shareURLs = item.fileURLs
                     showShare = !item.fileURLs.isEmpty
-                } onRunAgain: {
-                    inspectingItem = nil
-                    handleRunAgain(item.job)
                 }
                 .padding(BadanSpace.space4)
             }
@@ -1029,11 +567,30 @@ struct ExportCenterScreen: View {
     private var rowDivider: some View {
         Rectangle().fill(BadanColor.separator).frame(height: 1)
     }
+
+    private func deleteSharedFolders(_ urls: [URL]) {
+        let folders = Set(urls.map { $0.deletingLastPathComponent().path })
+        for folder in folders { env.exporter.deleteExportedFiles(at: folder) }
+    }
+
+    // MARK: - Pure range helpers (shared with the builder; covered by `ExportFixTests`)
+
+    /// Pure, directly testable: `start`'s calendar day falls after `end`'s (DATA-04).
+    static func isRangeInvalid(start: Date, end: Date, calendar: Calendar = .current) -> Bool {
+        calendar.startOfDay(for: start) > calendar.startOfDay(for: end)
+    }
+
+    /// Pure, directly testable: the half-open next-midnight instant after `date`'s calendar day —
+    /// the correct inclusive upper bound for a same-day-inclusive range filter (DATA-04).
+    static func endOfDayBound(for date: Date, calendar: Calendar = .current) -> Date {
+        let startOfDay = calendar.startOfDay(for: date)
+        return calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? date
+    }
 }
 
 // MARK: - Format card
 
-private struct ExportFormatCard: View {
+struct ExportFormatCard: View {
     @Environment(AppEnvironment.self) private var env
     let title: String
     let subtitle: LocalizedString
@@ -1066,24 +623,20 @@ private struct ExportFormatCard: View {
             .padding(BadanSpace.space3)
             .background(selected ? BadanColor.primary.opacity(0.08) : BadanColor.surface,
                         in: RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
-                    .strokeBorder(selected ? BadanColor.primary : BadanColor.separator,
-                                  lineWidth: selected ? 2 : 1)
-            )
+            .overlay(RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
+                .strokeBorder(selected ? BadanColor.primary : BadanColor.separator, lineWidth: selected ? 2 : 1))
         }
         .buttonStyle(.plain)
         // (A1) Every visual selection cue here — the tinted icon, the fill, the border, the
         // checkmark — is either colour or an `accessibilityHidden` decoration, so without this
-        // trait a VoiceOver user cannot tell which formats they are about to export. Same
-        // one-liner `SettingsScreen`'s radio rows already use.
+        // trait a VoiceOver user cannot tell which formats they are about to export.
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
 // MARK: - Segmented control
 
-private struct ExportSegmented<T: Hashable>: View {
+struct ExportSegmented<T: Hashable>: View {
     let options: [(value: T, label: String)]
     @Binding var selection: T
 
@@ -1096,10 +649,7 @@ private struct ExportSegmented<T: Hashable>: View {
                     selection = option.value
                 } label: {
                     Text(option.label)
-                        // (A6) Weight and the border below carry selection independently of
-                        // hue. This control was the app's own "never colour alone" rule's single
-                        // violation: tint + a 14%-opacity tint fill were the only cues, which
-                        // read as one flat row to a user who can't separate those hues.
+                        // (A6) Weight and the border below carry selection independently of hue.
                         .font(BadanFont.chip.weight(isSelected ? .bold : .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
@@ -1107,15 +657,10 @@ private struct ExportSegmented<T: Hashable>: View {
                         .foregroundStyle(isSelected ? BadanColor.primary : BadanColor.textSecondary)
                         .background(isSelected ? BadanColor.primary.opacity(0.14) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: BadanRadius.control - 2, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: BadanRadius.control - 2, style: .continuous)
-                                .strokeBorder(isSelected ? BadanColor.primary : Color.clear, lineWidth: 1)
-                        )
+                        .overlay(RoundedRectangle(cornerRadius: BadanRadius.control - 2, style: .continuous)
+                            .strokeBorder(isSelected ? BadanColor.primary : Color.clear, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                // (A1) The export range and unit mode are both this control. Without the trait a
-                // VoiceOver user cannot hear which range they are about to export — in a health
-                // app, that is not knowing what you are about to hand someone.
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
@@ -1127,13 +672,16 @@ private struct ExportSegmented<T: Hashable>: View {
 
 // MARK: - Success card
 
-private struct ExportSuccessCard: View {
+struct ExportSuccessCard: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let result: ExportRunner.ExportResult
     let sortedMetricIds: [String]
     let onShare: () -> Void
-    let onRunAgain: () -> Void
+    /// Optional: the hub's history-inspect sheet shows the card for re-sharing/inspection only, so
+    /// it passes `nil` and the "Export again" button is hidden. The advanced builder passes a
+    /// closure to re-run the same scope+format.
+    var onRunAgain: (() -> Void)?
 
     @State private var copiedValue: String?
 
@@ -1199,33 +747,29 @@ private struct ExportSuccessCard: View {
 
                 Button(action: onShare) {
                     HStack(spacing: BadanSpace.space2) {
-                        Image(systemName: "square.and.arrow.up")
-                            .accessibilityHidden(true)
+                        Image(systemName: "square.and.arrow.up").accessibilityHidden(true)
                         Text(Loc.share, language: env.language)
                     }
                     .font(BadanFont.body.weight(.medium))
                     .foregroundStyle(BadanColor.primary)
                     .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
-                            .strokeBorder(BadanColor.primary, lineWidth: 1)
-                    )
+                    .overlay(RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
+                        .strokeBorder(BadanColor.primary, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
 
-                // Same scope+format the user just ran, one tap away — the screen already holds
-                // everything needed to reproduce it (EASE-222).
-                Button(action: onRunAgain) {
-                    HStack(spacing: BadanSpace.space2) {
-                        Image(systemName: "arrow.clockwise")
-                            .accessibilityHidden(true)
-                        Text(ExportCopy.exportAgain, language: env.language)
+                if let onRunAgain {
+                    Button(action: onRunAgain) {
+                        HStack(spacing: BadanSpace.space2) {
+                            Image(systemName: "arrow.clockwise").accessibilityHidden(true)
+                            Text(ExportCopy.exportAgain, language: env.language)
+                        }
+                        .font(BadanFont.body.weight(.medium))
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
                     }
-                    .font(BadanFont.body.weight(.medium))
-                    .foregroundStyle(BadanColor.textSecondary)
-                    .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -1345,16 +889,11 @@ private struct ExportHistoryRow: View {
 
     var body: some View {
         HStack(spacing: BadanSpace.space3) {
-            // (A2) A real Button, not a bare `onTapGesture` on the row. The tap target was
-            // invisible twice over: sighted users got no chevron or any other hint that the row
-            // opened anything, and VoiceOver got no button trait, so inspecting a past export —
-            // the screen where you check what you actually shared — could not be reached at all.
-            // Share stays its own button outside this one so the two actions don't nest.
-            Button(action: onInspect) {
-                inspectLabel
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint(env.s(ExportCopy.inspectHint))
+            // (A2) A real Button, not a bare `onTapGesture` on the row. Share stays its own button
+            // outside this one so the two actions don't nest.
+            Button(action: onInspect) { inspectLabel }
+                .buttonStyle(.plain)
+                .accessibilityHint(env.s(ExportCopy.inspectHint))
             if !item.fileURLs.isEmpty {
                 Button {
                     onShare(item.fileURLs)
@@ -1386,9 +925,8 @@ private struct ExportHistoryRow: View {
                     if job.manifest?.encrypted == true {
                         PillLabel(env.s(ExportCopy.encryptedBadge), systemImage: "lock.fill", tint: BadanColor.primary)
                     }
-                    // Without this, an interrupted export (crash, force-quit) that never
-                    // reached `.completed` looked identical to a successful one in history —
-                    // missing files were the only, easy-to-miss hint (EDGE-02b).
+                    // Without this, an interrupted export (crash, force-quit) that never reached
+                    // `.completed` looked identical to a successful one in history (EDGE-02b).
                     if job.status == .failed {
                         PillLabel(env.s(ExportCopy.exportFailedLabel), systemImage: "exclamationmark.triangle",
                                  tint: BadanColor.outOfBand)
@@ -1407,8 +945,7 @@ private struct ExportHistoryRow: View {
                 }
             }
             Spacer(minLength: BadanSpace.space2)
-            // (A2) The missing affordance: says the row opens something. `chevron.forward`
-            // rather than `.right` so it mirrors itself in Arabic.
+            // (A2) `chevron.forward` rather than `.right` so it mirrors itself in Arabic.
             Image(systemName: "chevron.forward")
                 .imageScale(.small)
                 .foregroundStyle(BadanColor.textSecondary)
@@ -1422,8 +959,8 @@ private struct ExportHistoryRow: View {
         "\(env.format.integer(job.rowCount ?? 0)) \(env.s(ExportCopy.recordsInline))"
     }
 
-    /// A compact "what was in this one" chip (e.g. "Raw+Derived · 30d") sourced from the job's
-    /// own persisted scope, so two same-day exports are no longer indistinguishable (EASE-210).
+    /// A compact "what was in this one" chip (e.g. "Raw+Derived · 30d") sourced from the job's own
+    /// persisted scope, so two same-day exports are no longer indistinguishable (EASE-210).
     private var scopeSummaryText: String {
         var parts: [String] = []
         if job.scope.includeRaw { parts.append(env.s(ExportCopy.scopeRaw)) }

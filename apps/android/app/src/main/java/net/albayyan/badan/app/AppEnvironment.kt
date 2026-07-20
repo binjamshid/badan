@@ -36,6 +36,8 @@ import net.albayyan.badan.storage.repositories.BackgroundRunRepository
 import net.albayyan.badan.storage.repositories.CatalogRepository
 import net.albayyan.badan.storage.repositories.DerivationRepository
 import net.albayyan.badan.storage.repositories.ExportJobRepository
+import net.albayyan.badan.storage.repositories.ExportRunRepository
+import net.albayyan.badan.storage.repositories.ExportTemplateRepository
 import net.albayyan.badan.storage.repositories.InsightRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
@@ -75,6 +77,12 @@ class AppEnvironment(context: Context) {
     val catalog: CatalogRepository = CatalogRepository(database.main)
     val logging: LoggingRepository = LoggingRepository(database.main, database.sensitive)
     val exportJobs: ExportJobRepository = ExportJobRepository(database.main)
+    // EPIC-09/10/16 export surfaces. `export_templates` and `export_runs` already exist (migration
+    // v4); these repositories were written in Phase 0 but had no caller until the Compose export
+    // surfaces landed. Both are the main DB — a template is a configuration and a run is an event,
+    // neither is sensitive-namespace (I7), and the ledger must be readable without unlocking meds.
+    val exportTemplates: ExportTemplateRepository = ExportTemplateRepository(database.main)
+    val exportRuns: ExportRunRepository = ExportRunRepository(database.main)
     val profiles: ProfileRepository = ProfileRepository(database.main)
     val backgroundRuns: BackgroundRunRepository = BackgroundRunRepository(database.main)
     val routes: RouteRepository = RouteRepository(database.main)

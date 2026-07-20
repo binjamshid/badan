@@ -22,6 +22,25 @@ sealed interface Route {
     data object WorkoutLog : Route
     data object NutritionLog : Route
 
+    // Export surfaces (EPIC-10/11/09/16). The Export Center ([Export]) is the hub; these are the
+    // three pushed screens it links to. Quick Export is a card inside the hub, not a route — §16
+    // places it "at top of Export Center", so it never gets a destination of its own.
+
+    /**
+     * The advanced export builder (EPIC-11). [templateId] is the one piece of navigation state:
+     * null opens a blank ad-hoc builder, a non-null id opens the same screen pre-filled to edit
+     * that saved user template. Presets are never edited here (the repository refuses it and the
+     * template manager never offers the affordance), so a preset id would only ever arrive from a
+     * bug — the screen loads it read-only rather than crashing.
+     */
+    data class ExportBuilder(val templateId: String? = null) : Route
+
+    /** Saved export configurations — presets (read-only) plus the user's own (EPIC-09). */
+    data object ExportTemplates : Route
+
+    /** The trust ledger: did my exports actually run? (EPIC-16). */
+    data object ExportHealth : Route
+
     /**
      * The GPS-route consent surface (EPIC-03). A destination rather than a Settings row: it is the
      * single place `AppEnvironment.isRouteCaptureEnabled` is written, and being addressable means
