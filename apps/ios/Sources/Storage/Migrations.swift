@@ -689,6 +689,152 @@ enum Schema {
             // are scheduled/delivered in this window", a range scan on `scheduled_for` within a class,
             // so the class leads and `scheduled_for` follows.
             "CREATE INDEX idx_notification_deliveries_class_scheduled ON notification_deliveries(notification_class, scheduled_for);",
+        ]),
+        // Version 9 (plan §9.18 / EPIC-42): the workout OS's child-table set. `WorkoutSession`
+        // itself STAYS `sessions(kind=workout)` — no new top-level session table — because the
+        // richer, versioned detail payload plan §9.18 asks for (state history, quality summary,
+        // refs to the tables below) is exactly the kind of "the shape may grow" data
+        // `sessions.detail` already exists to hold as JSON, the same reason `WorkoutDetail` itself
+        // lives there rather than as its own table (see that struct's doc in Measurements.swift).
+        // Every table below is additive (CREATEs only), so an upgrading v8 install reaches v9
+        // without touching an existing row. A byte-equivalent Android mirror is deferred rather
+        // than written here: Android was paused mid-project (2026-07-22) and this migration is
+        // picked up unmodified whenever it resumes — writing an untested, unmirrored Android
+        // migration string now would be a claim of parity this slice cannot back up.
+        //
+        // FOUR TABLES, four different reasons to exist OUTSIDE `sessions.detail` rather than
+        // inside it, and none of the four is interchangeable with another:
+        //   * `workout_checkpoints` — hot, in-progress state for the ONE session currently being
+        //     recorded. Everything else in this migration describes a workout that already
+        //     happened; this describes one that might not survive to finish. It is the SOLE
+        //     exception to append-only in this file (see below) — a live session's checkpoint is
+        //     overwritten in place on every tick, and the row is deleted outright (not tombstoned)
+        //     the moment the session finalizes into `sessions`, because at that point the
+        //     finalized row IS the durable record and a lingering "still recording" draft would be
+        //     actively misleading to a crash-recovery scan.
+        //   * `strength_sets` — one row per logged set, keyed to a session by `session_id`,
+        //     because a strength workout can log dozens of sets and shredding that many rows into
+        //     one JSON blob column would make "how did my 3rd set of squats change over 6 weeks" an
+        //     expensive full-table-scan-and-parse instead of an indexed range read.
+        //   * `workout_intervals` — the same volume argument for structured work/rest/lap/segment
+        //     data (plan §7A.5's interval/HIIT engine): a 20-lap interval session is 20 rows here,
+        //     not 20 entries buried in a growing JSON array nobody can index.
+        //   * `workout_quality` — completeness/continuity/accuracy PER METRIC FAMILY (HR, GPS,
+        //     cadence, power…), because a single session can be simultaneously "GPS: good" and
+        //     "HR: gap-filled the first two minutes" (plan §7A.5's honest per-family badges), and
+        //     collapsing that into one number on the session row would erase exactly the
+        //     distinction I5 exists to preserve — here, good-metric vs. bad-metric within the SAME
+        //     session, not just raw vs. derived.
+        //
+        // PROVENANCE, deliberately omitted from all three non-checkpoint tables (not an oversight
+        // — this follows the exact model migration 4's `route_points` comment sets out):
+        //   * `strength_sets` / `workout_intervals` are children of a `sessions` row that ALREADY
+        //     carries full embedded provenance (I1) — the same source, device, and ingestion path
+        //     cover every set and every lap in that session. Stamping 12 provenance columns onto
+        //     every set of a 5×5 workout would duplicate an answer the parent session already
+        //     gives; "where did this set come from" resolves through `session_id` in one join,
+        //     never through a second audit trail that could drift from the first.
+        //   * `workout_quality` is a COMPUTED assessment, not a measurement — the same reason
+        //     `derived_values`/`baselines` carry no `measured_at`/`source_id` of their own. It does
+        //     carry `algorithm_version` and `computed_at`, the pair that actually identifies a
+        //     computation, mirroring those two tables exactly.
+        //
+        // CONVENTION COLUMNS (D-7), and the one deliberate omission:
+        //   * `strength_sets` carries the full set — AND the append-first revision chain
+        //     (`original_id`/`supersedes`/`revision`) `hydration_entries` already established
+        //     (migration 7): a corrected set (wrong weight logged) APPENDS a new revision, it never
+        //     UPDATEs the row, so "what the user logged, and how they corrected it" stays auditable
+        //     (I2-flavored) exactly like a hydration entry's history. `is_warm_up` is a plain flag,
+        //     not folded into `set_kind`'s vocabulary, because plan §7A.5 is explicit that warm-ups
+        //     are excluded from PR/volume logic BY DEFAULT — a query needs to filter them without
+        //     parsing every semantic set-kind value to guess which ones count as warm-up.
+        //   * `workout_intervals` carries the plain convention set — no revision chain, because a
+        //     lap is a recorded/computed segment, not a hand-typed number someone mis-keys the way
+        //     a set's weight can be — so a wrong segment is still correctable via the ordinary
+        //     tombstone (`deleted_at`) rather than needing a chain.
+        //   * `workout_quality` carries the plain convention set too, matching `derived_values`'
+        //     own shape (which also carries `conventionCols` despite being append-only — I2 governs
+        //     the VALUE history; the convention columns are the same cross-device sync bookkeeping
+        //     every other row gets, which is not a contradiction of append-only).
+        //   * `workout_checkpoints` carries NEITHER `provenanceCols` NOR `conventionCols` — it
+        //     asserts nothing about the user's body (provenance would lie, the same reasoning
+        //     migration 4 gives for `export_runs`/`background_runs`) and it is not a cross-device
+        //     reconciliation target (`updated_at`/`origin_device_id`/`deleted_at` would lie too —
+        //     only one device is ever recording one live session). `last_checkpoint_at` plays
+        //     `updated_at`'s role under a name that says what it actually means, and there is no
+        //     `deleted_at` because this table's one removal path is a real `DELETE`, not a
+        //     tombstone — see `WorkoutCheckpointRepository.clear`.
+        //
+        // `state` (workout_checkpoints), `set_kind`/`superset_group` (strength_sets), and `kind`
+        // (workout_intervals) are deliberately bare TEXT, not a CHECK-constrained enum: the
+        // domain-side `WorkoutLifecycleState` / set-semantics / interval-kind enums are Swift's
+        // (and, once Android resumes, Kotlin's) to own and evolve. A schema CHECK would need its
+        // own forward-only migration every time either enum gained a case, which defeats the same
+        // additive-without-a-migration reasoning this comment already applies to `sessions.detail`
+        // — just applied to a column instead of a JSON blob.
+        Migration(version: 9, statements: [
+            """
+            CREATE TABLE workout_checkpoints (
+              session_id TEXT PRIMARY KEY,
+              activity_type TEXT NOT NULL,
+              state TEXT NOT NULL,
+              started_at INTEGER NOT NULL,
+              state_history TEXT NOT NULL,
+              hot_state TEXT NOT NULL,
+              last_checkpoint_at INTEGER NOT NULL,
+              origin_device_id TEXT NOT NULL
+            );
+            """,
+            """
+            CREATE TABLE strength_sets (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              original_id TEXT NOT NULL,
+              supersedes TEXT,
+              revision INTEGER NOT NULL,
+              movement_id TEXT,
+              custom_label TEXT,
+              set_kind TEXT NOT NULL,
+              superset_group TEXT,
+              seq INTEGER NOT NULL,
+              reps INTEGER,
+              weight_value REAL,
+              weight_unit TEXT,
+              is_warm_up INTEGER NOT NULL,
+              recorded_at INTEGER NOT NULL,
+              \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_strength_sets_session ON strength_sets(session_id, seq);",
+            """
+            CREATE TABLE workout_intervals (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              seq INTEGER NOT NULL,
+              kind TEXT NOT NULL,
+              start_at INTEGER NOT NULL,
+              end_at INTEGER,
+              target TEXT,
+              result TEXT,
+              \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_workout_intervals_session ON workout_intervals(session_id, seq);",
+            """
+            CREATE TABLE workout_quality (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              metric_family TEXT NOT NULL,
+              completeness REAL,
+              continuity REAL,
+              accuracy REAL,
+              primary_source_id TEXT,
+              algorithm_version TEXT NOT NULL,
+              computed_at INTEGER NOT NULL,
+              \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_workout_quality_session ON workout_quality(session_id);",
         ])]
     }
 
