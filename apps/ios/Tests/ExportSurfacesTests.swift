@@ -121,7 +121,30 @@ final class ExportSurfacesTests: XCTestCase {
         XCTAssertEqual(AdvancedExportBuilderScreen.range(from: .fixed, scope: ExportScope(), now: now).0, .custom)
         // A rule the builder can't represent as one of its segments still maps to a usable one.
         XCTAssertEqual(AdvancedExportBuilderScreen.range(from: .lastNDays(45), scope: ExportScope(), now: now).0, .custom)
-        XCTAssertEqual(AdvancedExportBuilderScreen.range(from: .sinceLastRun, scope: ExportScope(), now: now).0, .all)
+        // `sinceLastRun` is carried by the builder's delta switch, not by a range segment. The
+        // segment it maps to is what the template falls back to if that switch is turned OFF, and
+        // it must be the runner's own no-cursor fallback window — `.all` here would silently turn
+        // an incremental template into a full-history export on a single toggle.
+        XCTAssertEqual(AdvancedExportBuilderScreen.range(from: .sinceLastRun, scope: ExportScope(), now: now).0, .last30)
+    }
+
+    /// EPIC-17. The whole delta chain — cursors, `previous_manifest_sha`, tombstones, corrections —
+    /// was fixture- and CI-verified but had no path a user could take to produce a `sinceLastRun`
+    /// template: the builder could only emit `lastNDays`/`allTime`/`fixed`, and no Quick Export
+    /// preset produces one either. The delta switch is that path, and this pins its precedence.
+    func testDeltaSwitchIsTheOnlyWayToSaveASinceLastRunTemplate() {
+        for range in [ExportRange.last30, .last90, .all, .custom] {
+            XCTAssertEqual(AdvancedExportBuilderScreen.rangeRule(range: range, deltaOnly: true),
+                           .sinceLastRun,
+                           "the delta switch must win over every window segment")
+            XCTAssertNotEqual(AdvancedExportBuilderScreen.rangeRule(range: range, deltaOnly: false),
+                              .sinceLastRun,
+                              "no window segment may produce a delta on its own")
+        }
+        // And the switch survives a save → reopen round trip, or editing a delta template would
+        // silently rewrite its rule to a window.
+        let saved = AdvancedExportBuilderScreen.rangeRule(range: .last90, deltaOnly: true)
+        XCTAssertEqual(saved, .sinceLastRun)
     }
 
     // MARK: - Window resolution

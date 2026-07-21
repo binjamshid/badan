@@ -247,6 +247,81 @@ struct CSVWriter {
     }
 }
 
+/// The two reconciliation tables a CSV **delta** export carries (§22.6 / EPIC-17), alongside
+/// `raw.csv` / `derived.csv` / `events.csv`.
+///
+/// They exist because the desync a delta creates is format-independent. A delta gathers only LIVE
+/// rows, so a removal or a dedup flip since the cursor is invisible to a consumer that only ever
+/// receives additions — and a CSV consumer is no less entitled to reconcile than a JSON one. The
+/// JSON bundle carries the same two facts as its `deletions[]` and `corrections[]` arrays; these are
+/// the CSV projection of exactly those records, one row per record, same field names, same ordering
+/// (`ExportTombstone.exportSorted` / `ExportSuppressionCorrection.exportSorted` — the single shared
+/// comparators, so the two formats cannot drift apart).
+///
+/// They ride their own small tables rather than the 26-column contract for the same reason the
+/// hydration set does: a tombstone is not a measurement, and forcing "this record is gone" onto a
+/// row shape built for "this record has value V in unit U" would produce a row a consumer has to
+/// guess at. `record_kind` has no `tombstone` case and inventing one would break the frozen
+/// vocabulary.
+///
+/// **Presence is the delta signal.** Unlike the JSON bundle, a CSV export's `manifest.json` carries
+/// no `is_delta` flag (`ExportManifest` has no delta fields), so `ExportRunner` writes BOTH files —
+/// header-only when nothing was removed or flipped — on every delta run, and neither on any other
+/// run. A consumer that receives them therefore knows the artifact is a delta AND is told
+/// affirmatively that nothing went away, instead of having to distinguish "no removals" from "this
+/// exporter never reports removals". A non-delta CSV export is byte-identical to before.
+struct ExportDeltaCSVWriter {
+    static let deletionsFileName = "deletions.csv"
+    static let correctionsFileName = "corrections.csv"
+
+    init() {}
+
+    /// The named CSV files for one delta run. Both are always present (see the type doc) so the
+    /// caller writes and checksums them unconditionally on a delta.
+    func files(deletions: [ExportTombstone],
+               corrections: [ExportSuppressionCorrection]) -> [String: String] {
+        [
+            Self.deletionsFileName: deletionsCSV(deletions),
+            Self.correctionsFileName: correctionsCSV(corrections)
+        ]
+    }
+
+    /// Rows removed since the cursor. Columns mirror the JSON `deletions[]` object exactly
+    /// (`record_id`, `entity`, `deleted_at`), and `deleted_at` is rendered in the row's OWN
+    /// timezone — the same offset-carrying instant the bundle writes, never normalized to UTC.
+    func deletionsCSV(_ deletions: [ExportTombstone]) -> String {
+        var out = row(["record_id", "entity", "deleted_at"])
+        for t in ExportTombstone.exportSorted(deletions) {
+            out += CSVWriter.newline
+            out += row([t.recordId, t.entity, CSVWriter.iso8601(t.deletedAt, tzId: t.tzId)])
+        }
+        return out + CSVWriter.newline
+    }
+
+    /// Suppression flips since the cursor. Columns mirror the JSON `corrections[]` object
+    /// (`record_id`, `suppressed_by`, `changed_at`); `changed_at` is UTC, matching the bundle,
+    /// because a dedup decision is an engine event with no measurement timezone of its own.
+    ///
+    /// A cleared suppression writes an EMPTY `suppressed_by` cell — CSV has no null, and the
+    /// column is a record id, so empty can only mean "no longer suppressed". That is the same
+    /// convention every other nullable id column in the export uses.
+    func correctionsCSV(_ corrections: [ExportSuppressionCorrection]) -> String {
+        var out = row(["record_id", "suppressed_by", "changed_at"])
+        for c in ExportSuppressionCorrection.exportSorted(corrections) {
+            out += CSVWriter.newline
+            out += row([c.recordId, c.suppressedBy ?? "", CSVWriter.iso8601(c.changedAt, tzId: "UTC")])
+        }
+        return out + CSVWriter.newline
+    }
+
+    /// One RFC-4180 line, borrowed from `CSVWriter` so these cells escape identically to every
+    /// other exported cell. No `sanitizeText` pass: every column here is a ULID or a timestamp,
+    /// never free text, so there is nothing a spreadsheet could read as a formula.
+    private func row(_ cells: [String]) -> String {
+        cells.map(CSVWriter.escape).joined(separator: ",")
+    }
+}
+
 /// Thread-safe, per-timezone cache of ISO-8601 `DateFormatter`s. Building a formatter per row
 /// dominates a large export; keyed reuse keeps the offset-carrying format cheap.
 enum TimestampFormatting {

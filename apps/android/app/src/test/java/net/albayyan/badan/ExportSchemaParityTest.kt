@@ -18,6 +18,8 @@ import net.albayyan.badan.domain.BaselineMethod
 import net.albayyan.badan.domain.DerivedValue
 import net.albayyan.badan.domain.ExportManifest
 import net.albayyan.badan.domain.ExportScope
+import net.albayyan.badan.domain.ExportSuppressionCorrection
+import net.albayyan.badan.domain.ExportTombstone
 import net.albayyan.badan.domain.IngestionPath
 import net.albayyan.badan.domain.IntervalRecord
 import net.albayyan.badan.domain.MealType
@@ -85,6 +87,16 @@ class ExportSchemaParityTest {
     // as a normal comparison and report a confusing pass/fail rather than regenerating anything.
     private val regenerating = System.getenv("BADAN_REGENERATE_EXPORT_GOLDENS") == "true"
 
+    private companion object {
+        // The EPIC-17 delta chain lives in its own subfolder so `scripts/verify_export_chain.py`
+        // can be pointed straight at it: the script treats every *.json in a folder as a candidate
+        // link, and bundle-v1.json (a full export, no predecessor) would read as a second chain
+        // root sitting next to the real one.
+        const val DELTA_INPUT = "delta-chain/delta-input-v1.json"
+        const val DELTA_RUN1 = "delta-chain/delta-run1-v1.json"
+        const val DELTA_RUN2 = "delta-chain/delta-run2-v1.json"
+    }
+
     // ===== The acceptance criterion =====
 
     /**
@@ -147,6 +159,106 @@ class ExportSchemaParityTest {
             assertTrue("is_derived must be present in every file", header.contains("is_derived"))
         }
     }
+
+    // ===== EPIC-17: the two-run delta sequence (§22.6) =====
+
+    /**
+     * Both links of the sequence, byte for byte: a chain root carrying `is_delta`, both cursors, a
+     * `deletions[]` tombstone and a live suppression flip, then a second delta that chains to it.
+     *
+     * Delta metadata is exactly the layer where a cross-platform divergence would be most expensive
+     * and least visible: a consumer that checksums the file to verify the chain gets a mismatch it
+     * cannot attribute, because both platforms' files parse perfectly well on their own machine.
+     *
+     * One test, not two, because the second link is a function of the first's exact bytes — JUnit
+     * does not promise method order, and a regenerating run that wrote run 2 before run 1 would
+     * chain it to whatever was on disk from the previous release.
+     */
+    @Test fun deltaChainIsByteStableAcrossBothRuns() {
+        val root = renderDelta("run1", previousManifestSha = null)
+        assertGolden(DELTA_RUN1, root)
+        // The chain link is sha256 of the ROOT BUNDLE'S BYTES — what a consumer recomputes from the
+        // delivered file. The assertion above has already established that those bytes ARE the
+        // golden file's, so this is sha256(delta-run1-v1.json) by construction, and it stays correct
+        // during a regenerating run where the file on disk is still the previous revision.
+        val rootSha = MessageDigest.getInstance("SHA-256").digest(root.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        assertGolden(DELTA_RUN2, renderDelta("run2", previousManifestSha = rootSha))
+    }
+
+    /**
+     * The chain properties asserted against the golden FILES rather than the in-memory renders, so
+     * they stay true of the artifacts a consumer actually receives: run 2's `previous_manifest_sha`
+     * really is `sha256(delta-run1-v1.json)`, and run 2's window opens exactly where run 1's closed
+     * (a gap means rows nobody ever exported; an overlap means rows delivered twice).
+     *
+     * This is the same walk `scripts/verify_export_chain.py` performs over a folder — restated here
+     * so a suite run catches a broken chain without waiting for the CI step that runs the script.
+     */
+    @Test fun deltaChainGoldensLinkAndTheirWindowsMeet() {
+        if (regenerating) return
+        fun manifestOf(name: String): JsonObject =
+            Json.parseToJsonElement(readVerified(name).toString(Charsets.UTF_8))
+                .jsonObject.getValue("manifest").jsonObject
+        val rootSha = MessageDigest.getInstance("SHA-256").digest(readVerified(DELTA_RUN1))
+            .joinToString("") { "%02x".format(it) }
+        val root = manifestOf(DELTA_RUN1)
+        val second = manifestOf(DELTA_RUN2)
+        assertTrue("the root declares itself a delta", root.getValue("is_delta").jsonPrimitive.boolean)
+        assertTrue(
+            "the root has no predecessor, so its chain link is null — never a fabricated sha",
+            root.getValue("previous_manifest_sha") == JsonNull,
+        )
+        assertEquals(
+            "previous_manifest_sha must equal sha256 of the prior bundle FILE — the chain link",
+            rootSha,
+            second.getValue("previous_manifest_sha").jsonPrimitive.content,
+        )
+        assertEquals(
+            "cursor_before[n] must equal cursor_after[n-1] — the chain verifier's monotonicity rule",
+            root.getValue("cursor_after").jsonPrimitive.content,
+            second.getValue("cursor_before").jsonPrimitive.content,
+        )
+    }
+
+    /**
+     * Renders one run of the shared delta fixture through this platform's writer. Reuses the same
+     * `manifest`/`rawSamples` builders the full-bundle goldens use, so the delta path is exercised
+     * through the same code the non-delta path is rather than through a parallel harness.
+     */
+    private fun renderDelta(runKey: String, previousManifestSha: String?): String {
+        val run = deltaFixture().getValue(runKey).jsonObject
+        return JsonBundleWriter().data(
+            manifest = manifest(run),
+            rawSamples = rawSamples(run),
+            intervalRecords = emptyList(), sessions = emptyList(),
+            derivedValues = emptyList(), baselines = emptyList(),
+            symptoms = emptyList(), adherence = emptyList(),
+            workouts = emptyList(), nutrition = emptyList(),
+            includeRoutes = false,
+            sampleDataRowCount = run.getValue("bundleManifest").jsonObject
+                .getValue("sampleDataRowCount").jsonPrimitive.int,
+            isDelta = run.getValue("isDelta").jsonPrimitive.boolean,
+            cursorBefore = run.millis("cursorBeforeMillis"),
+            cursorAfter = run.millis("cursorAfterMillis"),
+            previousManifestSha = previousManifestSha,
+            additionalDeletions = run.rows("deletions").map {
+                ExportTombstone(
+                    recordId = it.str("recordId"), entity = it.str("entity"),
+                    deletedAt = it.millis("deletedAtMillis"), tzId = it.str("tzId"),
+                )
+            },
+            corrections = run.rows("corrections").map {
+                ExportSuppressionCorrection(
+                    recordId = it.str("recordId"), suppressedBy = it.strOrNull("suppressedBy"),
+                    changedAt = it.millis("changedAtMillis"),
+                )
+            },
+        ).toString(Charsets.UTF_8)
+    }
+
+    private fun deltaFixture(): JsonObject =
+        Json.parseToJsonElement(readVerified(DELTA_INPUT).toString(Charsets.UTF_8)).jsonObject
 
     // ===== The primitives the goldens are built out of =====
 

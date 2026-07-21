@@ -51,6 +51,8 @@ import net.albayyan.badan.features.loghub.LogHubScreen
 import net.albayyan.badan.features.medication.MedicationLogScreen
 import net.albayyan.badan.features.metricdetail.MetricDetailScreen
 import net.albayyan.badan.features.onboarding.OnboardingScreen
+import net.albayyan.badan.features.reports.ReportDetailScreen
+import net.albayyan.badan.features.reports.ReportsScreen
 import net.albayyan.badan.features.settings.SettingsScreen
 import net.albayyan.badan.features.symptom.SymptomLogScreen
 import net.albayyan.badan.features.timeline.TimelineScreen
@@ -161,6 +163,8 @@ private fun DetailContent(route: Route) {
         Route.Timeline -> TimelineScreen()
         Route.Sources -> SourcesScreen()
         Route.HealthMonitor -> HealthMonitorScreen()
+        Route.Reports -> ReportsScreen()
+        is Route.ReportDetail -> ReportDetailScreen(route.reportId)
         Route.Export -> ExportScreen()
         Route.SymptomLog -> SymptomLogScreen()
         Route.MedicationLog -> MedicationLogScreen()

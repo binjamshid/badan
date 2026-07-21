@@ -66,12 +66,16 @@
   <!-- ====================== ENGLISH ====================== -->
   <section id="en" dir="ltr" lang="en">
     <h1>Privacy Policy</h1>
-    <p class="meta">Last updated: 16 July 2026 · Applies to BADAN for iOS</p>
+    <p class="meta">Last updated: 21 July 2026 · Applies to BADAN for iOS</p>
 
     <div class="callout">
       <strong>BADAN is a private, on-device health repository.</strong> Everything stays on your
-      device. BADAN has no servers, no accounts, and makes no network calls. Nothing you see in the
-      app is ever transmitted anywhere by the app.
+      device. BADAN has no servers of its own, no accounts, and it never sends your data anywhere on
+      its own initiative. <strong>Creating an export file involves no network</strong> — that is a
+      property of how the app is built, not a setting you have to find. In this version there is no
+      way to point an export at a server, so nothing leaves the device except a file you hand to
+      another app yourself. If a later version lets you deliver an export to a server, it will only
+      ever be a server <em>you</em> entered and control; BADAN never picks a destination for you.
     </div>
 
     <h2>1. Who this is for and what BADAN is</h2>
@@ -119,7 +123,12 @@
 
     <h2>4. What BADAN does not do</h2>
     <ul>
-      <li><strong>Makes no network calls</strong>: there is no server to talk to.</li>
+      <li><strong>Makes no network calls</strong>: BADAN has no server of its own to talk to, no
+        analytics, no crash uploads, and no background transfers. <strong>Creating an export file
+        involves no network</strong> — generation happens entirely on your device, and the build is
+        checked for that on every change, so it cannot quietly stop being true. Sending an export
+        somewhere would be a separate, deliberate act with its own code; this version has no way for
+        you to set one up, so no data is transmitted at all.</li>
       <li><strong>Has no accounts and no sign-in.</strong></li>
       <li><strong>Uses no third-party SDKs</strong>: no analytics, no crash reporting, no telemetry,
         no advertising.</li>
@@ -132,8 +141,12 @@
     <h2>5. Your control over your data</h2>
     <ul>
       <li><strong>Export</strong>: Settings → Data &amp; privacy → Export gives you a CSV or JSON
-        export with a checksummed manifest, created on your device and handed to you (e.g. via the
-        share sheet). BADAN does not send it anywhere.</li>
+        export with a checksummed manifest, created on your device with no network involved and
+        handed to you (e.g. via the share sheet) or saved to a folder you picked. BADAN sends it
+        nowhere. If a later version offers to deliver an export to a server, the file is still
+        <em>created</em> with no network, and the address is one you typed in — BADAN never chooses a
+        destination for you, and it would ask you to confirm that in as many words before the first
+        send.</li>
       <li><strong>Delete everything</strong>: Settings → Data management → "Delete all data"
         permanently deletes everything on the device. This cannot be undone.</li>
       <li><strong>Erase sensitive records separately</strong>: turning off "Sensitive records" in
@@ -175,11 +188,15 @@
   <!-- ====================== العربية ====================== -->
   <section id="ar" dir="rtl" lang="ar">
     <h1>سياسة الخصوصية</h1>
-    <p class="meta">آخر تحديث: ١٦ يوليو ٢٠٢٦ · تنطبق على تطبيق بدن لنظام iOS</p>
+    <p class="meta">آخر تحديث: ٢١ يوليو ٢٠٢٦ · تنطبق على تطبيق بدن لنظام iOS</p>
 
     <div class="callout">
-      <strong>بدن مستودع صحي خاص يعمل بالكامل على جهازك.</strong> كل شيء يبقى على جهازك. لا يملك بدن
-      خوادم ولا حسابات ولا يجري أي اتصال شبكي. لا شيء ممّا تراه في التطبيق يُرسَل إلى أي مكان.
+      <strong>بدن مستودع صحي خاص يعمل بالكامل على جهازك.</strong> كل شيء يبقى على جهازك. ليست لبدن
+      خوادم خاصة به ولا حسابات، ولا يرسل بياناتك إلى أي مكان من تلقاء نفسه.
+      <strong>إنشاء ملف التصدير لا يتضمّن أي اتصال شبكي</strong> — وهذه خاصية في طريقة بناء التطبيق،
+      لا إعداد عليك البحث عنه. وفي هذه النسخة لا توجد أي وسيلة لتوجيه التصدير إلى خادم، فلا يغادر
+      الجهاز شيء سوى ملف تسلّمه أنت بنفسك إلى تطبيق آخر. وإن أتاحت نسخة لاحقة إرسال التصدير إلى خادم،
+      فلن يكون إلا خادماً <em>أنت</em> من أدخل عنوانه وتتحكم فيه؛ ولا يختار بدن الوجهة نيابةً عنك أبداً.
     </div>
 
     <h2>١. لمن هذا التطبيق وما هو بدن</h2>
@@ -223,7 +240,11 @@
 
     <h2>٤. ما لا يفعله بدن</h2>
     <ul>
-      <li><strong>لا يُجري أي اتصال شبكي</strong>: لا يوجد خادم يتواصل معه.</li>
+      <li><strong>لا يُجري أي اتصال شبكي</strong>: ليس لبدن خادم خاص به يتواصل معه، ولا تحليلات، ولا
+        رفع لتقارير الأعطال، ولا عمليات نقل في الخلفية. <strong>وإنشاء ملف التصدير لا يتضمّن أي اتصال
+        شبكي</strong> — إذ يجري توليده بالكامل على جهازك، ويُفحص البناء على ذلك مع كل تغيير، فلا يمكن
+        أن يتوقف هذا عن الصحّة بصمت. أما إرسال التصدير إلى مكان ما فسيكون فعلاً منفصلاً ومقصوداً وله
+        شيفرته الخاصة؛ وهذه النسخة لا تتيح لك إعداد ذلك أصلاً، فلا تُنقل أي بيانات على الإطلاق.</li>
       <li><strong>لا حسابات ولا تسجيل دخول.</strong></li>
       <li><strong>لا يستخدم أي حزم أدوات من طرف ثالث</strong>: لا تحليلات، لا تتبّع أعطال، لا قياس
         عن بُعد، لا إعلانات.</li>

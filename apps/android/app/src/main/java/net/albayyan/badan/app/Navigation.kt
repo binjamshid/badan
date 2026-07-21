@@ -64,6 +64,17 @@ sealed interface Route {
      */
     data object RouteConsent : Route
 
+    /**
+     * The Reports surface (EPIC-31) — the list of generated weekly/monthly reports plus the periods
+     * worth generating. A pushed detail under Body alongside the other read/export tools, for the
+     * same reason [HealthMonitor] is: it reads the same derived store the rest of Body does and
+     * links onward rather than owning a tab.
+     */
+    data object Reports : Route
+
+    /** One report, keyed by its `reports` row id (EPIC-31). */
+    data class ReportDetail(val reportId: String) : Route
+
     data class MetricDetail(val metricId: String) : Route
 
     /**

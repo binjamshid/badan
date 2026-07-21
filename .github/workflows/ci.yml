@@ -106,6 +106,11 @@ jobs:
           fixtures = [
             'packages/fixtures/export/bundle-v1.json',            # no hydration (parity golden)
             'packages/fixtures/export/bundle-hydration-v1.json',  # exercises logs.hydration
+            # EPIC-17: the delta pair exercises the schema's delta fields — is_delta, both cursors,
+            # previous_manifest_sha and the corrections[] section — which a full export leaves null
+            # or absent, so nothing else in this list can catch a drift in them.
+            'packages/fixtures/export/delta-chain/delta-run1-v1.json',
+            'packages/fixtures/export/delta-chain/delta-run2-v1.json',
           ]
           fail = False
           for rel in fixtures:
@@ -117,6 +122,27 @@ jobs:
               fail = True
           sys.exit(1 if fail else 0)
           PY
+      # EPIC-17 / §22.6. Delta export tells people "this file contains only what is new" — a claim
+      # that is only worth anything if a consumer can CHECK it. scripts/verify_export_chain.py is
+      # the reference checker (previous_manifest_sha links, one root, no gaps, monotonic cursors),
+      # and the delta-chain fixtures are a real two-run sequence for it to walk.
+      #
+      # The negative control is the load-bearing half. A verifier that never rejects anything passes
+      # every folder handed to it and proves nothing; appending one byte to the root breaks its
+      # sha256, which must dangle the second bundle's link and fail the run. If the tamper case ever
+      # starts passing, the positive case above stopped meaning anything.
+      - name: Delta export chain verifies, and a tampered chain does not (EPIC-17)
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_export_chain.py packages/fixtures/export/delta-chain
+          tampered="$(mktemp -d)"
+          cp packages/fixtures/export/delta-chain/delta-run*.json "$tampered/"
+          printf '\n' >> "$tampered/delta-run1-v1.json"
+          if python3 scripts/verify_export_chain.py "$tampered" > /dev/null 2>&1; then
+            echo "::error::verify_export_chain.py accepted a tampered chain — the verifier proves nothing"
+            exit 1
+          fi
+          echo "delta chain verified; a tampered chain was correctly rejected"
       # The version lives in four places that must never disagree: the two contract files, and the
       # constant each platform's writers actually stamp into an artifact. A file labelled 1.0.0
       # whose writer emits 0.9.0 is worse than an unversioned one — it tells a consumer how to
@@ -158,14 +184,109 @@ jobs:
             echo "::error::docs/legal/*.html still contains a placeholder token — fill it in before release"
             exit 1
           fi
-      - name: Export module stays network-free (ADR D-8)
+      - name: Export generation stays network-free; delivery is isolated (ADR D-8 / §8.3)
         run: |
           set -euo pipefail
-          if grep -rqE 'URLSession|import Network|NSURLConnection' apps/ios/Sources/Export/; then
-            echo "::error::apps/ios/Sources/Export/ references a networking API — ADR D-8 requires the export module to be network-free"
-            grep -rnE 'URLSession|import Network|NSURLConnection' apps/ios/Sources/Export/
-            exit 1
+          # §8.3: the network-free guarantee is load-bearing for GENERATION (writers + runner) and
+          # stays true there. Delivery to a user-chosen destination is network by definition and
+          # lives ONLY in the Destinations layer, which is excluded here and checked separately below.
+          #
+          # TWO patterns per platform, not one. The API list alone did not close the hole: iOS's
+          # `Data(contentsOf:)` performs a synchronous GET when handed an http(s) URL and matches
+          # none of URLSession / import Network / NSURLConnection, and the same is true of
+          # CFNetwork and raw POSIX sockets. `Data(contentsOf:)` cannot simply be banned either —
+          # `ExportRunner.encryptResult` legitimately uses it to read the files it has just written
+          # back off disk, so the shape is present in generation today and must stay green.
+          #
+          # So the second pattern bans what a REMOTE read needs instead of the read itself: a
+          # remote URL. Generation derives every URL it touches from the app container
+          # (`appendingPathComponent` off its own temp folder), so `URL(string:)` / `URLComponents`
+          # / `URLRequest` — the only ways to construct an http(s) URL — have no business there,
+          # and have zero occurrences today. With those banned, a `Data(contentsOf:)` inside
+          # generation provably holds a file URL.
+          #
+          # Stated precisely so the guarantee is not overread: together these prove generation
+          # cannot open a socket and cannot BUILD a remote URL. They say nothing about a URL handed
+          # in from outside — no generation entry point takes one today, and adding one is the
+          # change that must revisit this note.
+          IOS_NET_API='URLSession|import Network|NSURLConnection|CFNetwork|CFReadStream|CFSocket|NWConnection|NWListener|getaddrinfo|[^A-Za-z_]socket\(|sendto\(|recvfrom\('
+          IOS_REMOTE_URL='URL\(string:|NSURL\(string:|URLComponents|URLRequest'
+          AND_NET_API='HttpURLConnection|okhttp|io\.ktor|java\.net\.Socket|java\.net\.DatagramSocket|java\.nio\.channels\.SocketChannel|java\.net\.InetAddress|openConnection|openStream'
+          AND_REMOTE_URL='java\.net\.URL|java\.net\.URI|Uri\.parse|\.toURL\('
+
+          fail=0
+          scan() {  # scan <root> <excluded-path-fragment> <regex> <message>
+            local hits
+            hits="$(grep -rnE "$3" "$1" | grep -v "$2" || true)"
+            if [ -n "$hits" ]; then
+              echo "::error::$4"
+              printf '%s\n' "$hits"
+              fail=1
+            fi
+          }
+
+          scan apps/ios/Sources/Export/ '/Destinations/' "$IOS_NET_API" \
+            "apps/ios/Sources/Export/ (writers/runner) references a networking API — export generation must stay network-free (ADR D-8)"
+          scan apps/ios/Sources/Export/ '/Destinations/' "$IOS_REMOTE_URL" \
+            "apps/ios/Sources/Export/ (writers/runner) constructs a URL from a string — generation may only touch file URLs it derived from its own output folder, and a remote Data(contentsOf:) is exactly what this forbids (§8.3)"
+          scan apps/android/app/src/main/java/net/albayyan/badan/export/ '/destinations/' "$AND_NET_API" \
+            "Android export generation references a networking API — export generation must stay network-free (ADR D-8)"
+          scan apps/android/app/src/main/java/net/albayyan/badan/export/ '/destinations/' "$AND_REMOTE_URL" \
+            "Android export generation constructs a java.net URL/URI — generation may only touch java.io.File paths under its own output dir (§8.3)"
+
+          # §8.3: the Destinations layer moves finished artifacts and must NOT reach into writer
+          # internals — it consumes file URLs + manifests only. Enforced by banning construction of,
+          # or static access to, the concrete writer/runner types. (ExportSchema, a shared version
+          # constant used for a header default, is deliberately not in this list.)
+          if grep -rnE '(CSVWriter|JSONBundleWriter|GPXWriter|WideCSVProjector|MetricAggregator|HydrationExport|ExportEncryption|ExportEncryptor|ExportRunner|BackupBundle)[(.]' apps/ios/Sources/Export/Destinations/; then
+            echo "::error::apps/ios/Sources/Export/Destinations/ reaches into a writer/runner internal — destinations consume file URLs + manifests only (§8.3)"
+            fail=1
           fi
+          # Android mirror of the isolation half. Same rule, same reason: a destination that reached
+          # into a writer would couple the networked layer to generation, and the two must stay
+          # provably separate. (ExportSchema is excluded here too — it is a version constant.)
+          if grep -rnE '(CsvWriter|JsonBundleWriter|GpxWriter|WideCsvProjector|MetricAggregator|HydrationExport|ExportEncryptor|ExportRunner|BackupBundle)[(.]' apps/android/app/src/main/java/net/albayyan/badan/export/destinations/; then
+            echo "::error::Android export/destinations/ reaches into a writer/runner internal — destinations consume files + manifests only (§8.3)"
+            fail=1
+          fi
+
+          # Negative + positive control, the load-bearing half. A lint whose patterns silently stop
+          # matching passes forever and proves nothing — the same reasoning as the tampered-chain
+          # check above. These probes are synthetic files in a temp dir, never part of the app.
+          probe="$(mktemp -d)"
+          mkdir -p "$probe/ios" "$probe/android"
+          # Must be CAUGHT: the exact shape the audit named — a remote read that no networking-API
+          # pattern matches.
+          printf 'let leaked = try Data(contentsOf: URL(string: "https://example.invalid/x")!)\n' > "$probe/ios/Leak.swift"
+          printf 'val leaked = java.net.URL("https://example.invalid/x").openStream().readBytes()\n' > "$probe/android/Leak.kt"
+          # Must be IGNORED: the legitimate local read that lives in ExportRunner today. If this
+          # ever starts matching, the lint has become a false-positive generator and the real fix
+          # will be to weaken it — which is exactly what this control is here to make visible.
+          printf 'let files = try Data(contentsOf: folder.appendingPathComponent("raw.csv"))\n' > "$probe/ios/Local.swift"
+          printf 'val files = java.io.File(outputDir, "raw.csv").readBytes()\n' > "$probe/android/Local.kt"
+
+          if ! grep -qE "$IOS_REMOTE_URL" "$probe/ios/Leak.swift"; then
+            echo "::error::the iOS remote-URL pattern no longer catches a remote Data(contentsOf:) — the §8.3 generation lint proves nothing"
+            fail=1
+          fi
+          if ! grep -qE "$AND_NET_API" "$probe/android/Leak.kt"; then
+            echo "::error::the Android networking pattern no longer catches java.net.URL(...).openStream() — the §8.3 generation lint proves nothing"
+            fail=1
+          fi
+          if grep -qE "$IOS_NET_API|$IOS_REMOTE_URL" "$probe/ios/Local.swift"; then
+            echo "::error::the iOS generation lint now flags a legitimate local-file Data(contentsOf:) — it would fail ExportRunner.encryptResult"
+            fail=1
+          fi
+          if grep -qE "$AND_NET_API|$AND_REMOTE_URL" "$probe/android/Local.kt"; then
+            echo "::error::the Android generation lint now flags a legitimate local File read"
+            fail=1
+          fi
+          rm -rf "$probe"
+
+          if [ "$fail" -eq 0 ]; then
+            echo "export generation is network-free on both platforms; the lint caught its remote-read probes and ignored its local-read probes"
+          fi
+          exit $fail
       - name: Insight template copy stays inside the wellness-language guardrails (ADR D-11)
         run: |
           python3 - <<'PY'

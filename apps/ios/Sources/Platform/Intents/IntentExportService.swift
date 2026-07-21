@@ -38,6 +38,10 @@ struct IntentExportService {
     /// property reads and nothing else changes.
     private var templates: ExportTemplateRepository { ExportTemplateRepository(env.database.main) }
     private var runs: ExportRunRepository { ExportRunRepository(env.database.main) }
+    /// EPIC-17. Read AND advanced by this service, so a `sinceLastRun` template fired from a
+    /// Shortcut takes the real delta instead of a fixed window — see `cursor(for:)` and
+    /// `advanceCursorIfDelta`.
+    private var cursors: ExportCursorRepository { ExportCursorRepository(env.database.main) }
 
     // MARK: - Template lookup
 
@@ -97,81 +101,104 @@ struct IntentExportService {
     /// error *and* an `ExportRun` row.
     func run(template: ExportTemplate) throws -> RunOutcome {
         let startedAt = env.now()
+        // Minted up front so the cursor this run may advance can name the ledger row that moved it
+        // (`ExportCursor.lastRunId`) — a watermark whose owning run is unidentifiable is a
+        // checkpoint nobody can audit.
+        let runId = ULID.newID()
 
         guard !template.requiresSensitiveConfirmation else {
-            record(templateId: template.id, startedAt: startedAt, outcome: .failedGeneration,
+            record(id: runId, templateId: template.id, startedAt: startedAt, outcome: .failedGeneration,
                    errorCode: .sensitiveConfirmationMissing, stage: .gathering,
                    destinationId: template.destinationId)
             throw IntentExportRefusal.sensitiveTemplateNeedsTheApp(templateId: template.id)
         }
 
-        let resolved = resolvedWindow(for: template, now: startedAt)
-        var scope = template.scope
-        scope.startDate = resolved.start
-        scope.endDate = resolved.end
+        let cursor = self.cursor(for: template)
+        let plan = ExportRunner.resolveRange(template.rangeRule, scope: template.scope,
+                                             cursor: cursor, now: startedAt)
 
         do {
-            let result = try env.exporter.run(scope: scope, format: template.format)
+            // A delta passes the ingested watermark (and the prior link) straight through to the
+            // runner, exactly as `runTemplate` does — same function, same arguments, same file.
+            let result = try env.exporter.run(
+                scope: plan.scope, format: template.format,
+                ingestedSince: plan.ingestedSince,
+                previousManifestSha: plan.ingestedSince == nil ? nil : cursor?.lastManifestSha?.hex)
             let files = Self.namedFiles(result.fileURLs, template: template,
-                                        start: resolved.start, end: resolved.end, now: startedAt)
-            record(templateId: template.id, startedAt: startedAt,
-                   // Zero rows is a successful answer to "is there anything to export", not a
-                   // failure — and it is recorded rather than skipped so an automation that
-                   // legitimately had nothing to do stays distinguishable from one that never ran.
-                   outcome: result.rowCount == 0 ? .skippedNoData : .success,
+                                        start: plan.ingestedSince ?? plan.scope.startDate,
+                                        end: plan.scope.endDate, now: startedAt)
+            // Zero rows is a successful answer to "is there anything to export", not a failure —
+            // and it is recorded rather than skipped so an automation that legitimately had nothing
+            // to do stays distinguishable from one that never ran.
+            let outcome: ExportOutcome = result.rowCount == 0 ? .skippedNoData : .success
+            let cursorAfter = advanceCursorIfDelta(template: template, plan: plan, result: result,
+                                                   outcome: outcome, runId: runId)
+            record(id: runId, templateId: template.id, startedAt: startedAt,
+                   outcome: outcome,
+                   // A `sinceLastRun` fallback rides a SUCCESS row as `.cursorMissing` — a note,
+                   // not a failure (`ExportOutcome.isFailure` excludes it) — so the notice below
+                   // is durable in Export Health rather than living only in the Shortcut's reply.
+                   // Mirrors `runTemplate`'s `noticeCode`.
+                   errorCode: plan.fellBackFromSinceLastRun ? .cursorMissing : nil,
                    jobId: result.job.id,
                    bytesWritten: Self.totalBytes(result.fileURLs),
                    manifestSha: Self.manifestDigest(result.fileURLs),
-                   destinationId: template.destinationId)
+                   destinationId: template.destinationId,
+                   cursorBefore: plan.cursorBefore, cursorAfter: cursorAfter)
             return RunOutcome(template: template, files: files, rowCount: result.rowCount,
-                              notice: resolved.notice)
+                              notice: plan.fellBackFromSinceLastRun
+                                  ? IntentStrings.sinceLastRunFallbackNotice : nil)
         } catch {
-            record(templateId: template.id, startedAt: startedAt, outcome: .failedGeneration,
+            record(id: runId, templateId: template.id, startedAt: startedAt, outcome: .failedGeneration,
                    errorCode: Self.errorCode(for: error), stage: .writing,
-                   destinationId: template.destinationId)
+                   destinationId: template.destinationId, cursorBefore: plan.cursorBefore)
             throw error
         }
     }
 
-    // MARK: - Range rules
+    // MARK: - Range rules + the incremental cursor (EPIC-17)
 
-    private struct ResolvedWindow {
-        let start: Date?
-        let end: Date?
-        let notice: LocalizedString?
-    }
-
-    /// Turn an `ExportRangeRule` into the concrete window this run uses.
+    /// The checkpoint this run resumes from, or nil for a template that has never taken a delta
+    /// **to this destination**.
     ///
-    /// `sinceLastRun` is the interesting case and it is deliberately not implemented as a delta:
-    /// a true incremental export reads `export_cursors.high_watermark`, which is a max
-    /// `ingested_at`, and nothing in the app writes that table yet (EPIC-17 owns the delta chain).
-    /// So the rule takes §12 EPIC-09's sanctioned no-cursor path — fall back to a bounded window
-    /// **with a notice** — rather than either exporting all of history silently or refusing a
-    /// template the user saved.
-    private func resolvedWindow(for template: ExportTemplate, now: Date) -> ResolvedWindow {
-        let tz = TimeZone.current.identifier
-        switch template.rangeRule {
-        case .fixed:
-            return ResolvedWindow(start: template.scope.startDate, end: template.scope.endDate,
-                                  notice: nil)
-        case .lastNDays(let days):
-            return ResolvedWindow(start: DayAttribution.addingDays(-max(1, days), to: now, tz: tz),
-                                  end: now, notice: nil)
-        case .allTime:
-            return ResolvedWindow(start: nil, end: nil, notice: nil)
-        case .sinceLastRun:
-            return ResolvedWindow(
-                start: DayAttribution.addingDays(-Self.sinceLastRunFallbackDays, to: now, tz: tz),
-                end: now,
-                notice: IntentStrings.sinceLastRunFallbackNotice)
-        }
+    /// Deliberately keyed on the SHARE SHEET, not on `template.destinationId`. A cursor is keyed
+    /// `(template, destination)` because each destination has its own independent chain, and this
+    /// run hands its artifacts to Shortcuts — it does not deliver to the folder or endpoint the
+    /// template may pin (that is `runTemplate`'s job). Reading the pinned destination's cursor here
+    /// would be the same silent desync in reverse: advancing it would tell the automation that data
+    /// reached a folder it was never sent to, and the automation's next delta would skip those rows
+    /// forever. So a Shortcut run continues the user-handoff chain — the same chain `runTemplate`
+    /// uses when the template's destination IS the share sheet, which is the default and the case
+    /// where "the Shortcut and the button behave identically" actually matters.
+    private func cursor(for template: ExportTemplate) -> ExportCursor? {
+        (try? cursors.cursor(templateId: template.id,
+                             destinationId: ExportDestination.shareSheetId)) ?? nil
     }
 
-    /// The window `sinceLastRun` falls back to. 30 days matches the Quick Export preset a user is
-    /// most likely to have in mind, and is short enough that the fallback cannot quietly become an
-    /// all-history export.
-    private static let sinceLastRunFallbackDays = 30
+    /// The two-phase commit (§9.5 discipline 2 / the DATA-08 parallel): move the watermark only
+    /// after the artifacts exist, and only to a value computed over the rows the file actually
+    /// contains (`result.maxIngestedAt`), never over the rows the query could have returned.
+    ///
+    /// The gates match `runTemplate`'s exactly, deliberately: a real delta (not the disclosed
+    /// no-cursor fallback), a `success` outcome (`skippedNoData` moves nothing, so a run with
+    /// nothing to send cannot close a window), and a non-nil watermark. `advance` is itself
+    /// forward-only, so a Shortcut firing out of order cannot walk the checkpoint backwards.
+    ///
+    /// Handing files to Shortcuts is treated as a completed delivery for the same reason
+    /// `runTemplate` treats a share-sheet delivery as one: BADAN's side of the handoff is done and
+    /// it cannot observe what the receiving app does next. What it must never do is claim the
+    /// handoff for a destination that never received anything — see `cursor(for:)`.
+    private func advanceCursorIfDelta(template: ExportTemplate, plan: ExportRunner.ResolvedRun,
+                                      result: ExportRunner.ExportResult,
+                                      outcome: ExportOutcome, runId: String) -> Date? {
+        guard outcome == .success, template.rangeRule == .sinceLastRun,
+              !plan.fellBackFromSinceLastRun, let watermark = result.maxIngestedAt else { return nil }
+        let sha = result.job.manifest?.checksums["bundle.json"].flatMap { ManifestDigest(hex: $0) }
+        _ = try? cursors.advance(templateId: template.id,
+                                 destinationId: ExportDestination.shareSheetId,
+                                 to: watermark, lastRunId: runId, manifestSha: sha, now: env.now())
+        return watermark
+    }
 
     // MARK: - Ledger
 
@@ -179,12 +206,18 @@ struct IntentExportService {
     /// single total, and `ExportRowCounts` is a per-kind breakdown — putting the total into any
     /// one of its buckets would be a fabricated breakdown in the one table that exists to be
     /// trusted. The total is recoverable from the linked `export_jobs` row.
-    private func record(templateId: String, startedAt: Date, outcome: ExportOutcome,
+    ///
+    /// `cursorBefore`/`cursorAfter` are recorded for the same reason `runTemplate` records them:
+    /// they are what makes a delta run reconstructable after the fact — which window it opened and
+    /// where it closed — and a delta whose window is only inferable from the artifact is a delta
+    /// nobody can audit.
+    private func record(id: String, templateId: String, startedAt: Date, outcome: ExportOutcome,
                         errorCode: ExportErrorCode? = nil, stage: ExportStage? = nil,
                         jobId: String? = nil, bytesWritten: Int? = nil,
-                        manifestSha: ManifestDigest? = nil, destinationId: String?) {
+                        manifestSha: ManifestDigest? = nil, destinationId: String?,
+                        cursorBefore: Date? = nil, cursorAfter: Date? = nil) {
         let run = ExportRun(
-            id: ULID.newID(), templateId: templateId, jobId: jobId,
+            id: id, templateId: templateId, jobId: jobId,
             // §9.5's `shortcut` trigger exists for exactly this caller: "an App Intent / Shortcut
             // ran it (device unlocked)". Never `scheduledOpportunistic` — that would claim BADAN's
             // own background substrate fired when in fact Shortcuts did.
@@ -192,6 +225,7 @@ struct IntentExportService {
             errorCode: errorCode,
             errorDetail: stage.map { ExportErrorDetail(stage: $0) },
             bytesWritten: bytesWritten, rowCounts: nil, destinationId: destinationId,
+            cursorBefore: cursorBefore, cursorAfter: cursorAfter,
             manifestSha256: manifestSha)
         // A ledger write that throws must not turn a successful export into a failed intent: the
         // user's file exists either way, and the alternative is telling them the export failed

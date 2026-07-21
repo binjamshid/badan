@@ -25,6 +25,17 @@ private enum BackupStrings {
         ar: "اختر نسخة احتياطية من بدن لفحصها ورؤية ما تحتويه تماماً — السجلات والقوالب المحفوظة "
             + "وما إذا كانت مشفّرة. يتحقق بدن من الملف قبل عرض أي شيء، ويرفض نسخة أنشأها إصدار أحدث "
             + "بدل استيرادها جزئياً.")
+    static let importHeader = LocalizedString(en: "Import", ar: "الاستيراد")
+    static let appleHealthImport = LocalizedString(en: "Import from Apple Health", ar: "استيراد من صحة Apple")
+    /// Entry-point copy only — it promises the *path* (same ingestion and matching as live sync) and
+    /// the undo, and leaves the precise limits of that matching to the import screen itself, where
+    /// `AHImportStrings.honesty` states them in full. Saying more than this here would be a claim
+    /// made where it cannot also be qualified.
+    static let importBlurb = LocalizedString(
+        en: "Bring history in from an Apple Health export.zip. It goes through the same ingestion "
+            + "and matching as live sync, and any import is one tap to undo.",
+        ar: "استورد السجل من ملف Apple Health export.zip. يمرّ عبر المسار نفسه والمطابقة نفسها "
+            + "المستخدَمة في المزامنة المباشرة، ويمكن التراجع عن أي استيراد بضغطة واحدة.")
     static let automationHeader = LocalizedString(en: "Automate", ar: "الأتمتة")
     static let automationBlurb = LocalizedString(
         en: "Run an export by voice, or at a time you choose, through the Shortcuts app. iOS "
@@ -36,12 +47,16 @@ private enum BackupStrings {
 
 /// Settings -> Backup & restore.
 ///
-/// Backup is export, which is real and complete. **Restore is not built yet** — the importer,
-/// `import_batches` (a table reserved since migration v1 and never used), and the file picker are
-/// the outstanding work, and this page says so plainly rather than showing a button that does
-/// nothing. See `docs/MONETIZATION.md` and the audit's stub sweep: an inert control on a data page
-/// is exactly the class of dishonesty this codebase keeps removing, and "Restore" that silently
-/// no-ops would be the worst instance of it — the user would believe their data was coming back.
+/// Backup is export, which is real and complete. **Restoring a BADAN backup is not built yet** —
+/// writing a `bundle.json`'s records back into the store is the outstanding work, and this page
+/// says so plainly rather than showing a button that does nothing. See `docs/MONETIZATION.md` and
+/// the audit's stub sweep: an inert control on a data page is exactly the class of dishonesty this
+/// codebase keeps removing, and "Restore" that silently no-ops would be the worst instance of it —
+/// the user would believe their data was coming back.
+///
+/// Importing an **Apple Health export** is a different, and real, path (plan §19): it has its own
+/// screen and it is the first live user of the `import_batches` machinery (a table reserved since
+/// migration v1). The backup-restore path can adopt the same batch staging when it lands.
 struct BackupRestoreSettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
 
@@ -56,6 +71,7 @@ struct BackupRestoreSettingsScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space6) {
                 backupSection
+                importSection
                 automationSection
                 restoreSection
             }
@@ -91,6 +107,26 @@ struct BackupRestoreSettingsScreen: View {
                 .buttonStyle(.plain)
             }
             LText(BackupStrings.backupBlurb)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Plan §19. The Apple Health archive importer — real, and the first user of the
+    /// `import_batches` machinery: it routes an `export.zip` through the same `IngestionPipeline`
+    /// live sync uses, so imported rows are deduped and provenanced identically, and the whole
+    /// import is undoable from its own screen.
+    private var importSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(BackupStrings.importHeader))
+            BadanCard {
+                NavigationLink { AppleHealthImportScreen() } label: {
+                    SettingsNavRowLabel(icon: "heart.text.square", title: BackupStrings.appleHealthImport)
+                }
+                .buttonStyle(.plain)
+            }
+            LText(BackupStrings.importBlurb)
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

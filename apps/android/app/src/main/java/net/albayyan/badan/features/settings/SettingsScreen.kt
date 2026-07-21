@@ -77,7 +77,9 @@ import net.albayyan.badan.domain.UnitProfileMode
  * confirm + a real file purge), the data & privacy note with links to Sources and Export, and
  * "Delete all data". A tab screen that owns its own header (there is no shared top bar for tabs).
  *
- * Notifications are absent by design until delivery exists — see [NotificationsSection].
+ * Notifications appear as EPIC-32's [NotificationsSettingsSection] (the classes that really are
+ * delivered); the older [NotificationsSection] below stays hidden because nothing delivers its
+ * four toggles.
  */
 @Composable
 fun SettingsScreen() {
@@ -110,7 +112,12 @@ fun SettingsScreen() {
             UnitsSection()
         }
         ModulesSection()
-        // Notifications are deliberately not shown on Android — see [NotificationsSection].
+        // EPIC-32. The budgeted decision classes (morning summary, wind-down, change notices,
+        // export health, water) now have real delivery on Android — channels, the
+        // `POST_NOTIFICATIONS` request flow and a WorkManager-backed schedule — so they get a real
+        // per-class opt-in surface. The OLD [NotificationsSection] stays hidden: its four toggles
+        // are the ones nothing delivers (see its doc).
+        NotificationsSettingsSection()
         SensitiveSection(onRequestPurge = { showPurgeConfirm = true })
         PrivacySection()
         // EPIC-18: preview & verify a backup file (writing back is not wired yet — see the section).
@@ -243,20 +250,22 @@ private fun ModulesSection() {
 // MARK: - Notifications
 
 /**
- * Not called today — see the call site in [SettingsScreen].
+ * Still not called today — see the call site in [SettingsScreen].
  *
- * All four of these toggles were wired to nothing. Android has no notification delivery
- * whatsoever: no scheduler, no channel, no `POST_NOTIFICATIONS` permission, no receiver — a
- * repo-wide search for any of them returns nothing. Each switch persisted a boolean no code
- * reads, under a hint promising "nudges at the times you've scheduled". A user could enable
- * medication reminders, believe their medication would be remembered for them, and never be
- * told otherwise. That is the most harmful shape a dead control can take in a health app.
+ * All four of these toggles were wired to nothing. Each switch persisted a boolean no code reads,
+ * under a hint promising "nudges at the times you've scheduled". A user could enable medication
+ * reminders, believe their medication would be remembered for them, and never be told otherwise.
+ * That is the most harmful shape a dead control can take in a health app.
  *
- * Hidden rather than deleted, following the pattern iOS's `notificationsSection` already
- * demonstrates for its own three unbuilt toggles: the profile fields stay, the UI makes no
- * promise the app cannot keep, and this composable is ready for the day a real scheduler exists.
- * Unhide it only alongside actual delivery — starting with medication reminders, which is the
- * one iOS ships.
+ * EPIC-32 built real delivery on Android — channels, the `POST_NOTIFICATIONS` request flow, a
+ * WorkManager-backed schedule and the `notification_deliveries` budget ledger — but for its OWN
+ * class registry, surfaced by [NotificationsSettingsSection]. These four are a different, older set
+ * (`morningNarrative`, `weeklyDigest`, `medicationReminders`, `dataPausedAlerts`), and nothing
+ * delivers any of them on Android: medication reminders in particular remain iOS-only standing
+ * parity debt. So this stays hidden rather than deleted, following the pattern iOS's own unbuilt
+ * toggles use: the profile fields stay, the UI makes no promise the app cannot keep, and this
+ * composable is ready for the day an Android medication scheduler exists. Unhide it only alongside
+ * that actual delivery.
  */
 @Suppress("UnusedPrivateMember")
 @Composable

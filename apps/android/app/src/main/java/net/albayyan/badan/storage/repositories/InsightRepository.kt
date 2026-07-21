@@ -90,6 +90,22 @@ class ReconciliationRepository(private val db: SqliteConnection) {
     fun recent(limit: Int = 50): List<ReconciliationDecision> =
         db.query("SELECT * FROM dedup_decisions ORDER BY decided_at DESC LIMIT ?;", listOf(limit.toLong())).map { read(it) }
 
+    /**
+     * Dedup decisions whose authority FLIPPED since [watermark] — a fresh suppression
+     * (`decided_at > watermark`) or a reversal (`reversed_at > watermark`) — for a delta export's
+     * `corrections[]` (§22.6 / EPIC-17). This is the subtle desync EPIC-17 closes: a delta that only
+     * adds rows silently corrupts a downstream store when a dedup decision reverses, because the row
+     * it holds as authoritative is now suppressed (or vice versa) and nothing in an add-only delta
+     * says so. Ordered by `id` for a deterministic, cross-platform-stable array; the caller maps each
+     * onto the current net `{record_id, suppressed_by, changed_at}`. Mirror of iOS
+     * `decisionsChangedSince`.
+     */
+    fun decisionsChangedSince(watermark: Long): List<ReconciliationDecision> =
+        db.query(
+            "SELECT * FROM dedup_decisions WHERE decided_at > ? OR reversed_at > ? ORDER BY id ASC;",
+            listOf(watermark, watermark),
+        ).map { read(it) }
+
     fun markReversed(id: String, at: Long) {
         db.run("UPDATE dedup_decisions SET reversed_at = ? WHERE id = ?;", listOf(at, id))
     }

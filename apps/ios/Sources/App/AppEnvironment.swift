@@ -42,6 +42,17 @@ final class AppEnvironment {
     /// surfaces (LogHub's Today card, the full Hydration screen) read one connection to `database.
     /// main`, and "where do logged drinks live?" is answerable from this dependency list.
     let hydration: HydrationRepository
+    /// Plan §19. Lineage for file imports (Apple Health archive): one `import_batches` row per
+    /// import, every imported measurement row stamped with its id, so an import is resumable and
+    /// undoable in one tap. Read by the Settings import surface and `makeAppleHealthImporter()`.
+    let importBatches: ImportBatchRepository
+    /// EPIC-32 (migration v8). The notification budget ledger — the `notification_deliveries` rows
+    /// the decision engine counts against to hold the ≤2/day non-med invariant across app opens and
+    /// process death. Value-free operational metadata, not health data (see the repository doc).
+    let notificationDeliveries: NotificationDeliveryRepository
+    /// EPIC-31 (migration v8). Periodic-report METADATA (`reports` rows). The rendered PDF is a
+    /// regenerable file; the row is derived and never a source of truth — see `ReportRepository`.
+    let reports: ReportRepository
 
     // Services
     let ingestion: IngestionPipeline
@@ -61,6 +72,11 @@ final class AppEnvironment {
     let derivationCoordinator: DerivationCoordinator
     let insightEngine: InsightEngine
     let exporter: ExportRunner
+    /// EPIC-31. The pure periodic-report builder (derived store → typed `ReportModel`) and the
+    /// service that persists a report's metadata + answers the substrate's "is a weekly report
+    /// due?". The PDF renderer is stateless (`ReportRenderer`) so it needs no wiring here.
+    let reportBuilder: ReportBuilder
+    let reportGeneration: ReportGenerationService
     /// EPIC-04. The background substrate: HealthKit observer wakes, `BGTaskScheduler` tasks, and
     /// the `background_runs` log. Also owns the ingest lock every sync path now goes through —
     /// see `BackgroundIngestBridge.ingestLock`.
@@ -171,6 +187,10 @@ final class AppEnvironment {
         self.profiles = ProfileRepository(main)
         self.routes = RouteRepository(main)
         self.hydration = HydrationRepository(main: main)
+        self.importBatches = ImportBatchRepository(main)
+        self.notificationDeliveries = NotificationDeliveryRepository(main)
+        let reportRepo = ReportRepository(main)
+        self.reports = reportRepo
         let backgroundRuns = BackgroundRunRepository(main)
         self.backgroundRuns = backgroundRuns
 
@@ -212,6 +232,16 @@ final class AppEnvironment {
                                      // DEFAULT export includes the user's drinks (notes withheld by
                                      // the writer's default redaction), never paywalled or omitted.
                                      hydration: hydration)
+
+        // EPIC-31. The builder is pure over the derived store (+ adherence counts, I7-safe); the
+        // service wraps it with the `reports` store and the "due weekly?" rule. The period timezone
+        // is the device's current zone at generation and is recorded on each model.
+        let reportBuilder = ReportBuilder(derivation: derivation, logging: logging)
+        self.reportBuilder = reportBuilder
+        let reportGeneration = ReportGenerationService(
+            builder: reportBuilder, reports: reportRepo, clock: clock, deviceId: deviceId,
+            timezone: { TimeZone.current.identifier })
+        self.reportGeneration = reportGeneration
 
         self.profile = (try? profiles.load()) ?? CustomizationProfile()
         self.onboardingComplete = UserDefaults.standard.bool(forKey: Self.onboardingKey)
@@ -268,7 +298,15 @@ final class AppEnvironment {
             templates: ExportTemplateRepository(main), destinations: ExportDestinationRepository(main),
             runs: ExportRunRepository(main), cursors: ExportCursorRepository(main),
             routes: RouteRepository(main),
-            deliverers: [FileFolderDestination(bookmarks: KeychainFolderBookmarkStore())])
+            // The registered delivery surface of this build, assembled in one place so "what can
+            // this build send an export to?" has a single answer. EPIC-20's REST deliverer is
+            // deliberately NOT in it — see `RESTDestinationAvailability` for the flag, the reason
+            // and everything that has to ship alongside it before it is.
+            deliverers: RESTDestinationAvailability.deliverers(
+                folderBookmarks: KeychainFolderBookmarkStore()),
+            // EPIC-17: the dedup journal, so a delta run emits suppression-flip `corrections[]`
+            // when a dedup decision reversed since the last cursor (the add-only desync guard).
+            reconciliation: reconciliation)
         let automationEngine = AutomationEngine(
             schedules: AutomationScheduleRepository(main),
             templates: ExportTemplateRepository(main),
@@ -279,7 +317,8 @@ final class AppEnvironment {
 
         self.background = BackgroundCoordinator(runs: backgroundRuns, clock: clock, ingest: bridge,
                                                 protectedData: ProtectedDataMonitor(),
-                                                automation: automationEngine)
+                                                automation: automationEngine,
+                                                reports: reportGeneration)
 
         applyLaunchOverrides()
     }
@@ -689,6 +728,189 @@ final class AppEnvironment {
     /// medication and is never told. See `MedicationReminderPlan.capped`.
     private(set) var remindersTruncatedCount: Int = 0
 
+    // MARK: - Decision-engine notifications (EPIC-32)
+
+    /// A deep link a tapped notification asked to open, waiting for the tab shell to consume it.
+    /// `@Observable` so `MainTabView` selects the destination tab the moment it is set, then clears
+    /// it. `nil` = nothing pending.
+    var pendingDeepLink: NotificationDeepLink?
+
+    /// Whether the user has enabled a given notification class. Meds keep the EXISTING
+    /// `medicationReminders` preference (so nothing about med reminders changes); every other class
+    /// reads the per-class opt-in map, which defaults every class OFF.
+    func isNotificationClassEnabled(_ cls: NotificationClass) -> Bool {
+        if cls.isMedication { return profile.notifications.medicationReminders }
+        return profile.notifications.classOptIn[cls.rawValue] ?? false
+    }
+
+    /// Route a tapped notification to its evidence surface (`MainTabView` observes `pendingDeepLink`).
+    func openDeepLink(_ link: NotificationDeepLink) { pendingDeepLink = link }
+
+    /// The default local fire hour for a time-based class. Constants (not magic literals at the
+    /// call site) so the schedule is legible and one place changes it.
+    static func defaultNotificationHour(_ cls: NotificationClass) -> Int {
+        switch cls {
+        case .morningReadinessSummary: return 8
+        case .eveningWindDown: return 21
+        case .hydration: return 15
+        default: return 9
+        }
+    }
+
+    /// The classes reconcile schedules ahead of time (a fixed local hour each day). The remaining
+    /// budgeted classes (deviation, export-health) are event-driven by design — they would be raised
+    /// at the moment they occur via `raiseDecisionNotification` — but no producer calls that seam
+    /// yet, which is why they are absent from `NotificationClass.userFacing` too.
+    private static let timeBasedClasses: [NotificationClass] =
+        [.morningReadinessSummary, .eveningWindDown, .hydration]
+
+    /// The next time `cls` should fire — the next occurrence of its default local hour.
+    static func nextDecisionFireDate(for cls: NotificationClass, after now: Date, calendar: Calendar) -> Date {
+        var components = DateComponents()
+        components.hour = defaultNotificationHour(cls)
+        components.minute = 0
+        return calendar.nextDate(after: now, matching: components, matchingPolicy: .nextTime) ?? now
+    }
+
+    /// A stable per-day identifier suffix so re-scheduling the same class+day replaces rather than
+    /// stacks a second request.
+    static func decisionDayKey(_ date: Date, calendar: Calendar) -> String {
+        let c = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    /// Bring the time-based decision notifications in line with the current preferences: schedule
+    /// each enabled class's next occurrence (subject to the ≤2/day budget, quiet hours, opt-in and
+    /// the 64-cap), and cancel any class the user has turned off. Idempotent — safe to call at every
+    /// launch. A no-op for a user with every class OFF (the default), and never prompts (uses
+    /// `isAuthorized()`); when notifications are not authorized it cancels rather than leaving stale
+    /// requests, mirroring `refreshMedicationReminders`.
+    func reconcileDecisionNotifications() async {
+        guard await NotificationScheduler.shared.isAuthorized() else {
+            await NotificationScheduler.shared.cancelAllDecisionNotifications()
+            return
+        }
+        for cls in Self.timeBasedClasses {
+            if isNotificationClassEnabled(cls) {
+                let fire = Self.nextDecisionFireDate(for: cls, after: now(), calendar: .current)
+                _ = await evaluateAndScheduleDecision(cls, fireDate: fire)
+            } else {
+                await NotificationScheduler.shared.cancelDecisionNotifications(cls)
+            }
+        }
+    }
+
+    /// Raise an event-driven decision notification (deviation, export-health) now, subject to the
+    /// same budget/opt-in/quiet-hours/cap gate. Returns the engine's verdict so a caller can log or
+    /// test it. The content is generic and value-free, so raising it leaks nothing onto the lock
+    /// screen.
+    ///
+    /// Nothing calls this yet — not production code, and not the test suite either, which covers the
+    /// pure engine's verdicts rather than this adapter. It is the seam a deviation detector or the
+    /// export-health surface will call. Its classes are correspondingly absent from
+    /// `NotificationClass.userFacing`; wire a producer and add the toggle in the same change.
+    @discardableResult
+    func raiseDecisionNotification(_ cls: NotificationClass, at fireDate: Date? = nil) async
+        -> NotificationDecisionEngine.Decision {
+        guard await NotificationScheduler.shared.isAuthorized() else { return .suppressedNotAuthorized }
+        return await evaluateAndScheduleDecision(cls, fireDate: fireDate ?? now())
+    }
+
+    /// The one place a decision notification is gated and, if allowed, scheduled + recorded. Reads
+    /// the live pending counts and the day's ledger count, asks the pure engine, and on `.scheduled`
+    /// reserves the ledger row that makes the budget survive the next app open BEFORE handing the
+    /// request to the OS. Idempotent per class+day via the ledger check.
+    ///
+    /// The write order is the whole point. The ≤2/day ceiling is a hard invariant, and the ledger is
+    /// the only thing that remembers it across process death — so a notification that reached the OS
+    /// without its row would let the next evaluation read a lower count and quietly deliver a third.
+    /// Reserving first makes the only possible failure a conservative one: a row with no
+    /// notification behind it costs the user a nudge, which is visible and self-corrects the next
+    /// day, where an unaccounted notification breaks an invariant nobody can observe breaking.
+    @discardableResult
+    private func evaluateAndScheduleDecision(_ cls: NotificationClass, fireDate: Date) async
+        -> NotificationDecisionEngine.Decision {
+        let calendar = Calendar.current
+        // Already committed for this class+day — don't stack a duplicate on a second evaluation.
+        // The opt-in is re-read rather than assumed: a class the user turned off after its row was
+        // written did NOT get scheduled by this call, so reporting `.scheduled` would name a verdict
+        // that never happened. (The already-written row keeps holding its budget slot until the
+        // class's cancel path releases it; that is the cancel path's job, not this one's.)
+        if notificationDeliveries.hasScheduled(cls, inDayOf: fireDate, calendar: calendar) {
+            return isNotificationClassEnabled(cls) ? .scheduled : .suppressedOptedOut
+        }
+
+        let counts = await NotificationScheduler.shared.pendingCounts()
+        // Read as plain values (not self-touching closures) so the pure engine stays free of any
+        // main-actor capture.
+        let enabled = isNotificationClassEnabled(cls)
+        let quiet = profile.notifications.quietHours
+        let context = NotificationDecisionEngine.Context(
+            calendar: calendar,
+            optedIn: { _ in enabled },
+            quietHours: { _ in quiet },
+            nonMedScheduledToday: notificationDeliveries.countBudgeted(inDayOf: fireDate, calendar: calendar),
+            pendingMedCount: counts.med,
+            pendingNonMedCount: counts.nonMed)
+
+        let decision = NotificationDecisionEngine.decide(.init(cls, fireDate: fireDate), in: context)
+        guard decision == .scheduled else {
+            // Record the suppression for diagnostics (it consumes no budget), matching Android, so
+            // "why didn't I get my morning summary?" is answerable from history. Best-effort: a
+            // failed diagnostic write must not change what the user experiences.
+            recordDecisionLedgerRow(cls, scheduledFor: fireDate, outcome: .suppressed)
+            return decision
+        }
+
+        // Reserve the budget slot first — see the note above on why the order is load-bearing.
+        let reserved: NotificationDelivery
+        do {
+            reserved = try notificationDeliveries.record(cls, scheduledFor: fireDate, outcome: .scheduled,
+                                                         now: now(), deviceId: deviceId)
+        } catch {
+            NotificationLog.logger.error(
+                "decision ledger reservation failed for \(cls.rawValue, privacy: .public); not scheduling: \(String(describing: error), privacy: .public)")
+            return .suppressedLedgerUnavailable
+        }
+
+        let identifier = cls.identifierPrefix + Self.decisionDayKey(fireDate, calendar: calendar)
+        await NotificationScheduler.shared.scheduleDecisionNotification(
+            cls, identifier: identifier, fireDate: fireDate, ledgerRowId: reserved.id,
+            language: language, calendar: calendar)
+        return decision
+    }
+
+    /// Append one ledger row, swallowing nothing silently: a failed write goes to the log so a
+    /// missing diagnostic row is inspectable rather than invisible. Only ever used for rows that
+    /// consume NO budget (`suppressed`) — the budget-consuming reservation is deliberately not
+    /// best-effort and lives inline above, where its failure changes the outcome.
+    private func recordDecisionLedgerRow(_ cls: NotificationClass, scheduledFor: Date,
+                                         outcome: NotificationOutcome) {
+        do {
+            try notificationDeliveries.record(cls, scheduledFor: scheduledFor, outcome: outcome,
+                                              now: now(), deviceId: deviceId)
+        } catch {
+            NotificationLog.logger.error(
+                "decision ledger write (\(outcome.rawValue, privacy: .public)) failed for \(cls.rawValue, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Close out a decision notification's reserved ledger row once the app has actually observed
+    /// the notification — a foreground presentation or a tap, routed here by
+    /// `NotificationForegroundDelegate`. The row id comes from the request's own `userInfo`, so this
+    /// closes the exact row that fired. Mirrors Android's `markNotificationDelivered`.
+    ///
+    /// Best-effort on purpose: the row already counts against the budget as `scheduled`, so a failed
+    /// transition loses a diagnostic distinction and nothing else.
+    func markNotificationDelivered(ledgerRowId: String, at date: Date) {
+        do {
+            try notificationDeliveries.markDelivered(id: ledgerRowId, at: date)
+        } catch {
+            NotificationLog.logger.error(
+                "marking a notification delivered failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
     // MARK: - Presentation mutations (persisted)
 
     /// Apply a settings change. Updates the in-memory profile immediately for instant UI
@@ -718,6 +940,14 @@ final class AppEnvironment {
         if previous.language != p.language && p.notifications.medicationReminders {
             Task { [weak self] in
                 await self?.refreshMedicationReminders()
+            }
+        }
+        // EPIC-32: decision notifications carry static, language-captured text too, so a language
+        // switch must re-render any that are scheduled. Reconcile re-schedules the enabled classes
+        // in the new language and is a no-op when none are on (the default).
+        if previous.language != p.language {
+            Task { [weak self] in
+                await self?.reconcileDecisionNotifications()
             }
         }
 
@@ -780,12 +1010,31 @@ final class AppEnvironment {
     }
 }
 
+extension AppEnvironment {
+    /// Construct the Apple Health archive importer (plan §19) with the composition root's live
+    /// collaborators. A factory, not a stored property, because an import is an occasional user-
+    /// initiated operation and the importer carries one import's mutable parse state — a fresh
+    /// instance per run keeps runs independent. Its `ingest` calls share the single main-DB
+    /// connection lock with live sync, so import and sync writes are serialized at that level.
+    func makeAppleHealthImporter() -> AppleHealthArchiveImporter {
+        AppleHealthArchiveImporter(pipeline: ingestion, batches: importBatches, registry: registry,
+                                   derivation: derivationCoordinator, clock: clock)
+    }
+}
+
 private enum HealthKitConnectLog {
     static let logger = Logger(subsystem: "net.binjamshid.badan", category: "HealthKitConnect")
 }
 
 private enum SyncLog {
     static let logger = Logger(subsystem: "net.binjamshid.badan", category: "ForegroundSync")
+}
+
+/// EPIC-32. The budget ledger's writes back the ≤2/day invariant, so a failed write is a fact worth
+/// surfacing rather than a `try?` away. Nothing logged here names a class's CONTENT or any health
+/// value — only the storage code of the notification class and the storage error.
+private enum NotificationLog {
+    static let logger = Logger(subsystem: "net.binjamshid.badan", category: "Notifications")
 }
 
 /// BUG-02: the pure debounce rule behind `AppEnvironment.syncIfStale()` — factored out so it's

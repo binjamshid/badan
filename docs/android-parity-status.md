@@ -67,6 +67,18 @@ Health Connect **background delivery / change-token incremental sync** (foregrou
 multi-device sync · vendor integrations · notifications · widgets/Wear · LLM insights · automated
 instrumented/Robolectric DB-pipeline tests (validated at runtime) · screenshot/AR-snapshot CI lane.
 
+**File-import gap (Apple Health ZIP importer, plan §19):** iOS ships an `export.zip` importer
+(`apps/ios/Sources/Platform/Import/`) that streams Apple's `export.xml` through the ordinary
+`IngestionPipeline`, so imported rows are deduped and provenanced exactly as live sync's are and
+the whole import is one-tap undoable through `import_batches`. **Android has no counterpart, by
+scope, not by oversight:** an Apple Health archive is an Apple-platform artifact, and Android's
+equivalent history path is Health Connect live sync, which is done. What Android is genuinely
+missing is a *generic* file importer (CSV/JSON, and a BADAN backup bundle) — a later item with its
+own design, not a port of this one. The reusable half of the iOS work is the pipeline seam
+(`IngestionPipeline.IngestOrigin.fileImport(batchId:)`) plus the `ImportBatchRepository` lineage/undo
+layer; both have direct Android equivalents to write when that item is scheduled, and the
+`import_batches` table already exists in the shared DDL on both platforms.
+
 **Screenshot coverage gap:** `docs/screenshots/android/` currently has 5 images covering Home
 (light + Arabic/RTL), Body, Log hub, and Data Sources only — Metric Detail, Anatomy sheet,
 Timeline, Symptom/Medication/Workout/Nutrition logging, Export, Insights, Onboarding, and Settings

@@ -79,6 +79,94 @@ final class ExportSchemaParityTests: XCTestCase {
         }
     }
 
+    // MARK: - EPIC-17: the two-run delta sequence (§22.6)
+
+    /// Both links of the sequence, byte for byte: a chain root carrying `is_delta`, both cursors, a
+    /// `deletions[]` tombstone and a live suppression flip, then a second delta that chains to it.
+    ///
+    /// Delta metadata is exactly the layer where a cross-platform divergence would be most
+    /// expensive and least visible: a consumer that checksums the file to verify the chain gets a
+    /// mismatch it cannot attribute, because each platform's file parses perfectly well on the
+    /// machine that wrote it.
+    ///
+    /// One test, not two, because the second link is a function of the first's exact bytes —
+    /// XCTest does not promise method order, and a regenerating run that wrote run 2 before run 1
+    /// would chain it to whatever was on disk from the previous release.
+    func testDeltaChainIsByteStableAcrossBothRuns() throws {
+        let root = try Self.renderDelta("run1", previousManifestSha: nil)
+        try Self.assertGolden(Self.deltaRun1, root)
+        // The chain link is sha256 of the ROOT BUNDLE'S BYTES — what a consumer recomputes from the
+        // delivered file. The assertion above has already established that those bytes ARE the
+        // golden file's, so this is sha256(delta-run1-v1.json) by construction, and it stays correct
+        // during a regenerating run where the file on disk is still the previous revision.
+        let rootSha = SHA256.hash(data: root).map { String(format: "%02x", $0) }.joined()
+        try Self.assertGolden(Self.deltaRun2, try Self.renderDelta("run2", previousManifestSha: rootSha))
+    }
+
+    /// The chain properties asserted against the golden FILES rather than the in-memory renders, so
+    /// they stay true of the artifacts a consumer actually receives: run 2's `previous_manifest_sha`
+    /// really is `sha256(delta-run1-v1.json)`, and run 2's window opens exactly where run 1's closed
+    /// (a gap means rows nobody ever exported; an overlap means rows delivered twice).
+    ///
+    /// This is the same walk `scripts/verify_export_chain.py` performs over a folder — restated
+    /// here so a suite run catches a broken chain without waiting for the CI step that runs it.
+    func testDeltaChainGoldensLinkAndTheirWindowsMeet() throws {
+        guard ProcessInfo.processInfo.environment["BADAN_REGENERATE_EXPORT_GOLDENS"] != "true" else { return }
+        func manifestOf(_ fileName: String) throws -> [String: Any] {
+            let object = try JSONSerialization.jsonObject(with: try Self.readVerified(fileName))
+            let root = try XCTUnwrap(object as? [String: Any])
+            return try XCTUnwrap(root["manifest"] as? [String: Any])
+        }
+        let rootSha = SHA256.hash(data: try Self.readVerified(Self.deltaRun1))
+            .map { String(format: "%02x", $0) }.joined()
+        let root = try manifestOf(Self.deltaRun1)
+        let second = try manifestOf(Self.deltaRun2)
+        XCTAssertEqual(root["is_delta"] as? Bool, true, "the root declares itself a delta")
+        XCTAssertTrue(root["previous_manifest_sha"] is NSNull,
+                      "the root has no predecessor, so its chain link is null — never a fabricated sha")
+        XCTAssertEqual(second["previous_manifest_sha"] as? String, rootSha,
+                       "previous_manifest_sha must equal sha256 of the prior bundle FILE")
+        XCTAssertEqual(root["cursor_after"] as? String, second["cursor_before"] as? String,
+                       "cursor_before[n] must equal cursor_after[n-1] — the chain verifier's rule")
+    }
+
+    // The EPIC-17 delta chain lives in its own subfolder so `scripts/verify_export_chain.py` can be
+    // pointed straight at it: the script treats every *.json in a folder as a candidate link, and
+    // bundle-v1.json (a full export, no predecessor) would read as a second chain root beside the
+    // real one.
+    private static let deltaInput = "delta-chain/delta-input-v1.json"
+    private static let deltaRun1 = "delta-chain/delta-run1-v1.json"
+    private static let deltaRun2 = "delta-chain/delta-run2-v1.json"
+
+    /// Renders one run of the shared delta fixture through this platform's writer. Reuses the same
+    /// `manifest`/`rawSamples` builders the full-bundle golden uses, so the delta path is exercised
+    /// through the same code the non-delta path is rather than through a parallel harness.
+    private static func renderDelta(_ runKey: String, previousManifestSha: String?) throws -> Data {
+        let input = try JSONSerialization.jsonObject(with: try readVerified(deltaInput))
+        let root = try XCTUnwrap(input as? [String: Any], "delta fixture is not a JSON object")
+        let run = try XCTUnwrap(root[runKey] as? [String: Any], "delta fixture has no `\(runKey)` object")
+        return try JSONBundleWriter().data(
+            manifest: try manifest(run),
+            rawSamples: try rawSamples(run),
+            intervalRecords: [], sessions: [], derivedValues: [], baselines: [],
+            symptoms: [], adherence: [], workouts: [], nutrition: [],
+            includeRoutes: false,
+            isDelta: try XCTUnwrap(run["isDelta"] as? Bool),
+            cursorBefore: try date(run, "cursorBeforeMillis"),
+            cursorAfter: try date(run, "cursorAfterMillis"),
+            previousManifestSha: previousManifestSha,
+            additionalDeletions: try array(run, "deletions").map { row in
+                ExportTombstone(recordId: try string(row, "recordId"), entity: try string(row, "entity"),
+                                deletedAt: try date(row, "deletedAtMillis"), tzId: try string(row, "tzId"))
+            },
+            corrections: try array(run, "corrections").map { row in
+                ExportSuppressionCorrection(recordId: try string(row, "recordId"),
+                                            suppressedBy: optionalString(row, "suppressedBy"),
+                                            changedAt: try date(row, "changedAtMillis"))
+            }
+        )
+    }
+
     // MARK: - The primitives the goldens are built out of
 
     /// Number formatting, pinned case by case.

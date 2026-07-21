@@ -84,12 +84,35 @@ struct ExportDeliveryRequest {
     /// the choice is visible to a fixture instead of being read off the device.
     let timeZone: TimeZone
 
+    /// EPIC-20 seam extension — the manifest's SHA-256, as the runner already computed it for the
+    /// `ExportRun` row (`ExportRun.manifestSha256`).
+    ///
+    /// A folder copy has no use for this and leaves it nil; a REST destination uses it as the
+    /// `Idempotency-Key`/`X-Badan-Manifest-Sha` so a retried POST of the *same* bundle replays
+    /// idempotently instead of double-ingesting (§22.7). It lives on the request rather than being
+    /// recomputed inside a destination for a reason the whole module rests on: a destination
+    /// **must not read a writer's internals**, and re-deriving the manifest sha would mean parsing
+    /// the manifest artifact — exactly the coupling `Sources/Export/Destinations/` is lint-checked
+    /// to never have (§8.3). When it is nil (no runner wiring yet, or an ad-hoc delivery), a REST
+    /// destination falls back to a deterministic digest of the delivered bytes, which has the same
+    /// idempotency property (stable per generated bundle) — see `RESTDestination.bundleSha`.
+    let manifestSha: ManifestDigest?
+
+    /// EPIC-20 seam extension — the export schema version this bundle was written against, for the
+    /// `X-Badan-Schema-Version` header (§22.7). Nil for a folder copy; a REST destination falls
+    /// back to `ExportSchema.version` (the single build-wide source of truth CI already pins across
+    /// both platforms) so the header is never silently absent.
+    let schemaVersion: String?
+
     init(destination: ExportDestination, artifacts: [ExportArtifact],
-         runDate: Date, timeZone: TimeZone = .current) {
+         runDate: Date, timeZone: TimeZone = .current,
+         manifestSha: ManifestDigest? = nil, schemaVersion: String? = nil) {
         self.destination = destination
         self.artifacts = artifacts
         self.runDate = runDate
         self.timeZone = timeZone
+        self.manifestSha = manifestSha
+        self.schemaVersion = schemaVersion
     }
 }
 

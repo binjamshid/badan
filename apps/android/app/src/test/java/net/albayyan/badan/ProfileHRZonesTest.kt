@@ -57,11 +57,13 @@ class ProfileHRZonesTest {
     }
 
     // v5 was the head until the audit-2026-07-20 baseline append-only fix added v6 (the
-    // `idx_baseline_identity` → `idx_baseline_lookup` swap), and v6 held until EPIC-38's hydration
-    // substrate added v7 (the five hydration tables). Bumped here as the routine maintenance that
-    // adding a migration entails; the v7 statements themselves are pinned in `HydrationTest`.
-    @Test fun v7IsTheHeadMainSchemaVersion() {
-        assertEquals(7, Schema.mainMigrations.maxOf { it.version })
+    // `idx_baseline_identity` → `idx_baseline_lookup` swap), v6 held until EPIC-38's hydration
+    // substrate added v7 (the five hydration tables), and v7 held until Phase-3A added v8 (the
+    // `reports` metadata table + the `notification_deliveries` budget ledger). Bumped here as the
+    // routine maintenance that adding a migration entails; the v8 statements themselves are pinned in
+    // `ReportsNotificationsMigrationTest`.
+    @Test fun v8IsTheHeadMainSchemaVersion() {
+        assertEquals(8, Schema.mainMigrations.maxOf { it.version })
     }
 
     // MARK: - HRZones JSON round-trip (what lands in the hr_zones column)

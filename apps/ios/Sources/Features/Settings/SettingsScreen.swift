@@ -539,6 +539,15 @@ enum SettingsStrings {
         en: "To get reminders, enable notifications for BADAN in iOS Settings.",
         ar: "لتصلك التذكيرات، فعّل الإشعارات لتطبيق بدن من إعدادات iOS.")
 
+    // EPIC-32 summaries & reminders section.
+    static let notifSummariesHeader = LocalizedString(en: "Summaries & reminders", ar: "الملخّصات والتذكيرات")
+    static let notifQuietHours = LocalizedString(en: "Quiet hours", ar: "ساعات الهدوء")
+    static let notifQuietHoursHint = LocalizedString(
+        en: "These notifications are held during this window.",
+        ar: "تُحجب هذه الإشعارات خلال هذه الفترة.")
+    static let notifQuietFrom = LocalizedString(en: "From", ar: "من")
+    static let notifQuietTo = LocalizedString(en: "To", ar: "إلى")
+
     static let depthChangeNotice = LocalizedString(
         en: "Applied — you'll see the change on Home and other screens.",
         ar: "تم التطبيق — سترى التغيير في الرئيسية وشاشات أخرى.")

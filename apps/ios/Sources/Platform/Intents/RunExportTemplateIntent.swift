@@ -59,8 +59,10 @@ struct RunExportTemplateIntent: AppIntent {
                 "files": env.format.integer(files.count),
                 "count": env.format.integer(outcome.rowCount),
             ]))
-            // A `sinceLastRun` fallback appends its notice so the user learns the window wasn't
-            // what the template literally asked for (see `IntentExportService.resolvedWindow`).
+            // A `sinceLastRun` run with NO checkpoint to resume from appends its notice, so the user
+            // learns the window wasn't what the template literally asked for. A `sinceLastRun` run
+            // that DID have a checkpoint takes the real delta and says nothing extra — there is
+            // nothing to disclose (see `IntentExportService.cursor(for:)`).
             let dialog = outcome.notice.map { "\(confirmation) \(env.s($0))" } ?? confirmation
             return .result(value: files, dialog: IntentDialog(appLanguage: dialog))
         } catch IntentExportRefusal.sensitiveTemplateNeedsTheApp {

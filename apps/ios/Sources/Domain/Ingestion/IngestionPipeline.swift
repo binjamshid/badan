@@ -41,6 +41,30 @@ final class IngestionPipeline {
         self.logging = logging
     }
 
+    /// What provenance a single `ingest` call stamps on every row it writes.
+    ///
+    /// Defaulted to `.liveSync` so every existing caller (foreground/background HealthKit sync,
+    /// the demo seed) is byte-identical to before this type existed. A file importer passes
+    /// `.fileImport(batchId:)` instead, which is the seam the pipeline's type doc promises: an
+    /// Apple Health archive routes its rows through this same `ingest`, deduped and provenanced
+    /// by the identical pass as live sync, but every row reads `ingestionPath = .import` (I1) and
+    /// carries a one-tap-undo `importBatchId` (the `batch_id` column, `idx_raw_batch`) so the
+    /// whole import is reversible via `import_batches` lineage. Derived rollups written inside the
+    /// same run keep `ingestionPath = .derived` regardless — they are recomputable, not imported.
+    struct IngestOrigin {
+        var ingestionPath: IngestionPath
+        var importBatchId: String?
+
+        /// Live HealthKit/Health Connect sync — the historical, and still default, behavior.
+        static let liveSync = IngestOrigin(ingestionPath: .platformStore, importBatchId: nil)
+
+        /// A file import (Apple Health export archive). Stamps `ingestionPath = .import` and the
+        /// batch id every row must carry for one-tap undo.
+        static func fileImport(batchId: String) -> IngestOrigin {
+            IngestOrigin(ingestionPath: .fileImport, importBatchId: batchId)
+        }
+    }
+
     /// New rows created this run, per family (derived rollups are excluded — they are a
     /// side effect for charts, not upstream facts). A clean re-ingest returns all zeros.
     struct IngestSummary {
@@ -60,7 +84,8 @@ final class IngestionPipeline {
         var suppressed: Int = 0
     }
 
-    func ingest(from port: HealthStorePort, range: HealthDateRange) throws -> IngestSummary {
+    func ingest(from port: HealthStorePort, range: HealthDateRange,
+                origin: IngestOrigin = .liveSync) throws -> IngestSummary {
         // (DATA-08) Phase 1: pull every payload from `port` BEFORE any write transaction is
         // open. HealthKit round-trips are real synchronous I/O (each bridges a completion-
         // handler query onto this thread via a semaphore — see `HealthKitAdapter`'s type doc);
@@ -99,7 +124,8 @@ final class IngestionPipeline {
         // progress is never mistaken for complete progress.
         let summary = try applyIngestBatched(descriptors: descriptors, samples: samples,
                                              intervals: intervals, sessionDTOs: sessionDTOs,
-                                             workoutDTOs: workoutDTOs, deletions: deletions)
+                                             workoutDTOs: workoutDTOs, deletions: deletions,
+                                             origin: origin)
 
         // (DATA-08) Phase 3: only persist the port's read cursor/anchor AFTER the write
         // transaction above has actually committed. Persisting eagerly (the old behavior) only
@@ -127,7 +153,8 @@ final class IngestionPipeline {
     private func applyIngestBatched(descriptors: [SourceDescriptor], samples: [SampleDTO],
                                     intervals: [IntervalDTO], sessionDTOs: [SessionDTO],
                                     workoutDTOs: [WorkoutDTO],
-                                    deletions: HealthStoreDeletions) throws -> IngestSummary {
+                                    deletions: HealthStoreDeletions,
+                                    origin: IngestOrigin) throws -> IngestSummary {
         let now = clock.now()
         var summary = IngestSummary()
 
@@ -158,13 +185,13 @@ final class IngestionPipeline {
 
         // (c) The big one on a first connect: a dense watch history is overwhelmingly raw samples.
         for batch in samples.badanChunked(Self.writeBatchSize) {
-            try measurements.transaction { summary.samples += try writeSamples(batch, now: now) }
+            try measurements.transaction { summary.samples += try writeSamples(batch, now: now, origin: origin) }
         }
 
         // (c) Interval aggregates — at most a few per metric per day, but batched on the same
         // rule so a wide backfill can't grow an unbounded transaction here either.
         for batch in intervals.badanChunked(Self.writeBatchSize) {
-            try measurements.transaction { summary.intervals += try writeIntervals(batch, now: now) }
+            try measurements.transaction { summary.intervals += try writeIntervals(batch, now: now, origin: origin) }
         }
 
         // (d) Episodes -> sessions (+ stages). Record which nights this run touched.
@@ -175,7 +202,7 @@ final class IngestionPipeline {
         var affectedNights = Set<String>()
         for batch in sessionDTOs.badanChunked(Self.writeBatchSize) {
             try measurements.transaction {
-                let (nights, written) = try writeSessions(batch, now: now)
+                let (nights, written) = try writeSessions(batch, now: now, origin: origin)
                 affectedNights.formUnion(nights)
                 summary.sessions += written
             }
@@ -189,7 +216,7 @@ final class IngestionPipeline {
         // `session_id`.
         for batch in workoutDTOs.badanChunked(Self.writeBatchSize) {
             try measurements.transaction {
-                let written = try writeWorkouts(batch, now: now)
+                let written = try writeWorkouts(batch, now: now, origin: origin)
                 summary.workouts += written.sessions
                 summary.routes += written.routes
             }
@@ -226,7 +253,7 @@ final class IngestionPipeline {
     /// begins on Tuesday is universally called "Tuesday night"; no equivalent convention makes a
     /// late run belong to Wednesday.
     private func writeWorkouts(_ workoutDTOs: ArraySlice<WorkoutDTO>,
-                               now: Date) throws -> (sessions: Int, routes: Int) {
+                               now: Date, origin: IngestOrigin) throws -> (sessions: Int, routes: Int) {
         var writtenSessions = 0
         var writtenRoutes = 0
         for dto in workoutDTOs {
@@ -245,7 +272,8 @@ final class IngestionPipeline {
                 detail: SessionDetail(workout: detail),
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                externalId: dto.externalId, measuredAt: dto.start,
-                                               tz: dto.tz, now: now, qualityFlags: dto.qualityFlags),
+                                               tz: dto.tz, now: now, origin: origin,
+                                               qualityFlags: dto.qualityFlags),
                 updatedAt: now, originDeviceId: deviceId)
             let isNew = try measurements.upsertSession(session)
             if isNew { writtenSessions += 1 }
@@ -258,7 +286,8 @@ final class IngestionPipeline {
             let ownerId = isNew ? session.id
                 : try measurements.session(externalId: dto.externalId, sourceId: dto.sourceId)?.id
             guard let ownerId else { continue }
-            if try writeRoute(routeDTO, sessionId: ownerId, workout: dto, now: now, repository: routes) {
+            if try writeRoute(routeDTO, sessionId: ownerId, workout: dto, now: now,
+                              repository: routes, origin: origin) {
                 writtenRoutes += 1
             }
         }
@@ -277,7 +306,7 @@ final class IngestionPipeline {
     /// a reduced version: it came from the same source, the same device, the same ingestion path
     /// and the same instant. Its points inherit that through `route_id` (see migration v4).
     private func writeRoute(_ routeDTO: RouteDTO, sessionId: String, workout: WorkoutDTO,
-                            now: Date, repository: RouteRepository) throws -> Bool {
+                            now: Date, repository: RouteRepository, origin: IngestOrigin) throws -> Bool {
         // Belt-and-braces: the adapter does not read routes without consent, so an
         // un-granted snapshot should be unreachable. It is checked anyway because this is the
         // last point before location data becomes rows on disk, and the cost of the check is
@@ -286,7 +315,8 @@ final class IngestionPipeline {
 
         let provenance = platformProvenance(sourceId: workout.sourceId, deviceId: workout.deviceId,
                                             externalId: routeDTO.externalId, measuredAt: workout.start,
-                                            tz: workout.tz, now: now, qualityFlags: workout.qualityFlags)
+                                            tz: workout.tz, now: now, origin: origin,
+                                            qualityFlags: workout.qualityFlags)
         let routeId = ULID.newID()
         let points = routeDTO.points.enumerated().map { index, p in
             RoutePoint(routeId: routeId, seq: index, latitude: p.latitude, longitude: p.longitude,
@@ -311,7 +341,7 @@ final class IngestionPipeline {
     }
 
     /// (c) Instant readings -> raw_samples (canonicalized, provenance stamped).
-    private func writeSamples(_ samples: ArraySlice<SampleDTO>, now: Date) throws -> Int {
+    private func writeSamples(_ samples: ArraySlice<SampleDTO>, now: Date, origin: IngestOrigin) throws -> Int {
         var written = 0
         for dto in samples {
             guard let def = registry.definition(dto.metricId) else { continue }
@@ -322,7 +352,8 @@ final class IngestionPipeline {
                 tzId: dto.tz,
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                 externalId: dto.externalId, measuredAt: dto.start,
-                                                tz: dto.tz, now: now, qualityFlags: dto.qualityFlags + flags),
+                                                tz: dto.tz, now: now, origin: origin,
+                                                qualityFlags: dto.qualityFlags + flags),
                 updatedAt: now, originDeviceId: deviceId)
             if try measurements.upsertRawSample(sample) { written += 1 }
         }
@@ -330,7 +361,7 @@ final class IngestionPipeline {
     }
 
     /// (c) Normalized aggregates -> interval_records.
-    private func writeIntervals(_ intervals: ArraySlice<IntervalDTO>, now: Date) throws -> Int {
+    private func writeIntervals(_ intervals: ArraySlice<IntervalDTO>, now: Date, origin: IngestOrigin) throws -> Int {
         var written = 0
         for dto in intervals {
             guard let def = registry.definition(dto.metricId) else { continue }
@@ -362,7 +393,8 @@ final class IngestionPipeline {
                 startAt: dto.start, endAt: dto.end, tzId: dto.tz, aggregation: dto.aggregation,
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                 externalId: dto.externalId, measuredAt: dto.start,
-                                                tz: dto.tz, now: now, qualityFlags: dto.qualityFlags + flags),
+                                                tz: dto.tz, now: now, origin: origin,
+                                                qualityFlags: dto.qualityFlags + flags),
                 updatedAt: now, originDeviceId: deviceId)
             if try measurements.upsertIntervalRecord(record) { written += 1 }
         }
@@ -372,7 +404,7 @@ final class IngestionPipeline {
     /// (d) Episodes -> sessions (+ stages). Returns the nights this batch touched, so the caller
     /// can reconcile each of them once after every session has landed.
     private func writeSessions(_ sessionDTOs: ArraySlice<SessionDTO>,
-                               now: Date) throws -> (nights: Set<String>, written: Int) {
+                               now: Date, origin: IngestOrigin) throws -> (nights: Set<String>, written: Int) {
         var affectedNights = Set<String>()
         var written = 0
         for dto in sessionDTOs {
@@ -386,7 +418,8 @@ final class IngestionPipeline {
                                       stageSummarySeconds: stageSummary(dto.stages)),
                 provenance: platformProvenance(sourceId: dto.sourceId, deviceId: dto.deviceId,
                                                externalId: dto.externalId, measuredAt: dto.start,
-                                               tz: dto.tz, now: now, qualityFlags: dto.qualityFlags),
+                                               tz: dto.tz, now: now, origin: origin,
+                                               qualityFlags: dto.qualityFlags),
                 updatedAt: now, originDeviceId: deviceId)
             let stages = dto.stages.enumerated().map { i, s in
                 SessionStage(sessionId: session.id, seq: i, stage: s.stage, startAt: s.start, endAt: s.end)
@@ -744,11 +777,19 @@ final class IngestionPipeline {
 
     // MARK: - Helpers
 
+    /// The embedded provenance for one raw/session/workout row. `origin` decides the ingestion
+    /// path and (for imports) the batch id — `.liveSync` reproduces the historical
+    /// `ingestionPath = .platformStore, importBatchId = nil` exactly, so this method's output is
+    /// unchanged for every sync caller. Named `platform`Provenance for continuity; the name now
+    /// means "an upstream-sourced row" (platform store OR file import), as opposed to the
+    /// `.derived` provenance the nightly rollups build.
     private func platformProvenance(sourceId: String, deviceId: String?, externalId: String,
                                     measuredAt: Date, tz: String, now: Date,
+                                    origin: IngestOrigin = .liveSync,
                                     qualityFlags: [QualityFlag] = []) -> Provenance {
-        Provenance(sourceId: sourceId, deviceId: deviceId, ingestionPath: .platformStore,
-                   externalId: externalId, measuredAt: measuredAt, measuredTimezone: tz,
+        Provenance(sourceId: sourceId, deviceId: deviceId, ingestionPath: origin.ingestionPath,
+                   externalId: externalId, importBatchId: origin.importBatchId,
+                   measuredAt: measuredAt, measuredTimezone: tz,
                    recordedAt: now, ingestedAt: now, qualityFlags: qualityFlags)
     }
 

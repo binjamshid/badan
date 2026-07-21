@@ -91,6 +91,36 @@
     -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!--
+      EPIC-32. From API 33 (Tiramisu) this is a runtime permission that starts DENIED, so without it
+      declared here every notification BADAN posts is silently dropped on a modern device — which is
+      how the EPIC-15 automation-pause notice behaved until now. Requested contextually, from the
+      Settings → "Summaries & reminders" toggles only (NotificationsSettingsSection.kt), never at
+      launch: the ask is the direct consequence of a user opting a class in, and a refusal leaves
+      every class off rather than persisting an opt-in the app cannot honour. Everything BADAN posts
+      is local, generic and value-free — no health value ever appears on a lock screen.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      android.permission.INTERNET is DELIBERATELY ABSENT, and this note exists so its absence reads
+      as a decision rather than an oversight.
+
+      EPIC-20's `export/destinations/RestDestination.kt` is the only code in the app that would ever
+      open a socket, and it is gated OFF at the composition root by
+      `RestDestinationAvailability.ENABLED` — no deliverer for `restApi` is registered and no screen
+      creates a `restApi` destination row, so nothing in this build can reach the network. Declaring
+      the permission anyway would put a capability on the Data Safety form that no code path
+      exercises: a reviewer (and a user reading the Play listing) would be told this app can transmit
+      their health data, which in this build is not true.
+
+      This is also what keeps the shipped privacy policy honest. docs/PRIVACY_POLICY.md and
+      docs/legal/privacy.html state in the present tense that there is "no way to point an export at
+      a server" and that BADAN "transmits nothing off the device". Those sentences and this manifest
+      have to change in the SAME release; see `RestDestinationAvailability` for the full checklist of
+      what must ship together before this line comes back.
+    -->
+
     <!-- Provider visibility so getSdkStatus() can detect Health Connect on Android 13 and below. -->
     <queries>
         <package android:name="com.google.android.apps.healthdata" />

@@ -12,6 +12,7 @@ import net.albayyan.badan.features.export.ExportOutcomeCopy
 import net.albayyan.badan.features.export.ExportRange
 import net.albayyan.badan.features.export.HealthChipStyle
 import net.albayyan.badan.features.export.QuickRange
+import net.albayyan.badan.features.export.builderDeltaOnlyFor
 import net.albayyan.badan.features.export.builderRangeFor
 import net.albayyan.badan.features.export.builderRangeRule
 import net.albayyan.badan.features.export.endOfDayBound
@@ -109,8 +110,16 @@ class ExportSurfacesTest {
             ExportRange.CUSTOM,
             builderRangeFor(ExportRangeRule.Fixed, ExportScope(startDate = now - day, endDate = now)),
         )
-        // A delta rule can't be represented by the builder — it must widen to ALL, never narrow.
-        assertEquals(ExportRange.ALL, builderRangeFor(ExportRangeRule.SinceLastRun, ExportScope()))
+        // EPIC-17: a delta IS representable now — by the builder's delta switch, not by a range
+        // segment. It must round-trip through both halves of the prefill, or editing a delta
+        // template silently rewrites its rule (which is exactly what saving one used to do).
+        assertEquals(ExportRangeRule.SinceLastRun, builderRangeRule(ExportRange.LAST30, deltaOnly = true))
+        assertTrue(builderDeltaOnlyFor(ExportRangeRule.SinceLastRun))
+        assertFalse(builderDeltaOnlyFor(ExportRangeRule.AllTime))
+        // The segment a delta prefills is only its fallback if the user turns the switch off, and
+        // it must be the runner's own no-cursor window. ALL here would turn an incremental template
+        // into a full-history export on a single toggle.
+        assertEquals(ExportRange.LAST30, builderRangeFor(ExportRangeRule.SinceLastRun, ExportScope()))
     }
 
     // MARK: - Template run-scope resolution (EPIC-09)

@@ -86,29 +86,48 @@ struct MainTabView: View {
     /// `MainTabView()` bare keep compiling unchanged.
     var showSampleDataBanner: Bool = false
 
+    /// EPIC-32: the selected tab. The `TabView` was previously uncontrolled (defaulted to the
+    /// first tab); this binding preserves that (starts on Today) and additionally lets a tapped
+    /// notification's deep link select the destination tab. Manual tab taps still work unchanged.
+    @State private var selectedTab: MainTab = .today
+
     var body: some View {
         // Stable accessibilityIdentifiers on the five tabs anchor future UI tests to the
         // primary navigation without depending on (localized) visible labels. FEAT-300.
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack { HomeScreen() }
                 .tabItem { Label(env.s(Loc.tabToday), systemImage: "sun.max.fill") }
                 .accessibilityIdentifier("tab.today")
+                .tag(MainTab.today)
 
             NavigationStack { BodyScreen() }
                 .tabItem { Label(env.s(Loc.tabBody), systemImage: "figure.stand") }
                 .accessibilityIdentifier("tab.body")
+                .tag(MainTab.body)
 
             NavigationStack { LogHubScreen() }
                 .tabItem { Label(env.s(Loc.tabLog), systemImage: "plus.circle.fill") }
                 .accessibilityIdentifier("tab.log")
+                .tag(MainTab.log)
 
             NavigationStack { InsightsScreen() }
                 .tabItem { Label(env.s(Loc.tabInsights), systemImage: "sparkles") }
                 .accessibilityIdentifier("tab.insights")
+                .tag(MainTab.insights)
 
             NavigationStack { SettingsScreen() }
                 .tabItem { Label(env.s(Loc.tabSettings), systemImage: "gearshape.fill") }
                 .accessibilityIdentifier("tab.settings")
+                .tag(MainTab.settings)
+        }
+        // EPIC-32: a tapped notification sets `env.pendingDeepLink`; select its tab and clear it.
+        // Deep links resolve to the destination tab (the evidence surface's top-level home) — see
+        // `NotificationDeepLink.tab`.
+        .onChange(of: env.pendingDeepLink) { _, link in
+            if let link {
+                selectedTab = link.tab
+                env.pendingDeepLink = nil
+            }
         }
         // STUB-01/COMP-06: `safeAreaInset` on the `TabView` itself places the banner directly
         // above the tab bar (each tab's own content gets the matching bottom inset reserved

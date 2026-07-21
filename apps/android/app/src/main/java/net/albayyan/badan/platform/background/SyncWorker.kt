@@ -86,6 +86,35 @@ class SyncWorker(
             0
         }
 
+        // EPIC-31: generate every weekly report that is due — the last completed ISO week if it has
+        // none yet, plus the bounded gap backfill `ReportTrigger` returns when a run of wakes was
+        // missed entirely. Like the
+        // automation step above it reads only already-stored data, so it runs before the
+        // Health-Connect eligibility gate and ONLY on the periodic wake — a user tapping "sync now"
+        // is asking for their data, not for a report to be produced behind them. It is deliberately
+        // not allowed to fail the wake: a report is a regenerable rollup and the Reports screen can
+        // always build one on demand, so a failure here must not cost the user their sync. Nothing
+        // is written to the substrate row for it — no `BackgroundWorkDone` field fits "reports
+        // generated" and inventing one would be a schema change for a diagnostic.
+        if (!userTriggered) {
+            runCatching { env.reportGeneration.generateDueWeekly(env.clock.now()) }
+        }
+
+        // EPIC-32: re-arm the budgeted decision notifications. Each enabled class is scheduled as a
+        // ONE-SHOT piece of work, so once it fires nothing else would arm the next day's — a user
+        // who opted into the morning summary would receive it once and then hear nothing until they
+        // happened to relaunch the app. Riding this wake (as EPIC-15's automations and EPIC-31's
+        // reports already do) keeps the daily cadence going without a second schedule of its own.
+        //
+        // Runs on the periodic wake only — a user tapping "sync now" is asking for their data, not
+        // for BADAN to re-evaluate what to notify them about. Blocking by design: work handed to a
+        // background scope here can be lost when the worker's process is torn down. It is idempotent
+        // per class+day (the ledger), needs no Health Connect, is a no-op for a user with every
+        // class OFF (the default), and never prompts for permission. Not allowed to fail the wake.
+        if (!userTriggered) {
+            runCatching { env.reconcileDecisionNotificationsBlocking() }
+        }
+
         // Deliberately writes no run row and reports success. Two reasons, and the first is a data
         // bug rather than tidiness: `syncHealthConnect` purges the demo seed on its first real
         // ingest, so letting this run for a user who has never connected would silently delete the

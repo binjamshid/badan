@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Search
@@ -241,6 +242,7 @@ fun BodyScreen() {
                     BodyToolsCard(
                         showAllMetrics = showAllMetrics,
                         onToggleAllMetrics = { showAllMetrics = !showAllMetrics },
+                        onReports = { nav.push(Route.Reports) },
                         onSources = { nav.push(Route.Sources) },
                         onExport = { nav.push(Route.Export) },
                         onTimeline = { nav.push(Route.Timeline) },
@@ -350,10 +352,14 @@ private fun pillarStatus(pillar: BodyPillar): Pair<ChipStatus, LocalizedString> 
 
 // MARK: - Repository tools
 
+/** EPIC-31. Local rather than in `Loc` for the same reason the two headers above are. */
+private val bodyToolReports = LocalizedString(en = "Reports", ar = "التقارير")
+
 @Composable
 private fun BodyToolsCard(
     showAllMetrics: Boolean,
     onToggleAllMetrics: () -> Unit,
+    onReports: () -> Unit,
     onSources: () -> Unit,
     onExport: () -> Unit,
     onTimeline: () -> Unit,
@@ -364,6 +370,14 @@ private fun BodyToolsCard(
             title = Loc.allMetrics,
             trailing = if (showAllMetrics) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
             onClick = onToggleAllMetrics,
+        )
+        BodyToolDivider()
+        // EPIC-31: weekly/monthly reports, beside the other read/export tools.
+        BodyToolRow(
+            icon = Icons.Filled.Description,
+            title = bodyToolReports,
+            trailing = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            onClick = onReports,
         )
         BodyToolDivider()
         BodyToolRow(

@@ -1,0 +1,180 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://badan.albayyan.net/contracts/report_model.schema.json",
+  "title": "BADAN Report Model",
+  "description": "The typed, language-neutral model a periodic (weekly/monthly) report is built from (EPIC-31). The shared shape both platforms produce: iOS `ReportBuilder.swift`/`ReportModel.swift` and Android `ReportBuilder.kt`/`ReportModel.kt` decode/encode to this schema. It is WHOOP's Performance Assessment, transparent edition — every claim (a metric summary, a notable change, or the adherence roll-up) carries the ids of the derived-value / adherence rows it rests on, so the report can always answer 'where did this number come from' by resolving those ids back to real rows. The model is numeric and evidence-bearing, NEVER prose: the localized, wellness-safe sentences live in the renderer, so a model snapshot fixture pins the numbers and refs, not any wording. Determinism (see `sha256`): given the same period and the same underlying rows, `ReportBuilder` reproduces an identical model, which is what lets a rendered PDF be verified against a re-derivation and never be a source of truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "periodKey",
+    "periodKind",
+    "periodStart",
+    "periodEnd",
+    "timezone",
+    "generatedAt",
+    "algorithmVersionId",
+    "hasSufficientData",
+    "sections",
+    "sha256"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version of this report model. Bumped when the shape changes; the report-building algorithm version (`algorithmVersionId`) is a separate axis (the method can change without the shape changing, and vice versa)."
+    },
+    "periodKey": {
+      "type": "string",
+      "pattern": "^(week:\\d{4}-W\\d{2}|month:\\d{4}-\\d{2})$",
+      "description": "The report's period in the textual, sortable, language-neutral form the rest of the schema uses for period keys — an ISO week (`week:2026-W29`) or a calendar month (`month:2026-07`). Matches the `reports.period_key` column (migration v8)."
+    },
+    "periodKind": {
+      "type": "string",
+      "enum": ["week", "month"],
+      "description": "Whether this is a weekly or monthly report. Redundant with the prefix of `periodKey` and kept explicit so a consumer need not parse the key."
+    },
+    "periodStart": {
+      "type": "integer",
+      "description": "Epoch millis (UTC) of the start of the first local day in the period, in `timezone`. Inclusive."
+    },
+    "periodEnd": {
+      "type": "integer",
+      "description": "Epoch millis (UTC) of the start of the local day AFTER the last day in the period, in `timezone`. Exclusive — the period is [periodStart, periodEnd)."
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA timezone id the period's days were resolved in. Days are attributed in the timezone at measurement, so this records which zone framed the week/month."
+    },
+    "generatedAt": {
+      "type": "integer",
+      "description": "Epoch millis (UTC) this model was built. Operational metadata — it is DELIBERATELY EXCLUDED from `sha256`, so regenerating an unchanged period at a different instant yields the same content hash."
+    },
+    "algorithmVersionId": {
+      "type": "string",
+      "description": "The report-building algorithm identity that produced this model, e.g. `report.periodic@1.0.0`. Written to `reports.algorithm_version_id`; part of a report's identity because regenerating under a NEW version is a different report, not a replacement."
+    },
+    "hasSufficientData": {
+      "type": "boolean",
+      "description": "False for an honest empty period — a week/month with no derived scores and no adherence produces a valid model with `hasSufficientData=false` and (typically) no sections, which the renderer shows as 'not enough logged this week', never a fabricated or crashing report."
+    },
+    "sections": {
+      "type": "array",
+      "description": "The sections present, in a stable order (sleep, effort, readiness, adherence, changes). A section is present only when it has content; `reports.sections_included` is exactly `sections[].kind`. An empty period legitimately has zero sections.",
+      "items": { "$ref": "#/definitions/section" }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase-hex SHA-256 of the model's CONTENT (everything except `generatedAt` and `sha256` itself), computed over a canonical encoding with doubles rounded to a fixed precision. The row's integrity anchor: because the builder is deterministic, a rendered artifact is trustworthy iff re-deriving the model reproduces this hash. Deterministic within a platform (stable across runs); not required to match byte-for-byte across platforms, since each device stores its own report rows."
+    }
+  },
+  "definitions": {
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "metrics", "changes"],
+      "description": "One report section. A uniform shape across kinds so the section set can grow without a schema break: a score section populates `metrics`; the changes section populates `changes`; the adherence section populates `adherence`. The fields not relevant to a given kind are empty/absent.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["sleep", "effort", "readiness", "adherence", "changes"],
+          "description": "Which section this is."
+        },
+        "metrics": {
+          "type": "array",
+          "description": "Per-metric summaries for a score section (sleep/effort/readiness). Empty for adherence/changes.",
+          "items": { "$ref": "#/definitions/metricSummary" }
+        },
+        "changes": {
+          "type": "array",
+          "description": "Notable changes for the `changes` section — the score metrics whose period-over-period shift crossed the published threshold. Empty for every other section.",
+          "items": { "$ref": "#/definitions/changeItem" }
+        },
+        "adherence": {
+          "description": "The adherence roll-up for the `adherence` section; absent otherwise.",
+          "oneOf": [{ "$ref": "#/definitions/adherenceSummary" }, { "type": "null" }]
+        }
+      }
+    },
+    "metricSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metricId", "unit", "count", "direction", "evidence"],
+      "description": "A claim about one metric over the period: how many days had a value, the central/extreme values, and the shift versus the prior period. Every field a reader could question is backed by `evidence`.",
+      "properties": {
+        "metricId": { "type": "string", "description": "Canonical metric id (e.g. `sleep.performance`, `effort.day`, `readiness.score`)." },
+        "unit": { "type": "string", "description": "Unit of the values (e.g. `score_0_100`)." },
+        "count": { "type": "integer", "minimum": 0, "description": "Number of days in the period that had a derived value for this metric." },
+        "mean": { "type": ["number", "null"], "description": "Mean over the period's days; null when `count` is 0." },
+        "min": { "type": ["number", "null"], "description": "Minimum daily value; null when `count` is 0." },
+        "max": { "type": ["number", "null"], "description": "Maximum daily value; null when `count` is 0." },
+        "latest": { "type": ["number", "null"], "description": "Most recent daily value in the period; null when `count` is 0." },
+        "deltaVsPrior": { "type": ["number", "null"], "description": "mean(this period) − mean(prior period), or null when either period lacks enough days to compare." },
+        "direction": { "$ref": "#/definitions/trendDirection" },
+        "evidence": {
+          "type": "array",
+          "description": "The rows this summary is computed from. Non-empty whenever `count > 0`; each ref resolves to a real derived-value row.",
+          "items": { "$ref": "#/definitions/evidenceRef" }
+        }
+      }
+    },
+    "changeItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metricId", "currentMean", "priorMean", "deltaAbs", "direction", "evidence"],
+      "description": "A notable period-over-period change for one metric. Present only when the shift crossed the published threshold, so this section is the 'what changed' highlight, not a repeat of every metric.",
+      "properties": {
+        "metricId": { "type": "string" },
+        "currentMean": { "type": "number", "description": "Mean over this period." },
+        "priorMean": { "type": "number", "description": "Mean over the prior period." },
+        "deltaAbs": { "type": "number", "description": "currentMean − priorMean." },
+        "deltaPct": { "type": ["number", "null"], "description": "Relative change (deltaAbs / priorMean), or null when priorMean is 0." },
+        "direction": { "$ref": "#/definitions/trendDirection" },
+        "evidence": {
+          "type": "array",
+          "description": "The derived-value rows from BOTH periods this change rests on.",
+          "items": { "$ref": "#/definitions/evidenceRef" }
+        }
+      }
+    },
+    "adherenceSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taken", "late", "skipped", "logged", "evidence"],
+      "description": "Medication-adherence roll-up for the period. COUNTS ONLY — no medication names, dosages, or any other sensitive content, so this aggregate does not carry the sensitive-plus namespace's contents across into the report artifact. Skip-with-reason is counted equally to taken (non-punitive by design).",
+      "properties": {
+        "taken": { "type": "integer", "minimum": 0, "description": "Doses marked taken." },
+        "late": { "type": "integer", "minimum": 0, "description": "Doses marked late." },
+        "skipped": { "type": "integer", "minimum": 0, "description": "Doses marked skipped (with or without a reason)." },
+        "logged": { "type": "integer", "minimum": 0, "description": "Total adherence events logged in the period (taken + late + skipped)." },
+        "adherenceRate": { "type": ["number", "null"], "description": "(taken + late) / logged, in [0,1]; null when `logged` is 0." },
+        "evidence": {
+          "type": "array",
+          "description": "The adherence-event rows this roll-up counts. Ids only (ULIDs), never event content.",
+          "items": { "$ref": "#/definitions/evidenceRef" }
+        }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "description": "A pointer to a real row this report claim rests on — the transparency contract. `id` is a ULID that resolves in the store; nothing about the row's content is copied here.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["derivedValue", "adherenceEvent", "baseline"],
+          "description": "Which store the `id` resolves in."
+        },
+        "id": { "type": "string", "description": "The row's ULID." },
+        "periodKey": { "type": ["string", "null"], "description": "For a derived-value ref, the day period key it was read at (e.g. `day:2026-07-13`); null otherwise." }
+      }
+    },
+    "trendDirection": {
+      "type": "string",
+      "enum": ["up", "down", "flat", "insufficient"],
+      "description": "The direction of a period-over-period shift: `up`/`down`/`flat` when comparable, `insufficient` when either period lacked enough days. Never a value judgement — the renderer maps direction to wellness-safe, neutral copy."
+    }
+  }
+}

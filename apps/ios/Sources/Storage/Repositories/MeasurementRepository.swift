@@ -27,6 +27,17 @@ final class MeasurementRepository {
     /// The `DO UPDATE SET` clause also refreshes `measured_at`/`recorded_at` (DATA-12) —
     /// mirroring `upsertIntervalRecord`'s OPT-170 fix — so a re-ingest with a corrected
     /// measured/recorded timestamp isn't silently dropped.
+    ///
+    /// It also carries `deleted_at` across, which is what makes a tombstone REVIVABLE. Two callers
+    /// depend on that and neither worked without it. `IngestionPipeline.applyIngestBatched` applies
+    /// upstream deletions before the batch's writes precisely so a row both deleted and re-delivered
+    /// in one sync "ends up live rather than stuck soft-deleted" (BUG-10a) — true only if the write
+    /// clears the flag the delete just set. And `ImportBatchRepository.undo` now tombstones an
+    /// import's rows instead of hard-deleting them (so the delta carries the removal), which would
+    /// make a re-import of the same archive permanently invisible if the upsert could not un-delete.
+    /// The value is `excluded.deleted_at`, not a hardcoded NULL: a caller writing an already-deleted
+    /// row (re-persisting a struct read back from storage) keeps it deleted rather than silently
+    /// resurrecting it.
     @discardableResult
     func upsertRawSample(_ s: RawSample) throws -> Bool {
         let wonId = try db.query("""
@@ -39,7 +50,7 @@ final class MeasurementRepository {
               original_unit=excluded.original_unit, start_at=excluded.start_at, end_at=excluded.end_at,
               tz_id=excluded.tz_id, measured_at=excluded.measured_at, recorded_at=excluded.recorded_at,
               ingested_at=excluded.ingested_at, quality_flags=excluded.quality_flags,
-              updated_at=excluded.updated_at
+              updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
             RETURNING id;
             """,
             [.text(s.id), .text(s.metricId), .real(s.value), .text(s.unit),
@@ -66,7 +77,8 @@ final class MeasurementRepository {
     /// also refreshes `start_at`/`end_at`/`tz_id`/`measured_at`/`recorded_at` — the previous
     /// UPDATE path only touched `value`/`unit`/`coverage`, silently dropping a corrected time
     /// span or provenance timestamp on re-ingest (OPT-170). See `upsertRawSample` for how the
-    /// `RETURNING id` comparison determines insert vs. update.
+    /// `RETURNING id` comparison determines insert vs. update, and for why `deleted_at` is carried
+    /// across (a tombstoned row must be revivable by a re-ingest or a re-import).
     @discardableResult
     func upsertIntervalRecord(_ r: IntervalRecord) throws -> Bool {
         let wonId = try db.query("""
@@ -77,7 +89,8 @@ final class MeasurementRepository {
             ON CONFLICT(metric_id, external_id, source_id) WHERE external_id IS NOT NULL DO UPDATE SET
               value=excluded.value, unit=excluded.unit, start_at=excluded.start_at, end_at=excluded.end_at,
               tz_id=excluded.tz_id, coverage=excluded.coverage, measured_at=excluded.measured_at,
-              recorded_at=excluded.recorded_at, ingested_at=excluded.ingested_at, updated_at=excluded.updated_at
+              recorded_at=excluded.recorded_at, ingested_at=excluded.ingested_at, updated_at=excluded.updated_at,
+              deleted_at=excluded.deleted_at
             RETURNING id;
             """,
             [.text(r.id), .text(r.metricId), .real(r.value), .text(r.unit), .date(r.startAt),
@@ -138,6 +151,9 @@ final class MeasurementRepository {
     /// including the partial-index predicate — SQLite requires an exact match between an
     /// `ON CONFLICT` target and a real unique index/constraint, mirroring the exact-match
     /// requirement already noted on this table's other partial indexes.
+    ///
+    /// `deleted_at` is carried across for the reason `upsertRawSample` documents: a tombstoned row
+    /// must be revivable by a re-ingest or a re-import, or the tombstone becomes permanent.
     @discardableResult
     func upsertSession(_ s: Session, stages: [SessionStage] = []) throws -> Bool {
         let wonId = try db.query("""
@@ -151,7 +167,7 @@ final class MeasurementRepository {
               local_night=excluded.local_night, detail=excluded.detail,
               measured_at=excluded.measured_at, measured_tz=excluded.measured_tz,
               recorded_at=excluded.recorded_at, ingested_at=excluded.ingested_at,
-              updated_at=excluded.updated_at
+              updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
             RETURNING id;
             """,
             [.text(s.id), .text(s.kind.rawValue), .string(s.subtype), .date(s.startAt), .date(s.endAt),
@@ -254,6 +270,32 @@ final class MeasurementRepository {
         }
         sql += ";"
         return try db.run(sql, params) > 0
+    }
+
+    /// The measurement-chain rows tombstoned since `watermark` — for a delta export's `deletions[]`
+    /// (§22.6 / EPIC-17). A delta gathers only LIVE rows (every read above filters `deleted_at IS
+    /// NULL`), so a row soft-deleted after the last run would otherwise be invisible to a downstream
+    /// store that only ever receives additions. This is the one read that deliberately looks PAST
+    /// that filter, at `deleted_at` alone.
+    ///
+    /// The axis is `deleted_at`, not the ingested watermark: a tombstone's job is to report WHEN a
+    /// row went away, which the ingested axis says nothing about. `> watermark` (strictly) matches
+    /// the cursor's forward-only window; re-reporting a tombstone on a later run until the cursor
+    /// advances past it is idempotent for a downstream store (deleting an already-deleted record is
+    /// a no-op). Ordered by `record_id` for a deterministic, cross-platform-stable array.
+    func tombstones(since watermark: Date) throws -> [ExportTombstone] {
+        try db.query("""
+            SELECT id, 'raw_sample' AS entity, deleted_at, tz_id FROM raw_samples WHERE deleted_at > ?
+            UNION ALL
+            SELECT id, 'interval_record' AS entity, deleted_at, tz_id FROM interval_records WHERE deleted_at > ?
+            UNION ALL
+            SELECT id, 'session' AS entity, deleted_at, tz_id FROM sessions WHERE deleted_at > ?
+            ORDER BY id ASC;
+            """, [.date(watermark), .date(watermark), .date(watermark)])
+            .map { row in
+                ExportTombstone(recordId: row.requireString("id"), entity: row.requireString("entity"),
+                                deletedAt: row.requireDate("deleted_at"), tzId: row.requireString("tz_id"))
+            }
     }
 
     func session(id: String) throws -> Session? {

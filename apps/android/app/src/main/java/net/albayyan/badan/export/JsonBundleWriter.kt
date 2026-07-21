@@ -10,6 +10,8 @@ import net.albayyan.badan.domain.hydration.HydrationGoal
 import net.albayyan.badan.domain.DerivedValue
 import net.albayyan.badan.domain.ExportManifest
 import net.albayyan.badan.domain.ExportScope
+import net.albayyan.badan.domain.ExportSuppressionCorrection
+import net.albayyan.badan.domain.ExportTombstone
 import net.albayyan.badan.domain.IntervalRecord
 import net.albayyan.badan.domain.NutritionEntry
 import net.albayyan.badan.domain.Provenance
@@ -191,6 +193,8 @@ class JsonBundleWriter {
         cursorBefore: Long? = null,
         cursorAfter: Long? = null,
         previousManifestSha: String? = null,
+        additionalDeletions: List<ExportTombstone> = emptyList(),
+        corrections: List<ExportSuppressionCorrection> = emptyList(),
         destination: Pair<String, String>? = null,
         config: Map<String, CanonicalJson>? = null,
         hydration: HydrationExportPayload? = null,
@@ -198,7 +202,8 @@ class JsonBundleWriter {
     ): ByteArray = bundle(
         manifest, rawSamples, intervalRecords, sessions, derivedValues, baselines, symptoms,
         adherence, workouts, nutrition, includeRoutes, sampleDataRowCount, isDelta, cursorBefore,
-        cursorAfter, previousManifestSha, destination, config, hydration, hydrationRedaction,
+        cursorAfter, previousManifestSha, additionalDeletions, corrections, destination, config,
+        hydration, hydrationRedaction,
     ).render().toByteArray(Charsets.UTF_8)
 
     /**
@@ -254,6 +259,8 @@ class JsonBundleWriter {
         cursorBefore: Long? = null,
         cursorAfter: Long? = null,
         previousManifestSha: String? = null,
+        additionalDeletions: List<ExportTombstone> = emptyList(),
+        corrections: List<ExportSuppressionCorrection> = emptyList(),
         destination: Pair<String, String>? = null,
         config: Map<String, CanonicalJson>? = null,
         hydration: HydrationExportPayload? = null,
@@ -315,9 +322,14 @@ class JsonBundleWriter {
             ),
             "deletions" to deletions(
                 rawSamples, intervalRecords, sleepSessions, workoutSessions, derivedValues,
-                symptoms, adherence, workouts, nutrition,
+                symptoms, adherence, workouts, nutrition, additionalDeletions,
             ),
         )
+        // Absent, not empty (§22.6): a delta run with no dedup flips carries NO `corrections` key at
+        // all, exactly as `config`/`logs.hydration` stay absent when empty — so a non-delta bundle,
+        // and the byte-pinned no-corrections golden, are untouched. `{"corrections": []}` would
+        // assert "we checked and nothing flipped", a claim a full (non-delta) run cannot make.
+        if (corrections.isNotEmpty()) members["corrections"] = corrections(corrections)
         // Absent, not empty: `{"export_templates": []}` would assert the user has no templates,
         // which is a claim this writer is in no position to make.
         if (config != null) members["config"] = CanonicalJson.Obj(config)
@@ -822,6 +834,18 @@ class JsonBundleWriter {
 
     // ===== Deletions (§22.6) =====
 
+    /**
+     * `additional` (§22.6) is the delta path's tombstone slice: rows soft-deleted since the cursor
+     * that are NOT in the data arrays (a delta gathers only live rows, so a removal would otherwise
+     * be invisible). The two sources are unioned and the whole array is sorted by `record_id`, so
+     * the output is deterministic regardless of gather order and identical across platforms — the
+     * no-op case (a single row-derived tombstone, no `additional`) leaves the byte-pinned golden
+     * unchanged because sorting one element is the identity. Mirror of iOS `deletions`.
+     *
+     * `record_id` alone is a TOTAL order here (unlike [corrections], which needs a tiebreaker): ids
+     * are ULIDs unique across every table (I8), and the two sources cannot collide because a delta
+     * gathers live rows only (`deleted_at IS NULL`) while `additional` is tombstones only.
+     */
     private fun deletions(
         rawSamples: List<RawSample>,
         intervalRecords: List<IntervalRecord>,
@@ -832,12 +856,13 @@ class JsonBundleWriter {
         adherence: List<AdherenceEvent>,
         workoutLogs: List<WorkoutEntry>,
         nutrition: List<NutritionEntry>,
+        additional: List<ExportTombstone> = emptyList(),
     ): CanonicalJson {
-        val entries = mutableListOf<CanonicalJson>()
+        val entries = mutableListOf<Pair<String, CanonicalJson>>()
         fun add(recordId: String, entity: String, deletedAt: Long?, tzId: String) {
             if (deletedAt == null) return
             entries.add(
-                CanonicalJson.Obj(
+                recordId to CanonicalJson.Obj(
                     mapOf(
                         "record_id" to CanonicalJson.Str(recordId),
                         "entity" to CanonicalJson.Str(entity),
@@ -855,8 +880,34 @@ class JsonBundleWriter {
         adherence.forEach { add(it.id, "adherence", it.deletedAt, it.tzId) }
         workoutLogs.forEach { add(it.id, "workout_log", it.deletedAt, it.tzId) }
         nutrition.forEach { add(it.id, "nutrition", it.deletedAt, it.tzId) }
-        return CanonicalJson.Arr(entries)
+        additional.forEach { add(it.recordId, it.entity, it.deletedAt, it.tzId) }
+        return CanonicalJson.Arr(entries.sortedBy { it.first }.map { it.second })
     }
+
+    /**
+     * The `corrections[]` section (§22.6): suppression flips since the cursor.
+     *
+     * Ordering is [ExportSuppressionCorrection.exportSorted] — the ONE comparator every format
+     * uses, so this array and `corrections.csv` (the CSV delta's twin table, written by
+     * [ExportDeltaCsvWriter]) list the same flips in the same sequence. Its doc explains why the
+     * order is a total one rather than `record_id` alone.
+     *
+     * A null `suppressedBy` renders as JSON `null` — the record's suppression was CLEARED (it wins
+     * again) — never as an empty string, so a consumer can tell "no longer suppressed" from
+     * "suppressed by <id>". Mirror of iOS `corrections`.
+     */
+    private fun corrections(corrections: List<ExportSuppressionCorrection>): CanonicalJson =
+        CanonicalJson.Arr(
+            ExportSuppressionCorrection.exportSorted(corrections).map { c ->
+                CanonicalJson.Obj(
+                    mapOf(
+                        "record_id" to CanonicalJson.Str(c.recordId),
+                        "suppressed_by" to CanonicalJson.str(c.suppressedBy),
+                        "changed_at" to CanonicalJson.Str(TimestampFormatting.string(c.changedAt, "UTC")),
+                    ),
+                )
+            },
+        )
 
     // ===== Dictionaries =====
 

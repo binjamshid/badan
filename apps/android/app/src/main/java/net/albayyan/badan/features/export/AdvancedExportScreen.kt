@@ -14,8 +14,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DataObject
 import androidx.compose.material.icons.filled.ExpandLess
@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDefaults
@@ -137,6 +138,69 @@ private object BuilderCopy {
         en = "Quick Export presets are read-only.",
         ar = "قوالب التصدير السريع للقراءة فقط.",
     )
+
+    // -- Delta (EPIC-17). Mirrors the iOS builder's copy sentence for sentence. --
+
+    /**
+     * The `sinceLastRun` switch. Deliberately worded as "since this template last ran" rather than
+     * "new data": the checkpoint belongs to the template + destination pair, not to the app, so two
+     * templates can be at different points in the same history.
+     */
+    val deltaOnly = LocalizedString(
+        en = "Only what's new since the last run",
+        ar = "الجديد فقط منذ آخر تشغيل",
+    )
+
+    /**
+     * What the switch actually does, including the two things that surprise people: the checkpoint
+     * only moves on a run that was delivered, and a delta is taken on when data ARRIVED, not when it
+     * was measured — which is what stops a late-syncing watch reading from being skipped.
+     */
+    val deltaOnlyHint = LocalizedString(
+        en = "Each run picks up where the last delivered run stopped, so nothing is exported twice. " +
+            "Records that arrive late are still included — the checkpoint follows when data reached " +
+            "BADAN, not when it was measured.",
+        ar = "يبدأ كل تشغيل من حيث توقّف آخر تشغيل تم تسليمه، فلا يُصدَّر أي سجل مرتين. " +
+            "وتبقى السجلات المتأخرة مشمولة — إذ تتبع النقطة المرجعية وقت وصول البيانات إلى بدن، " +
+            "لا وقت قياسها.",
+    )
+
+    /**
+     * The first-run behaviour, stated before it happens rather than as a surprise afterwards. `{n}`
+     * matches `ExportRunner.CURSOR_MISSING_FALLBACK_DAYS` — the runner's own no-cursor fallback.
+     */
+    val deltaFirstRun = LocalizedString(
+        en = "There's no checkpoint until the first run finishes, so that first export covers the " +
+            "last {n} days and says so.",
+        ar = "لا توجد نقطة مرجعية قبل اكتمال أول تشغيل، لذا يشمل ذلك التصدير الأول آخر {n} يوماً " +
+            "ويوضّح ذلك.",
+    )
+
+    /**
+     * What moves the checkpoint, and — the half people are actually harmed by not knowing — what
+     * happens when a run fails. Deliberately does NOT tell the user to put the template on a
+     * schedule: a scheduled run is the only path that moves the checkpoint today, but every template
+     * this builder saves is share-sheet-bound, and recommending a route whose file nobody ever sees
+     * would be the kind of promise this copy exists to avoid.
+     */
+    val deltaCheckpointNote = LocalizedString(
+        en = "The checkpoint only moves after a run finishes and is delivered, so a failed run " +
+            "leaves it where it was and nothing is skipped.",
+        ar = "لا تتحرّك النقطة المرجعية إلا بعد اكتمال التشغيل وتسليمه، لذا يترك التشغيل الفاشل " +
+            "النقطة في مكانها ولا يُتخطّى أي سجل.",
+    )
+
+    /**
+     * Shown in the date-range section while the delta switch is on, so the two controls cannot be
+     * read as contradicting each other. The range picker still governs the immediate Run button; it
+     * is only the SAVED template that ignores it.
+     */
+    val deltaOverridesRange = LocalizedString(
+        en = "The saved template uses its checkpoint instead of this window. The window above still " +
+            "applies if you run the export now.",
+        ar = "يستخدم القالب المحفوظ نقطته المرجعية بدلاً من هذه المدة. أما المدة أعلاه فتنطبق إن " +
+            "شغّلت التصدير الآن.",
+    )
 }
 
 // MARK: - Pure range helpers (mirror the iOS builder; testable without Compose)
@@ -167,22 +231,48 @@ internal fun endOfDayBound(millis: Long): Long {
 internal fun isCustomRangeInvalid(startMillis: Long, endMillis: Long): Boolean =
     startOfDayMillis(startMillis) > startOfDayMillis(endMillis)
 
-/** The range rule a builder selection saves into a template. */
-internal fun builderRangeRule(range: ExportRange): ExportRangeRule = when (range) {
-    ExportRange.LAST30 -> ExportRangeRule.LastNDays(30)
-    ExportRange.LAST90 -> ExportRangeRule.LastNDays(90)
-    ExportRange.ALL -> ExportRangeRule.AllTime
-    ExportRange.CUSTOM -> ExportRangeRule.Fixed
-}
+/**
+ * The range rule a builder selection saves into a template.
+ *
+ * [deltaOnly] is the EPIC-17 switch and it wins outright: `SinceLastRun` is the one rule that is not
+ * a window at all, so a window segment cannot also be in force. It is a separate parameter rather
+ * than a fifth [ExportRange] entry because the segments also drive this screen's immediate Run
+ * button, where a checkpoint cannot exist — an ad-hoc run has no template id and no destination to
+ * hold one — and a control that silently means nothing is the thing this builder's copy rules out.
+ */
+internal fun builderRangeRule(range: ExportRange, deltaOnly: Boolean = false): ExportRangeRule =
+    if (deltaOnly) {
+        ExportRangeRule.SinceLastRun
+    } else {
+        when (range) {
+            ExportRange.LAST30 -> ExportRangeRule.LastNDays(30)
+            ExportRange.LAST90 -> ExportRangeRule.LastNDays(90)
+            ExportRange.ALL -> ExportRangeRule.AllTime
+            ExportRange.CUSTOM -> ExportRangeRule.Fixed
+        }
+    }
 
-/** Best-effort inverse for the edit prefill: pick the builder option nearest a stored rule. */
+/** Whether a stored rule should light the builder's delta switch on the edit prefill. */
+internal fun builderDeltaOnlyFor(rule: ExportRangeRule): Boolean = rule is ExportRangeRule.SinceLastRun
+
+/**
+ * Best-effort inverse for the edit prefill: pick the builder option nearest a stored rule.
+ *
+ * `SinceLastRun` maps to LAST30, not ALL. The delta itself is carried by [builderDeltaOnlyFor], so
+ * the segment here is only what the template FALLS BACK TO if the user turns the delta switch off —
+ * and 30 days matches the runner's own no-cursor fallback, where "all time" would silently turn an
+ * incremental template into a full-history dump on a single toggle. (Before the delta switch existed
+ * this mapping was worse than imprecise: saving an edited `SinceLastRun` template rewrote its rule to
+ * `AllTime`, because nothing could produce the original rule back.)
+ */
 internal fun builderRangeFor(rule: ExportRangeRule, scope: ExportScope): ExportRange = when {
     rule is ExportRangeRule.LastNDays && rule.safeDays == 30 -> ExportRange.LAST30
     rule is ExportRangeRule.LastNDays && rule.safeDays == 90 -> ExportRange.LAST90
+    rule is ExportRangeRule.SinceLastRun -> ExportRange.LAST30
     rule is ExportRangeRule.AllTime -> ExportRange.ALL
     rule is ExportRangeRule.Fixed && (scope.startDate != null || scope.endDate != null) -> ExportRange.CUSTOM
-    // SinceLastRun (delta) and odd LastNDays counts can't be represented by the builder's four
-    // options; fall back to "all time" so editing never silently narrows the window.
+    // An odd LastNDays count can't be represented by the builder's four options; fall back to "all
+    // time" so editing never silently narrows the window.
     else -> ExportRange.ALL
 }
 
@@ -218,6 +308,9 @@ fun AdvancedExportScreen(templateId: String?) {
     var scope by remember { mutableStateOf(ExportScope(unitProfile = env.profile.unitProfile)) }
     var format by remember { mutableStateOf(ExportFormat.CSV) }
     var range by remember { mutableStateOf(ExportRange.LAST30) }
+    // EPIC-17. When on, the SAVED template stores `SinceLastRun` instead of the range segment
+    // above — see `builderRangeRule` for why it is not a fifth segment.
+    var deltaOnly by remember { mutableStateOf(false) }
     var customStart by remember { mutableStateOf(env.now() - 30L * 86_400_000L) }
     var customEnd by remember { mutableStateOf(env.now()) }
 
@@ -264,6 +357,7 @@ fun AdvancedExportScreen(templateId: String?) {
             scope = t.scope
             format = t.format
             range = builderRangeFor(t.rangeRule, t.scope)
+            deltaOnly = builderDeltaOnlyFor(t.rangeRule)
             t.scope.startDate?.let { customStart = it }
             t.scope.endDate?.let { customEnd = it }
             selectedMetricIds = t.scope.metricIds?.toSet() ?: emptySet()
@@ -336,7 +430,7 @@ fun AdvancedExportScreen(templateId: String?) {
             id = existing?.id ?: Ulid.newId(),
             name = name,
             scope = runScope,
-            rangeRule = builderRangeRule(range),
+            rangeRule = builderRangeRule(range, deltaOnly),
             format = format,
             aggregation = existing?.aggregation ?: net.albayyan.badan.domain.ExportAggregation.Raw,
             layout = existing?.layout ?: net.albayyan.badan.domain.ExportLayout.TIDY,
@@ -492,7 +586,10 @@ fun AdvancedExportScreen(templateId: String?) {
                         ScopeToggleRow(
                             title = env.s(BuilderCopy.routesTitle),
                             subtitle = env.s(BuilderCopy.routesUnavailable),
-                            icon = Icons.Filled.AltRoute,
+                            // AutoMirrored: the branching-route glyph is directional, so it must
+                            // flip in Arabic like the back arrow above it does. RTL correctness is
+                            // a first-order concern here, not a deprecation-warning cleanup.
+                            icon = Icons.AutoMirrored.Filled.AltRoute,
                             checked = false,
                             enabled = false,
                             onCheckedChange = {},
@@ -562,6 +659,15 @@ fun AdvancedExportScreen(templateId: String?) {
                         )
                     }
                 }
+                // The delta switch overrides this window for the SAVED template only, so the two
+                // controls are never left looking like they contradict each other.
+                if (deltaOnly) {
+                    Text(
+                        text = env.s(BuilderCopy.deltaOverridesRange),
+                        style = BadanType.caption,
+                        color = colors.textSecondary,
+                    )
+                }
             }
 
             // Units
@@ -607,6 +713,39 @@ fun AdvancedExportScreen(templateId: String?) {
                                 color = colors.textSecondary,
                             )
                         } else {
+                            // EPIC-17 — the control that makes a `SinceLastRun` template reachable
+                            // at all. Until this existed the whole cursor/chain/tombstone machinery
+                            // was verified by fixtures and CI but had no path a user could take to
+                            // trigger it: the builder could only emit LastNDays/AllTime/Fixed, and
+                            // the Quick Export presets never produce a delta either.
+                            ScopeToggleRow(
+                                title = env.s(BuilderCopy.deltaOnly),
+                                subtitle = env.s(BuilderCopy.deltaOnlyHint),
+                                icon = Icons.Filled.Sync,
+                                checked = deltaOnly,
+                                onCheckedChange = { deltaOnly = it },
+                            )
+                            if (deltaOnly) {
+                                // Everything the switch implies, stated up front rather than
+                                // discovered later: the first run has no checkpoint and falls back
+                                // to a bounded window *with a notice* (which the runner already
+                                // implements), and only a delivered run moves the checkpoint.
+                                Text(
+                                    text = env.s(BuilderCopy.deltaFirstRun)
+                                        .replace(
+                                            "{n}",
+                                            env.format.integer(ExportRunner.CURSOR_MISSING_FALLBACK_DAYS),
+                                        ),
+                                    style = BadanType.caption,
+                                    color = colors.textSecondary,
+                                )
+                                Text(
+                                    text = env.s(BuilderCopy.deltaCheckpointNote),
+                                    style = BadanType.caption,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                            RowDivider()
                             OutlinedTextField(
                                 value = saveName,
                                 onValueChange = { saveName = it; saved = false; saveError = null },
