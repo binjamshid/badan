@@ -16,12 +16,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,12 +63,17 @@ import net.albayyan.badan.designsystem.BadanSpace
 import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.BadanType
 import net.albayyan.badan.designsystem.components.BadanCard
+import net.albayyan.badan.designsystem.components.PillLabel
 import net.albayyan.badan.designsystem.components.SectionHeader
+import net.albayyan.badan.domain.ExportDestination
 import net.albayyan.badan.domain.ExportOutcome
 import net.albayyan.badan.domain.ExportRun
 import net.albayyan.badan.domain.ExportTemplate
 import net.albayyan.badan.domain.ExportTrigger
+import net.albayyan.badan.domain.automation.AutomationSchedule
+import net.albayyan.badan.domain.automation.AutomationTier
 import net.albayyan.badan.export.ExportRunner
+import net.albayyan.badan.storage.repositories.AutomationScheduleRepository
 import net.albayyan.badan.storage.repositories.CadenceSummary
 
 // MARK: - Plain-language mapping (pure; testable)
@@ -115,16 +125,44 @@ private data class HealthData(
     val jobsWithoutRun: List<String>,
     val templateStatus: List<Pair<ExportTemplate, ExportRun?>>,
     val cadence: CadenceSummary,
+    val schedules: List<ScheduleRow>,
+)
+
+/** One automation, joined to its (possibly since-deleted) template and its last successful export. */
+private data class ScheduleRow(
+    val schedule: AutomationSchedule,
+    val template: ExportTemplate?,
+    val lastSuccess: ExportRun?,
 )
 
 // MARK: - Copy
 
 private object HealthCopy {
-    val title = LocalizedString(en = "Export health", ar = "حالة التصدير")
+    val title = LocalizedString(en = "Export & automation health", ar = "حالة التصدير والأتمتة")
     val trust = LocalizedString(
         en = "If something didn't run, you'll see it here — nothing fails silently.",
         ar = "إن لم يُنفَّذ شيء، فسيظهر هنا — لا شيء يفشل بصمت.",
     )
+
+    // Automations (EPIC-15)
+    val automationsHeader = LocalizedString(en = "Automations", ar = "الأتمتة")
+    val setUp = LocalizedString(en = "Set up", ar = "إعداد")
+    val noAutomations = LocalizedString(
+        en = "No automations yet. Schedule a template to keep an export up to date — you'll see exactly how reliable each option is before you turn it on.",
+        ar = "لا توجد أتمتة بعد. جدوِل قالباً لإبقاء تصدير محدَّثاً — وسترى مدى موثوقية كل خيار قبل تفعيله.",
+    )
+    val setUpAutomation = LocalizedString(en = "Set up automation", ar = "إعداد الأتمتة")
+    val deletedScheduleTemplate = LocalizedString(
+        en = "This template was deleted — the automation can't run.",
+        ar = "حُذف هذا القالب — لا يمكن للأتمتة العمل.",
+    )
+    val nextRun = LocalizedString(en = "Next run", ar = "التشغيل التالي")
+    val lastSuccessLabel = LocalizedString(en = "Last successful export", ar = "آخر تصدير ناجح")
+    val noSuccessYet = LocalizedString(en = "No successful export yet", ar = "لا تصدير ناجح بعد")
+    val resume = LocalizedString(en = "Resume", ar = "استئناف")
+    val turnOff = LocalizedString(en = "Turn off", ar = "إيقاف")
+    val turnOn = LocalizedString(en = "Turn on", ar = "تشغيل")
+    val moreOptions = LocalizedString(en = "More options", ar = "خيارات أخرى")
     val last30 = LocalizedString(en = "Last 30 days", ar = "آخر ٣٠ يوماً")
     val noRuns = LocalizedString(
         en = "No exports yet. When you create one, its result is recorded here.",
@@ -189,6 +227,9 @@ fun ExportHealthScreen() {
                 runCatching { env.exportTemplates.seedPresets(now, env.deviceId) }
                 val since = now - 30L * 86_400_000L
                 val templates = runCatching { env.exportTemplates.all() }.getOrDefault(emptyList())
+                val templateById = templates.associateBy { it.id }
+                val schedules = runCatching { AutomationScheduleRepository(env.database.main).all() }
+                    .getOrDefault(emptyList())
                 HealthData(
                     outcomeCounts = runCatching { env.exportRuns.outcomeCounts(since) }.getOrDefault(emptyList()),
                     recentRuns = runCatching { env.exportRuns.recent(50) }.getOrDefault(emptyList()),
@@ -198,6 +239,15 @@ fun ExportHealthScreen() {
                     },
                     cadence = runCatching { env.backgroundRuns.cadence(now = now) }
                         .getOrDefault(CadenceSummary(86_400_000L, 0, 0, 0, 0L, null)),
+                    schedules = schedules.map { s ->
+                        val template = templateById[s.templateId]
+                        val dest = template?.destinationId ?: ExportDestination.SHARE_SHEET_ID
+                        ScheduleRow(
+                            schedule = s,
+                            template = template,
+                            lastSuccess = runCatching { env.exportRuns.lastSuccess(s.templateId, dest) }.getOrNull(),
+                        )
+                    },
                 )
             }
             data = loaded
@@ -237,6 +287,18 @@ fun ExportHealthScreen() {
                 .onSuccess { lastResult = it }
                 .onFailure { errorText = it.toString() }
             isRunning = false
+            reload()
+        }
+    }
+
+    // Schedule bookkeeping (resume / enable-disable / delete) goes through the repository off the
+    // main thread, then reloads so the dashboard reflects the change — the same read-after-write the
+    // rest of this screen uses. The engine and the failure budget are never touched here.
+    fun mutateSchedule(block: (AutomationScheduleRepository) -> Unit) {
+        coroutineScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { block(AutomationScheduleRepository(env.database.main)) }
+            }
             reload()
         }
     }
@@ -301,6 +363,63 @@ fun ExportHealthScreen() {
                     CircularProgressIndicator(color = colors.primary, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
                 }
             } else {
+                // Automations (EPIC-15) — the headline of "Export & Automation Health".
+                Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
+                    SectionHeader(
+                        title = env.s(HealthCopy.automationsHeader),
+                        trailing = if (loaded.schedules.isNotEmpty()) {
+                            {
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(BadanRadius.control))
+                                        .clickable { nav.push(Route.AutomationSetup) }
+                                        .heightIn(min = BadanSpace.touchMin)
+                                        .padding(horizontal = BadanSpace.s2),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1),
+                                ) {
+                                    Icon(Icons.Filled.Add, contentDescription = null, tint = colors.primary, modifier = Modifier.size(18.dp))
+                                    Text(env.s(HealthCopy.setUp), style = BadanType.body.copy(fontWeight = FontWeight.Medium), color = colors.primary)
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                    )
+                    if (loaded.schedules.isEmpty()) {
+                        BadanCard {
+                            Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
+                                Text(env.s(HealthCopy.noAutomations), style = BadanType.body, color = colors.textSecondary)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(BadanRadius.control))
+                                        .background(colors.primary)
+                                        .clickable { nav.push(Route.AutomationSetup) }
+                                        .heightIn(min = BadanSpace.touchMin)
+                                        .padding(horizontal = BadanSpace.s4),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2, Alignment.CenterHorizontally),
+                                ) {
+                                    Icon(Icons.Filled.Schedule, contentDescription = null, tint = colors.onPrimary, modifier = Modifier.size(18.dp))
+                                    Text(env.s(HealthCopy.setUpAutomation), style = BadanType.body.copy(fontWeight = FontWeight.SemiBold), color = colors.onPrimary)
+                                }
+                            }
+                        }
+                    } else {
+                        for (row in loaded.schedules) {
+                            ScheduleCard(
+                                row = row,
+                                running = isRunning,
+                                onRun = { row.template?.let { runTemplate(it) } },
+                                onResume = { mutateSchedule { it.resume(row.schedule.id, env.now()) } },
+                                onToggle = { mutateSchedule { it.setEnabled(row.schedule.id, !row.schedule.enabled, env.now()) } },
+                                onDelete = { mutateSchedule { it.softDelete(row.schedule.id, env.now()) } },
+                            )
+                        }
+                    }
+                }
+
                 // Summary
                 Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
                     SectionHeader(title = env.s(HealthCopy.last30))
@@ -521,6 +640,142 @@ private fun RunHistoryRow(run: ExportRun, showDetail: Boolean) {
                     color = colors.textSecondary,
                 )
             }
+        }
+    }
+}
+
+// MARK: - Schedule card (EPIC-15)
+
+@Composable
+private fun ScheduleCard(
+    row: ScheduleRow,
+    running: Boolean,
+    onRun: () -> Unit,
+    onResume: () -> Unit,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val schedule = row.schedule
+    val status = AutomationPresentation.status(schedule)
+    val statusTint: Color = when (status) {
+        AutomationPresentation.StatusKind.ACTIVE -> colors.primary
+        AutomationPresentation.StatusKind.PAUSED -> colors.outOfBand
+        AutomationPresentation.StatusKind.OFF -> colors.textSecondary
+    }
+    BadanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+                Icon(Icons.Filled.Schedule, contentDescription = null, tint = colors.primary, modifier = Modifier.size(20.dp))
+                Text(
+                    text = row.template?.name ?: env.s(HealthCopy.deletedScheduleTemplate),
+                    style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                StatusChip(status = status, tint = statusTint)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2), verticalAlignment = Alignment.CenterVertically) {
+                PillLabel(text = env.s(AutomationPresentation.tierChip(schedule.tier)), icon = automationTierIcon(schedule.tier))
+                if (schedule.tier == AutomationTier.OPPORTUNISTIC_BACKGROUND) {
+                    PillLabel(text = env.s(AutomationPresentation.cadenceLabel(schedule.desiredCadence)))
+                }
+            }
+            if (status == AutomationPresentation.StatusKind.PAUSED) {
+                InfoNote(
+                    icon = Icons.Filled.WarningAmber,
+                    tint = colors.outOfBand,
+                    text = env.s(AutomationPresentation.pausedReason(env.format.integer(AutomationSchedule.FAILURE_BUDGET))),
+                )
+            }
+            // Per-schedule last success — reflects the automation's own successful exports.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+                Icon(
+                    imageVector = if (row.lastSuccess != null) Icons.Filled.Check else Icons.Filled.Info,
+                    contentDescription = null,
+                    tint = if (row.lastSuccess != null) colors.inBand else colors.textSecondary,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    text = row.lastSuccess?.let {
+                        "${env.s(HealthCopy.lastSuccessLabel)}: ${formatTimestamp(it.finishedAt ?: it.startedAt, env.language)}"
+                    } ?: env.s(HealthCopy.noSuccessYet),
+                    style = BadanType.caption,
+                    color = colors.textSecondary,
+                )
+            }
+            // Next run — always an estimate, only meaningful while active.
+            if (status == AutomationPresentation.StatusKind.ACTIVE) {
+                val kind = AutomationPresentation.nextWindow(schedule)
+                val dateText = schedule.nextExpectedWindow?.let { formatTimestamp(it, env.language) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+                    Icon(Icons.Filled.Schedule, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+                    Text(
+                        text = "${env.s(HealthCopy.nextRun)}: ${env.s(AutomationPresentation.nextWindowLabel(kind, dateText))}",
+                        style = BadanType.caption,
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+                if (row.template != null) {
+                    RunNowChip(running = running, label = env.s(HealthCopy.runNow), onClick = onRun)
+                }
+                androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                ScheduleMenu(schedule = schedule, onResume = onResume, onToggle = onToggle, onDelete = onDelete)
+            }
+        }
+    }
+}
+
+/** Status chip — icon + word + hue, never colour alone (§16 a11y). */
+@Composable
+private fun StatusChip(status: AutomationPresentation.StatusKind, tint: Color) {
+    val env = LocalAppEnvironment.current
+    Row(
+        modifier = Modifier
+            .background(tint.copy(alpha = 0.14f), RoundedCornerShape(BadanRadius.chip))
+            .padding(horizontal = BadanSpace.s2, vertical = BadanSpace.s1),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s1),
+    ) {
+        Icon(imageVector = automationStatusIcon(status), contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+        Text(text = env.s(AutomationPresentation.statusLabel(status)), style = BadanType.chip, color = tint)
+    }
+}
+
+@Composable
+private fun ScheduleMenu(
+    schedule: AutomationSchedule,
+    onResume: () -> Unit,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(Icons.Filled.MoreVert, contentDescription = env.s(HealthCopy.moreOptions), tint = colors.textSecondary)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (schedule.isPaused) {
+                DropdownMenuItem(
+                    text = { Text(env.s(HealthCopy.resume)) },
+                    onClick = { expanded = false; onResume() },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(env.s(if (schedule.enabled) HealthCopy.turnOff else HealthCopy.turnOn)) },
+                onClick = { expanded = false; onToggle() },
+            )
+            DropdownMenuItem(
+                text = { Text(env.s(Loc.delete), color = colors.critical) },
+                onClick = { expanded = false; onDelete() },
+            )
         }
     }
 }

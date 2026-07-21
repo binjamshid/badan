@@ -3,10 +3,27 @@ import SwiftUI
 // MARK: - Copy
 
 private enum ExportHealthCopy {
-    static let title = LocalizedString(en: "Export health", ar: "حالة التصدير")
+    static let title = LocalizedString(en: "Export & automation health", ar: "حالة التصدير والأتمتة")
     static let trust = LocalizedString(
         en: "If something didn't run, you'll see it here — nothing fails silently.",
         ar: "إن لم يجرِ تشغيل شيء، فسترى ذلك هنا — لا شيء يفشل بصمت.")
+
+    // Automations (EPIC-15)
+    static let automationsSection = LocalizedString(en: "Automations", ar: "الأتمتة")
+    static let addAutomation = LocalizedString(en: "Set up", ar: "إعداد")
+    static let noAutomations = LocalizedString(
+        en: "No automations yet. Schedule a template to keep an export up to date — you'll see exactly how reliable each option is before you turn it on.",
+        ar: "لا توجد أتمتة بعد. جدوِل قالباً لإبقاء تصدير محدَّثاً — وسترى مدى موثوقية كل خيار قبل تفعيله.")
+    static let setUpAutomation = LocalizedString(en: "Set up automation", ar: "إعداد الأتمتة")
+    static let deletedScheduleTemplate = LocalizedString(
+        en: "This template was deleted — the automation can't run.",
+        ar: "حُذف هذا القالب — لا يمكن للأتمتة العمل.")
+    static let runNow = LocalizedString(en: "Run now", ar: "التشغيل الآن")
+    static let nextRun = LocalizedString(en: "Next run", ar: "التشغيل التالي")
+    static let resume = LocalizedString(en: "Resume", ar: "استئناف")
+    static let turnOff = LocalizedString(en: "Turn off", ar: "إيقاف")
+    static let turnOn = LocalizedString(en: "Turn on", ar: "تشغيل")
+    static let scheduleActions = LocalizedString(en: "More options", ar: "خيارات أخرى")
 
     static let templatesSection = LocalizedString(en: "Your templates", ar: "قوالبك")
     static let lastSuccess = LocalizedString(en: "Last successful export", ar: "آخر تصدير ناجح")
@@ -69,12 +86,14 @@ struct ExportHealthScreen: View {
     @State private var backgroundSummary: BackgroundHealthSummary?
     @State private var gapCount = 0
     @State private var runModel = TemplateRunModel()
+    @State private var schedules: [AutomationSchedule] = []
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space5) {
                 trustCard
                 if let message = runModel.message { runMessageBanner(message) }
+                automationsSection
                 templatesSection
                 recentRunsSection
                 if env.depth.showsPowerDetail {
@@ -125,6 +144,212 @@ struct ExportHealthScreen: View {
         .padding(BadanSpace.space3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+    }
+
+    // MARK: Automations (EPIC-15)
+
+    private var automationsSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(ExportHealthCopy.automationsSection)) {
+                if !schedules.isEmpty {
+                    NavigationLink { AutomationSetupWizardScreen() } label: {
+                        HStack(spacing: BadanSpace.space1) {
+                            Image(systemName: "plus").imageScale(.small).accessibilityHidden(true)
+                            Text(ExportHealthCopy.addAutomation, language: env.language)
+                        }
+                        .font(BadanFont.link)
+                        .foregroundStyle(BadanColor.primary)
+                    }
+                    .accessibilityLabel(env.s(ExportHealthCopy.setUpAutomation))
+                }
+            }
+            if schedules.isEmpty {
+                BadanCard {
+                    VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                        Text(ExportHealthCopy.noAutomations, language: env.language)
+                            .font(BadanFont.body)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        NavigationLink { AutomationSetupWizardScreen() } label: {
+                            HStack(spacing: BadanSpace.space2) {
+                                Image(systemName: "clock.badge.checkmark").accessibilityHidden(true)
+                                Text(ExportHealthCopy.setUpAutomation, language: env.language)
+                            }
+                            .font(BadanFont.body.weight(.semibold))
+                            .foregroundStyle(BadanColor.onPrimary)
+                            .frame(maxWidth: .infinity, minHeight: BadanSpace.touchMin)
+                            .background(BadanColor.primary,
+                                        in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } else {
+                ForEach(schedules) { schedule in
+                    scheduleCard(schedule)
+                }
+            }
+        }
+    }
+
+    private func scheduleCard(_ schedule: AutomationSchedule) -> some View {
+        let template = templates.first { $0.id == schedule.templateId }
+        let status = AutomationPresentation.status(schedule)
+        return BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                HStack(spacing: BadanSpace.space2) {
+                    Image(systemName: scheduleIcon(template))
+                        .foregroundStyle(BadanColor.primary)
+                        .accessibilityHidden(true)
+                    Text(template.map(displayName) ?? env.s(ExportHealthCopy.deletedScheduleTemplate))
+                        .font(BadanFont.body.weight(.semibold))
+                        .foregroundStyle(BadanColor.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: BadanSpace.space2)
+                    statusChip(status)
+                }
+                HStack(spacing: BadanSpace.space2) {
+                    PillLabel(env.s(AutomationPresentation.tierChip(schedule.tier)),
+                              systemImage: AutomationPresentation.tierIcon(schedule.tier),
+                              tint: BadanColor.textSecondary, filled: false)
+                    if schedule.tier == .opportunisticBackground {
+                        PillLabel(env.s(AutomationPresentation.cadenceLabel(schedule.desiredCadence)), filled: false)
+                    }
+                }
+                if status == .paused { pausedBanner }
+                lastSuccessLine(schedule)
+                nextRunLine(schedule)
+                HStack(spacing: BadanSpace.space2) {
+                    scheduleRunButton(schedule, template: template)
+                    Spacer(minLength: BadanSpace.space2)
+                    scheduleMenu(schedule)
+                }
+            }
+        }
+    }
+
+    private func scheduleIcon(_ template: ExportTemplate?) -> String {
+        guard let template else { return "clock.arrow.circlepath" }
+        return template.format == .csv ? "tablecells" : "curlybraces"
+    }
+
+    /// Status is icon + text + tint — three independent carriers (§16: status not color-only).
+    private func statusChip(_ status: AutomationPresentation.StatusKind) -> some View {
+        PillLabel(env.s(AutomationPresentation.statusLabel(status)),
+                  systemImage: status.icon, tint: status.tint)
+    }
+
+    private var pausedBanner: some View {
+        HStack(alignment: .top, spacing: BadanSpace.space2) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(BadanColor.outOfBand)
+                .accessibilityHidden(true)
+            Text(AutomationPresentation.pausedReason(env.format), language: env.language)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(BadanSpace.space2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(BadanColor.outOfBand.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func lastSuccessLine(_ schedule: AutomationSchedule) -> some View {
+        let dest = templates.first { $0.id == schedule.templateId }?.destinationId ?? ExportDestination.shareSheetId
+        let run = ExportManageService(env: env).lastSuccess(templateId: schedule.templateId, destinationId: dest)
+        return HStack(spacing: BadanSpace.space2) {
+            Image(systemName: run != nil ? "checkmark.circle.fill" : "circle.dashed")
+                .imageScale(.small)
+                .foregroundStyle(run != nil ? BadanColor.primary : BadanColor.textSecondary)
+                .accessibilityHidden(true)
+            Text(run.map { "\(env.s(ExportHealthCopy.lastSuccess)): \(dateText($0.finishedAt ?? $0.startedAt))" }
+                ?? env.s(ExportHealthCopy.noSuccess))
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The next run, ALWAYS as an estimate — never a promised wall-clock time. A paused or disabled
+    /// schedule has no meaningful "next", so this line is suppressed for those (the status chip and
+    /// the paused banner carry that state instead).
+    @ViewBuilder
+    private func nextRunLine(_ schedule: AutomationSchedule) -> some View {
+        let status = AutomationPresentation.status(schedule)
+        if status == .active {
+            let kind = AutomationPresentation.nextWindow(schedule)
+            let dateText = schedule.nextExpectedWindow.map(self.dateText)
+            HStack(spacing: BadanSpace.space2) {
+                Image(systemName: "clock.badge.questionmark")
+                    .imageScale(.small)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .accessibilityHidden(true)
+                Text("\(env.s(ExportHealthCopy.nextRun)): \(env.s(AutomationPresentation.nextWindowLabel(kind, dateText: dateText)))")
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    @ViewBuilder
+    private func scheduleRunButton(_ schedule: AutomationSchedule, template: ExportTemplate?) -> some View {
+        if let template {
+            Button { runModel.run(template, env: env) } label: {
+                Group {
+                    if runModel.runningTemplateId == template.id {
+                        ProgressView().tint(BadanColor.primary)
+                    } else {
+                        HStack(spacing: BadanSpace.space1) {
+                            Image(systemName: "play.fill").imageScale(.small).accessibilityHidden(true)
+                            Text(ExportHealthCopy.runNow, language: env.language)
+                                .font(BadanFont.chip.weight(.semibold))
+                        }
+                    }
+                }
+                .foregroundStyle(BadanColor.primary)
+                .padding(.horizontal, BadanSpace.space3)
+                .frame(minHeight: BadanSpace.touchMin)
+                .overlay(RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
+                    .strokeBorder(BadanColor.primary.opacity(0.5), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(runModel.isRunning)
+            .accessibilityLabel("\(env.s(ExportHealthCopy.runNow)): \(displayName(template))")
+        }
+    }
+
+    private func scheduleMenu(_ schedule: AutomationSchedule) -> some View {
+        let service = AutomationScheduleService(env: env)
+        return Menu {
+            if schedule.isPaused {
+                Button { service.resume(id: schedule.id); reload() } label: {
+                    Label(env.s(ExportHealthCopy.resume), systemImage: "arrow.clockwise")
+                }
+            }
+            if schedule.enabled {
+                Button { service.setEnabled(id: schedule.id, enabled: false); reload() } label: {
+                    Label(env.s(ExportHealthCopy.turnOff), systemImage: "pause")
+                }
+            } else {
+                Button { service.setEnabled(id: schedule.id, enabled: true); reload() } label: {
+                    Label(env.s(ExportHealthCopy.turnOn), systemImage: "play")
+                }
+            }
+            Button(role: .destructive) { service.delete(id: schedule.id); reload() } label: {
+                Label(env.s(Loc.delete), systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .imageScale(.large)
+                .foregroundStyle(BadanColor.textSecondary)
+                .frame(minWidth: BadanSpace.touchMin, minHeight: BadanSpace.touchMin)
+        }
+        .accessibilityLabel(env.s(ExportHealthCopy.scheduleActions))
     }
 
     // MARK: Templates
@@ -411,6 +636,7 @@ struct ExportHealthScreen: View {
         lastSuccesses = successes
         gapCount = service.jobsWithoutRunCount()
         backgroundSummary = try? env.backgroundRuns.summary(now: env.now())
+        schedules = AutomationScheduleService(env: env).allSchedules()
     }
 
     // MARK: Display helpers

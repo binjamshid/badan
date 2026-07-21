@@ -130,7 +130,7 @@
       "items": { "$ref": "#/$defs/baseline" }
     },
     "logs": {
-      "description": "User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `journal` is reserved for EPIC-29 and is deliberately absent rather than emitted empty — an empty array would assert 'this user wrote no journal entries', which is not the same claim as 'this build has no journal'.",
+      "description": "User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `hydration` is normal-class (a logged drink is the user's own data, never paywalled) and appears in a DEFAULT export, but is added ONLY when the export caught at least one drink — an install without the module, or an export whose scope caught no drinks, omits the key entirely rather than emitting an empty block that would assert 'this user logged no drinks'. `journal` is reserved for EPIC-29 and is deliberately absent rather than emitted empty — an empty array would assert 'this user wrote no journal entries', which is not the same claim as 'this build has no journal'.",
       "type": "object",
       "required": ["symptoms", "adherence", "workouts", "nutrition"],
       "additionalProperties": false,
@@ -142,7 +142,8 @@
           "type": "array",
           "items": { "$ref": "#/$defs/workout_log" }
         },
-        "nutrition": { "type": "array", "items": { "$ref": "#/$defs/nutrition_entry" } }
+        "nutrition": { "type": "array", "items": { "$ref": "#/$defs/nutrition_entry" } },
+        "hydration": { "$ref": "#/$defs/hydration_log" }
       }
     },
     "deletions": {
@@ -583,6 +584,161 @@
         "updated_at": { "$ref": "#/$defs/timestamp" },
         "origin_device_id": { "type": "string" },
         "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "hydration_log": {
+      "description": "The `logs.hydration` block (EPIC-38 / §9.14). Present only when the export caught at least one drink. REDACTION is structural, not blanked: the default export withholds `note` (the key is absent from every entry) and the `redaction` object names every field a default file leaves out (§7A.1). The hydration CSV set (hydration_entries.csv etc.) carries the same rows and a byte-identical redaction manifest.",
+      "type": "object",
+      "required": ["redaction", "entries", "summaries", "goals", "beverages", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "redaction": { "$ref": "#/$defs/hydration_redaction" },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/hydration_entry" } },
+        "summaries": {
+          "description": "Per-local-day rollups with a frozen goal snapshot. Manual/imported/estimated totals are kept separate (I5) so an imported or estimated volume is never silently blended into what the user logged; only manual is populated this phase.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/hydration_summary" }
+        },
+        "goals": { "type": "array", "items": { "$ref": "#/$defs/hydration_goal" } },
+        "beverages": {
+          "description": "The custom beverage definitions the exported entries reference, so a reader can name each drink without the app or a separate catalog. Built-ins are not repeated here.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/hydration_beverage" }
+        },
+        "sources": {
+          "description": "The provenance apps/paths the entries came from, aggregated and sorted — the hydration-scoped answer to 'where did this come from' (I1), matching hydration_sources.csv.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/hydration_source" }
+        }
+      }
+    },
+
+    "hydration_redaction": {
+      "description": "The machine-readable statement of what a default hydration export leaves out (§7A.1). `notes_included` is false in a default export; `excluded_by_default` lists `note` (while withheld) plus the contexts this phase never models at all (fasting/cycle/pregnancy/location/reminder history), so the omission is disclosed rather than invisible.",
+      "type": "object",
+      "required": ["notes_included", "excluded_by_default"],
+      "additionalProperties": false,
+      "properties": {
+        "notes_included": { "type": "boolean" },
+        "excluded_by_default": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "hydration_entry": {
+      "description": "One logged drink from the append-first revision ledger (§9.14). A volume is always canonical mL — a fluid type is a display/grouping category, NEVER a hydration weight, so 500 mL of coffee is 500 mL exactly like water (§7A.1). `note` is present ONLY when the export explicitly opted notes in; a default export omits the key entirely.",
+      "type": "object",
+      "required": ["record_id", "original_id", "supersedes", "revision", "volume_ml", "canonical_unit",
+                   "fluid_type", "beverage_id", "container_id", "occurred_at", "timezone",
+                   "value_type", "is_derived", "provenance", "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string", "description": "This revision's ULID." },
+        "original_id": {
+          "description": "The stable identity of the logical drink across every revision. Equal to record_id for an un-revised entry.",
+          "type": "string"
+        },
+        "supersedes": {
+          "description": "record_id of the revision this one replaces; null for an original (I2 append-never-overwrite).",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "revision": { "type": "integer", "description": "1-based; 1 is the original.", "minimum": 1 },
+        "volume_ml": { "type": "number", "description": "Canonical mL, always > 0." },
+        "canonical_unit": { "const": "mL" },
+        "fluid_type": {
+          "description": "Open-vocabulary category key (water, coffee, tea, …) for grouping/display only — never a hydration multiplier.",
+          "type": "string"
+        },
+        "beverage_id": { "$ref": "#/$defs/nullable_string" },
+        "container_id": { "$ref": "#/$defs/nullable_string" },
+        "occurred_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "note": {
+          "description": "Free-text note. Structurally redacted from a default export: the key is absent unless notes were explicitly opted in, never present-but-blank.",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "value_type": { "const": "raw" },
+        "is_derived": { "const": false },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "hydration_summary": {
+      "description": "A day's hydration rollup with a frozen goal snapshot: raising a goal next month does not retroactively mark last month's days as missed (§9.14). value_type is 'derived' — this is a computed rollup, physically separable from the raw entries (I5).",
+      "type": "object",
+      "required": ["day_key", "timezone", "manual_ml", "imported_ml", "estimated_ml", "total_ml",
+                   "entry_count", "goal_kind", "goal_target_ml", "goal_progress_pct", "value_type",
+                   "is_derived", "updated_at", "origin_device_id"],
+      "additionalProperties": false,
+      "properties": {
+        "day_key": { "type": "string", "description": "Local calendar day, YYYY-MM-DD, computed in `timezone`." },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "manual_ml": { "type": "number" },
+        "imported_ml": { "type": "number" },
+        "estimated_ml": { "type": "number" },
+        "total_ml": { "type": "number" },
+        "entry_count": { "type": "integer", "minimum": 0 },
+        "goal_kind": { "enum": ["none", "manual"] },
+        "goal_target_ml": {
+          "description": "The snapshotted target, or null for a no-goal day (equal-status, never 0).",
+          "$ref": "#/$defs/nullable_number"
+        },
+        "goal_progress_pct": {
+          "description": "Progress against the snapshotted target, or null for a no-goal day — a percentage of nothing is the streak-guilt framing §7A.1 rejects, so it is null, never 0.",
+          "$ref": "#/$defs/nullable_number"
+        },
+        "value_type": { "const": "derived" },
+        "is_derived": { "const": true },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" }
+      }
+    },
+
+    "hydration_goal": {
+      "description": "A hydration goal. `none` is a first-class, equal-status value — tracking without a target, never nagged (§7A.1) — so `target_ml` is null exactly when `kind` is `none`. `day_type` is a user-authored label (nothing infers it); null is the default goal.",
+      "type": "object",
+      "required": ["goal_id", "kind", "target_ml", "day_type", "active", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "goal_id": { "type": "string" },
+        "kind": { "enum": ["none", "manual"] },
+        "target_ml": { "$ref": "#/$defs/nullable_number" },
+        "day_type": { "$ref": "#/$defs/nullable_string" },
+        "active": { "type": "boolean" },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+
+    "hydration_beverage": {
+      "description": "A user-added beverage definition referenced by an exported entry. caffeine/alcohol/electrolyte are DISPLAY METADATA ONLY — carried so a reader sees the catalog fact, never read into a hydration total or a 'net hydration' multiplier (§7A.1 Reject).",
+      "type": "object",
+      "required": ["beverage_id", "name_en", "name_ar", "fluid_type", "default_volume_ml",
+                   "is_builtin", "caffeine_mg_per_100ml", "alcohol_pct", "electrolyte_note"],
+      "additionalProperties": false,
+      "properties": {
+        "beverage_id": { "type": "string" },
+        "name_en": { "type": "string" },
+        "name_ar": { "type": "string" },
+        "fluid_type": { "type": "string" },
+        "default_volume_ml": { "$ref": "#/$defs/nullable_number" },
+        "is_builtin": { "type": "boolean" },
+        "caffeine_mg_per_100ml": { "$ref": "#/$defs/nullable_number" },
+        "alcohol_pct": { "$ref": "#/$defs/nullable_number" },
+        "electrolyte_note": { "$ref": "#/$defs/nullable_string" }
+      }
+    },
+
+    "hydration_source": {
+      "type": "object",
+      "required": ["source_app", "ingestion_paths", "entry_count"],
+      "additionalProperties": false,
+      "properties": {
+        "source_app": { "type": "string" },
+        "ingestion_paths": { "type": "array", "items": { "$ref": "#/$defs/ingestion_path" } },
+        "entry_count": { "type": "integer", "minimum": 0 }
       }
     },
 

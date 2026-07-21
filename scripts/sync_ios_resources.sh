@@ -22,6 +22,8 @@ sync_file() {
 sync_file "$ROOT/packages/metric-ontology/registry.json"        "$DEST/registry.json"
 sync_file "$ROOT/packages/contracts/insights/templates.json"    "$DEST/insight_templates.json"
 sync_file "$ROOT/packages/contracts/dictionaries/symptoms.json" "$DEST/symptoms.json"
+# EPIC-38: the curated bilingual beverage vocabulary the hydration quick-log picks from.
+sync_file "$ROOT/packages/contracts/dictionaries/beverages.json" "$DEST/beverages.json"
 sync_file "$ROOT/packages/export-schemas/csv_columns.json"      "$DEST/csv_columns.json"
 # EPIC-07: algorithm params and the sensor-quality map are shared contracts loaded exactly like
 # registry.json — mirrored here so both platforms evaluate the same constants (plan §15) and show

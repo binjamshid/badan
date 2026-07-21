@@ -3,6 +3,10 @@ package net.albayyan.badan.export
 import net.albayyan.badan.domain.Aggregation
 import net.albayyan.badan.domain.AdherenceEvent
 import net.albayyan.badan.domain.Baseline
+import net.albayyan.badan.domain.hydration.BeverageDefinition
+import net.albayyan.badan.domain.hydration.HydrationDailySummary
+import net.albayyan.badan.domain.hydration.HydrationEntry
+import net.albayyan.badan.domain.hydration.HydrationGoal
 import net.albayyan.badan.domain.DerivedValue
 import net.albayyan.badan.domain.ExportManifest
 import net.albayyan.badan.domain.ExportScope
@@ -189,10 +193,12 @@ class JsonBundleWriter {
         previousManifestSha: String? = null,
         destination: Pair<String, String>? = null,
         config: Map<String, CanonicalJson>? = null,
+        hydration: HydrationExportPayload? = null,
+        hydrationRedaction: HydrationRedactionPolicy = HydrationRedactionPolicy.DEFAULT,
     ): ByteArray = bundle(
         manifest, rawSamples, intervalRecords, sessions, derivedValues, baselines, symptoms,
         adherence, workouts, nutrition, includeRoutes, sampleDataRowCount, isDelta, cursorBefore,
-        cursorAfter, previousManifestSha, destination, config,
+        cursorAfter, previousManifestSha, destination, config, hydration, hydrationRedaction,
     ).render().toByteArray(Charsets.UTF_8)
 
     /**
@@ -250,6 +256,8 @@ class JsonBundleWriter {
         previousManifestSha: String? = null,
         destination: Pair<String, String>? = null,
         config: Map<String, CanonicalJson>? = null,
+        hydration: HydrationExportPayload? = null,
+        hydrationRedaction: HydrationRedactionPolicy = HydrationRedactionPolicy.DEFAULT,
     ): CanonicalJson {
         // A workout session lives in `workouts`, not `sessions`. Split before anything counts
         // rows, so `row_counts` describes what was actually serialized rather than what was
@@ -257,7 +265,14 @@ class JsonBundleWriter {
         val workoutSessions = sessions.filter { it.kind == SessionKind.WORKOUT }
         val sleepSessions = sessions.filter { it.kind != SessionKind.WORKOUT }
 
-        val rowCounts: Map<String, CanonicalJson> = mapOf(
+        // Absent, not empty: a null-or-empty hydration payload contributes NOTHING to the envelope —
+        // no `logs.hydration` block and no `logs.hydration` row count. An empty `"hydration":[]` would
+        // assert "the user logged no drinks", which the writer cannot claim when the module may simply
+        // be hidden or unbuilt for this install. Mirrors the top-level `config` rule and keeps a
+        // pre-hydration golden byte-identical without a fixture regeneration.
+        val hydrationPayload = if (hydration != null && !hydration.isEmpty) hydration else null
+
+        val rowCounts: MutableMap<String, CanonicalJson> = linkedMapOf(
             "raw_samples" to CanonicalJson.Int64(rawSamples.size.toLong()),
             "interval_records" to CanonicalJson.Int64(intervalRecords.size.toLong()),
             "sessions" to CanonicalJson.Int64(sleepSessions.size.toLong()),
@@ -269,6 +284,7 @@ class JsonBundleWriter {
             "logs.workouts" to CanonicalJson.Int64(workouts.size.toLong()),
             "logs.nutrition" to CanonicalJson.Int64(nutrition.size.toLong()),
         )
+        if (hydrationPayload != null) rowCounts["logs.hydration"] = CanonicalJson.Int64(hydrationPayload.entries.size.toLong())
 
         val members: LinkedHashMap<String, CanonicalJson> = linkedMapOf(
             "export_schema_version" to CanonicalJson.Str(ExportSchema.VERSION),
@@ -295,12 +311,7 @@ class JsonBundleWriter {
             "derived_values" to CanonicalJson.Arr(derivedValues.map(::derivedValue)),
             "baselines" to CanonicalJson.Arr(baselines.map(::baseline)),
             "logs" to CanonicalJson.Obj(
-                mapOf(
-                    "symptoms" to CanonicalJson.Arr(symptoms.map(::symptom)),
-                    "adherence" to CanonicalJson.Arr(adherence.map(::adherence)),
-                    "workouts" to CanonicalJson.Arr(workouts.map(::workoutLog)),
-                    "nutrition" to CanonicalJson.Arr(nutrition.map(::nutrition)),
-                ),
+                logs(symptoms, adherence, workouts, nutrition, hydrationPayload, hydrationRedaction),
             ),
             "deletions" to deletions(
                 rawSamples, intervalRecords, sleepSessions, workoutSessions, derivedValues,
@@ -581,6 +592,134 @@ class JsonBundleWriter {
     )
 
     // ===== Logs =====
+
+    /**
+     * The `logs` sub-object. Symptoms/adherence/workouts/nutrition are always present. `hydration` is
+     * the exception: added ONLY when a non-empty payload is supplied, so a build without the module
+     * (or an export whose scope caught no drinks) produces the exact bytes it did before EPIC-38.
+     * When present it carries its own redaction manifest (§7A.1).
+     */
+    private fun logs(
+        symptoms: List<SymptomEntry>, adherence: List<AdherenceEvent>, workouts: List<WorkoutEntry>,
+        nutrition: List<NutritionEntry>, hydration: HydrationExportPayload?, hydrationRedaction: HydrationRedactionPolicy,
+    ): Map<String, CanonicalJson> {
+        val members: LinkedHashMap<String, CanonicalJson> = linkedMapOf(
+            "symptoms" to CanonicalJson.Arr(symptoms.map(::symptom)),
+            "adherence" to CanonicalJson.Arr(adherence.map(::adherence)),
+            "workouts" to CanonicalJson.Arr(workouts.map(::workoutLog)),
+            "nutrition" to CanonicalJson.Arr(nutrition.map(::nutrition)),
+        )
+        if (hydration != null) members["hydration"] = hydrationLog(hydration, hydrationRedaction)
+        return members
+    }
+
+    // ===== logs.hydration (EPIC-38, §9.14 / §7A.1) =====
+    // Reuses this class's own provenance/timestamp rendering so a hydration entry's `provenance`
+    // block is byte-identical to a raw sample's, and its redaction manifest byte-matches the one
+    // HydrationCsvWriter writes. Redaction is structural: the default policy withholds `note` (the
+    // key is absent, not blanked). Byte-equivalent to iOS `HydrationExportJSON`.
+
+    private fun hydrationLog(payload: HydrationExportPayload, policy: HydrationRedactionPolicy): CanonicalJson = CanonicalJson.Obj(
+        mapOf(
+            "redaction" to HydrationExportJson.redaction(policy),
+            "entries" to CanonicalJson.Arr(payload.entries.map { hydrationEntry(it, policy) }),
+            "summaries" to CanonicalJson.Arr(payload.summaries.map(::hydrationSummary)),
+            "goals" to CanonicalJson.Arr(payload.goals.map(::hydrationGoal)),
+            "beverages" to CanonicalJson.Arr(payload.beverages.map(::hydrationBeverage)),
+            "sources" to hydrationSources(payload.entries),
+        ),
+    )
+
+    private fun hydrationEntry(e: HydrationEntry, policy: HydrationRedactionPolicy): CanonicalJson {
+        val members: LinkedHashMap<String, CanonicalJson> = linkedMapOf(
+            "record_id" to CanonicalJson.Str(e.id),
+            "original_id" to CanonicalJson.Str(e.originalId),
+            "supersedes" to CanonicalJson.str(e.supersedes),
+            "revision" to CanonicalJson.Int64(e.revision.toLong()),
+            "volume_ml" to CanonicalJson.Num(e.volumeMl),
+            "canonical_unit" to CanonicalJson.Str("mL"),
+            "fluid_type" to CanonicalJson.Str(e.fluidType),
+            "beverage_id" to CanonicalJson.str(e.beverageId),
+            "container_id" to CanonicalJson.str(e.containerId),
+            "occurred_at" to CanonicalJson.Str(TimestampFormatting.string(e.occurredAt, e.tzId)),
+            "timezone" to CanonicalJson.Str(e.tzId),
+            "value_type" to CanonicalJson.Str("raw"),
+            "is_derived" to CanonicalJson.Bool(false),
+            "provenance" to provenance(e.provenance, e.tzId),
+            "updated_at" to CanonicalJson.Str(TimestampFormatting.string(e.updatedAt, e.tzId)),
+            "origin_device_id" to CanonicalJson.Str(e.originDeviceId),
+            "deleted_at" to (e.deletedAt?.let { CanonicalJson.Str(TimestampFormatting.string(it, e.tzId)) } ?: CanonicalJson.Null),
+        )
+        if (policy.includeNotes) members["note"] = CanonicalJson.str(e.note)
+        return CanonicalJson.Obj(members)
+    }
+
+    private fun hydrationSummary(s: HydrationDailySummary): CanonicalJson = CanonicalJson.Obj(
+        mapOf(
+            "day_key" to CanonicalJson.Str(s.dayKey),
+            "timezone" to CanonicalJson.Str(s.tzId),
+            "manual_ml" to CanonicalJson.Num(s.manualMl),
+            "imported_ml" to CanonicalJson.Num(s.importedMl),
+            "estimated_ml" to CanonicalJson.Num(s.estimatedMl),
+            "total_ml" to CanonicalJson.Num(s.totalMl),
+            "entry_count" to CanonicalJson.Int64(s.entryCount.toLong()),
+            "goal_kind" to CanonicalJson.Str(s.goalKind.code),
+            "goal_target_ml" to CanonicalJson.num(s.goalTargetMl),
+            // Null, never 0, for a no-goal day — a percentage of nothing is the framing §7A.1 rejects.
+            "goal_progress_pct" to CanonicalJson.num(s.goalProgressPct),
+            "value_type" to CanonicalJson.Str("derived"),
+            "is_derived" to CanonicalJson.Bool(true),
+            "updated_at" to CanonicalJson.Str(utc(s.updatedAt)),
+            "origin_device_id" to CanonicalJson.Str(s.originDeviceId),
+        ),
+    )
+
+    private fun hydrationGoal(g: HydrationGoal): CanonicalJson = CanonicalJson.Obj(
+        mapOf(
+            "goal_id" to CanonicalJson.Str(g.id),
+            "kind" to CanonicalJson.Str(g.kind.code),
+            // Null target is the equal-status no-goal, not a missing value.
+            "target_ml" to CanonicalJson.num(g.targetMl),
+            "day_type" to CanonicalJson.str(g.dayType),
+            "active" to CanonicalJson.Bool(g.active),
+            "created_at" to CanonicalJson.Str(utc(g.createdAt)),
+        ),
+    )
+
+    private fun hydrationBeverage(b: BeverageDefinition): CanonicalJson = CanonicalJson.Obj(
+        mapOf(
+            "beverage_id" to CanonicalJson.Str(b.id),
+            "name_en" to CanonicalJson.Str(b.nameEn),
+            "name_ar" to CanonicalJson.Str(b.nameAr),
+            "fluid_type" to CanonicalJson.Str(b.fluidType),
+            "default_volume_ml" to CanonicalJson.num(b.defaultVolumeMl),
+            "is_builtin" to CanonicalJson.Bool(b.isBuiltin),
+            // Display metadata only — carried so a reader sees the catalog fact, never read into a
+            // hydration total or a "net hydration" multiplier (§7A.1 Reject).
+            "caffeine_mg_per_100ml" to CanonicalJson.num(b.caffeineMgPer100ml),
+            "alcohol_pct" to CanonicalJson.num(b.alcoholPct),
+            "electrolyte_note" to CanonicalJson.str(b.electrolyteNote),
+        ),
+    )
+
+    private fun hydrationSources(entries: List<HydrationEntry>): CanonicalJson {
+        val paths = HashMap<String, MutableSet<String>>()
+        val counts = HashMap<String, Int>()
+        for (e in entries) {
+            paths.getOrPut(e.provenance.sourceId) { mutableSetOf() }.add(e.provenance.ingestionPath.code)
+            counts[e.provenance.sourceId] = (counts[e.provenance.sourceId] ?: 0) + 1
+        }
+        val rows = paths.keys.sorted().map { sourceId ->
+            CanonicalJson.Obj(
+                mapOf(
+                    "source_app" to CanonicalJson.Str(sourceId),
+                    "ingestion_paths" to CanonicalJson.Arr(paths[sourceId]!!.sorted().map { CanonicalJson.Str(it) }),
+                    "entry_count" to CanonicalJson.Int64((counts[sourceId] ?: 0).toLong()),
+                ),
+            )
+        }
+        return CanonicalJson.Arr(rows)
+    }
 
     private fun symptom(entry: SymptomEntry): CanonicalJson = CanonicalJson.Obj(
         mapOf(

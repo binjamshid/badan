@@ -237,13 +237,26 @@ def bundle_section(schema):
             continue
         lines += object_table(schema, items, name + "[]")
     # The log arrays live one level down and are the sensitive-class ones, so they get their own
-    # heading rather than being folded in above.
+    # heading rather than being folded in above. A log family may be a flat array (symptoms,
+    # adherence, workouts, nutrition) OR a structured object (hydration: a block of arrays + a
+    # redaction manifest) — both are rendered so the human dictionary shows every shape the schema
+    # permits, not just the flat ones.
     logs = schema["properties"]["logs"]
     lines += ["#### `logs`", "", escape_cell(logs.get("description", "")), ""]
     for name, prop in logs["properties"].items():
-        items = prop.get("items")
+        resolved = resolve(schema, prop)
+        items = resolved.get("items")
         if items is not None:
             lines += object_table(schema, items, f"logs.{name}[]")
+        elif resolved.get("type") == "object":
+            lines += object_table(schema, resolved, f"logs.{name}")
+            for sub_name, sub_prop in resolved.get("properties", {}).items():
+                sub_resolved = resolve(schema, sub_prop)
+                sub_items = sub_resolved.get("items")
+                if sub_items is not None:
+                    lines += object_table(schema, sub_items, f"logs.{name}.{sub_name}[]")
+                elif sub_resolved.get("type") == "object":
+                    lines += object_table(schema, sub_resolved, f"logs.{name}.{sub_name}")
     lines += object_table(schema, schema["$defs"]["provenance"], "provenance")
     return lines
 

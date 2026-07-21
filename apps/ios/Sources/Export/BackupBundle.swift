@@ -116,12 +116,23 @@ enum BackupBundle {
     /// are echoed *only* into an encrypted bundle and *only* through `Self.destinationSansSecrets`,
     /// which has no field a secret or a secret-reference fits into. A plaintext bundle has no
     /// `export_destinations` key at all.
+    ///
+    /// `hydration` is the drink slice (EPIC-38): the full ledger the caller gathered for a backup —
+    /// entries with their revision chains, day summaries, goals, and the referenced beverages. It is
+    /// carried **whole, with notes**, unlike the redacted default export: a backup is the user's
+    /// complete data for their own device migration, and the bundle already carries symptom, workout
+    /// and nutrition notes unconditionally (`JSONBundleWriter` writes their `note` field with no
+    /// redaction), so dropping only *water* notes would be arbitrary. The encrypted variant protects
+    /// the whole bundle; a plaintext backup carries notes by the same design that carries every other
+    /// log's notes. A `nil`/empty payload writes no `logs.hydration` at all (the absent-not-empty rule
+    /// `JSONBundleWriter` documents), so the pre-hydration goldens stay byte-identical.
     static func build(
         manifest: ExportManifest,
         rawSamples: [RawSample], intervalRecords: [IntervalRecord], sessions: [Session],
         derivedValues: [DerivedValue], baselines: [Baseline],
         symptoms: [SymptomEntry], adherence: [AdherenceEvent],
         workouts: [WorkoutEntry], nutrition: [NutritionEntry],
+        hydration: HydrationExportPayload? = nil,
         includeRoutes: Bool = false,
         templates: [ExportTemplate], destinations: [ExportDestination],
         customization: CanonicalJSON, schedules: [CanonicalJSON],
@@ -143,7 +154,10 @@ enum BackupBundle {
             manifest: manifest, rawSamples: rawSamples, intervalRecords: intervalRecords,
             sessions: sessions, derivedValues: derivedValues, baselines: baselines,
             symptoms: symptoms, adherence: adherence, workouts: workouts, nutrition: nutrition,
-            includeRoutes: includeRoutes, config: config)
+            includeRoutes: includeRoutes, config: config,
+            // A backup carries the drink ledger WHOLE — notes included — because it is the user's
+            // complete data, and the bundle already carries every other log's notes unredacted.
+            hydration: hydration, hydrationRedaction: HydrationRedactionPolicy(includeNotes: true))
 
         let dictionaryData = Data(dataDictionaryMarkdown().utf8)
 
@@ -473,7 +487,8 @@ enum BackupBundle {
         var encrypted: Bool
         /// Per-namespace record counts (`raw_samples`, `interval_records`, `sessions`, `workouts`,
         /// `derived_values`, `baselines`, `logs.symptoms`, `logs.adherence`, `logs.workouts`,
-        /// `logs.nutrition`).
+        /// `logs.nutrition`, `logs.hydration`). `logs.hydration` counts the drink *entries* (the
+        /// full ledger, including revisions), the same normal-class family workouts/nutrition are.
         var namespaceCounts: [String: Int]
         /// True when the bundle carries medications/symptoms (I7 namespace). Drives whether the
         /// restore screen must show the sensitive-consent toggle.
@@ -489,6 +504,10 @@ enum BackupBundle {
 
         let symptoms = logCount("symptoms")
         let adherence = logCount("adherence")
+        // `logs.hydration` is an object (redaction/entries/summaries/…), so its record count is the
+        // length of its `entries` array, not the object itself. A backup with no drinks has no
+        // `hydration` key and reads as 0 — same absent-not-empty rule the writer follows.
+        let hydrationEntries = ((logs?["hydration"] as? [String: Any])?["entries"] as? [Any])?.count ?? 0
 
         let config = bundle.bundle["config"] as? [String: Any]
         func configArray(_ key: String) -> Int { (config?[key] as? [Any])?.count ?? 0 }
@@ -509,7 +528,8 @@ enum BackupBundle {
                 "logs.symptoms": symptoms,
                 "logs.adherence": adherence,
                 "logs.workouts": logCount("workouts"),
-                "logs.nutrition": logCount("nutrition")
+                "logs.nutrition": logCount("nutrition"),
+                "logs.hydration": hydrationEntries
             ],
             sensitivePresent: symptoms > 0 || adherence > 0,
             configCounts: [
@@ -635,6 +655,8 @@ enum BackupBundle {
         - `baselines` — personal baselines with center/spread/band and `n_points`.
         - `logs.symptoms`, `logs.adherence` — the sensitive namespace (present only with consent).
         - `logs.workouts`, `logs.nutrition` — manual logs.
+        - `logs.hydration` — the drink ledger: entries (with their revision chains), day summaries,
+          goals, and referenced beverages. Carried whole in a backup, notes included.
         - `deletions` — tombstones (id + `deleted_at`) so a consumer can reconcile removals.
 
         Every timestamp is ISO-8601 with a numeric offset (never `Z`). Every value is in its

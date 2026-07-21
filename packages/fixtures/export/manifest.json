@@ -23,6 +23,15 @@
       ]
     },
     {
+      "id": "bundle-hydration-v1",
+      "file": "bundle-hydration-v1.json",
+      "sha256": "3531284698726100163d3732473d4aab640f205d233fbf5d0964e1261b167437",
+      "role": "CI schema-validation instance — NOT a cross-platform parity golden. Carries a logs.hydration block (EPIC-38) so the CI JSON-Schema step exercises that section, which bundle-v1.json (no drinks) cannot. Shaped as ExportRunner/HydrationExportJSON emits it, but never asserted byte-identical by the two suites — so it is not regenerated the way the parity goldens are.",
+      "readBy": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
       "id": "raw-v1",
       "file": "raw-v1.csv",
       "sha256": "53cbbc17f878f09f2ac832a44466aae64356c156cfaf0cec20fed515215d9eed",

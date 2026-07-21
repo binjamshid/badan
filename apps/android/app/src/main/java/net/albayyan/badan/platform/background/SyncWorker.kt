@@ -8,6 +8,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkerParameters
 import net.albayyan.badan.app.AppEnvironment
 import net.albayyan.badan.core.Ulid
+import net.albayyan.badan.domain.ExportTrigger
 import net.albayyan.badan.platform.health.BackfillWindow
 import net.albayyan.badan.storage.repositories.BackgroundRun
 import net.albayyan.badan.storage.repositories.BackgroundRunKind
@@ -72,6 +73,19 @@ class SyncWorker(
         }
         val startedAt = env.clock.now()
 
+        // EPIC-15: evaluate due automations on the periodic wake — the Android counterpart of iOS's
+        // BGAppRefresh automation step. Exports read already-stored data, so this runs regardless of
+        // Health-Connect eligibility below, and ONLY on the periodic wake, never on a user "sync
+        // now" tap (tapping Sync must not silently fire the user's scheduled exports). Each due
+        // automation writes its own `ExportRun`; the count here is the substrate-level diagnostic.
+        val automationsEvaluated = if (!userTriggered) {
+            runCatching {
+                env.automationEngine.evaluateDue(env.clock.now(), ExportTrigger.SCHEDULED_WORK).ran
+            }.getOrDefault(0)
+        } else {
+            0
+        }
+
         // Deliberately writes no run row and reports success. Two reasons, and the first is a data
         // bug rather than tidiness: `syncHealthConnect` purges the demo seed on its first real
         // ingest, so letting this run for a user who has never connected would silently delete the
@@ -87,7 +101,18 @@ class SyncWorker(
         } else {
             env.isBackgroundSyncEligible()
         }
-        if (!eligible) return Result.success()
+        if (!eligible) {
+            // The periodic wake still evaluated automations above (they need no Health Connect), so
+            // record a substrate row when any ran rather than dropping the diagnostic — the empty-row
+            // suppression is only for wakes that did nothing at all.
+            if (automationsEvaluated > 0) {
+                record(
+                    env, kind, startedAt, BackgroundRunOutcome.COMPLETED,
+                    BackgroundWorkDone(runAttempt = runAttemptCount, automationsEvaluated = automationsEvaluated),
+                )
+            }
+            return Result.success()
+        }
 
         return try {
             val summary = env.syncHealthConnect(lookbackDays = CATCHUP_LOOKBACK_DAYS)
@@ -108,6 +133,7 @@ class SyncWorker(
                     incremental = IncrementalClassification.wasIncremental(
                         summary?.backfillWindows.orEmpty(),
                     ),
+                    automationsEvaluated = automationsEvaluated,
                 ),
             )
             // Opportunistic §9.8 pruning: bounded DELETE on an indexed column, cheaper than owning

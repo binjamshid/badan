@@ -131,6 +131,11 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     public var notifications: NotificationPreference
     public var sensitiveModulesEnabled: Bool
     public var nutritionEnabled: Bool
+    /// EPIC-38: whether the hydration module shows on the Log tab. A pure presentation flag —
+    /// hiding the module never touches the drink ledger (§16.1 "hideable without deletion"), so
+    /// turning it back on restores every logged drink untouched. Defaults on; a user who never
+    /// visits hydration simply leaves it on.
+    public var hydrationEnabled: Bool
     /// Explicit user choice of which tab the app opens on; nil = today's default (Home/Today).
     public var defaultLandingTab: Int?
     /// Remembered-but-not-precious session/navigation state — see `SessionPreferences`.
@@ -141,6 +146,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 language: AppLanguage = .en, arabicDigits: Bool = false, theme: AppTheme = .system,
                 notifications: NotificationPreference = NotificationPreference(),
                 sensitiveModulesEnabled: Bool = true, nutritionEnabled: Bool = true,
+                hydrationEnabled: Bool = true,
                 defaultLandingTab: Int? = nil,
                 sessionPreferences: SessionPreferences = SessionPreferences()) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
@@ -148,6 +154,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
         self.notifications = notifications; self.sensitiveModulesEnabled = sensitiveModulesEnabled
         self.nutritionEnabled = nutritionEnabled
+        self.hydrationEnabled = hydrationEnabled
         self.defaultLandingTab = defaultLandingTab; self.sessionPreferences = sessionPreferences
     }
 
@@ -171,6 +178,10 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         notifications = try c.decode(NotificationPreference.self, forKey: .notifications)
         sensitiveModulesEnabled = try c.decode(Bool.self, forKey: .sensitiveModulesEnabled)
         nutritionEnabled = try c.decode(Bool.self, forKey: .nutritionEnabled)
+        // decodeIfPresent (not decode): a profile persisted before this flag existed must still
+        // load — a missing key is treated as the default (on), never a whole-profile decode
+        // failure, which ProfileRepository.load() would silently reset every preference over.
+        hydrationEnabled = try c.decodeIfPresent(Bool.self, forKey: .hydrationEnabled) ?? true
         defaultLandingTab = try c.decodeIfPresent(Int.self, forKey: .defaultLandingTab)
         sessionPreferences = try c.decodeIfPresent(SessionPreferences.self, forKey: .sessionPreferences)
             ?? SessionPreferences()

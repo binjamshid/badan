@@ -124,6 +124,14 @@ object BackupBundle {
      *
      * Destinations are handled structurally (requirement 3): echoed only into an encrypted bundle,
      * only through [destinationSansSecrets], which has no field a secret fits into.
+     *
+     * [hydration] is the drink slice (EPIC-38): the full ledger the caller gathered for a backup —
+     * entries with their revision chains, day summaries, goals, and referenced beverages. It is
+     * carried **whole, with notes**, unlike the redacted default export: a backup is the user's
+     * complete data for their own device migration, and the bundle already carries symptom, workout
+     * and nutrition notes unconditionally, so dropping only *water* notes would be arbitrary. A
+     * null/empty payload writes no `logs.hydration` at all, so the pre-hydration goldens stay
+     * byte-identical.
      */
     fun build(
         manifest: ExportManifest,
@@ -143,6 +151,7 @@ object BackupBundle {
         createdAt: Long,
         appVersion: String,
         platform: String,
+        hydration: HydrationExportPayload? = null,
         includeRoutes: Boolean = false,
         passphrase: String? = null,
     ): Artifact {
@@ -156,6 +165,9 @@ object BackupBundle {
         val bundleData = JsonBundleWriter().data(
             manifest, rawSamples, intervalRecords, sessions, derivedValues, baselines, symptoms,
             adherence, workouts, nutrition, includeRoutes = includeRoutes, config = config,
+            // A backup carries the drink ledger WHOLE — notes included — because it is the user's
+            // complete data, and the bundle already carries every other log's notes unredacted.
+            hydration = hydration, hydrationRedaction = HydrationRedactionPolicy(includeNotes = true),
         )
         val dictionaryData = dataDictionaryMarkdown().toByteArray(Charsets.UTF_8)
 
@@ -491,6 +503,10 @@ object BackupBundle {
 
         val symptoms = logCount("symptoms")
         val adherence = logCount("adherence")
+        // `logs.hydration` is an object (redaction/entries/summaries/…), so its record count is the
+        // length of its `entries` array. A backup with no drinks has no `hydration` key → 0, the
+        // same absent-not-empty rule the writer follows.
+        val hydrationEntries = ((logs?.get("hydration") as? JsonObject)?.get("entries") as? JsonArray)?.size ?: 0
 
         val config = bundle.bundle["config"] as? JsonObject
         fun configArray(key: String): Int = (config?.get(key) as? JsonArray)?.size ?: 0
@@ -513,6 +529,7 @@ object BackupBundle {
                 "logs.adherence" to adherence,
                 "logs.workouts" to logCount("workouts"),
                 "logs.nutrition" to logCount("nutrition"),
+                "logs.hydration" to hydrationEntries,
             ),
             sensitivePresent = symptoms > 0 || adherence > 0,
             configCounts = mapOf(
@@ -637,6 +654,8 @@ object BackupBundle {
         - `baselines` — personal baselines with center/spread/band and `n_points`.
         - `logs.symptoms`, `logs.adherence` — the sensitive namespace (present only with consent).
         - `logs.workouts`, `logs.nutrition` — manual logs.
+        - `logs.hydration` — the drink ledger: entries (with their revision chains), day summaries,
+          goals, and referenced beverages. Carried whole in a backup, notes included.
         - `deletions` — tombstones (id + `deleted_at`) so a consumer can reconcile removals.
 
         Every timestamp is ISO-8601 with a numeric offset (never `Z`). Every value is in its

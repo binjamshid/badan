@@ -267,6 +267,12 @@ data class BackgroundWorkDone(
      * and leaves this to its default, that claim comes back.
      */
     val incremental: Boolean = false,
+    /**
+     * Due automations evaluated this wake (EPIC-15) — the count that actually ran their template,
+     * not the number merely examined. Added for parity with iOS `BackgroundWorkCounts`; defaulted
+     * to 0 so existing serialized rows decode unchanged and a wake with no automations stays honest.
+     */
+    val automationsEvaluated: Int = 0,
 )
 
 data class BackgroundRun(

@@ -40,6 +40,7 @@ import net.albayyan.badan.domain.SensitiveRunConsent
 import net.albayyan.badan.domain.Session
 import net.albayyan.badan.domain.SessionKind
 import net.albayyan.badan.domain.UnitProfileMode
+import net.albayyan.badan.domain.hydration.GoalEngine
 import net.albayyan.badan.export.destinations.ExportArtifact
 import net.albayyan.badan.export.destinations.ExportArtifactNaming
 import net.albayyan.badan.export.destinations.ExportDeliveryReceipt
@@ -60,6 +61,7 @@ import net.albayyan.badan.storage.repositories.ExportDestinationRepository
 import net.albayyan.badan.storage.repositories.ExportJobRepository
 import net.albayyan.badan.storage.repositories.ExportRunRepository
 import net.albayyan.badan.storage.repositories.ExportTemplateRepository
+import net.albayyan.badan.storage.repositories.HydrationRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
 import net.albayyan.badan.storage.repositories.RouteRepository
@@ -119,6 +121,16 @@ class ExportRunner(
      * silently writing the user's data nowhere.
      */
     private val deliverers: List<ExportDestinationDelivering> = emptyList(),
+    /**
+     * EPIC-38 hydration ledger + catalogs (main DB — a logged drink is normal-class, §9.14). Optional
+     * and defaulted to null so every pre-hydration construction — and the Phase-0/1 tests — is
+     * unchanged: a null repo gathers no payload, so the JSON bundle omits `logs.hydration` and the CSV
+     * set omits the `hydration_*.csv` files, leaving existing goldens byte-identical. When present, the
+     * runner assembles ONE [HydrationExportPayload] (in [run]) and feeds it to BOTH the JSON writer
+     * (as `logs.hydration`) and the CSV writer (as its own file set), so a drink the user logged is
+     * exportable on the real export path — raw data is never paywalled. Mirror of iOS's hydration dep.
+     */
+    private val hydration: HydrationRepository? = null,
 ) {
 
     /**
@@ -213,14 +225,22 @@ class ExportRunner(
             }
         }
 
+        // EPIC-38 hydration (§9.14 / §7A.1). A logged drink is a normal-class log, gathered here —
+        // once — exactly like workouts/nutrition are (wantRaw + family), so BOTH format paths render
+        // the SAME drinks: the JSON bundle as `logs.hydration`, the CSV export as its own file set.
+        // A null repo, an out-of-scope family, or an empty result yields no payload, which keeps the
+        // hydration block/files absent and existing goldens byte-stable.
+        val hydrationPayload = gatherHydration(scope, startedAt, ingestedSince)
+
         val result = when (format) {
             ExportFormat.CSV -> runCsv(
                 scope, exportId, outputDir, startedAt,
-                rawSamples, intervalRecords, sessions, derivedValues, baselines,
+                rawSamples, intervalRecords, sessions, derivedValues, baselines, hydrationPayload,
             )
             ExportFormat.JSON -> runJson(
                 scope, exportId, outputDir, startedAt,
-                rawSamples, intervalRecords, sessions, derivedValues, baselines, ingestedSince,
+                rawSamples, intervalRecords, sessions, derivedValues, baselines, hydrationPayload,
+                ingestedSince,
             )
         }
 
@@ -336,6 +356,7 @@ class ExportRunner(
         sessions: List<Session>,
         derivedValues: List<DerivedValue>,
         baselines: List<Baseline>,
+        hydration: HydrationExportPayload?,
     ): ExportResult {
         val generatedAt = clock.now()
         val writer = CsvWriter()
@@ -362,15 +383,39 @@ class ExportRunner(
         writer.writeTo(rawRows, rawFile.outputStream(), rawDigest)
         writer.writeTo(derivedRows, derivedFile.outputStream(), derivedDigest)
 
-        val checksums = mapOf(
+        val checksums = linkedMapOf(
             "raw.csv" to hex(rawDigest.digest()),
             "derived.csv" to hex(derivedDigest.digest()),
         )
-        val rowCount = rawRows.size + derivedRows.size
+        val files = mutableListOf(rawFile, derivedFile)
+
+        // EPIC-38 (§9.14 / §7A.1): the hydration CSV set — one self-describing table per aspect
+        // (entries, summaries, goals, sources) plus the redaction manifest, separate from the main
+        // 26-column contract because a drink ledger is a different shape. Notes are excluded
+        // STRUCTURALLY by the default policy (the `note` column is absent, not blanked). Written only
+        // when a non-empty payload is present, so a no-hydration CSV export stays byte-identical.
+        var hydrationRows = 0
+        if (hydration != null && !hydration.isEmpty) {
+            // Sorted by name (matching iOS) so the file list and the manifest's checksum-key order are
+            // stable and cross-platform-consistent.
+            for ((name, content) in HydrationCsvWriter().files(hydration).toSortedMap()) {
+                val bytes = content.toByteArray(Charsets.UTF_8)
+                val file = File(folder, name)
+                file.writeBytes(bytes)
+                checksums[name] = hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+                files += file
+            }
+            hydrationRows = hydration.entries.size
+        }
+
+        // The drinks count toward the export total (and the `logs` tally the caller derives from it),
+        // so a CSV export's row count reflects the ledger it wrote — matching the JSON path.
+        val rowCount = rawRows.size + derivedRows.size + hydrationRows
 
         val manifest = makeManifest(exportId, scope, generatedAt, checksums, counts)
         val manifestFile = File(folder, "manifest.json")
         manifestFile.writeText(JsonCoding.encode(manifest))
+        files += manifestFile
 
         val job = ExportJob(
             id = exportId, scope = scope, format = ExportFormat.CSV, status = ExportJobStatus.COMPLETED,
@@ -378,7 +423,7 @@ class ExportRunner(
             startedAt = startedAt, finishedAt = generatedAt, createdAt = startedAt,
         )
         exportJobs.insert(job)
-        return ExportResult(job, listOf(rawFile, derivedFile, manifestFile), rowCount)
+        return ExportResult(job, files, rowCount)
     }
 
     // MARK: - JSON
@@ -393,6 +438,7 @@ class ExportRunner(
         sessions: List<Session>,
         derivedValues: List<DerivedValue>,
         baselines: List<Baseline>,
+        hydration: HydrationExportPayload?,
         ingestedSince: Long? = null,
     ): ExportResult {
         val generatedAt = clock.now()
@@ -438,24 +484,33 @@ class ExportRunner(
         for (unused in adherence) counts.bump("medications.adherence")
         for (unused in workouts) counts.bump("activity.workout")
         for (unused in nutrition) counts.bump("nutrition.entry")
+        // EPIC-38: drinks count toward the total and the per-metric tally; the writer additionally
+        // emits the per-class `logs.hydration` count itself, and skips the whole block for a
+        // null/empty payload (absent-when-empty), so a pre-hydration bundle stays byte-identical.
+        val hydrationEntries = hydration?.entries ?: emptyList()
+        for (unused in hydrationEntries) counts.bump("hydration.entry")
         val rowCount = rawSamples.size + intervalRecords.size + sessions.size +
             derivedValues.size + baselines.size +
-            symptoms.size + adherence.size + workouts.size + nutrition.size
+            symptoms.size + adherence.size + workouts.size + nutrition.size + hydrationEntries.size
 
         // A single self-contained file cannot checksum itself, so the embedded manifest carries no
         // checksums; the file-level SHA is recorded on the persisted job below.
         val embedded = makeManifest(exportId, scope, generatedAt, emptyMap(), counts)
-        // Streams the bundle's JSON encoding directly to the file (rather than fully materializing
-        // the JSON string and its byte array first) with the SHA-256 checksum computed
-        // incrementally in the same pass (PERF-253/PERF-254).
         val bundleDigest = MessageDigest.getInstance("SHA-256")
         val bundleFile = File(folder, "bundle.json")
-        JsonBundleWriter().writeTo(
+        // `writeTo` does not forward the hydration payload, so render via `data` (which does) and put
+        // the bytes through the same digest. Behaviorally identical: canonical rendering already
+        // materializes the whole string before any write, so there is nothing to stream incrementally.
+        // The DEFAULT redaction excludes notes structurally (§7A.1); the writer withholds the whole
+        // block for a null/empty payload, keeping a pre-hydration golden byte-identical.
+        val bundleBytes = JsonBundleWriter().data(
             manifest = embedded, rawSamples = rawSamples, intervalRecords = intervalRecords,
             sessions = sessions, derivedValues = derivedValues, baselines = baselines,
             symptoms = symptoms, adherence = adherence, workouts = workouts, nutrition = nutrition,
-            outputStream = bundleFile.outputStream(), digest = bundleDigest,
+            hydration = hydration, hydrationRedaction = HydrationRedactionPolicy.DEFAULT,
         )
+        bundleFile.writeBytes(bundleBytes)
+        bundleDigest.update(bundleBytes)
 
         val checksums = mapOf("bundle.json" to hex(bundleDigest.digest()))
         val persisted = makeManifest(exportId, scope, generatedAt, checksums, counts)
@@ -725,6 +780,50 @@ class ExportRunner(
         val families = scope.families
         if (families != null && families.isNotEmpty()) return families.contains(family)
         return true
+    }
+
+    /**
+     * Assembles the hydration slice of an export from the ledger, or null when there is nothing to
+     * write. Gated identically to workouts/nutrition — a drink is a normal-class log (§9.14), so it
+     * needs `includeRaw` and its family ("hydration") in scope; a narrowed metric picklist excludes
+     * it, exactly as [logFamilyIncluded] governs the other logs.
+     *
+     * Entries are the LIVE drinks whose `occurred_at` falls in the run window. A drink carries full
+     * provenance, so the delta filter runs on the honest INGESTED axis (`provenance.ingested_at`, the
+     * same axis raw samples use) — a drink logged before the watermark but stored after it is still
+     * delivered, never silently dropped (the DATA-08 hazard). Summaries and goals filter on their
+     * `updated_at` (they carry no provenance). Beverages are dictionary: only those the exported
+     * entries actually reference, enough to name every drink without shipping the whole catalog, and
+     * NOT delta-filtered — a dictionary entry a delta's rows point at must travel with them. Returns
+     * null for an empty result so the writers omit the block/files and existing goldens stay
+     * byte-stable. Mirrors iOS `ExportRunner.gatherHydration` field-for-field.
+     */
+    private fun gatherHydration(scope: ExportScope, startedAt: Long, ingestedSince: Long?): HydrationExportPayload? {
+        val repo = hydration ?: return null
+        if (!scope.includeRaw || !logFamilyIncluded("hydration", scope)) return null
+
+        val rangeStart = scope.startDate ?: 0L
+        val rangeEnd = scope.endDate ?: startedAt
+        val entries = repo.liveEntries(rangeStart, rangeEnd)
+            .filter { ingestedAfter(it.provenance.ingestedAt, ingestedSince) }
+
+        // Summaries are keyed by local day; derive the window's day keys in UTC (matching the instants
+        // the runner works in) and let an unbounded side fall to the full lexicographic range
+        // (yyyy-MM-dd sorts as text). The drinks above are the raw data, windowed precisely by instant,
+        // so even a boundary summary excluded here never loses a logged drink — a summary is the
+        // derived rollup, not the record of intake.
+        val fromDayKey = scope.startDate?.let { GoalEngine.dayKey(it, "UTC") } ?: DAY_KEY_MIN
+        val toDayKey = scope.endDate?.let { GoalEngine.dayKey(it, "UTC") } ?: DAY_KEY_MAX
+        val summaries = repo.summaries(fromDayKey, toDayKey)
+            .filter { ingestedAfter(it.updatedAt, ingestedSince) }
+        val goals = repo.allGoals()
+            .filter { ingestedAfter(it.updatedAt, ingestedSince) }
+
+        val referenced = entries.mapNotNull { it.beverageId }.toSet()
+        val beverages = if (referenced.isEmpty()) emptyList() else repo.beverages().filter { it.id in referenced }
+
+        val payload = HydrationExportPayload(entries = entries, summaries = summaries, goals = goals, beverages = beverages)
+        return if (payload.isEmpty) null else payload
     }
 
     /**
@@ -1294,6 +1393,10 @@ class ExportRunner(
 
     companion object {
         private const val DAY_MS = 86_400_000L
+
+        /** Lexicographic bounds for an unbounded hydration-summaries window (yyyy-MM-dd sorts as text). */
+        private const val DAY_KEY_MIN = "0000-01-01"
+        private const val DAY_KEY_MAX = "9999-12-31"
 
         /**
          * How many days a `sinceLastRun` template falls back to when it has no cursor yet. Matches

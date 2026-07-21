@@ -231,7 +231,8 @@ struct BackupRestorePreviewScreen: View {
         ("baselines", LocalizedString(en: "Baselines", ar: "خطوط الأساس")),
         ("logs.symptoms", LocalizedString(en: "Symptom logs", ar: "سجلات الأعراض")),
         ("logs.adherence", LocalizedString(en: "Medication logs", ar: "سجلات الأدوية")),
-        ("logs.nutrition", LocalizedString(en: "Nutrition logs", ar: "سجلات التغذية"))
+        ("logs.nutrition", LocalizedString(en: "Nutrition logs", ar: "سجلات التغذية")),
+        ("logs.hydration", LocalizedString(en: "Hydration logs", ar: "سجلات الترطيب"))
     ]
 
     private enum Strings {

@@ -65,20 +65,17 @@ import net.albayyan.badan.designsystem.components.BadanCard
 import net.albayyan.badan.designsystem.components.SectionHeader
 import net.albayyan.badan.designsystem.components.iconForKey
 import net.albayyan.badan.domain.IngestionPath
-import net.albayyan.badan.domain.MealType
 import net.albayyan.badan.domain.MetricId
-import net.albayyan.badan.domain.NutritionEntry
 import net.albayyan.badan.domain.Provenance
 import net.albayyan.badan.domain.RawSample
+import net.albayyan.badan.features.hydration.HydrationSection
 import java.util.TimeZone
 
 // MARK: - File-local strings (bilingual; not in the shared catalog)
 
 private val quickAddTitle = LocalizedString(en = "Quick add", ar = "إضافة سريعة")
-private val mlUnit = LocalizedString(en = "ml", ar = "مل")
 private val storedManually = LocalizedString(en = "Saved as your own entry", ar = "يُحفَظ كإدخال منك")
 private val justNow = LocalizedString(en = "just now", ar = "الآن")
-private val customAmount = LocalizedString(en = "Custom amount", ar = "كمية مخصصة")
 private val thisWeek = LocalizedString(en = "this week", ar = "هذا الأسبوع")
 private val earlier = LocalizedString(en = "earlier", ar = "سابقًا")
 private val quickTag = LocalizedString(en = "Quick", ar = "سريع")
@@ -97,14 +94,19 @@ private data class RecentItem(
     val count: Int,
 )
 
-private enum class LogSheet { WATER, WEIGHT }
+private enum class LogSheet { WEIGHT }
 
 /**
- * The Log tab. A grid of log types gated by the sensitive-modules / nutrition toggles that push
- * the four dedicated log editors, plus inline quick-add sheets for Water and Weight, and a
- * recents row of the last few symptom / workout entries surfaced as "log again" chips. Faithful
- * port of the iOS `LogHubScreen` — same gating, same dual-altitude (recents show a relative-time
- * detail only in power depth). Navigation tiles render immediately; recents load off-thread.
+ * The Log tab. Opens with the hydration surface (EPIC-38 Today card + weekly card + custom/goal
+ * sheets), then a grid of log types gated by the sensitive-modules / nutrition toggles that push
+ * the four dedicated log editors, an inline quick-add sheet for Weight, and a recents row of the
+ * last few symptom / workout entries surfaced as "log again" chips.
+ *
+ * Water logging lives in the hydration Today card now (its own append-first ledger), not the
+ * nutrition-backed quick sheet it used before — a logged drink is hydration evidence, kept apart
+ * from food-water so no total ever silently blends the two (§7A.1). Faithful port of the iOS
+ * `LogHubScreen` — same gating, same dual-altitude. Navigation tiles render immediately; recents
+ * load off-thread.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -137,7 +139,6 @@ fun LogHubScreen() {
     }
 
     val quickAddCells = listOf<@Composable () -> Unit>(
-        { LogTile(title = env.s(Loc.logWater), iconKey = "water_drop", isQuickAdd = true) { activeSheet = LogSheet.WATER } },
         { LogTile(title = env.s(Loc.logWeight), iconKey = "monitor_weight", isQuickAdd = true) { activeSheet = LogSheet.WEIGHT } },
     )
 
@@ -154,6 +155,11 @@ fun LogHubScreen() {
             style = BadanType.sectionTitle.copy(fontSize = 28.sp),
             color = colors.textPrimary,
         )
+
+        // Hydration (EPIC-38): the Today card + observational weekly card, or — when the user has
+        // hidden the module — a calm "Hydration is hidden · Show" card. Manages its own state and
+        // sheets; the fastest logging path in the app (a favorite is one tap, ≤2 actions).
+        HydrationSection()
 
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
             SectionHeader(title = env.s(Loc.tabLog))
@@ -210,13 +216,6 @@ fun LogHubScreen() {
             containerColor = colors.background,
         ) {
             when (activeSheet) {
-                LogSheet.WATER -> WaterQuickSheet(
-                    onLog = { ml ->
-                        scope.launch(Dispatchers.IO) { logWater(env, ml) }
-                        activeSheet = null
-                    },
-                    onCancel = { activeSheet = null },
-                )
                 LogSheet.WEIGHT -> WeightQuickSheet(
                     onLog = { value ->
                         scope.launch(Dispatchers.IO) { logWeight(env, value) }
@@ -338,112 +337,6 @@ private fun RecentChip(
 }
 
 // MARK: - Quick-log sheets
-
-@Composable
-private fun WaterQuickSheet(onLog: (Double) -> Unit, onCancel: () -> Unit) {
-    val env = LocalAppEnvironment.current
-    val colors = BadanTheme.colors
-    val amounts = listOf(250.0, 500.0)
-
-    // Custom amount, mirroring WeightQuickSheet's free-text pattern: presets cover the common
-    // cases (a glass, a bottle) but a can (330ml) or a large bottle (750ml) has no preset.
-    var customText by remember { mutableStateOf("") }
-    val customParsed = remember(customText) {
-        customText.replace(",", ".").trim().toDoubleOrNull()?.takeIf { it > 0.0 }
-    }
-
-    // Pre-fill with the most recently logged amount so a repeat entry starts from something
-    // useful instead of blank, without clobbering anything the user has already typed.
-    LaunchedEffect(Unit) {
-        val last = withContext(Dispatchers.IO) { lastWaterMl(env) }
-        if (last != null && customText.isEmpty()) {
-            customText = trimmedNumber(last)
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(BadanSpace.s4),
-        verticalArrangement = Arrangement.spacedBy(BadanSpace.s3),
-    ) {
-        SheetHeader(title = env.s(Loc.logWater), onCancel = onCancel)
-        for (ml in amounts) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(BadanRadius.card))
-                    .clickable { onLog(ml) }
-                    .background(color = colors.surface, shape = RoundedCornerShape(BadanRadius.card))
-                    .border(
-                        width = 1.dp,
-                        color = colors.separator,
-                        shape = RoundedCornerShape(BadanRadius.card),
-                    )
-                    .heightIn(min = 60.dp)
-                    .padding(horizontal = BadanSpace.s4),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
-            ) {
-                Icon(
-                    imageVector = iconForKey("water_drop"),
-                    contentDescription = null,
-                    tint = colors.primary,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
-                    text = "+${env.format.integer(ml.toInt())} ${env.s(mlUnit)}",
-                    style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
-                    color = colors.textPrimary,
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(BadanRadius.card))
-                .background(color = colors.surface, shape = RoundedCornerShape(BadanRadius.card))
-                .border(
-                    width = 1.dp,
-                    color = colors.separator,
-                    shape = RoundedCornerShape(BadanRadius.card),
-                )
-                .heightIn(min = 60.dp)
-                .padding(horizontal = BadanSpace.s4),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
-        ) {
-            Box(modifier = Modifier.weight(1f)) {
-                if (customText.isEmpty()) {
-                    Text(
-                        text = env.s(customAmount),
-                        style = BadanType.numeralM,
-                        color = colors.textSecondary.copy(alpha = 0.6f),
-                    )
-                }
-                BasicTextField(
-                    value = customText,
-                    onValueChange = { customText = it },
-                    textStyle = BadanType.numeralM.copy(color = colors.textPrimary),
-                    singleLine = true,
-                    cursorBrush = SolidColor(colors.primary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { customParsed?.let(onLog) }),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Text(text = env.s(mlUnit), style = BadanType.body, color = colors.textSecondary)
-            TextButton(onClick = { customParsed?.let(onLog) }, enabled = customParsed != null) {
-                Text(
-                    text = env.s(Loc.add),
-                    style = BadanType.body.copy(fontWeight = FontWeight.SemiBold),
-                    color = if (customParsed != null) colors.primary else colors.textSecondary,
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun WeightQuickSheet(onLog: (Double) -> Unit, onCancel: () -> Unit) {
@@ -636,15 +529,6 @@ private fun rankRecents(occurrences: List<RecentOccurrence>, now: Long, windowMi
         .map { it.second }
 }
 
-/** The most recently logged water amount (any meal-type entry with a water value), if any. */
-private fun lastWaterMl(env: AppEnvironment): Double? {
-    val now = env.now()
-    val from = now - 90L * 86_400_000L
-    return runCatching { env.logging.nutrition(from, now) }.getOrNull()
-        ?.firstOrNull { (it.waterMl ?: 0.0) > 0.0 }
-        ?.waterMl
-}
-
 /** The most recently logged weight, converted into the user's current display unit. */
 private fun lastWeightDisplayValue(env: AppEnvironment): Double? {
     val def = env.registry.definitionOrFallback(MetricId.weight)
@@ -668,21 +552,6 @@ private fun trimmedNumber(value: Double): String {
     } else {
         rounded.toString()
     }
-}
-
-private fun logWater(env: AppEnvironment, milliliters: Double) {
-    val now = env.now()
-    val entry = NutritionEntry(
-        id = Ulid.newId(),
-        description = env.s(Loc.logWater),
-        mealType = MealType.DRINK,
-        waterMl = milliliters,
-        occurredAt = now,
-        tzId = TimeZone.getDefault().id,
-        updatedAt = now,
-        originDeviceId = env.deviceId,
-    )
-    runCatching { env.logging.upsertNutrition(entry) }
 }
 
 private fun logWeight(env: AppEnvironment, displayValue: Double) {

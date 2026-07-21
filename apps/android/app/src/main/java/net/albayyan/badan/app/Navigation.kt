@@ -50,6 +50,13 @@ sealed interface Route {
     data object ExportHealth : Route
 
     /**
+     * The automation setup wizard (EPIC-15) — turns a saved template into an `AutomationSchedule`,
+     * making the honest reliability tier a mandatory step the user reads before enabling. Reached
+     * from Export & Automation Health, where the resulting schedules are also managed.
+     */
+    data object AutomationSetup : Route
+
+    /**
      * The GPS-route consent surface (EPIC-03). A destination rather than a Settings row: it is the
      * single place `AppEnvironment.isRouteCaptureEnabled` is written, and being addressable means
      * every screen that has to explain a missing route — the workout detail today, export scope

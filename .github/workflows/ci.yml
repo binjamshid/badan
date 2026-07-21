@@ -82,7 +82,15 @@ jobs:
       # Schema" a claim about the file's syntax rather than about the bundle's contents. The golden
       # is the bundle both platforms are asserted byte-identical on, so validating it validates the
       # shape both writers actually emit.
-      - name: The golden export bundle validates against its own JSON Schema
+      #
+      # Two fixtures are validated, not one. bundle-v1.json carries NO drinks, so on its own it
+      # left the logs.hydration schema section (EPIC-38) documented but unexercised — a writer or
+      # schema drift on the hydration block would have passed CI unnoticed. bundle-hydration-v1.json
+      # carries a logs.hydration block shaped as ExportRunner emits it (entries incl. an append-first
+      # revision, summaries with and without a goal, goals, beverages, sources, redaction manifest),
+      # so that section is now schema-checked too. bundle-v1.json stays the byte-stable cross-platform
+      # parity golden and MUST NOT be edited to carry hydration (see packages/fixtures/export/README.md).
+      - name: The export bundle fixtures validate against their own JSON Schema
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --disable-pip-version-check 'jsonschema>=4,<5'
@@ -92,14 +100,22 @@ jobs:
 
           root = pathlib.Path('.')
           schema = json.loads((root/'packages/export-schemas/json_bundle.schema.json').read_text())
-          bundle = json.loads((root/'packages/fixtures/export/bundle-v1.json').read_text())
-
           Draft202012Validator.check_schema(schema)
-          errors = sorted(Draft202012Validator(schema).iter_errors(bundle), key=lambda e: list(e.path))
-          for error in errors:
-            location = '/'.join(str(p) for p in error.path) or '<root>'
-            print(f"::error::bundle-v1.json at {location}: {error.message}")
-          sys.exit(1 if errors else 0)
+          validator = Draft202012Validator(schema)
+
+          fixtures = [
+            'packages/fixtures/export/bundle-v1.json',            # no hydration (parity golden)
+            'packages/fixtures/export/bundle-hydration-v1.json',  # exercises logs.hydration
+          ]
+          fail = False
+          for rel in fixtures:
+            bundle = json.loads((root/rel).read_text())
+            errors = sorted(validator.iter_errors(bundle), key=lambda e: list(e.path))
+            for error in errors:
+              location = '/'.join(str(p) for p in error.path) or '<root>'
+              print(f"::error::{rel} at {location}: {error.message}")
+              fail = True
+          sys.exit(1 if fail else 0)
           PY
       # The version lives in four places that must never disagree: the two contract files, and the
       # constant each platform's writers actually stamp into an artifact. A file labelled 1.0.0

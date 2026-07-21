@@ -226,6 +226,7 @@ private val namespaceLabels: List<Pair<String, LocalizedString>> = listOf(
     "logs.symptoms" to LocalizedString(en = "Symptom logs", ar = "سجلات الأعراض"),
     "logs.adherence" to LocalizedString(en = "Medication logs", ar = "سجلات الأدوية"),
     "logs.nutrition" to LocalizedString(en = "Nutrition logs", ar = "سجلات التغذية"),
+    "logs.hydration" to LocalizedString(en = "Hydration logs", ar = "سجلات الترطيب"),
 )
 
 private object Loc {

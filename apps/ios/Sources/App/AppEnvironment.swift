@@ -36,6 +36,12 @@ final class AppEnvironment {
     /// repository against `database.main` — the one place route rows are reachable from should be
     /// visible in the dependency list, not buried in a view model.
     let routes: RouteRepository
+    /// EPIC-38 (plan §9.14). The hydration module's append-first drink ledger, its beverage/
+    /// container catalogs, goals, and per-day summaries. Wired here — not constructed inside a
+    /// hydration view model — for the same reason every sibling repository is: the hydration
+    /// surfaces (LogHub's Today card, the full Hydration screen) read one connection to `database.
+    /// main`, and "where do logged drinks live?" is answerable from this dependency list.
+    let hydration: HydrationRepository
 
     // Services
     let ingestion: IngestionPipeline
@@ -164,6 +170,7 @@ final class AppEnvironment {
         self.exportJobs = ExportJobRepository(main)
         self.profiles = ProfileRepository(main)
         self.routes = RouteRepository(main)
+        self.hydration = HydrationRepository(main: main)
         let backgroundRuns = BackgroundRunRepository(main)
         self.backgroundRuns = backgroundRuns
 
@@ -199,7 +206,12 @@ final class AppEnvironment {
                                            registry: registry, clock: clock, deviceId: deviceId)
         self.exporter = ExportRunner(measurements: measurements, derivation: derivation, logging: logging,
                                      exportJobs: exportJobs, registry: registry, clock: clock,
-                                     appVersion: appVersion, deviceId: deviceId)
+                                     appVersion: appVersion, deviceId: deviceId,
+                                     // EPIC-38: a logged drink is normal-class, so the plain
+                                     // share-sheet exporter must carry the drink ledger too — a
+                                     // DEFAULT export includes the user's drinks (notes withheld by
+                                     // the writer's default redaction), never paywalled or omitted.
+                                     hydration: hydration)
 
         self.profile = (try? profiles.load()) ?? CustomizationProfile()
         self.onboardingComplete = UserDefaults.standard.bool(forKey: Self.onboardingKey)
@@ -238,8 +250,36 @@ final class AppEnvironment {
             // writes to.
             derivationCoordinator: derivationCoordinator,
             scoreBackfillStore: scoreBackfillStore)
+        // EPIC-15 wiring. The automation engine composes Phase-1's runner, so it needs a
+        // DELIVERY-capable `ExportRunner` — the plain `self.exporter` above is share-sheet-only
+        // (built without the template collaborators). This one carries `templates`/`destinations`/
+        // `runs`/`cursors`/`routes` and the folder deliverer, so a scheduled template can actually
+        // land its file in the user's iCloud/Files folder. It is a second lightweight composition
+        // over the SAME `main` connection every other repository holds — not a second write lock.
+        // The keychain bookmark store is `AfterFirstUnlockThisDeviceOnly` precisely so a background
+        // wake can resolve the folder while the phone is locked (see `KeychainFolderBookmarkStore`).
+        let automationRunner = ExportRunner(
+            measurements: measurements, derivation: derivation, logging: logging,
+            exportJobs: exportJobs, registry: registry, clock: clock,
+            appVersion: appVersion, deviceId: deviceId,
+            // EPIC-38: a scheduled/automated export must carry drinks too, so a delta or full
+            // template run lands the user's hydration exactly as the manual one does.
+            hydration: hydration,
+            templates: ExportTemplateRepository(main), destinations: ExportDestinationRepository(main),
+            runs: ExportRunRepository(main), cursors: ExportCursorRepository(main),
+            routes: RouteRepository(main),
+            deliverers: [FileFolderDestination(bookmarks: KeychainFolderBookmarkStore())])
+        let automationEngine = AutomationEngine(
+            schedules: AutomationScheduleRepository(main),
+            templates: ExportTemplateRepository(main),
+            runner: automationRunner,
+            freshness: AutomationDataFreshnessProbe(main),
+            notifier: AutomationPauseNotifier(),
+            clock: clock)
+
         self.background = BackgroundCoordinator(runs: backgroundRuns, clock: clock, ingest: bridge,
-                                                protectedData: ProtectedDataMonitor())
+                                                protectedData: ProtectedDataMonitor(),
+                                                automation: automationEngine)
 
         applyLaunchOverrides()
     }
