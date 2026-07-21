@@ -641,3 +641,17 @@ jobs:
         working-directory: apps/android
         continue-on-error: true
         run: ./gradlew :app:lint --no-daemon
+
+  reachability-ratchet:
+    name: SwiftUI screen reachability ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Pure text scan over apps/ios/App + apps/ios/Sources — no Xcode/simulator needed, so this
+      # runs on ubuntu-latest independently of ios-build-test. Adapted from
+      # ghawazi/scripts/check-reachability.py (see that script's docstring for the incident that
+      # motivated it); BADAN has no equivalent finding yet, so this is added proactively as a
+      # ratchet. See scripts/check-reachability.py's own docstring for what it checks and its limits.
+      - name: Every top-level SwiftUI View is constructed somewhere outside its own #Preview
+        run: python3 scripts/check-reachability.py
