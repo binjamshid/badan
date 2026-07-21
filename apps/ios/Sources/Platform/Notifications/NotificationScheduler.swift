@@ -15,6 +15,21 @@ enum MedicationReminderCopy {
         ar: "اقترب وقتك المعتاد لأحد أدويتك.")
 }
 
+/// The copy for the "an automation was paused" notification (EPIC-15 failure budget). Generic on
+/// purpose: it names no template and no destination, so nothing a user chose to label revealingly
+/// leaks onto a lock screen, and the tone is calm — a paused automation is a thing to review, not
+/// an emergency. This is an ALLOWED notification class (a direct consequence of the user's own 3
+/// failed runs), not the Phase-3 reminder decision engine.
+enum AutomationPausedCopy {
+    static let title = LocalizedString(en: "BADAN", ar: "بدن")
+    static let body = LocalizedString(
+        en: "An automatic export was paused after a few failed attempts. Open BADAN to review it.",
+        ar: "أُوقف تصدير تلقائي مؤقتاً بعد عدّة محاولات فاشلة. افتح «بدن» لمراجعته.")
+    /// Identifier prefix so an automation-paused notice is distinguishable from — and never
+    /// cancelled alongside — the medication reminders (`MedicationReminderPlan.identifierPrefix`).
+    static let identifierPrefix = "automation-paused."
+}
+
 // MARK: - Pure plan builder (testable; no UNUserNotificationCenter)
 
 /// One local notification to be scheduled: a repeating calendar trigger at `hour`/`minute`,
@@ -237,6 +252,28 @@ final class NotificationScheduler {
             try? await center.add(request)
         }
         return truncated
+    }
+
+    /// Deliver the "an automation was paused" notice for `scheduleId` (EPIC-15). One request per
+    /// schedule id, so re-pausing the same schedule replaces its notice rather than stacking a
+    /// second one. Silent no-op when notifications are not authorized — this method never prompts
+    /// (the authorization prompt is an explicit-user-action concern, not something a background
+    /// failure may trigger). The VISIBLE pause in `automation_schedules` is the guarantee; this is
+    /// the best-effort nudge on top.
+    ///
+    /// `trigger: nil` delivers as soon as the system allows. Content language is captured now
+    /// because a scheduled notification's text is static (same limitation, and same reasoning, as
+    /// the medication reminders above).
+    func notifyAutomationPaused(scheduleId: String, language: AppLanguage) async {
+        guard await isAuthorized() else { return }
+        let content = UNMutableNotificationContent()
+        content.title = AutomationPausedCopy.title.resolved(language)
+        content.body = AutomationPausedCopy.body.resolved(language)
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: AutomationPausedCopy.identifierPrefix + scheduleId,
+            content: content, trigger: nil)
+        try? await center.add(request)
     }
 
     /// Remove only pending medication reminders (matched by prefix), leaving any other

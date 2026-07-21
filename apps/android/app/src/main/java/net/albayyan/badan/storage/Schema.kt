@@ -469,6 +469,122 @@ object Schema {
                     "CREATE INDEX IF NOT EXISTS idx_baseline_lookup ON baselines(metric_id, covariate_context, valid_from DESC);",
                 )
             ),
+            // Version 7 (plan §9.14 / EPIC-38): the hydration module's data substrate — an
+            // append-first drink ledger plus its beverage/container catalogs, goals, and per-day
+            // summaries. Purely additive (CREATEs only), so an upgrading v6 install reaches v7
+            // without touching an existing row.
+            //
+            // Byte-equivalent mirror of iOS `Schema.mainMigrations` version 7: same table names,
+            // same column names, same column ORDER, same indexes. Cross-platform export fixtures
+            // diff the two schemas, so a "harmless" reordering here is a test failure there.
+            //
+            // SCOPE: this is the Phase-1 slice of EPIC-38 (ledger + quick-log + goals + export). It
+            // does NOT create the module's later-phase tables (fasting profiles, reminder schedules,
+            // contextual target rules); those arrive as their own forward migrations.
+            // `hydration_entries` is normal-class and lives here in the main DB — a logged drink is
+            // not sensitive-plus. The fasting/cycle/pregnancy CONTEXTS that §9.14 marks
+            // sensitive-plus are deliberately not modelled yet, and the default export redacts them
+            // structurally (see `HydrationExport`).
+            Migration(
+                version = 7,
+                statements = listOf(
+                    // §9.14 `HydrationEntry`. The append-first ledger with an auditable revision
+                    // chain, and full embedded provenance (I1) because a manually-asserted drink is
+                    // still a fact with an origin (`ingestion_path=manual` distinguishes it from a
+                    // future platform import).
+                    //
+                    // REVISION-CHAIN DESIGN (the heart of "evidence first, auditable second").
+                    // Editing a logged drink never overwrites the row — it APPENDS a new row that
+                    // supersedes the old, so the full history of "what the user said, and how they
+                    // later corrected it" survives (I2-flavored). Three columns carry the chain:
+                    //   * `original_id` — the stable identity of a logical drink across all its
+                    //     revisions. For a first-time (un-revised) entry, `original_id == id`. Every
+                    //     revision copies the original's `original_id`, so one query on `original_id`
+                    //     returns the whole audit chain, tombstones included.
+                    //   * `supersedes` — the id of the immediately-prior row this revision replaces;
+                    //     NULL for an original. This is the backward link that lets the LIVE view be
+                    //     computed without ever mutating an old row: a row is live iff it is not
+                    //     tombstoned AND no *non-deleted* row supersedes it. That "non-deleted
+                    //     superseder" qualifier is load-bearing — it is what lets `undo` of a
+                    //     revision (tombstone just the revision) revert to the prior version, while
+                    //     `delete` (tombstone the WHOLE chain) removes the entry outright. The two
+                    //     operations differ only in how many rows they tombstone, never in a mutate.
+                    //   * `revision` — a 1-based counter (1 = original), for honest display ("edited")
+                    //     and stable chain ordering. Not required by the live query, but cheap and
+                    //     audit-useful.
+                    // `note` is nullable and is REDACTED from the default export (§7A.1) — the schema
+                    // stores it, the export writer withholds it unless explicitly opted in.
+                    """
+                    CREATE TABLE hydration_entries (
+                      id TEXT PRIMARY KEY, volume_ml REAL NOT NULL, fluid_type TEXT NOT NULL,
+                      beverage_id TEXT, container_id TEXT, occurred_at INTEGER NOT NULL, tz_id TEXT NOT NULL,
+                      note TEXT, original_id TEXT NOT NULL, supersedes TEXT, revision INTEGER NOT NULL,
+                      $provenanceCols, $conventionCols
+                    );
+                    """,
+                    // Day/range reads scan by `occurred_at` (a day's summary, a week's history).
+                    "CREATE INDEX idx_hydration_occurred ON hydration_entries(occurred_at);",
+                    // The whole audit chain of one logical drink, by its stable identity.
+                    "CREATE INDEX idx_hydration_original ON hydration_entries(original_id);",
+                    // Backs the live-view subquery ("which rows are superseded by a non-deleted
+                    // revision"). Partial, because only revisions carry a non-NULL `supersedes`.
+                    "CREATE INDEX idx_hydration_supersedes ON hydration_entries(supersedes) WHERE supersedes IS NOT NULL;",
+                    // §9.14 `BeverageDefinition`. USER-added beverages live here; the curated
+                    // built-ins ship as `packages/contracts/dictionaries/beverages.json` (same
+                    // dictionary-vs-custom split as `symptoms.json` / `symptom_entries`).
+                    // `caffeine_mg_per_100ml`/`alcohol_pct`/`electrolyte_note` are DISPLAY METADATA
+                    // ONLY this phase — they are stored so a future phase can surface them, but
+                    // NOTHING reads them into a "net hydration" multiplier (a §7A.1 Reject item). No
+                    // provenance columns: a beverage definition is a catalog row, not a measurement
+                    // of the user's body.
+                    """
+                    CREATE TABLE beverage_definitions (
+                      id TEXT PRIMARY KEY, name_en TEXT NOT NULL, name_ar TEXT NOT NULL, fluid_type TEXT NOT NULL,
+                      default_volume_ml REAL, caffeine_mg_per_100ml REAL, alcohol_pct REAL, electrolyte_note TEXT,
+                      is_builtin INTEGER NOT NULL, $conventionCols
+                    );
+                    """,
+                    // §9.14 `ContainerPreset`. The "My Bottle" favorites that make a log ≤2 actions.
+                    // Bilingual name so a built-in preset renders in either locale (a user-named
+                    // bottle sets both to their own text). `beverage_id` is the preset's default
+                    // drink; NULL means plain water.
+                    """
+                    CREATE TABLE container_presets (
+                      id TEXT PRIMARY KEY, name_en TEXT NOT NULL, name_ar TEXT NOT NULL, volume_ml REAL NOT NULL,
+                      beverage_id TEXT, sort_order INTEGER NOT NULL, $conventionCols
+                    );
+                    """,
+                    // §9.14 `HydrationGoal`. `kind` is the equal-status discriminator: `none` is a
+                    // real, first-class value ("I track without a goal"), never the absence of a row
+                    // — the product rule is that no-goal is never nagged and never treated as "unset"
+                    // (§7A.1). `target_ml` is NULL exactly when `kind = none`. `day_type` is a
+                    // USER-AUTHORED label (rest/training/…) for day-type goal schedules (§7A.1,
+                    // Phase 2); NULL is the default goal that applies when no day-type override
+                    // matches. The engine never INFERS a day type — the caller supplies it.
+                    """
+                    CREATE TABLE hydration_goals (
+                      id TEXT PRIMARY KEY, kind TEXT NOT NULL, target_ml REAL, day_type TEXT, active INTEGER NOT NULL,
+                      created_at INTEGER NOT NULL, $conventionCols
+                    );
+                    """,
+                    "CREATE INDEX idx_hydration_goals_active ON hydration_goals(active, day_type);",
+                    // §9.14 per-day goal snapshot. A rollup keyed by local calendar day, storing the
+                    // day's manual/imported/estimated totals SEPARATELY (I5 — only `manual_ml` is
+                    // populated this phase; the other two exist so an imported/estimated total is
+                    // never silently blended into the logged number). `goal_target_ml`/`goal_kind`/
+                    // `goal_id` are the SNAPSHOT: the goal that was in effect when this day was first
+                    // summarized, frozen so history stays honest after a later goal change
+                    // (`GoalEngine.makeSummary` preserves an existing snapshot on recompute). No
+                    // provenance: a summary is a derived rollup, not a measurement.
+                    """
+                    CREATE TABLE hydration_daily_summaries (
+                      day_key TEXT PRIMARY KEY, tz_id TEXT NOT NULL, manual_ml REAL NOT NULL, imported_ml REAL NOT NULL,
+                      estimated_ml REAL NOT NULL, entry_count INTEGER NOT NULL, goal_kind TEXT NOT NULL,
+                      goal_target_ml REAL, goal_id TEXT, $conventionCols
+                    );
+                    """,
+                )
+            ),
         )
 
     // MARK: - Sensitive DB (badan_sensitive.db)

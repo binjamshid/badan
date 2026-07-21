@@ -168,7 +168,9 @@ struct JSONBundleWriter {
         cursorAfter: Date? = nil,
         previousManifestSha: String? = nil,
         destination: (name: String, kind: String)? = nil,
-        config: [String: CanonicalJSON]? = nil
+        config: [String: CanonicalJSON]? = nil,
+        hydration: HydrationExportPayload? = nil,
+        hydrationRedaction: HydrationRedactionPolicy = .default
     ) throws -> Data {
         let json = bundle(
             manifest: manifest, rawSamples: rawSamples, intervalRecords: intervalRecords,
@@ -176,7 +178,8 @@ struct JSONBundleWriter {
             symptoms: symptoms, adherence: adherence, workouts: workouts, nutrition: nutrition,
             includeRoutes: includeRoutes, isDelta: isDelta, cursorBefore: cursorBefore,
             cursorAfter: cursorAfter, previousManifestSha: previousManifestSha,
-            destination: destination, config: config
+            destination: destination, config: config,
+            hydration: hydration, hydrationRedaction: hydrationRedaction
         )
         return Data(json.render().utf8)
     }
@@ -200,7 +203,9 @@ struct JSONBundleWriter {
         cursorAfter: Date? = nil,
         previousManifestSha: String? = nil,
         destination: (name: String, kind: String)? = nil,
-        config: [String: CanonicalJSON]? = nil
+        config: [String: CanonicalJSON]? = nil,
+        hydration: HydrationExportPayload? = nil,
+        hydrationRedaction: HydrationRedactionPolicy = .default
     ) -> CanonicalJSON {
         // A workout session lives in `workouts`, not `sessions`. Split before anything counts
         // rows, so `row_counts` describes what was actually serialized rather than what was
@@ -208,7 +213,14 @@ struct JSONBundleWriter {
         let workoutSessions = sessions.filter { $0.kind == .workout }
         let sleepSessions = sessions.filter { $0.kind != .workout }
 
-        let rowCounts: [String: CanonicalJSON] = [
+        // Absent, not empty: a nil-or-empty hydration payload contributes NOTHING to the envelope —
+        // no `logs.hydration` block and no `logs.hydration` row count. An empty `"hydration":[]`
+        // would assert "the user logged no drinks", which the writer cannot claim when the module may
+        // simply be hidden or unbuilt for this install. This mirrors the top-level `config` rule and
+        // is what keeps a pre-hydration golden byte-identical without a fixture regeneration.
+        let hydrationPayload = (hydration?.isEmpty == false) ? hydration : nil
+
+        var rowCounts: [String: CanonicalJSON] = [
             "raw_samples": .integer(rawSamples.count),
             "interval_records": .integer(intervalRecords.count),
             "sessions": .integer(sleepSessions.count),
@@ -220,6 +232,7 @@ struct JSONBundleWriter {
             "logs.workouts": .integer(workouts.count),
             "logs.nutrition": .integer(nutrition.count)
         ]
+        if let hydrationPayload { rowCounts["logs.hydration"] = .integer(hydrationPayload.entries.count) }
 
         var members: [String: CanonicalJSON] = [
             "export_schema_version": .string(ExportSchema.version),
@@ -246,12 +259,9 @@ struct JSONBundleWriter {
             "workouts": .array(workoutSessions.map { Self.workout($0, includeRoutes: includeRoutes) }),
             "derived_values": .array(derivedValues.map(Self.derivedValue)),
             "baselines": .array(baselines.map(Self.baseline)),
-            "logs": .object([
-                "symptoms": .array(symptoms.map(Self.symptom)),
-                "adherence": .array(adherence.map(Self.adherence)),
-                "workouts": .array(workouts.map(Self.workoutLog)),
-                "nutrition": .array(nutrition.map(Self.nutrition))
-            ]),
+            "logs": .object(Self.logs(symptoms: symptoms, adherence: adherence, workouts: workouts,
+                                      nutrition: nutrition, hydration: hydrationPayload,
+                                      hydrationRedaction: hydrationRedaction)),
             "deletions": Self.deletions(rawSamples: rawSamples, intervalRecords: intervalRecords,
                                         sleepSessions: sleepSessions, workoutSessions: workoutSessions,
                                         derivedValues: derivedValues, symptoms: symptoms,
@@ -586,9 +596,29 @@ struct JSONBundleWriter {
         ])
     }
 
+    // MARK: - Logs
+
+    /// The `logs` sub-object. Symptoms/adherence/workouts/nutrition are always present (an empty log
+    /// family is a real claim — "no rows in scope" — for a family the app always tracks). `hydration`
+    /// is the exception: it is added ONLY when a non-empty payload is supplied, so a build without the
+    /// module, or an export whose scope caught no drinks, produces the exact bytes it did before
+    /// EPIC-38. When present it carries its own redaction manifest (§7A.1).
+    static func logs(symptoms: [SymptomEntry], adherence: [AdherenceEvent], workouts: [WorkoutEntry],
+                     nutrition: [NutritionEntry], hydration: HydrationExportPayload?,
+                     hydrationRedaction: HydrationRedactionPolicy) -> [String: CanonicalJSON] {
+        var members: [String: CanonicalJSON] = [
+            "symptoms": .array(symptoms.map(Self.symptom)),
+            "adherence": .array(adherence.map(Self.adherence)),
+            "workouts": .array(workouts.map(Self.workoutLog)),
+            "nutrition": .array(nutrition.map(Self.nutrition))
+        ]
+        if let hydration { members["hydration"] = HydrationExportJSON.log(hydration, policy: hydrationRedaction) }
+        return members
+    }
+
     // MARK: - Provenance
 
-    private static func provenance(_ provenance: Provenance, tzId: String) -> CanonicalJSON {
+    static func provenance(_ provenance: Provenance, tzId: String) -> CanonicalJSON {
         .object([
             // `source_app`/`source_device` rather than the domain's `sourceId`/`deviceId`, so the
             // JSON names match the CSV columns describing the same two facts.
@@ -760,7 +790,134 @@ struct JSONBundleWriter {
 
     /// For instants that belong to no single measurement timezone (manifest generation, derived
     /// values, baselines). Still a numeric offset, never `Z`.
-    private static func utc(_ date: Date) -> String {
+    static func utc(_ date: Date) -> String {
         TimestampFormatting.string(date, tzId: "UTC")
+    }
+}
+
+/// The `logs.hydration` serializer (EPIC-38, §9.14 / §7A.1). Kept adjacent to `JSONBundleWriter` so
+/// it reuses the same `CanonicalJSON`, provenance rendering and timestamp formatting — a hydration
+/// entry's `provenance` block is byte-identical to a raw sample's, and its redaction manifest byte-
+/// matches the one `HydrationCSVWriter` writes.
+///
+/// REDACTION is structural: the default policy withholds `note` (the key is absent, not blanked) and
+/// the manifest names every field a default file leaves out. The Android mirror
+/// (`HydrationExportJson`) produces the same bytes from the same payload.
+enum HydrationExportJSON {
+
+    /// The full `logs.hydration` object: the redaction manifest first (so a reader knows what is
+    /// missing before reading what is present), then the entries, day summaries, goals, referenced
+    /// beverage catalog, and provenance sources.
+    static func log(_ payload: HydrationExportPayload, policy: HydrationRedactionPolicy) -> CanonicalJSON {
+        .object([
+            "redaction": redaction(policy),
+            "entries": .array(payload.entries.map { entry($0, policy: policy) }),
+            "summaries": .array(payload.summaries.map(summary)),
+            "goals": .array(payload.goals.map(goal)),
+            "beverages": .array(payload.beverages.map(beverage)),
+            "sources": sources(payload.entries)
+        ])
+    }
+
+    /// The machine-readable statement of what a default hydration export excludes (§7A.1). Also
+    /// emitted standalone by `HydrationCSVWriter.redactionManifest` — one renderer, identical bytes.
+    static func redaction(_ policy: HydrationRedactionPolicy) -> CanonicalJSON {
+        .object([
+            "notes_included": .bool(policy.includeNotes),
+            "excluded_by_default": .array(policy.excludedFields.map { CanonicalJSON.string($0) })
+        ])
+    }
+
+    private static func entry(_ e: HydrationEntry, policy: HydrationRedactionPolicy) -> CanonicalJSON {
+        var members: [String: CanonicalJSON] = [
+            "record_id": .string(e.id),
+            "original_id": .string(e.originalId),
+            "supersedes": .string(nullable: e.supersedes),
+            "revision": .integer(e.revision),
+            "volume_ml": .number(e.volumeMl),
+            "canonical_unit": .string("mL"),
+            "fluid_type": .string(e.fluidType),
+            "beverage_id": .string(nullable: e.beverageId),
+            "container_id": .string(nullable: e.containerId),
+            "occurred_at": .string(TimestampFormatting.string(e.occurredAt, tzId: e.tzId)),
+            "timezone": .string(e.tzId),
+            "value_type": .string("raw"),
+            "is_derived": .bool(false),
+            "provenance": JSONBundleWriter.provenance(e.provenance, tzId: e.tzId),
+            "updated_at": .string(TimestampFormatting.string(e.updatedAt, tzId: e.tzId)),
+            "origin_device_id": .string(e.originDeviceId),
+            "deleted_at": e.deletedAt.map { CanonicalJSON.string(TimestampFormatting.string($0, tzId: e.tzId)) } ?? .null
+        ]
+        // Structural redaction: the note key exists only when explicitly opted in.
+        if policy.includeNotes { members["note"] = .string(nullable: e.note) }
+        return .object(members)
+    }
+
+    private static func summary(_ s: HydrationDailySummary) -> CanonicalJSON {
+        .object([
+            "day_key": .string(s.dayKey),
+            "timezone": .string(s.tzId),
+            "manual_ml": .number(s.manualMl),
+            "imported_ml": .number(s.importedMl),
+            "estimated_ml": .number(s.estimatedMl),
+            "total_ml": .number(s.totalMl),
+            "entry_count": .integer(s.entryCount),
+            "goal_kind": .string(s.goalKind.rawValue),
+            "goal_target_ml": .number(nullable: s.goalTargetMl),
+            // Null, never 0, for a no-goal day — a percentage of nothing is the streak-guilt framing
+            // §7A.1 rejects.
+            "goal_progress_pct": .number(nullable: s.goalProgressPct),
+            "value_type": .string("derived"),
+            "is_derived": .bool(true),
+            "updated_at": .string(JSONBundleWriter.utc(s.updatedAt)),
+            "origin_device_id": .string(s.originDeviceId)
+        ])
+    }
+
+    private static func goal(_ g: HydrationGoal) -> CanonicalJSON {
+        .object([
+            "goal_id": .string(g.id),
+            "kind": .string(g.kind.rawValue),
+            // Null target is the equal-status no-goal, not a missing value.
+            "target_ml": .number(nullable: g.targetMl),
+            "day_type": .string(nullable: g.dayType),
+            "active": .bool(g.active),
+            "created_at": .string(JSONBundleWriter.utc(g.createdAt))
+        ])
+    }
+
+    private static func beverage(_ b: BeverageDefinition) -> CanonicalJSON {
+        .object([
+            "beverage_id": .string(b.id),
+            "name_en": .string(b.nameEn),
+            "name_ar": .string(b.nameAr),
+            "fluid_type": .string(b.fluidType),
+            "default_volume_ml": .number(nullable: b.defaultVolumeMl),
+            "is_builtin": .bool(b.isBuiltin),
+            // Display metadata only — carried so a reader sees the catalog fact, never read into a
+            // hydration total or a "net hydration" multiplier (§7A.1 Reject).
+            "caffeine_mg_per_100ml": .number(nullable: b.caffeineMgPer100ml),
+            "alcohol_pct": .number(nullable: b.alcoholPct),
+            "electrolyte_note": .string(nullable: b.electrolyteNote)
+        ])
+    }
+
+    /// The provenance apps/paths the entries came from, aggregated and sorted — the hydration-scoped
+    /// answer to "where did this come from" (I1), matching the CSV `hydration_sources.csv`.
+    private static func sources(_ entries: [HydrationEntry]) -> CanonicalJSON {
+        var paths: [String: Set<String>] = [:]
+        var counts: [String: Int] = [:]
+        for e in entries {
+            paths[e.provenance.sourceId, default: []].insert(e.provenance.ingestionPath.rawValue)
+            counts[e.provenance.sourceId, default: 0] += 1
+        }
+        let rows = paths.keys.sorted().map { sourceId in
+            CanonicalJSON.object([
+                "source_app": .string(sourceId),
+                "ingestion_paths": .array(paths[sourceId]!.sorted().map { CanonicalJSON.string($0) }),
+                "entry_count": .integer(counts[sourceId] ?? 0)
+            ])
+        }
+        return .array(rows)
     }
 }

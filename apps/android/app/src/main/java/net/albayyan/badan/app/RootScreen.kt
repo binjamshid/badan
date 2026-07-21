@@ -40,6 +40,7 @@ import net.albayyan.badan.designsystem.components.SampleDataBanner
 import net.albayyan.badan.features.body.BodyScreen
 import net.albayyan.badan.features.body.SourcesScreen
 import net.albayyan.badan.features.export.AdvancedExportScreen
+import net.albayyan.badan.features.export.AutomationSetupScreen
 import net.albayyan.badan.features.export.ExportHealthScreen
 import net.albayyan.badan.features.export.ExportScreen
 import net.albayyan.badan.features.export.TemplateManagerScreen
@@ -170,6 +171,7 @@ private fun DetailContent(route: Route) {
         is Route.ExportBuilder -> AdvancedExportScreen(route.templateId)
         Route.ExportTemplates -> TemplateManagerScreen()
         Route.ExportHealth -> ExportHealthScreen()
+        Route.AutomationSetup -> AutomationSetupScreen()
     }
 }
 

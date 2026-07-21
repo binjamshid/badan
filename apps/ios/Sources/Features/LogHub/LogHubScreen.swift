@@ -143,6 +143,10 @@ final class LogHubViewModel {
 
     // MARK: Quick-log mutations
 
+    /// The canonical quick-water write: a `NutritionEntry` with the stable `WaterEntryIdentity`
+    /// description. Retained after LogHub's own water tile moved to the hydration ledger card
+    /// (EPIC-38) because the App Intent layer (`IntentWaterService`) deliberately performs the
+    /// *same* write and documents parity against this method — it is the shape the intent mirrors.
     @discardableResult
     func logWater(_ milliliters: Double, env: AppEnvironment) -> Bool {
         let now = env.now()
@@ -219,11 +223,14 @@ private struct LogHubLoadKey: Equatable {
 
 struct LogHubScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var vm = LogHubViewModel()
+    @State private var hydrationVM = HydrationViewModel()
     @State private var activeSheet: LogSheet?
+    @State private var showHydrationCustom = false
 
     private enum LogSheet: String, Identifiable {
-        case water, weight
+        case weight
         var id: String { rawValue }
     }
 
@@ -236,6 +243,7 @@ struct LogHubScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space6) {
                 logTypesSection
+                hydrationSection
                 quickAddSection
                 recentsSectionIfNeeded
             }
@@ -243,15 +251,64 @@ struct LogHubScreen: View {
         }
         .background(BadanColor.background)
         .navigationTitle(env.s(Loc.logTitle))
+        // The hydration quick-log's "Added 500 mL — Undo" affordance, pinned to the screen bottom
+        // (EPIC-38). Hosted here rather than inside the card so it clears the tab bar and reads as a
+        // screen-level toast, matching how the app's other undo surfaces sit.
+        .overlay(alignment: .bottom) { hydrationUndoOverlay }
+        .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: hydrationVM.pendingUndo)
+        .sheet(isPresented: $showHydrationCustom) { HydrationLogSheet(vm: hydrationVM, mode: .create) }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
-            case .water:
-                WaterQuickSheet { ml in vm.logWater(ml, env: env) }
             case .weight:
                 WeightQuickSheet { value in vm.logWeight(displayValue: value, env: env) }
             }
         }
-        .task(id: LogHubLoadKey(profile: env.profile, generation: env.dataGeneration)) { vm.load(env) }
+        .task(id: LogHubLoadKey(profile: env.profile, generation: env.dataGeneration)) {
+            vm.load(env)
+            hydrationVM.load(env)
+        }
+    }
+
+    // MARK: Hydration (EPIC-38)
+
+    /// The hydration Today card, or — when the module is hidden — a calm, reversible restore row.
+    /// Hiding is a pure presentation flag (`hydrationEnabled`); the drink ledger is never touched,
+    /// so "Show" brings back every logged drink untouched (§16.1 "hideable without deletion").
+    @ViewBuilder
+    private var hydrationSection: some View {
+        if env.profile.hydrationEnabled {
+            HydrationTodayCard(vm: hydrationVM, onCustom: { showHydrationCustom = true })
+        } else {
+            hydrationHiddenRow
+        }
+    }
+
+    private var hydrationHiddenRow: some View {
+        HStack(spacing: BadanSpace.space2) {
+            Image(systemName: "drop")
+                .imageScale(.small)
+                .foregroundStyle(BadanColor.textSecondary)
+                .accessibilityHidden(true)
+            Text(env.s(HydrationStrings.hiddenChip))
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+            Spacer(minLength: BadanSpace.space2)
+            Button(env.s(HydrationStrings.showAgain)) {
+                env.update { $0.hydrationEnabled = true }
+            }
+            .font(BadanFont.link)
+            .foregroundStyle(BadanColor.primary)
+        }
+        .frame(minHeight: BadanSpace.touchMin)
+    }
+
+    @ViewBuilder
+    private var hydrationUndoOverlay: some View {
+        if let pending = hydrationVM.pendingUndo {
+            BadanUndoToast(message: pending.message, undoLabel: env.s(Loc.undo)) {
+                hydrationVM.undoLastLog(env: env)
+            }
+        }
     }
 
     // MARK: Sections
@@ -303,17 +360,15 @@ struct LogHubScreen: View {
         }
     }
 
+    /// Water moved out of this grid: the LogHub water surface is now the ledger-backed hydration
+    /// Today card above (EPIC-38), so the only quick-add tile left is weight. `WaterQuickSheet` /
+    /// `LogHubViewModel.logWater` are deliberately retained below — the App Intent layer
+    /// (`IntentWaterService`) mirrors that exact `NutritionEntry` water write and documents parity
+    /// against them; they are the canonical shape it points at, not dead code.
     private var quickAddSection: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(LogHubStrings.quickAdd))
             LazyVGrid(columns: columns, spacing: BadanSpace.space3) {
-                Button {
-                    activeSheet = .water
-                } label: {
-                    LogTile(title: env.s(Loc.logWater), systemImage: "drop.fill", isQuickAdd: true)
-                }
-                .buttonStyle(.plain)
-
                 Button {
                     activeSheet = .weight
                 } label: {
@@ -496,6 +551,10 @@ private extension View {
 
 // MARK: - Quick-log sheets
 
+/// Retained as the App Intent parity reference (`IntentWaterService` mirrors its `NutritionEntry`
+/// water write and pins its plausibility ceiling to `waterPlausibilityCeilingMl`). LogHub itself no
+/// longer presents it — the water surface here is now the hydration Today card (EPIC-38), which logs
+/// to the append-first drink ledger rather than to nutrition.
 private struct WaterQuickSheet: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss

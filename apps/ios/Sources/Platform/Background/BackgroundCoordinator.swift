@@ -263,6 +263,11 @@ final class BackgroundCoordinator {
     private let protectedData: ProtectedDataProviding
     private let checkpoints: BackgroundCheckpointStore
     private let dispatcher: BackgroundWorkDispatching
+    /// EPIC-15. Optional and defaulted to nil so every Phase-0 construction site and test that does
+    /// not care about automations compiles and behaves exactly as before (the step-2 automation
+    /// evaluation in `runAppRefresh` is simply skipped when this is nil, which is the pre-EPIC-15
+    /// no-op). The composition root (`AppEnvironment`) supplies the real engine.
+    private let automation: AutomationEngine?
 
     private let lock = NSLock()
     private var observers: HealthKitObserverRegistrar?
@@ -276,13 +281,15 @@ final class BackgroundCoordinator {
          ingest: BackgroundIngestPerforming,
          protectedData: ProtectedDataProviding,
          checkpoints: BackgroundCheckpointStore = BackgroundCheckpointStore(),
-         dispatcher: BackgroundWorkDispatching = AssertedWorkDispatcher()) {
+         dispatcher: BackgroundWorkDispatching = AssertedWorkDispatcher(),
+         automation: AutomationEngine? = nil) {
         self.runs = runs
         self.clock = clock
         self.ingest = ingest
         self.protectedData = protectedData
         self.checkpoints = checkpoints
         self.dispatcher = dispatcher
+        self.automation = automation
     }
 
     // MARK: - App lifecycle wiring
@@ -492,12 +499,14 @@ final class BackgroundCoordinator {
                 }
             }
 
-            // 2. Evaluate due automations.
-            // TODO(EPIC-15): no `AutomationSchedule` evaluator exists yet, so this step is a
-            // deliberate no-op and `automationsEvaluated` stays 0 — the field and the step are
-            // here so that when EPIC-15 lands it plugs into an already-shipped, already-measured
-            // wake instead of needing its own. Do not fabricate a count for a thing that does not
-            // run yet; a diagnostics number nobody can trust is worse than an absent one.
+            // 2. Evaluate due automations (EPIC-15). Plan §13.4: the light refresh wake is where
+            //    due automations are evaluated. Skipped entirely when no engine is wired (the
+            //    pre-EPIC-15 no-op), so `automationsEvaluated` stays honestly 0 on a build without
+            //    it. The count recorded is `ran` — the due schedules actually executed — never the
+            //    number merely examined, so the diagnostic means "automations that did work".
+            if let automation {
+                counts.automationsEvaluated = evaluateAutomationsBlocking(automation, now: clock.now())
+            }
 
             if isExpired() {
                 record(kind: .bgAppRefresh, startedAt: startedAt, outcome: .expired, counts: counts)
@@ -601,6 +610,36 @@ final class BackgroundCoordinator {
         }
     }
 
+    // MARK: - Automation bridge (EPIC-15)
+
+    /// Run the async `AutomationEngine.evaluateDue` to completion and return the count of due
+    /// schedules that actually ran, for `BackgroundWorkCounts.automationsEvaluated`.
+    ///
+    /// This blocks the calling thread on a semaphore, and that is correct HERE specifically: this
+    /// runs inside a `BGAppRefreshTask` body, on the system-provided background queue
+    /// `BackgroundTaskRegistrar` hands the handler (`using: nil`), and the whole point of the body
+    /// is to finish its work *before* `setTaskCompleted(success:)` — an automation left running
+    /// after the task completes would be killed mid-export when iOS suspends the app. The "never
+    /// block" rule the Phase-0 audit fixed is about HealthKit's *observer completion handler* (the
+    /// 3-strikes budget), which has already been called long before any `runAppRefresh` runs; it is
+    /// not about the refresh task's own runtime, which exists to be spent on exactly this.
+    ///
+    /// No deadlock: the blocked thread is a `DispatchQueue` thread, never a Swift-concurrency
+    /// cooperative-pool thread, so the `Task` below runs on the pool independently and signals. The
+    /// engine's own work touches no main actor (the runner and repositories are off-actor); only
+    /// the real pause-notifier hops to the main actor, and it does so fire-and-forget in its own
+    /// detached `Task`, never awaited on this path.
+    private func evaluateAutomationsBlocking(_ engine: AutomationEngine, now: Date) -> Int {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = AutomationSummaryBox()
+        Task {
+            box.summary = await engine.evaluateDue(now: now, trigger: .scheduledOpportunistic)
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return box.summary.ran
+    }
+
     // MARK: - Reporting
 
     /// The value-free rollup Diagnostics renders. Cheap enough to call from a screen's `.task`,
@@ -640,6 +679,13 @@ final class BackgroundCoordinator {
     private enum Log {
         static let logger = Logger(subsystem: "net.binjamshid.badan", category: "Background")
     }
+}
+
+/// Carries the async `evaluateDue` result across the semaphore in `evaluateAutomationsBlocking`.
+/// `@unchecked Sendable` is safe by the happens-before the semaphore establishes: the `Task`'s
+/// write completes before `signal()`, and the read follows `wait()`, so the two never race.
+private final class AutomationSummaryBox: @unchecked Sendable {
+    var summary = AutomationEvaluationSummary()
 }
 
 extension BackgroundRunKind {

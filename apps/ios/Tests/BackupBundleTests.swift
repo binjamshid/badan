@@ -21,6 +21,17 @@ import XCTest
 /// languages, which is what keeps the fixture honest rather than fragile.
 final class BackupBundleTests: XCTestCase {
 
+    /// Temp stores opened by the hydration round-trip tests, torn down after each. Held so ARC keeps
+    /// the SQLite connections alive for the length of a test and the files are cleaned up after.
+    private var openDatabases: [Database] = []
+    private var tempDirs: [URL] = []
+
+    override func tearDownWithError() throws {
+        openDatabases.removeAll()
+        for dir in tempDirs { try? FileManager.default.removeItem(at: dir) }
+        tempDirs.removeAll()
+    }
+
     // MARK: - Frozen fixture (must byte-match Android's BackupBundleTest.kt)
 
     /// 2026-07-20T10:02:00Z — the same instant the export fixture uses.
@@ -316,6 +327,165 @@ final class BackupBundleTests: XCTestCase {
             XCTAssertEqual(iterations, huge)
             XCTAssertEqual(cap, BackupBundle.maxKdfIterations)
         }
+    }
+
+    // MARK: - Hydration (EPIC-38) survives a backup — the drink ledger is not silently dropped
+
+    private static let hyOriginalId = "01HYDENTRYA0000000000000001"
+    private static let hyRevisionId = "01HYDENTRYA0000000000000002"
+    private static let hyDeletedId = "01HYDENTRYB0000000000000001"
+    private static let hyGoalId = "01HYDGOAL00000000000000001"
+    private static let hyBeverageId = "01HYDBEV000000000000000001"
+    private static let dayEnd = createdAt.addingTimeInterval(86_400)
+
+    private func manualProvenance() -> Provenance {
+        Provenance(sourceId: "badan.manual", ingestionPath: .manual, measuredAt: Self.createdAt,
+                   measuredTimezone: "Asia/Riyadh", recordedAt: Self.createdAt, ingestedAt: Self.createdAt)
+    }
+
+    /// A fresh main-DB hydration store in its own temp dir (v7 migrations run), tracked for teardown.
+    private func freshHydrationRepo() throws -> HydrationRepository {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("badan-backup-hydration-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(dir)
+        let db = try Database(directory: dir)
+        openDatabases.append(db)
+        return HydrationRepository(main: db.main)
+    }
+
+    /// Logs a realistic ledger: an edited drink (original superseded by a revision), a deleted drink
+    /// (tombstoned), the custom beverage the deleted drink references, a manual goal, and a day
+    /// summary. Every entry carries a note.
+    private func seedHydration(into repo: HydrationRepository) throws {
+        let original = HydrationLedger.makeEntry(
+            id: Self.hyOriginalId, volumeMl: 250, fluidType: "water", occurredAt: Self.createdAt,
+            tzId: "Asia/Riyadh", note: "before the walk", provenance: manualProvenance(),
+            updatedAt: Self.createdAt, originDeviceId: "device-fixture")
+        let revision = HydrationLedger.makeRevision(
+            of: original, id: Self.hyRevisionId, volumeMl: 500, note: "after the walk",
+            provenance: manualProvenance(), updatedAt: Self.createdAt, originDeviceId: "device-fixture")
+        var deleted = HydrationLedger.makeEntry(
+            id: Self.hyDeletedId, volumeMl: 300, fluidType: "coffee", beverageId: Self.hyBeverageId,
+            occurredAt: Self.createdAt, tzId: "Asia/Riyadh", note: "mistake", provenance: manualProvenance(),
+            updatedAt: Self.createdAt, originDeviceId: "device-fixture")
+        deleted.deletedAt = Self.createdAt
+        try repo.insertEntry(original)
+        try repo.insertEntry(revision)
+        try repo.insertEntry(deleted)
+        try repo.upsertBeverage(BeverageDefinition(
+            id: Self.hyBeverageId, nameEn: "House blend", nameAr: "خلطة المنزل", fluidType: "coffee",
+            updatedAt: Self.createdAt, originDeviceId: "device-fixture"))
+        try repo.upsertGoal(HydrationGoal(
+            id: Self.hyGoalId, kind: .manual, targetMl: 2000, createdAt: Self.createdAt,
+            updatedAt: Self.createdAt, originDeviceId: "device-fixture"))
+        try repo.upsertSummary(HydrationDailySummary(
+            dayKey: "2026-07-20", tzId: "Asia/Riyadh", manualMl: 500, entryCount: 1,
+            goalKind: .manual, goalTargetMl: 2000, updatedAt: Self.createdAt, originDeviceId: "device-fixture"))
+    }
+
+    /// Gathers the FULL ledger a backup must carry — every row incl. superseded + tombstoned, so
+    /// revision chains (I2) survive — via the repository, mirroring what a real backup would do.
+    private func gatherFullLedger(from repo: HydrationRepository) throws -> HydrationExportPayload {
+        let entries = try repo.history(originalId: Self.hyOriginalId) + repo.history(originalId: Self.hyDeletedId)
+        let goals = try repo.allGoals()
+        let summaries = try repo.summaries(from: "0000-00-00", to: "9999-99-99")
+        let referenced = Set(entries.compactMap { $0.beverageId })
+        let beverages = try repo.beverages().filter { referenced.contains($0.id) }
+        return HydrationExportPayload(entries: entries, summaries: summaries, goals: goals, beverages: beverages)
+    }
+
+    /// Restores a gathered ledger into a store the append-first, id-preserving way the repository
+    /// already inserts — the primitive a staged restore commit would use.
+    private func applyHydration(_ payload: HydrationExportPayload, to repo: HydrationRepository) throws {
+        for e in payload.entries { try repo.insertEntry(e) }
+        for b in payload.beverages { try repo.upsertBeverage(b) }
+        for g in payload.goals { try repo.upsertGoal(g) }
+        for s in payload.summaries { try repo.upsertSummary(s) }
+    }
+
+    /// The whole point of the finding: a user who logs drinks, backs up, and restores to a new device
+    /// must get every drink back. Logs a full ledger, backs it up, verifies the backup carries it
+    /// (with notes and revision chains), restores into a wiped store, and proves a double-restore does
+    /// not duplicate.
+    func testHydrationLedgerSurvivesBackupAndRestoreToANewStore() throws {
+        let source = try freshHydrationRepo()
+        try seedHydration(into: source)
+        let gathered = try gatherFullLedger(from: source)
+        XCTAssertEqual(gathered.entries.count, 3, "the backup gathers the full chain, not just live rows")
+
+        let artifact = try BackupBundle.build(
+            manifest: Self.fixtureManifest(),
+            rawSamples: [], intervalRecords: [], sessions: [], derivedValues: [], baselines: [],
+            symptoms: [], adherence: [], workouts: [], nutrition: [],
+            hydration: gathered,
+            templates: [], destinations: [], customization: Self.fixtureCustomization(), schedules: [],
+            createdAt: Self.createdAt, appVersion: Self.appVersion, platform: Self.platform)
+
+        // Restore READS the drink slice: preview counts the full ledger as a normal-class family.
+        let restored = try BackupBundle.parse(artifact.data)
+        XCTAssertEqual(BackupBundle.preview(restored).namespaceCounts["logs.hydration"], 3)
+
+        // The backup carries every field needed to reconstruct — ids, notes, tombstone — nothing
+        // silently lost (asserted against the serialized bundle).
+        let hydrationLog = try XCTUnwrap((restored.bundle["logs"] as? [String: Any])?["hydration"] as? [String: Any])
+        let jsonEntries = try XCTUnwrap(hydrationLog["entries"] as? [[String: Any]])
+        XCTAssertEqual(jsonEntries.count, 3)
+        XCTAssertTrue(jsonEntries.allSatisfy { $0["note"] != nil }, "a backup keeps water notes")
+
+        // WIPE / NEW STORE, then restore into it (device migration). The append-first insert preserves
+        // ids and revision links, so the live view, full history, goal and beverage all come back.
+        let migrated = try freshHydrationRepo()
+        try applyHydration(gathered, to: migrated)
+
+        let liveBack = try migrated.liveEntries(from: Date(timeIntervalSince1970: 0), to: Self.dayEnd)
+        XCTAssertEqual(Set(liveBack.map(\.id)), [Self.hyRevisionId],
+                       "original superseded, deleted gone — only the live revision")
+        XCTAssertEqual(try migrated.history(originalId: Self.hyOriginalId).map(\.id),
+                       [Self.hyOriginalId, Self.hyRevisionId], "the revision chain is intact")
+        XCTAssertEqual(try migrated.entry(id: Self.hyRevisionId)?.note, "after the walk", "notes restored")
+        XCTAssertEqual(try migrated.allGoals().map(\.id), [Self.hyGoalId])
+        XCTAssertEqual(try migrated.beverages().map(\.id), [Self.hyBeverageId])
+
+        // Closed loop: what the migrated store re-gathers equals what was backed up, byte-for-byte at
+        // the domain level (every field of every entry, goal and beverage).
+        let regathered = try gatherFullLedger(from: migrated)
+        XCTAssertEqual(Set(regathered.entries), Set(gathered.entries))
+        XCTAssertEqual(Set(regathered.goals), Set(gathered.goals))
+        XCTAssertEqual(Set(regathered.beverages), Set(gathered.beverages))
+
+        // Idempotent: restoring the SAME bundle twice must not duplicate — the ledger keys by record
+        // id (INSERT OR REPLACE on the ULID PK), so a re-apply is a no-op.
+        try applyHydration(gathered, to: migrated)
+        XCTAssertEqual(try migrated.history(originalId: Self.hyOriginalId).count, 2)
+        XCTAssertEqual(try migrated.history(originalId: Self.hyDeletedId).count, 1)
+        XCTAssertEqual(try migrated.allGoals().count, 1)
+        XCTAssertEqual(try migrated.beverages().count, 1)
+    }
+
+    func testBackupOptsHydrationNotesInStructurally() throws {
+        let source = try freshHydrationRepo()
+        try seedHydration(into: source)
+        let artifact = try BackupBundle.build(
+            manifest: Self.fixtureManifest(),
+            rawSamples: [], intervalRecords: [], sessions: [], derivedValues: [], baselines: [],
+            symptoms: [], adherence: [], workouts: [], nutrition: [],
+            hydration: try gatherFullLedger(from: source),
+            templates: [], destinations: [], customization: Self.fixtureCustomization(), schedules: [],
+            createdAt: Self.createdAt, appVersion: Self.appVersion, platform: Self.platform)
+        let restored = try BackupBundle.parse(artifact.data)
+        let hydrationLog = try XCTUnwrap((restored.bundle["logs"] as? [String: Any])?["hydration"] as? [String: Any])
+        let redaction = try XCTUnwrap(hydrationLog["redaction"] as? [String: Any])
+        XCTAssertEqual(redaction["notes_included"] as? Bool, true, "a backup opts notes in")
+        let excluded = (redaction["excluded_by_default"] as? [String]) ?? []
+        XCTAssertFalse(excluded.contains("note"), "note must not be excluded in a backup")
+    }
+
+    func testAbsentHydrationWritesNoBlockAndKeepsGoldensStable() throws {
+        // The config-only golden fixture passes no hydration → no `logs.hydration` key at all
+        // (absent, not empty), which is what keeps the pre-hydration goldens byte-identical.
+        let restored = try BackupBundle.parse(try Self.buildFixture().data)
+        XCTAssertNil((restored.bundle["logs"] as? [String: Any])?["hydration"])
+        XCTAssertEqual(BackupBundle.preview(restored).namespaceCounts["logs.hydration"], 0)
     }
 
     // MARK: - Helpers

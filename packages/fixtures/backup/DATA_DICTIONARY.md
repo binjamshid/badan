@@ -32,6 +32,8 @@ Raw and derived values are physically separate and never share a row shape:
 - `baselines` — personal baselines with center/spread/band and `n_points`.
 - `logs.symptoms`, `logs.adherence` — the sensitive namespace (present only with consent).
 - `logs.workouts`, `logs.nutrition` — manual logs.
+- `logs.hydration` — the drink ledger: entries (with their revision chains), day summaries,
+  goals, and referenced beverages. Carried whole in a backup, notes included.
 - `deletions` — tombstones (id + `deleted_at`) so a consumer can reconcile removals.
 
 Every timestamp is ISO-8601 with a numeric offset (never `Z`). Every value is in its

@@ -31,7 +31,18 @@ import net.albayyan.badan.domain.derivation.InsightEngine
 import net.albayyan.badan.domain.derivation.ReadinessEngine
 import net.albayyan.badan.domain.derivation.SleepIntelligenceEngine
 import net.albayyan.badan.domain.ingestion.IngestionPipeline
+import net.albayyan.badan.domain.automation.AutomationEngine
+import net.albayyan.badan.domain.automation.ExportRunnerAutomationRunner
 import net.albayyan.badan.export.ExportRunner
+import net.albayyan.badan.export.destinations.ContentResolverTreeDocumentGateway
+import net.albayyan.badan.export.destinations.FileFolderDestination
+import net.albayyan.badan.export.destinations.SharedPrefsTreeUriStore
+import net.albayyan.badan.platform.notifications.AndroidAutomationPauseNotifier
+import net.albayyan.badan.storage.repositories.AutomationDataFreshnessProbe
+import net.albayyan.badan.storage.repositories.AutomationScheduleRepository
+import net.albayyan.badan.storage.repositories.ExportCursorRepository
+import net.albayyan.badan.storage.repositories.ExportDestinationRepository
+import net.albayyan.badan.ontology.BeverageCatalog
 import net.albayyan.badan.ontology.InsightTemplateStore
 import net.albayyan.badan.ontology.MetricRegistry
 import net.albayyan.badan.ontology.SensorQualityMap
@@ -44,6 +55,7 @@ import net.albayyan.badan.storage.repositories.DerivationRepository
 import net.albayyan.badan.storage.repositories.ExportJobRepository
 import net.albayyan.badan.storage.repositories.ExportRunRepository
 import net.albayyan.badan.storage.repositories.ExportTemplateRepository
+import net.albayyan.badan.storage.repositories.HydrationRepository
 import net.albayyan.badan.storage.repositories.InsightRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
@@ -74,6 +86,9 @@ class AppEnvironment(context: Context) {
     val registry: MetricRegistry = MetricRegistry(context.assets)
     val symptoms: SymptomDictionary = SymptomDictionary(context.assets)
     val templates: InsightTemplateStore = InsightTemplateStore(context.assets)
+    // EPIC-38 built-in beverage vocabulary (`beverages.json`), the curated half of the hydration
+    // dictionary-vs-custom split. A dictionary loader beside `symptoms`/`templates`, not a repository.
+    val beverages: BeverageCatalog = BeverageCatalog(context.assets)
 
     // Repositories
     val measurements: MeasurementRepository = MeasurementRepository(database.main)
@@ -82,6 +97,10 @@ class AppEnvironment(context: Context) {
     val reconciliation: ReconciliationRepository = ReconciliationRepository(database.main)
     val catalog: CatalogRepository = CatalogRepository(database.main)
     val logging: LoggingRepository = LoggingRepository(database.main, database.sensitive)
+    // EPIC-38 hydration ledger + beverage/container catalogs + goals + daily summaries. Main DB — a
+    // logged drink is normal-class, not sensitive-plus (§9.14). Consumed by the LogHub hydration
+    // surface; the pure ledger/goal logic lives in `domain.hydration`.
+    val hydration: HydrationRepository = HydrationRepository(database.main)
     val exportJobs: ExportJobRepository = ExportJobRepository(database.main)
     // EPIC-09/10/16 export surfaces. `export_templates` and `export_runs` already exist (migration
     // v4); these repositories were written in Phase 0 but had no caller until the Compose export
@@ -128,7 +147,46 @@ class AppEnvironment(context: Context) {
     val insightEngine: InsightEngine =
         InsightEngine(insightsRepo, derivation, measurements, templates, registry, clock, deviceId)
     val exporter: ExportRunner =
-        ExportRunner(measurements, derivation, logging, exportJobs, registry, clock, appVersion, deviceId)
+        ExportRunner(measurements, derivation, logging, exportJobs, registry, clock, appVersion, deviceId,
+            hydration = hydration)
+
+    /**
+     * EPIC-15 — the scheduling & automation engine, invoked from [SyncWorker] on the periodic wake.
+     * Lazy because it is only needed in the background worker, not on the app's first frame.
+     *
+     * It composes Phase-1's runner, so it needs a DELIVERY-capable [ExportRunner] — the plain
+     * [exporter] above is share-sheet-only (no template collaborators). This one carries
+     * `templates`/`destinations`/`runs`/`cursors`/`routes` and the folder deliverer, so a scheduled
+     * template can land its file in the user's picked tree. Generation happens into the app cache
+     * dir (the same scratch space the export UI uses).
+     */
+    val automationEngine: AutomationEngine by lazy {
+        val deliveryRunner = ExportRunner(
+            measurements, derivation, logging, exportJobs, registry, clock, appVersion, deviceId,
+            templates = ExportTemplateRepository(database.main),
+            destinations = ExportDestinationRepository(database.main),
+            runs = ExportRunRepository(database.main),
+            cursors = ExportCursorRepository(database.main),
+            routes = RouteRepository(database.main),
+            // A scheduled/automation export owns the ledger too — a drink is the user's own data (raw
+            // data is never paywalled), so the background lane exports it exactly like the share sheet.
+            hydration = hydration,
+            deliverers = listOf(
+                FileFolderDestination(
+                    SharedPrefsTreeUriStore(appContext),
+                    ContentResolverTreeDocumentGateway(appContext),
+                ),
+            ),
+        )
+        AutomationEngine(
+            schedules = AutomationScheduleRepository(database.main),
+            templates = ExportTemplateRepository(database.main),
+            runner = ExportRunnerAutomationRunner(deliveryRunner, appContext.cacheDir),
+            freshness = AutomationDataFreshnessProbe(database.main),
+            notifier = AndroidAutomationPauseNotifier(appContext),
+            clock = clock,
+        )
+    }
 
     private val seedController: SeedController =
         SeedController(catalog, ingestion, logging, measurements, baselines, insightEngine, registry,

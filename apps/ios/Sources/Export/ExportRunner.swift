@@ -37,6 +37,17 @@ final class ExportRunner {
     private let measurements: MeasurementRepository
     private let derivation: DerivationRepository
     private let logging: LoggingRepository
+    /// The drink ledger (EPIC-38), or nil. Optional-and-defaulted for the same reason the template
+    /// collaborators below are: the automation runner, `runRouteExport`/`runAggregated`, and every
+    /// pre-hydration test construct an `ExportRunner` without it and must keep compiling and
+    /// behaving byte-for-byte unchanged. When it is nil — or when a run's scope catches no drinks —
+    /// the JSON `logs.hydration` block and the hydration CSV set stay ABSENT, so a store with no
+    /// hydration produces the exact bytes it did before (the absent-not-empty rule `JSONBundleWriter`
+    /// documents, which is what keeps the pre-hydration goldens byte-stable). A logged drink is
+    /// normal-class (main DB), so it rides the DEFAULT export exactly like workouts/nutrition — it is
+    /// the user's own data and is never paywalled or withheld. Only the free-text `note` is redacted,
+    /// and structurally, by the default `HydrationRedactionPolicy` — never by the sensitive gate.
+    private let hydration: HydrationRepository?
     private let exportJobs: ExportJobRepository
     private let registry: MetricRegistry
     private let clock: Clock
@@ -62,12 +73,14 @@ final class ExportRunner {
     init(measurements: MeasurementRepository, derivation: DerivationRepository,
          logging: LoggingRepository, exportJobs: ExportJobRepository,
          registry: MetricRegistry, clock: Clock, appVersion: String, deviceId: String,
+         hydration: HydrationRepository? = nil,
          templates: ExportTemplateRepository? = nil, destinations: ExportDestinationRepository? = nil,
          runs: ExportRunRepository? = nil, cursors: ExportCursorRepository? = nil,
          routes: RouteRepository? = nil, deliverers: [ExportDestinationDelivering] = []) {
         self.measurements = measurements
         self.derivation = derivation
         self.logging = logging
+        self.hydration = hydration
         self.exportJobs = exportJobs
         self.registry = registry
         self.clock = clock
@@ -198,18 +211,25 @@ final class ExportRunner {
                     }
                 }
 
-                // Structured logs kept in the main DB (workouts/nutrition are normal-class).
+                // Structured logs kept in the main DB (workouts/nutrition/hydration are normal-class).
                 let workouts = (wantRaw && logFamilyIncluded("activity", scope))
                     ? try logging.workouts(from: rangeStart, to: rangeEnd)
                         .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) } : []
                 let nutrition = (wantRaw && logFamilyIncluded("nutrition", scope))
                     ? try logging.nutrition(from: rangeStart, to: rangeEnd)
                         .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) } : []
+                // Hydration rides the same normal-class log gate as workouts/nutrition — the
+                // "hydration" family, mirroring their "activity"/"nutrition" gating exactly. Gathered
+                // inside THIS `measurements.transaction` block (not after it) because the drink ledger
+                // shares the same main-DB connection, so a same-thread nested read joins this one
+                // snapshot (EDGE-03) rather than opening a second.
+                let hydrationPayload = (wantRaw && logFamilyIncluded("hydration", scope))
+                    ? try gatherHydration(from: rangeStart, to: rangeEnd, ingestedSince: ingestedSince) : nil
 
                 return GatheredMainDB(rawSamples: rawSamples, intervalRecords: intervalRecords, sessions: sessions,
                                       derivedValues: derivedValues, baselines: baselines,
                                       derivedRangeFallbackCount: derivedRangeFallbackCount,
-                                      workouts: workouts, nutrition: nutrition)
+                                      workouts: workouts, nutrition: nutrition, hydration: hydrationPayload)
             }
 
             // Sensitive-class logs (medications/symptoms) — separate `sensitive` DB connection,
@@ -230,7 +250,8 @@ final class ExportRunner {
                                     baselines: gathered.baselines,
                                     derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
                                     symptoms: symptoms, adherence: adherence,
-                                    workouts: gathered.workouts, nutrition: gathered.nutrition)
+                                    workouts: gathered.workouts, nutrition: gathered.nutrition,
+                                    hydration: gathered.hydration)
             case .json:
                 result = try runJSON(scope: scope, exportId: exportId, folder: folder, startedAt: startedAt,
                                      rawSamples: gathered.rawSamples, intervalRecords: gathered.intervalRecords,
@@ -238,7 +259,8 @@ final class ExportRunner {
                                      baselines: gathered.baselines,
                                      derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
                                      symptoms: symptoms, adherence: adherence,
-                                     workouts: gathered.workouts, nutrition: gathered.nutrition)
+                                     workouts: gathered.workouts, nutrition: gathered.nutrition,
+                                     hydration: gathered.hydration)
             }
 
             // The delta watermark and ledger row counts, computed once over the rows that were
@@ -256,7 +278,8 @@ final class ExportRunner {
             let counts = ExportRowCounts(
                 measurements: gathered.rawSamples.count, intervals: gathered.intervalRecords.count,
                 sessions: gathered.sessions.count,
-                logs: symptoms.count + adherence.count + gathered.workouts.count + gathered.nutrition.count,
+                logs: symptoms.count + adherence.count + gathered.workouts.count + gathered.nutrition.count
+                    + (gathered.hydration?.entries.count ?? 0),
                 derived: gathered.derivedValues.count + gathered.baselines.count,
                 suppressed: suppressedCount)
 
@@ -337,6 +360,45 @@ final class ExportRunner {
         let derivedRangeFallbackCount: Int
         let workouts: [WorkoutEntry]
         let nutrition: [NutritionEntry]
+        /// The drink slice, or nil when hydration isn't wired in or caught no data in range — kept
+        /// nil (never an empty payload) so the JSON block and CSV set stay absent, not empty.
+        let hydration: HydrationExportPayload?
+    }
+
+    /// Gathers the hydration slice within the export window and assembles a `HydrationExportPayload`,
+    /// or returns nil when the module isn't wired in (`hydration == nil`) or nothing falls in range.
+    /// Nil — not an empty payload — is deliberate: `JSONBundleWriter` and `HydrationCSVWriter` add
+    /// nothing for a nil/empty payload, so an install with no drinks emits the exact pre-hydration
+    /// bytes (the goldens stay byte-stable).
+    ///
+    /// MUST be called inside `run`'s `measurements.transaction` snapshot — the drink ledger shares
+    /// the main-DB connection, so this nested same-thread read joins that one transaction (EDGE-03).
+    private func gatherHydration(from rangeStart: Date, to rangeEnd: Date,
+                                 ingestedSince: Date?) throws -> HydrationExportPayload? {
+        guard let hydration else { return nil }
+        // Entries carry full provenance, so the delta filter runs on the honest ingested axis (the
+        // same axis raw samples use) rather than `updated_at` — a drink logged before the watermark
+        // but stored after it is still delivered, never silently dropped (the DATA-08 hazard).
+        let entries = try hydration.liveEntries(from: rangeStart, to: rangeEnd)
+            .filter { Self.ingestedAfter($0.provenance.ingestedAt, ingestedSince) }
+        // Summaries are keyed by local calendar day and queried by lexical (== chronological) day-key
+        // comparison. The window's day keys are computed in UTC to match the instants the runner
+        // works in; an all-time export (nil dates) spans 1970-01-01..today and catches every day.
+        let startKey = GoalEngine.dayKey(for: rangeStart, tzId: "UTC")
+        let endKey = GoalEngine.dayKey(for: rangeEnd, tzId: "UTC")
+        let summaries = try hydration.summaries(from: startKey, to: endKey)
+            .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) }
+        let goals = try hydration.allGoals()
+            .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) }
+        // Only the custom beverages the exported entries actually reference — enough to name every
+        // drink in the file without shipping the whole catalog (HydrationExportPayload's contract).
+        // Not delta-filtered: a dictionary entry a delta's rows point at must travel with them.
+        let referenced = Set(entries.compactMap { $0.beverageId })
+        let beverages = referenced.isEmpty
+            ? [] : try hydration.beverages().filter { referenced.contains($0.id) }
+        let payload = HydrationExportPayload(entries: entries, summaries: summaries,
+                                             goals: goals, beverages: beverages)
+        return payload.isEmpty ? nil : payload
     }
 
     /// Deletes `badan-export-*` temp folders older than `hours` — orphaned by an interrupted
@@ -385,7 +447,8 @@ final class ExportRunner {
                         rawSamples: [RawSample], intervalRecords: [IntervalRecord], sessions: [Session],
                         derivedValues: [DerivedValue], baselines: [Baseline],
                         derivedRangeFallbackCount: Int, symptoms: [SymptomEntry], adherence: [AdherenceEvent],
-                        workouts: [WorkoutEntry], nutrition: [NutritionEntry]) throws -> ExportResult {
+                        workouts: [WorkoutEntry], nutrition: [NutritionEntry],
+                        hydration: HydrationExportPayload?) throws -> ExportResult {
         let generatedAt = clock.now()
         let writer = CSVWriter()
 
@@ -414,16 +477,40 @@ final class ExportRunner {
         let derivedChecksum = try Self.streamWrite(derivedRows, using: writer, to: derivedURL)
         let eventsChecksum = try Self.streamWrite(eventRows, using: writer, to: eventsURL)
 
-        let checksums = [
+        var checksums = [
             "raw.csv": rawChecksum,
             "derived.csv": derivedChecksum,
             "events.csv": eventsChecksum
         ]
+
+        // Hydration rides its own small `hydration_*` CSV set (a drink ledger is a different shape
+        // from the 26-column contract, so it gets self-describing tables rather than being forced
+        // onto events.csv), written ONLY when the export actually caught drinks — so a CSV export
+        // with no hydration is byte-identical to before. This is the CSV analogue of the JSON
+        // bundle's absent-not-empty `logs.hydration`, and mirrors how DATA-03 added events.csv.
+        // Notes are excluded structurally by the default policy, whose byte-identical redaction
+        // manifest (`hydration_redaction.json`) states exactly what the file leaves out.
+        var hydrationURLs: [URL] = []
+        if let hydration {
+            for (name, contents) in HydrationCSVWriter(policy: .default).files(hydration).sorted(by: { $0.key < $1.key }) {
+                let url = folder.appendingPathComponent(name)
+                let data = Data(contents.utf8)
+                FileManager.default.createFile(atPath: url.path, contents: nil,
+                                               attributes: [.protectionKey: FileProtectionType.complete])
+                try data.write(to: url, options: .completeFileProtection)
+                checksums[name] = Self.sha256Hex(data)
+                hydrationURLs.append(url)
+            }
+        }
+
         var counts: [String: Int] = [:]
         addCounts(rawRows.map { $0.metricId }, into: &counts)
         addCounts(derivedRows.map { $0.metricId }, into: &counts)
         addCounts(eventRows.map { $0.metricId }, into: &counts)
-        let rowCount = rawRows.count + derivedRows.count + eventRows.count
+        // Disclosed in `per_metric_row_counts` under the same synthetic-id convention the other logs
+        // use ("nutrition.entry" etc.), so the CSV manifest discloses drinks the way the JSON one does.
+        addCounts((hydration?.entries ?? []).map { _ in "hydration.entry" }, into: &counts)
+        let rowCount = rawRows.count + derivedRows.count + eventRows.count + (hydration?.entries.count ?? 0)
 
         let manifest = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
                                     checksums: checksums, perMetricRowCounts: counts,
@@ -438,7 +525,8 @@ final class ExportRunner {
                             manifest: manifest, outputPath: folder.path, rowCount: rowCount,
                             startedAt: startedAt, finishedAt: generatedAt, createdAt: startedAt)
         try exportJobs.insert(job)
-        return ExportResult(job: job, fileURLs: [rawURL, derivedURL, eventsURL, manifestURL], rowCount: rowCount)
+        return ExportResult(job: job, fileURLs: [rawURL, derivedURL, eventsURL] + hydrationURLs + [manifestURL],
+                            rowCount: rowCount)
     }
 
     // MARK: - JSON
@@ -447,7 +535,8 @@ final class ExportRunner {
                          rawSamples: [RawSample], intervalRecords: [IntervalRecord], sessions: [Session],
                          derivedValues: [DerivedValue], baselines: [Baseline],
                          derivedRangeFallbackCount: Int, symptoms: [SymptomEntry], adherence: [AdherenceEvent],
-                         workouts: [WorkoutEntry], nutrition: [NutritionEntry]) throws -> ExportResult {
+                         workouts: [WorkoutEntry], nutrition: [NutritionEntry],
+                         hydration: HydrationExportPayload?) throws -> ExportResult {
         let generatedAt = clock.now()
 
         var counts: [String: Int] = [:]
@@ -460,9 +549,11 @@ final class ExportRunner {
         addCounts(adherence.map { _ in "medications.adherence" }, into: &counts)
         addCounts(workouts.map { _ in "activity.workout" }, into: &counts)
         addCounts(nutrition.map { _ in "nutrition.entry" }, into: &counts)
+        addCounts((hydration?.entries ?? []).map { _ in "hydration.entry" }, into: &counts)
         let rowCount = rawSamples.count + intervalRecords.count + sessions.count
             + derivedValues.count + baselines.count
             + symptoms.count + adherence.count + workouts.count + nutrition.count
+            + (hydration?.entries.count ?? 0)
 
         let sampleRows = Self.sampleDataRowCount(rawSamples: rawSamples,
                                                  intervalRecords: intervalRecords, sessions: sessions)
@@ -473,10 +564,14 @@ final class ExportRunner {
                                     checksums: [:], perMetricRowCounts: counts,
                                     derivedRangeFallbackCount: derivedRangeFallbackCount,
                                     sampleDataRowCount: sampleRows)
+        // `hydrationRedaction: .default` withholds notes structurally (the key is absent, not
+        // blanked). The writer adds `logs.hydration` only for a non-empty payload, so a nil/empty
+        // one contributes nothing and the pre-hydration goldens stay byte-identical.
         let bundleData = try JSONBundleWriter().data(
             manifest: embedded, rawSamples: rawSamples, intervalRecords: intervalRecords,
             sessions: sessions, derivedValues: derivedValues, baselines: baselines,
-            symptoms: symptoms, adherence: adherence, workouts: workouts, nutrition: nutrition)
+            symptoms: symptoms, adherence: adherence, workouts: workouts, nutrition: nutrition,
+            hydration: hydration, hydrationRedaction: .default)
         let bundleURL = folder.appendingPathComponent("bundle.json")
         try bundleData.write(to: bundleURL, options: .completeFileProtection)
 

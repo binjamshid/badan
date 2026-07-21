@@ -114,6 +114,11 @@ data class CustomizationProfile(
     val notifications: NotificationPreference = NotificationPreference(),
     val sensitiveModulesEnabled: Boolean = true,
     val nutritionEnabled: Boolean = true,
+    // EPIC-38: whether the hydration surface is shown in the Log tab. A presentation flag exactly
+    // like [nutritionEnabled] — hiding it is non-destructive (§7A.1 "hideable without deletion"):
+    // the ledger, goals and summaries stay in the DB and re-enabling brings them straight back.
+    // Defaults on; a persisted profile without the field decodes to true (ignoreUnknownKeys + default).
+    val hydrationEnabled: Boolean = true,
 ) {
     fun module(id: String): HomeModule? = homeModules.firstOrNull { it.id == id }
 

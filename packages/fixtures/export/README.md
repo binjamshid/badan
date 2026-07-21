@@ -21,6 +21,31 @@ that can drift from the artifact it is supposed to police — the failure mode
 `packages/fixtures/canonicalization/README.md` documents at length, and the reason that fixture
 set exists in this shape.
 
+## `bundle-hydration-v1.json` — a CI schema instance, not a parity golden
+
+`bundle-v1.json` carries no drinks, so validating it against `json_bundle.schema.json` (the CI step
+"The export bundle fixtures validate against their own JSON Schema") never touches the
+`logs.hydration` section EPIC-38 added. That left the hydration schema **documented but unexercised**:
+a writer or schema drift on the hydration block — a renamed key, a `const` that moved, a
+required field dropped — would have passed CI unnoticed.
+
+`bundle-hydration-v1.json` closes that: it is `bundle-v1.json` plus a realistic `logs.hydration`
+block shaped as `ExportRunner` / `HydrationExportJSON.log` emits it — canonical-mL entries including
+an **append-first revision** (`revision: 2`, `supersedes` the original id, `original_id` preserved,
+per I2), a day summary **with** a goal and one **without** (null `goal_target_ml` / `goal_progress_pct`,
+never `0`), a manual goal and an explicit no-goal, the referenced custom beverage, the aggregated
+provenance sources (I1), and the redaction manifest with `note` structurally withheld (the key is
+absent from every entry, per §7A.1). CI validates **both** files, so the hydration section is now
+schema-checked.
+
+It is deliberately **not** a cross-platform parity golden. The three goldens above are asserted
+byte-identical by both suites; this file is not — it is a schema-validation instance only, read by
+`.github/workflows/ci.yml`. Do **not** wire it into `ExportSchemaParityTest(s)` and do **not** edit
+`bundle-v1.json` to carry hydration: keeping the no-hydration golden byte-stable is what lets a
+pre-hydration store stay byte-for-byte reproducible (the absent-not-empty rule `JSONBundleWriter`
+documents). If the hydration schema changes on purpose, regenerate this file to match the writer's
+new output, then `scripts/check_fixture_hashes.sh --update` to re-record its sha256.
+
 ## Why bytes, not parsed structures
 
 A parsed comparison passes while key order, number spelling, string escaping and timestamp

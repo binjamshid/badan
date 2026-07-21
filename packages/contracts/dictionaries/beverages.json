@@ -1,0 +1,176 @@
+{
+  "version": "0.1.0",
+  "note": "Curated bilingual (en+ar) beverage dictionary for the hydration module (EPIC-38, plan §7A.1 / §9.14). Seeds the built-in beverages a user picks from; user-added beverages live in the `beverage_definitions` table (dictionary-vs-custom split, same as symptoms.json). fluidType is a display/grouping category, never a hydration weight. IMPORTANT: caffeineMgPer100ml, alcoholPct and electrolyte are DISPLAY METADATA ONLY. They MUST NOT feed a 'net hydration' multiplier and no food-water estimate is ever mixed into a logged total — both are explicit §7A.1 Reject items ('Never silently compute net-hydration multipliers'). Every logged mL counts as one logged mL regardless of what was in the cup. defaultVolumeMl is a starting suggestion for the quick-log sheet, never a target.",
+  "beverages": [
+    {
+      "id": "water",
+      "nameEn": "Water",
+      "nameAr": "ماء",
+      "fluidType": "water",
+      "defaultVolumeMl": 250,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "sparkling_water",
+      "nameEn": "Sparkling water",
+      "nameAr": "مياه غازية",
+      "fluidType": "water",
+      "defaultVolumeMl": 330,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "coffee",
+      "nameEn": "Coffee",
+      "nameAr": "قهوة",
+      "fluidType": "coffee",
+      "defaultVolumeMl": 200,
+      "caffeineMgPer100ml": 40,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "arabic_coffee",
+      "nameEn": "Arabic coffee",
+      "nameAr": "قهوة عربية",
+      "fluidType": "coffee",
+      "defaultVolumeMl": 60,
+      "caffeineMgPer100ml": 40,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "espresso",
+      "nameEn": "Espresso",
+      "nameAr": "إسبريسو",
+      "fluidType": "coffee",
+      "defaultVolumeMl": 30,
+      "caffeineMgPer100ml": 210,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "tea",
+      "nameEn": "Tea",
+      "nameAr": "شاي",
+      "fluidType": "tea",
+      "defaultVolumeMl": 200,
+      "caffeineMgPer100ml": 20,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "green_tea",
+      "nameEn": "Green tea",
+      "nameAr": "شاي أخضر",
+      "fluidType": "tea",
+      "defaultVolumeMl": 200,
+      "caffeineMgPer100ml": 12,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "herbal_tea",
+      "nameEn": "Herbal tea",
+      "nameAr": "شاي أعشاب",
+      "fluidType": "tea",
+      "defaultVolumeMl": 200,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "milk",
+      "nameEn": "Milk",
+      "nameAr": "حليب",
+      "fluidType": "dairy",
+      "defaultVolumeMl": 250,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "laban",
+      "nameEn": "Laban",
+      "nameAr": "لبن",
+      "fluidType": "dairy",
+      "defaultVolumeMl": 250,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "juice",
+      "nameEn": "Juice",
+      "nameAr": "عصير",
+      "fluidType": "juice",
+      "defaultVolumeMl": 250,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "soft_drink",
+      "nameEn": "Soft drink",
+      "nameAr": "مشروب غازي",
+      "fluidType": "soft_drink",
+      "defaultVolumeMl": 330,
+      "caffeineMgPer100ml": 10,
+      "alcoholPct": 0,
+      "electrolyte": false
+    },
+    {
+      "id": "sports_drink",
+      "nameEn": "Sports drink",
+      "nameAr": "مشروب رياضي",
+      "fluidType": "electrolyte",
+      "defaultVolumeMl": 500,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": true
+    },
+    {
+      "id": "oral_rehydration",
+      "nameEn": "Rehydration solution",
+      "nameAr": "محلول معالجة الجفاف",
+      "fluidType": "electrolyte",
+      "defaultVolumeMl": 200,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": true
+    },
+    {
+      "id": "coconut_water",
+      "nameEn": "Coconut water",
+      "nameAr": "ماء جوز الهند",
+      "fluidType": "electrolyte",
+      "defaultVolumeMl": 330,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": true
+    },
+    {
+      "id": "broth",
+      "nameEn": "Broth",
+      "nameAr": "مرق",
+      "fluidType": "other",
+      "defaultVolumeMl": 250,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": true
+    },
+    {
+      "id": "other",
+      "nameEn": "Other drink",
+      "nameAr": "مشروب آخر",
+      "fluidType": "other",
+      "defaultVolumeMl": 250,
+      "caffeineMgPer100ml": 0,
+      "alcoholPct": 0,
+      "electrolyte": false
+    }
+  ]
+}
