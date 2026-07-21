@@ -43,6 +43,12 @@ private enum AnatomyStrings {
     static let noBaselineYet = LocalizedString(
         en: "Not enough history yet to draw a typical range.",
         ar: "لا يوجد سجل كافٍ بعد لرسم نطاق معتاد.")
+    static let contributions = LocalizedString(en: "What went into this", ar: "ما الذي دخل في هذا")
+    static let contributionShare = LocalizedString(en: "{pct}% of the score", ar: "{pct}٪ من النتيجة")
+    static let formulaHeading = LocalizedString(en: "The formula", ar: "المعادلة")
+    static let formulaPublishedNote = LocalizedString(
+        en: "Computed on your device. This formula is published.",
+        ar: "محسوبة على جهازك. هذه المعادلة منشورة.")
 
     /// Plain-language description of each frozen algorithm id BaselineEngine actually emits
     /// (see `BaselineEngine.swift`), keyed by the id portion before "@version". Unknown ids
@@ -69,6 +75,147 @@ private enum AnatomyStrings {
     ]
 }
 
+/// One contribution-bar row: which input, its formatted value, its share of the score, and the bar
+/// fill fraction (its weight relative to the largest contributor). Pure value type so the property
+/// that matters — bars read straight from the stored manifest weights, and their shares sum to 1 — is
+/// unit-tested without a view (`AnatomyContributions.rows`).
+struct AnatomyContribution: Hashable {
+    let metricId: String
+    let value: Double
+    let weight: Double
+    /// weight ÷ Σweight, 0…1 — the share text ("50% of the score").
+    let share: Double
+    /// weight ÷ maxWeight, 0…1 — the bar fill, so the top contributor fills the track.
+    let barFraction: Double
+}
+
+/// Builds the contribution breakdown from a `DerivedValue`'s `InputManifest`.
+///
+/// Only a manifest that is genuinely a *contribution* breakdown qualifies: at least two DISTINCT
+/// input metrics, each carrying a positive `weight`. Readiness stores exactly this — one input per
+/// metric, `weight` = that input's additive points-out-of-100 contribution, so Σ(weights) is the
+/// score and the bars are the score's anatomy (see `ReadinessEngine`'s manifest note). A per-zone
+/// manifest (Effort), where every input shares one metric id, is deliberately rejected — a
+/// metric-keyed bar there would just repeat one label — and falls through to the plain "Records used"
+/// list instead. This is the gate that keeps the bars honest rather than forcing every manifest into
+/// a shape it isn't.
+enum AnatomyContributions {
+    static func rows(from manifest: InputManifest) -> [AnatomyContribution]? {
+        let weighted = manifest.inputs.compactMap { input -> (metricId: String, value: Double, weight: Double)? in
+            guard let w = input.weight, w > 0 else { return nil }
+            return (input.metricId, input.value, w)
+        }
+        guard weighted.count >= 2 else { return nil }
+        guard Set(weighted.map(\.metricId)).count == weighted.count else { return nil }
+        let total = weighted.reduce(0.0) { $0 + $1.weight }
+        let maxWeight = weighted.map(\.weight).max() ?? 0
+        guard total > 0, maxWeight > 0 else { return nil }
+        return weighted
+            .sorted { $0.weight > $1.weight }
+            .map { AnatomyContribution(metricId: $0.metricId, value: $0.value, weight: $0.weight,
+                                       share: $0.weight / total, barFraction: $0.weight / maxWeight) }
+    }
+}
+
+/// A published score formula plus its plain-language alt text. The `formula` carries math notation
+/// (Σ, ×, ÷) for sighted users; `altText` is what VoiceOver reads instead, because a screen reader
+/// announcing "Sigma" or "middle dot" is noise, not comprehension (plan §16: "formula alt-text").
+struct AnatomyFormula: Hashable {
+    let formula: LocalizedString
+    let altText: LocalizedString
+}
+
+/// The published per-algorithm formulas surfaced in the anatomy sheet — the in-app half of "every
+/// score ships with a published formula (in-app AND `docs/algorithms/<x>.md`)". Keyed by the raw
+/// `algorithmId` (version-independent); an algorithm with no published formula simply shows no
+/// formula card rather than a guess. These strings must stay in step with `docs/algorithms/*.md`.
+enum AnatomyFormulas {
+    static let byAlgorithmId: [String: AnatomyFormula] = [
+        "composite.readiness_score": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Readiness = Σ (weightᵢ × sub-scoreᵢ), over the inputs present",
+                ar: "الجاهزية = Σ (الوزنᵢ × النتيجة-الفرعيةᵢ)، للمدخلات المتوفرة"),
+            altText: LocalizedString(
+                en: "Readiness is a weighted average of how your HRV, resting heart rate, respiratory rate and sleep performance compare to your own baselines. Each input's weight is renormalized over whatever was recorded, so a missing input redistributes its weight rather than being filled in.",
+                ar: "الجاهزية متوسط مرجّح لمدى مقارنة تغيّر نبضك ومعدل نبضك أثناء الراحة ومعدل تنفسك وأداء نومك بخط أساسك الشخصي. يُعاد توزيع وزن كل مدخل على ما تم تسجيله فعلاً، فالمدخل الغائب يُعاد توزيع وزنه بدل تعويضه.")),
+        "composite.sleep_efficiency": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Efficiency = time asleep ÷ time in bed × 100%",
+                ar: "الكفاءة = زمن النوم ÷ زمن البقاء في الفراش × 100٪"),
+            altText: LocalizedString(
+                en: "Sleep efficiency is the time you were asleep divided by the time you were in bed, shown as a percentage.",
+                ar: "كفاءة النوم هي زمن نومك مقسوماً على زمن بقائك في الفراش، معروضة كنسبة مئوية.")),
+        "sleep.performance": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Performance = time asleep ÷ your sleep need",
+                ar: "الأداء = زمن النوم ÷ حاجتك للنوم"),
+            altText: LocalizedString(
+                en: "Sleep performance is how much you slept compared to what your body needed. The need is a personal range, so performance is shown as a range too when confidence is low.",
+                ar: "أداء النوم هو مقدار نومك مقارنةً بما يحتاجه جسمك. الحاجة نطاق شخصي، لذا يُعرض الأداء كنطاق أيضاً حين تكون الثقة منخفضة.")),
+        "sleep.need": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Need = baseline + recent debt − nap credit + prior-day effort",
+                ar: "الحاجة = خط الأساس + الدين الأخير − رصيد القيلولة + جهد اليوم السابق"),
+            altText: LocalizedString(
+                en: "Your sleep need starts from your personal baseline duration, adds a little for recent sleep debt and yesterday's effort, and subtracts credit for any naps. It is always shown as a range, never a fake-exact number of minutes.",
+                ar: "تبدأ حاجتك للنوم من مدة خط أساسك الشخصي، وتضيف قليلاً للدين الأخير وجهد الأمس، وتطرح رصيداً لأي قيلولة. تُعرض دائماً كنطاق، لا كرقم دقيق زائف من الدقائق.")),
+        // sleep.debt / .consistency / .disturbances transcribe the published formulas in
+        // docs/algorithms/sleep.md verbatim in intent — the debt accumulator, the timing-regularity
+        // blend, and the merge-then-count disturbance rule — so a surfaced sleep score is never
+        // docs-yes / in-app-no (the transparency invariant; audit finding #3).
+        "sleep.debt": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Debt = Σ (needᵢ − actualᵢ) × 0.5^(ageᵢ ÷ half-life), bounded to [0, max]",
+                ar: "الدين = مجموع (الحاجةᵢ − الفعليᵢ) × 0.5^(العمرᵢ ÷ نصف-العمر)، محصوراً بين 0 والحد الأقصى"),
+            altText: LocalizedString(
+                en: "Sleep debt adds up how far each recent night fell short of the sleep it needed, with older nights counting for less, and is held between zero and a capped maximum. A night you sleep more than you needed pays the debt back down.",
+                ar: "يجمع دين النوم مقدار ما قصّرت به كل ليلة أخيرة عن حاجتها من النوم، مع احتساب الليالي الأقدم بوزن أقل، ويبقى محصوراً بين صفر وحدٍّ أقصى. الليلة التي تنام فيها أكثر من حاجتك تسدّد جزءاً من الدين.")),
+        "sleep.consistency": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Consistency = 100 × ( w × bed-regularity + (1 − w) × wake-regularity )",
+                ar: "الاتساق = 100 × ( وزن × انتظام-موعد-النوم + (1 − وزن) × انتظام-موعد-الاستيقاظ )"),
+            altText: LocalizedString(
+                en: "Timing consistency scores how steady your bedtimes and wake times are over the last two weeks. The tighter the spread, the higher the score; bedtime and wake-time regularity are blended, and the spread is measured wrap-aware so times either side of midnight count as close.",
+                ar: "يقيس اتساق التوقيت مدى ثبات مواعيد نومك واستيقاظك خلال الأسبوعين الماضيين. كلما ضاق التشتّت ارتفعت النتيجة؛ ويُمزج انتظام موعد النوم مع انتظام موعد الاستيقاظ، ويُقاس التشتّت بطريقة تراعي التفاف منتصف الليل فتُحتسب الأوقات على جانبي منتصف الليل متقاربة.")),
+        "sleep.disturbances": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Disturbances = count of awake episodes ≥ min length, after merging gaps < merge threshold",
+                ar: "الاضطرابات = عدد فترات اليقظة التي طولها ≥ الحد الأدنى، بعد دمج الفجوات < حد الدمج"),
+            altText: LocalizedString(
+                en: "Overnight disturbances count the times you were awake long enough to notice. Brief awakenings closer together than a short gap are merged into one, and anything under a few minutes is dropped. A night with no sleep-stage data gets no count rather than a zero.",
+                ar: "تُحصي الاضطرابات الليلية المرّات التي كنت فيها مستيقظاً مدةً كافية لتلاحظها. تُدمج فترات اليقظة القصيرة المتقاربة أقرب من فجوة قصيرة في فترة واحدة، ويُسقَط ما يقل عن بضع دقائق. والليلة التي لا تتوفّر لها بيانات مراحل النوم لا تحصل على عدد بدل أن تُحتسب صفراً.")),
+        "effort.day": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Effort = scale × (1 − e^(−k × weighted zone-minutes))",
+                ar: "الجهد = المقياس × (1 − e^(−k × دقائق-النطاق-المرجّحة))"),
+            altText: LocalizedString(
+                en: "Effort rises with the minutes you spend in each heart-rate zone, weighted so harder zones count for more. The curve flattens as effort accumulates, so the same extra minutes add less near the top.",
+                ar: "يرتفع الجهد مع الدقائق التي تقضيها في كل نطاق لمعدل ضربات القلب، مرجّحةً بحيث تُحتسب النطاقات الأصعب أكثر. ينبسط المنحنى كلما تراكم الجهد، فالدقائق الإضافية نفسها تضيف أقل قرب القمة.")),
+        // effort.workout shares effort.day's published curve (asserted by a golden), so it maps to
+        // the same formula rather than duplicating the string.
+        "effort.workout": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Effort = scale × (1 − e^(−k × weighted zone-minutes))",
+                ar: "الجهد = المقياس × (1 − e^(−k × دقائق-النطاق-المرجّحة))"),
+            altText: LocalizedString(
+                en: "Workout effort uses the same curve as your daily effort, over the minutes in each heart-rate zone during the workout.",
+                ar: "يستخدم جهد التمرين المنحنى نفسه لجهدك اليومي، على الدقائق في كل نطاق لمعدل ضربات القلب خلال التمرين.")),
+        "baseline.rolling_median_mad": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Band = median ± k × typical variation",
+                ar: "النطاق = الوسيط ± k × التغيّر المعتاد"),
+            altText: LocalizedString(
+                en: "Your typical range is your personal median plus or minus a multiple of how much this value usually varies, ignoring occasional outliers.",
+                ar: "نطاقك المعتاد هو وسيطك الشخصي زائداً أو ناقصاً مضاعفاً لمقدار تغيّر هذه القيمة عادةً، متجاهلاً القيم الشاذة العارضة.")),
+    ]
+
+    /// Resolve for a method token that may be a raw `algorithmId` or the composed `"algorithmId@semver"`.
+    static func lookup(_ method: String) -> AnatomyFormula? {
+        let id = method.split(separator: "@").first.map(String.init) ?? method
+        return byAlgorithmId[id]
+    }
+}
+
 /// Small in-place memoization so the sheet's formatted values (manifest rows, band text,
 /// method string) are computed once per presentation instead of on every re-render — `data`
 /// is immutable for the sheet's lifetime, so nothing cached here can go stale.
@@ -77,6 +224,8 @@ private final class AnatomyDisplayCache {
     var bandText: String?
     var methodStringComputed = false
     var methodString: String?
+    var contributionsComputed = false
+    var contributions: [AnatomyContribution]?
 }
 
 /// The "How this was worked out" sheet (VS-4). Presented modally in its own stack, it shows the
@@ -95,6 +244,14 @@ struct MetricAnatomySheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: BadanSpace.space5) {
                     baselineCard
+                    // Contribution bars first when the latest value has a contribution breakdown
+                    // (Readiness): the "why this number" answer leads, the raw records follow.
+                    if let contributions {
+                        contributionsCard(contributions)
+                    }
+                    if let method = methodString, let formula = AnatomyFormulas.lookup(method) {
+                        formulaCard(formula)
+                    }
                     manifestOrFallbackCard
                     if let method = methodString {
                         methodCard(method)
@@ -180,6 +337,96 @@ struct MetricAnatomySheet: View {
         let tz = windowTz
         let start = DayAttribution.addingDays(-b.windowDays, to: b.validFrom, tz: tz)
         return "\(dateOnlyText(start)) – \(dateOnlyText(b.validFrom))"
+    }
+
+    // MARK: Contribution bars (score anatomy)
+
+    /// The contribution breakdown of the latest computed value, when its manifest is one (Readiness).
+    /// Cached like the sheet's other derived values — `data` is immutable for the sheet's lifetime.
+    private var contributions: [AnatomyContribution]? {
+        if cache.contributionsComputed { return cache.contributions }
+        let rows = data.manifest.flatMap(AnatomyContributions.rows)
+        cache.contributions = rows
+        cache.contributionsComputed = true
+        return rows
+    }
+
+    /// Horizontal bars, one per input, each filled to its weight relative to the top contributor, with
+    /// the input's own value and its share of the score. This is the transparent-vs-black-box promise
+    /// made visual: the bars read straight off the stored manifest weights, so Σ(shares) = 1 by
+    /// construction and the picture cannot disagree with the number it explains.
+    private func contributionsCard(_ rows: [AnatomyContribution]) -> some View {
+        BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                SectionHeader(env.s(AnatomyStrings.contributions))
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    contributionRow(row)
+                }
+            }
+        }
+    }
+
+    private func contributionRow(_ row: AnatomyContribution) -> some View {
+        let def = env.registry.definitionOrFallback(row.metricId)
+        let label = def.label(depth: env.depth, language: env.language)
+        let valueText = env.format.full(metricId: row.metricId, canonicalValue: row.value)
+        let shareText = env.s(AnatomyStrings.contributionShare.filling(
+            ["pct": env.format.integer(Int((row.share * 100).rounded()))]))
+        return VStack(alignment: .leading, spacing: BadanSpace.space1) {
+            HStack(spacing: BadanSpace.space2) {
+                Text(label)
+                    .font(BadanFont.bodyCompact)
+                    .foregroundStyle(BadanColor.textPrimary)
+                Spacer(minLength: BadanSpace.space2)
+                Text(valueText)
+                    .font(BadanFont.bodyCompact.monospacedDigit())
+                    .foregroundStyle(BadanColor.textSecondary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(BadanColor.surfaceElevated)
+                    Capsule()
+                        .fill(BadanColor.primary.opacity(0.7))
+                        .frame(width: max(2, geo.size.width * row.barFraction))
+                }
+                // The bar grows from the leading edge in reading order (RTL mirrors normally).
+            }
+            .frame(height: 8)
+            Text(shareText)
+                .font(BadanFont.caption.monospacedDigit())
+                .foregroundStyle(BadanColor.textSecondary)
+        }
+        .frame(minHeight: BadanSpace.touchMin)
+        // Read as one phrase per input rather than four disconnected stops.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label), \(valueText), \(shareText)")
+    }
+
+    // MARK: Formula (published, with VoiceOver alt-text)
+
+    /// The published formula for the value's algorithm. The math notation is shown for sighted users;
+    /// VoiceOver reads the plain-language `altText` instead (a screen reader announcing "Sigma" is
+    /// noise). The "computed on your device, formula published" note is the trust line plan §16 asks
+    /// this surface to carry.
+    private func formulaCard(_ formula: AnatomyFormula) -> some View {
+        BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                SectionHeader(env.s(AnatomyStrings.formulaHeading))
+                // The formula is bilingual prose + math, so it follows the ambient direction (RTL in
+                // Arabic); the math symbols fall into place under standard bidi. VoiceOver reads the
+                // plain-language alt-text instead of the notation.
+                Text(env.s(formula.formula))
+                    .font(BadanFont.bodyCompact.monospaced())
+                    .foregroundStyle(BadanColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityLabel(env.s(formula.altText))
+                Text(env.s(AnatomyStrings.formulaPublishedNote))
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: Contributing records

@@ -31,9 +31,12 @@ final class AlgorithmRegistryTests: XCTestCase {
     /// resolve through the bundled file.
     func testKnownAlgorithmAndParamResolve() throws {
         let baseline = try XCTUnwrap(registry.definition("baseline.rolling_median_mad"))
-        XCTAssertEqual(baseline.semver, "1.0.0")
+        // EPIC-23 bumped this to 2.0.0: the band method fundamentally changed (per-metric windows,
+        // log-domain banding for vitals, MAD outlier rejection). Per I2, rows already stamped 1.0.0
+        // are never rewritten — a recompute appends a 2.0.0 row.
+        XCTAssertEqual(baseline.semver, "2.0.0")
         XCTAssertFalse(baseline.provisional)
-        XCTAssertEqual(baseline.params["windowDays"], 28)
+        XCTAssertEqual(baseline.params["windowDays"], 28, "the DEFAULT window; per-metric overrides live in windowTable")
         XCTAssertEqual(baseline.params["minPoints"], 7)
         // The MAD→sigma consistency constant. Not tunable — the contract's own paramNote says
         // changing it changes what the band means, so it is worth pinning here too.

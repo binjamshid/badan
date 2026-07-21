@@ -206,19 +206,24 @@ final class MigrationFixTests: XCTestCase {
         }
     }
 
-    /// The other half of the acceptance criterion: a database created from nothing lands on v4
-    /// directly. Cheap, but it is the only test that would catch a v4 statement that happens to be
-    /// valid against an upgraded database and invalid against an empty one.
-    func testFreshDatabaseCreatesAtV4() throws {
+    /// The other half of the acceptance criterion: a database created from nothing lands on the
+    /// head schema version directly. Cheap, but it is the only test that would catch a migration
+    /// statement that happens to be valid against an upgraded database and invalid against an empty
+    /// one. Asserted against the computed head (not a literal) so a new migration — v5 added the
+    /// profile HR columns — re-checks this property instead of pinning a number that silently goes
+    /// stale.
+    func testFreshDatabaseCreatesAtHeadVersion() throws {
         let db = try Database(directory: tempDir)
 
-        XCTAssertEqual(try db.main.query("PRAGMA user_version;").first?.int("user_version"), 4,
-                       "fresh main DB must land on v4")
+        XCTAssertEqual(try db.main.query("PRAGMA user_version;").first?.int("user_version"),
+                       Int64(Schema.mainMigrations.map(\.version).max() ?? 0),
+                       "fresh main DB must land on the head schema version (v5+)")
         for table in Self.v4MainTables {
             XCTAssertTrue(try objectExists(db.main, type: "table", name: table))
         }
-        XCTAssertEqual(try db.sensitive.query("PRAGMA user_version;").first?.int("user_version"), 3,
-                       "fresh sensitive DB must land on v3")
+        XCTAssertEqual(try db.sensitive.query("PRAGMA user_version;").first?.int("user_version"),
+                       Int64(Schema.sensitiveMigrations.map(\.version).max() ?? 0),
+                       "fresh sensitive DB must land on the head sensitive version (v3)")
         for table in Self.v3SensitiveTables {
             XCTAssertTrue(try objectExists(db.sensitive, type: "table", name: table))
         }
@@ -334,11 +339,12 @@ final class MigrationFixTests: XCTestCase {
     /// `resetAll()` drops every table and re-migrates from empty. It has its own fast-path hazard
     /// (BUG-03's `user_version` reset), so the newest migration is worth re-asserting through it
     /// rather than assuming the fresh-create test covers the same ground.
-    func testResetAllRebuildsTheV4Schema() throws {
+    func testResetAllRebuildsTheHeadSchema() throws {
         let db = try Database(directory: tempDir)
         try db.resetAll()
 
-        XCTAssertEqual(try db.main.query("PRAGMA user_version;").first?.int("user_version"), 4)
+        XCTAssertEqual(try db.main.query("PRAGMA user_version;").first?.int("user_version"),
+                       Int64(Schema.mainMigrations.map(\.version).max() ?? 0))
         for table in Self.v4MainTables {
             XCTAssertTrue(try objectExists(db.main, type: "table", name: table),
                           "\(table) must survive a reset — resetAll re-runs the full migration list")

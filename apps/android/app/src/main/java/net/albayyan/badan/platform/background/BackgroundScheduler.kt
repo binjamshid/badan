@@ -40,11 +40,18 @@ object BackgroundScheduler {
     /** Unique-work name for the user-triggered "sync now" path. */
     const val ONE_OFF_WORK_NAME = "badan.sync.runNow"
 
-    /** Tag on both request kinds, so diagnostics can query all BADAN sync work in one call. */
+    /** Unique-work name for the EPIC-26 historical effort/score backfill (an HR-max/zone edit). */
+    const val SCORE_BACKFILL_WORK_NAME = "badan.sync.scoreBackfill"
+
+    /** Tag on every request kind, so diagnostics can query all BADAN sync work in one call. */
     const val WORK_TAG = "badan.sync"
 
     /** Set on the one-off request's input data; read by [SyncWorker] to pick the run kind. */
     const val KEY_USER_TRIGGERED = "badan.userTriggered"
+
+    /** Set on the score-backfill request's input data; read by [SyncWorker] to run the re-derivation
+     *  path (a pure recompute over already-ingested data) instead of a Health Connect sync. */
+    const val KEY_SCORE_BACKFILL = "badan.scoreBackfill"
 
     /** §12 EPIC-05 / §14: one hour. */
     val periodMillis: Long = TimeUnit.HOURS.toMillis(1)
@@ -95,6 +102,16 @@ object BackgroundScheduler {
             .enqueueUniqueWork(ONE_OFF_WORK_NAME, oneOffPolicy, oneOffRequest())
     }
 
+    /**
+     * Enqueue the EPIC-26 historical effort/score backfill (an HR-max/zone edit changed every effort
+     * score, so the window must be re-derived). `KEEP` so a burst of edits collapses onto one queued
+     * job — the durable request window is already the union of them ([AppEnvironment.requestEffortBackfill]).
+     */
+    fun runScoreBackfill(context: Context) {
+        WorkManager.getInstance(context.applicationContext)
+            .enqueueUniqueWork(SCORE_BACKFILL_WORK_NAME, ExistingWorkPolicy.KEEP, scoreBackfillRequest())
+    }
+
     // MARK: - Request builders (pure)
 
     /**
@@ -123,6 +140,19 @@ object BackgroundScheduler {
         PeriodicWorkRequest.Builder(SyncWorker::class.java, periodMillis, TimeUnit.MILLISECONDS)
             .setConstraints(constraints())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
+            .addTag(WORK_TAG)
+            .build()
+
+    /**
+     * The score-backfill request. Deliberately NOT expedited: a historical re-derivation is heavy,
+     * deferrable work (the opposite of "sync now"), so it takes the ordinary queue and the
+     * battery-not-low constraint. Carries [KEY_SCORE_BACKFILL] so the worker runs the re-derivation
+     * path rather than a Health Connect read.
+     */
+    fun scoreBackfillRequest(): OneTimeWorkRequest =
+        OneTimeWorkRequest.Builder(SyncWorker::class.java)
+            .setConstraints(constraints())
+            .setInputData(Data.Builder().putBoolean(KEY_SCORE_BACKFILL, true).build())
             .addTag(WORK_TAG)
             .build()
 

@@ -16,6 +16,7 @@ import net.albayyan.badan.domain.SymptomEntry
 import net.albayyan.badan.domain.UserProfile
 import net.albayyan.badan.domain.WorkoutEntry
 import net.albayyan.badan.domain.derivation.BaselineEngine
+import net.albayyan.badan.domain.derivation.DerivationCoordinator
 import net.albayyan.badan.domain.derivation.InsightEngine
 import net.albayyan.badan.domain.ingestion.IngestionPipeline
 import net.albayyan.badan.ontology.MetricRegistry
@@ -54,6 +55,15 @@ class SeedController(
      * the same shape, and `sources` being non-empty says only that SOMETHING was ingested.
      */
     private val prefs: SharedPreferences,
+    /**
+     * EPIC-23. The ordered score pipeline (baselines -> effort -> sleep -> readiness). When present,
+     * the seed's derive step runs it INSTEAD of the bare `baselines.recomputeAll`, so a demo seed
+     * computes the full score cluster in the published order — matching the connect/sync path
+     * ([AppEnvironment.syncHealthConnect]). Optional so any headless test constructing a
+     * `SeedController` without the score engines keeps the baseline-only behavior; the composition
+     * root always injects it.
+     */
+    private val derivationCoordinator: DerivationCoordinator? = null,
 ) {
     fun seedIfNeeded(nowMillis: Long) {
         if (catalog.sources().isNotEmpty()) return
@@ -111,8 +121,15 @@ class SeedController(
             ),
         )
 
-        // 4. Derivations + insights.
-        baselines.recomputeAll(nowMillis)
+        // 4. Derivations + insights. The full score pipeline when wired (composition root), else the
+        // interim baseline-only recompute — the coordinator runs `baselines.recomputeAll` itself first,
+        // so it is a superset in the defined cross-metric order, not a second baseline pass.
+        val coordinator = derivationCoordinator
+        if (coordinator != null) {
+            coordinator.recompute(nowMillis)
+        } else {
+            baselines.recomputeAll(nowMillis)
+        }
         for (dayOffset in 0 until 4) {
             runCatching { insightEngine.generate(nowMillis - dayOffset.toLong() * MILLIS_PER_DAY, tz) }
         }

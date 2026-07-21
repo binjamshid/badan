@@ -1,13 +1,17 @@
 package net.albayyan.badan.features.metricdetail
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Undo
@@ -15,13 +19,19 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import net.albayyan.badan.app.LocalAppEnvironment
 import net.albayyan.badan.app.ValueFormatter
 import net.albayyan.badan.core.Loc
 import net.albayyan.badan.core.LocalizedString
+import net.albayyan.badan.designsystem.BadanRadius
 import net.albayyan.badan.designsystem.BadanSpace
 import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.BadanType
@@ -30,6 +40,8 @@ import net.albayyan.badan.designsystem.components.PillLabel
 import net.albayyan.badan.designsystem.components.ProvisionalBadge
 import net.albayyan.badan.designsystem.components.SectionHeader
 import net.albayyan.badan.domain.Baseline
+import net.albayyan.badan.domain.InputManifest
+import net.albayyan.badan.domain.MetricId
 
 // MARK: - Strings local to the anatomy sheet
 
@@ -54,6 +66,24 @@ private object AnatomyStrings {
     val noBaselineYet = LocalizedString(
         en = "Not enough history yet to draw a typical range.",
         ar = "لا يوجد سجل كافٍ بعد لرسم نطاق معتاد.",
+    )
+    val contribution = LocalizedString(en = "What went into it", ar = "ما الذي دخل فيه")
+    val contributionHint = LocalizedString(
+        en = "Each signal's share of the score. The bars add up to the number above.",
+        ar = "حصة كل إشارة من النتيجة. تتجمّع الأشرطة لتكوّن الرقم أعلاه.",
+    )
+    val points = LocalizedString(en = "pts", ar = "نقطة")
+    val formulaHeading = LocalizedString(en = "The formula", ar = "المعادلة")
+    val formulaPublishedNote = LocalizedString(
+        en = "Computed on your device. This formula is published.",
+        ar = "محسوبة على جهازك. هذه المعادلة منشورة.",
+    )
+    val confidence = LocalizedString(en = "Confidence", ar = "الثقة")
+    // Reduced-input honesty (plan §18): a Readiness score computed without the HRV anchor is a
+    // DISTINCT thing, labelled — never a full score silently passed off as complete.
+    val reducedInputReadiness = LocalizedString(
+        en = "Computed from fewer signals — heart-rate variability wasn't available this morning.",
+        ar = "احتُسب من إشارات أقل — لم يتوفّر تغيّر معدل ضربات القلب هذا الصباح.",
     )
 }
 
@@ -106,11 +136,23 @@ fun MetricAnatomySheet(data: MetricDetailData, onClose: () -> Unit) {
             BaselineCard(data)
 
             val manifest = data.manifest
-            if (manifest != null && manifest.inputs.isNotEmpty()) {
-                RecordsCard(data, manifest.inputs)
-            } else {
-                StraightFromRecordsCard()
+            val weightedInputs = manifest?.inputs?.filter { it.weight != null }.orEmpty()
+            // A weighted manifest on a 0–100 composite (Readiness) renders as contribution bars —
+            // Σ(contributions) == the score by construction (see `ReadinessEngine`), so the bars
+            // literally add up to the number. Everything else keeps the plain records list.
+            val isScoreComposite = data.latestDerivedValue?.unit == "score_0_100"
+            when {
+                weightedInputs.isNotEmpty() && isScoreComposite -> ContributionCard(data, weightedInputs)
+                manifest != null && manifest.inputs.isNotEmpty() -> RecordsCard(data, manifest.inputs)
+                else -> StraightFromRecordsCard()
             }
+
+            // The published formula for the value's algorithm — the in-app half of "every surfaced
+            // score ships with a published formula" (audit finding #3). A method with no published
+            // formula shows no card rather than a guess.
+            methodStringOrNull(data)?.let { AnatomyFormulas.lookup(it) }?.let { FormulaCard(it) }
+
+            ConfidenceCard(data)
 
             methodStringOrNull(data)?.let { MethodCard(it) }
 
@@ -185,6 +227,154 @@ private fun StraightFromRecordsCard() {
             style = BadanType.body,
             color = colors.textSecondary,
         )
+    }
+}
+
+// MARK: - Contribution bars (composite scores)
+
+/**
+ * Contribution bars for a weighted composite (Readiness). Each input's bar length is its share of the
+ * largest contribution, its trailing value is its additive points, and the caption names the record's
+ * raw reading. Together they make "why is it this number" a visible arithmetic, not a promise — the
+ * bars add up to the score by construction. A Readiness score that dropped the HRV anchor is labelled
+ * distinctly here (reduced-input honesty), never presented as a full score.
+ */
+@Composable
+private fun ContributionCard(data: MetricDetailData, inputs: List<InputManifest.Input>) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val rows = remember(inputs) { contributionRows(inputs) }
+    BadanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
+            SectionHeader(env.s(AnatomyStrings.contribution))
+            Text(
+                text = env.s(AnatomyStrings.contributionHint),
+                style = BadanType.caption,
+                color = colors.textSecondary,
+            )
+            if (data.def.metricId == MetricId.readinessScore && isReducedInputReadiness(inputs)) {
+                Text(
+                    text = env.s(AnatomyStrings.reducedInputReadiness),
+                    style = BadanType.bodyCompact,
+                    color = colors.outOfBand,
+                )
+            }
+            rows.forEach { row ->
+                val inputDef = env.registry.definitionOrFallback(row.metricId)
+                Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s1)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+                    ) {
+                        Text(
+                            text = inputDef.label(env.depth, env.language),
+                            style = BadanType.bodyCompact,
+                            color = colors.textPrimary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${env.format.number(row.contribution, 0)} ${env.s(AnatomyStrings.points)}",
+                            style = BadanType.monospaceDigits(BadanType.bodyCompact),
+                            color = colors.textSecondary,
+                        )
+                    }
+                    // The bar: share of the largest contribution, so the leading signal fills the row.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(BadanRadius.chip))
+                            .background(colors.surfaceElevated),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(row.fractionOfMax)
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(BadanRadius.chip))
+                                .background(colors.primary.copy(alpha = 0.7f)),
+                        )
+                    }
+                    // The record's raw reading, so the bar is traceable to a real measurement (I1).
+                    Text(
+                        text = env.format.full(row.metricId, row.measuredValue),
+                        style = BadanType.monospaceDigits(BadanType.caption),
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Confidence
+
+/**
+ * The derived value's confidence as a plain word (casual) plus the exact figure (power). BADAN never
+ * shows a bare percentage as if it were precision — the word carries the meaning, the number is the
+ * power-user's footnote. Renders nothing when the value carries no confidence (e.g. a straight-read
+ * metric), so a card never appears empty.
+ */
+@Composable
+private fun ConfidenceCard(data: MetricDetailData) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val confidence = data.latestDerivedValue?.confidence ?: return
+    BadanCard {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BadanSpace.touchMin),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+        ) {
+            Text(text = env.s(AnatomyStrings.confidence), style = BadanType.body, color = colors.textPrimary)
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = env.s(confidenceWord(confidence)),
+                style = BadanType.bodyCompact,
+                color = colors.textSecondary,
+            )
+            if (env.depth.showsPowerDetail) {
+                Text(
+                    text = "${env.format.number(confidence * 100, 0)}%",
+                    style = BadanType.monospaceDigits(BadanType.bodyCompact),
+                    color = colors.textSecondary,
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Formula (published, with TalkBack alt-text)
+
+/**
+ * The published formula for the value's algorithm. The math notation is shown for sighted users;
+ * TalkBack reads the plain-language [AnatomyFormula.altText] instead (a screen reader announcing
+ * "Sigma" is noise). The "computed on your device, formula published" note is the trust line this
+ * surface carries. Mirror of the iOS `formulaCard`.
+ */
+@Composable
+private fun FormulaCard(formula: AnatomyFormula) {
+    val env = LocalAppEnvironment.current
+    val colors = BadanTheme.colors
+    val altText = env.s(formula.altText)
+    BadanCard {
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+            SectionHeader(env.s(AnatomyStrings.formulaHeading))
+            Text(
+                text = env.s(formula.formula),
+                style = BadanType.monospaceDigits(BadanType.bodyCompact),
+                color = colors.textPrimary,
+                // TalkBack reads the plain-language reading, not the math notation.
+                modifier = Modifier.clearAndSetSemantics { contentDescription = altText },
+            )
+            Text(
+                text = env.s(AnatomyStrings.formulaPublishedNote),
+                style = BadanType.caption,
+                color = colors.textSecondary,
+            )
+        }
     }
 }
 
@@ -298,3 +488,7 @@ private fun bandText(format: ValueFormatter, metricId: String, b: Baseline): Str
     val unit = format.unitLabel(metricId)
     return if (unit != null) "$low – $high $unit" else "$low – $high"
 }
+
+// The pure contribution/confidence helpers (`contributionRows`, `isReducedInputReadiness`,
+// `confidenceWord`) live in `AnatomyModel.kt` so a JVM unit test asserts them without loading this
+// Compose file.

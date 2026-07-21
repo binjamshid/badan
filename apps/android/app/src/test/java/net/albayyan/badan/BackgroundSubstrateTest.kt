@@ -200,6 +200,20 @@ class BackgroundSubstrateTest {
     }
 
     /**
+     * EPIC-26: the score-backfill job must have its OWN unique-work name and its OWN input flag. A
+     * name shared with the hourly sync would collide the two chains; a flag shared with "sync now"
+     * would route a backfill down the Health-Connect read path (or vice versa) — [SyncWorker] picks
+     * the path by exactly these constants before any work runs.
+     */
+    @Test fun scoreBackfillHasItsOwnWorkNameAndFlag() {
+        assertTrue(BackgroundScheduler.SCORE_BACKFILL_WORK_NAME.isNotBlank())
+        assertTrue(BackgroundScheduler.SCORE_BACKFILL_WORK_NAME != BackgroundScheduler.PERIODIC_WORK_NAME)
+        assertTrue(BackgroundScheduler.SCORE_BACKFILL_WORK_NAME != BackgroundScheduler.ONE_OFF_WORK_NAME)
+        assertTrue(BackgroundScheduler.KEY_SCORE_BACKFILL.isNotBlank())
+        assertTrue(BackgroundScheduler.KEY_SCORE_BACKFILL != BackgroundScheduler.KEY_USER_TRIGGERED)
+    }
+
+    /**
      * Marking a request expedited below API 31 makes WorkManager call `getForegroundInfo()`, which
      * `CoroutineWorker` implements by throwing — so every "sync now" tap would fail on API 26-30.
      */

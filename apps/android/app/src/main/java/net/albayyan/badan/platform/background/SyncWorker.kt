@@ -57,6 +57,13 @@ class SyncWorker(
         val env = runCatching { AppEnvironment.shared(applicationContext) }.getOrNull()
             ?: return Result.retry()
 
+        // EPIC-26: the score-backfill path is a pure re-derivation over already-ingested data, so it
+        // runs BEFORE (and independently of) the Health-Connect eligibility gate below — it needs no
+        // connection and must not be skipped for a disconnected user who edited their HR max.
+        if (inputData.getBoolean(BackgroundScheduler.KEY_SCORE_BACKFILL, false)) {
+            return runScoreBackfill(env)
+        }
+
         val userTriggered = inputData.getBoolean(BackgroundScheduler.KEY_USER_TRIGGERED, false)
         val kind = if (userTriggered) {
             BackgroundRunKind.FOREGROUND_SYNC
@@ -119,6 +126,39 @@ class SyncWorker(
             // can carry record contents, and this table is exportable.
             record(
                 env, kind, startedAt, BackgroundRunOutcome.ERROR,
+                BackgroundWorkDone(runAttempt = runAttemptCount),
+            )
+            retryWithinBudget()
+        }
+    }
+
+    /**
+     * EPIC-26 — run the queued effort/score backfill (an HR-max/zone edit). A pure re-derivation over
+     * already-ingested data through [AppEnvironment.runPendingScoreBackfill], which is append-only
+     * (I2) so an interrupted run simply re-runs and skips the days it already wrote. Logged as
+     * `bgProcessing` — the parity-correct label for heavy deferrable processing (matching iOS's
+     * BGProcessing score-backfill step), not the hourly-sync `workManagerPeriodic`.
+     */
+    private suspend fun runScoreBackfill(env: AppEnvironment): Result {
+        val startedAt = env.clock.now()
+        return try {
+            env.runPendingScoreBackfill()
+            record(
+                env, BackgroundRunKind.BG_PROCESSING, startedAt, BackgroundRunOutcome.COMPLETED,
+                BackgroundWorkDone(runAttempt = runAttemptCount),
+            )
+            // Opportunistic §9.8 pruning, matching the sync path.
+            runCatching { env.backgroundRuns.prune(env.clock.now()) }
+            Result.success()
+        } catch (cancellation: CancellationException) {
+            record(env, BackgroundRunKind.BG_PROCESSING, startedAt, stoppedOutcome(), stoppedWorkDone())
+            throw cancellation
+        } catch (t: Throwable) {
+            // No `t.message` near the log or row: an exception out of derivation can carry record
+            // contents, and this table is exportable. The request marker is left in place (only
+            // cleared on success inside `runPendingScoreBackfill`), so the retry re-runs the window.
+            record(
+                env, BackgroundRunKind.BG_PROCESSING, startedAt, BackgroundRunOutcome.ERROR,
                 BackgroundWorkDone(runAttempt = runAttemptCount),
             )
             retryWithinBudget()

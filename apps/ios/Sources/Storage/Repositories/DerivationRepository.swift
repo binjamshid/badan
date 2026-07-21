@@ -2,6 +2,16 @@ import Foundation
 
 /// Append-only derived values, their input manifests, and materialized baselines. Recompute
 /// APPENDS rows; reads take the latest `computed_at` (INVARIANT I2). Nothing is overwritten.
+///
+/// "Nothing is overwritten" was, until migration 6, false for baselines specifically — a claim
+/// this header made while `upsertBaseline` wrote with `INSERT OR REPLACE` against a UNIQUE natural
+/// key, so a second write at the same (metric_id, covariate_context, window_days, valid_from) did
+/// a DELETE-then-INSERT and lost the prior row. That surfaced only on the score-backfill RETRY
+/// (fixed `window.to` → same `valid_from`, recomputed band), never the nightly path. Migration 6
+/// drops that unique index for a non-unique lookup index, and `upsertBaseline` below is now a plain
+/// `INSERT` — every row carries a unique ULID `id`, so an append can no longer collide, and two
+/// rows sharing a `valid_from` both survive with `computed_at` deciding the latest read. The method
+/// keeps its `upsert` name because the baseline engine calls it; the semantics are now pure append.
 final class DerivationRepository {
     private let db: SQLiteConnection
     init(_ db: SQLiteConnection) { self.db = db }
@@ -78,9 +88,14 @@ final class DerivationRepository {
 
     // MARK: - Baseline
 
+    /// Appends a baseline. Named `upsert` for the engine that calls it, but a pure `INSERT` since
+    /// migration 6 (I2): the natural key is no longer UNIQUE, so this can never overwrite a prior
+    /// row — the earlier `INSERT OR REPLACE` deleted history whenever a retried backfill recomputed
+    /// a different band at an already-used `valid_from`. Every row's ULID `id` keeps inserts unique;
+    /// `latestBaseline` resolves which row is current on read.
     func upsertBaseline(_ b: Baseline) throws {
         try db.run("""
-            INSERT OR REPLACE INTO baselines
+            INSERT INTO baselines
               (id, metric_id, covariate_context, window_days, method, center, spread, band_low, band_high,
                n_points, provisional, algorithm_version, valid_from, computed_at, unit)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
@@ -91,8 +106,12 @@ final class DerivationRepository {
              .date(b.computedAt), .text(b.unit)])
     }
 
+    /// The current baseline for a metric+context: newest `valid_from`, and — now that migration 6
+    /// lets two appended rows share a `valid_from` (the retry case) — newest `computed_at` among
+    /// those, so the freshest belief wins and the older row is RETAINED as auditable history rather
+    /// than deleted. Served by `idx_baseline_lookup` (metric_id, covariate_context, valid_from DESC).
     func latestBaseline(metricId: String, context: String = "default") throws -> Baseline? {
-        try db.query("SELECT * FROM baselines WHERE metric_id = ? AND covariate_context = ? ORDER BY valid_from DESC LIMIT 1;",
+        try db.query("SELECT * FROM baselines WHERE metric_id = ? AND covariate_context = ? ORDER BY valid_from DESC, computed_at DESC LIMIT 1;",
                      [.text(metricId), .text(context)]).first.map(Self.readBaseline)
     }
 

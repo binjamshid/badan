@@ -4,6 +4,7 @@ import android.content.res.AssetManager
 import android.util.Log
 import kotlinx.serialization.Serializable
 import net.albayyan.badan.domain.AlgorithmVersion
+import net.albayyan.badan.storage.JsonCoding
 
 /**
  * The compiled algorithm contract (`algorithms.json` -> [AlgorithmDefinition]). Algorithm
@@ -78,6 +79,29 @@ class AlgorithmRegistry(file: AlgorithmFile?) {
 
         private fun load(assets: AssetManager): AlgorithmFile? =
             BundleJson.load<AlgorithmFile>(assets, "algorithms")
+
+        /**
+         * Loads the contract from the JVM classpath (`/algorithms.json`, a Java resource mirrored
+         * next to the AssetManager copy by `scripts/sync_android_assets.sh`). This is the one load
+         * path that needs no Android [android.content.Context]: [net.albayyan.badan.domain.derivation.BaselineEngine]
+         * is constructed at a call site (AppEnvironment) that EPIC-23 must not modify, and the
+         * pure-JVM baseline goldens have no AssetManager either — routing both through the same
+         * classpath resource is what makes the app and its tests read byte-identical constants
+         * (asserted by AlgorithmResourceMirrorTest). Returns an empty registry (logged) on a
+         * packaging failure rather than crashing, matching the empty-file handling in [init].
+         */
+        fun fromClasspath(): AlgorithmRegistry {
+            val text = AlgorithmRegistry::class.java.getResourceAsStream("/algorithms.json")
+                ?.bufferedReader()?.use { it.readText() }
+            if (text == null) {
+                Log.e(TAG, "algorithms.json not found on classpath (/algorithms.json) — resources mirror missing")
+                return AlgorithmRegistry(file = null)
+            }
+            val file = runCatching { JsonCoding.json.decodeFromString<AlgorithmFile>(text) }
+                .onFailure { e -> Log.e(TAG, "Failed to decode classpath algorithms.json: ${e::class.simpleName}: ${e.message}", e) }
+                .getOrNull()
+            return AlgorithmRegistry(file)
+        }
     }
 }
 
@@ -127,6 +151,15 @@ data class AlgorithmDefinition(
      * `SensorQualityMap` applies to the contract's `familyNotes`).
      */
     val paramNotes: Map<String, String> = emptyMap(),
+    /**
+     * Structured per-metric window/transform rules. Numeric-only [params] cannot express a
+     * metric→{window, transform} table (a window is numeric but a transform is not, and the
+     * mapping is keyed by metric id), so it lives here as a sibling field — the same escape hatch
+     * [producesMetricIds]/[inputMetricIds] use for non-numeric structure. Only
+     * `baseline.rolling_median_mad` carries one today; every other entry decodes it as empty and
+     * `BaselineSpec` falls back to the entry's default `windowDays`/identity transform.
+     */
+    val windowTable: List<BaselineWindowRule> = emptyList(),
 ) {
     val algorithmVersion: AlgorithmVersion
         get() = AlgorithmVersion(
@@ -136,3 +169,19 @@ data class AlgorithmDefinition(
             introducedIn = introducedIn,
         )
 }
+
+/**
+ * One row of `baseline.rolling_median_mad`'s per-metric window/transform table. A rule names a set
+ * of metric ids and the trailing window (in days) and transform their personal baseline is built
+ * over. [transform] is `"identity"` (band drawn directly on the values) or `"log"` (median and MAD
+ * taken on `ln(value)` for log-normal vitals, then exponentiated back — see
+ * `BaselineSpec`/`docs/algorithms/baselines.md`). An unknown transform string is treated as identity
+ * by the resolver rather than failing the whole contract decode, since a future transform must not
+ * brick baselines for every other metric. Mirror of iOS `BaselineWindowRule`.
+ */
+@Serializable
+data class BaselineWindowRule(
+    val metrics: List<String> = emptyList(),
+    val windowDays: Int,
+    val transform: String = "identity",
+)

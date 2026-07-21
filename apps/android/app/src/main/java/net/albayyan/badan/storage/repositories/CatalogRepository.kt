@@ -1,12 +1,14 @@
 package net.albayyan.badan.storage.repositories
 
 import net.albayyan.badan.domain.Device
+import net.albayyan.badan.domain.HRZones
 import net.albayyan.badan.domain.PermissionState
 import net.albayyan.badan.domain.PermissionStatus
 import net.albayyan.badan.domain.Source
 import net.albayyan.badan.domain.SourceStatus
 import net.albayyan.badan.domain.SourceType
 import net.albayyan.badan.domain.UserProfile
+import net.albayyan.badan.storage.JsonCoding
 import net.albayyan.badan.storage.sqlite.Row
 import net.albayyan.badan.storage.sqlite.SqliteConnection
 
@@ -118,25 +120,34 @@ class CatalogRepository(private val db: SqliteConnection) {
 
     // MARK: - User profile
 
+    // `user_profile` is the single local demographic record (D-9: no accounts). The Effort-engine
+    // inputs added at migration v5 — `hr_max` and the `hr_zones` JSON blob — round-trip here rather
+    // than through a separate repository so this row keeps ONE writer: because `saveUserProfile`
+    // replaces the whole row, any writer that did not carry these two columns would silently null a
+    // user's HR override the next time they edited their height. EPIC-26 reads them off this
+    // `UserProfile` (`hrMax`/`hrZones`) and edits them by saving a modified profile back.
     fun userProfile(): UserProfile? =
         db.query("SELECT * FROM user_profile LIMIT 1;").firstOrNull()?.let { r ->
             UserProfile(
                 id = r.requireString("id"), displayName = r.getString("display_name"),
                 heightMeters = r.getDouble("height_m"), birthYear = r.getInt("birth_year"),
-                biologicalContextNote = r.getString("bio_note"), createdAt = r.requireDate("created_at"),
-                updatedAt = r.requireDate("updated_at"),
+                biologicalContextNote = r.getString("bio_note"),
+                hrMax = r.getDouble("hr_max"),
+                hrZones = JsonCoding.decodeOrNull<HRZones>(r.getString("hr_zones")),
+                createdAt = r.requireDate("created_at"), updatedAt = r.requireDate("updated_at"),
             )
         }
 
     fun saveUserProfile(p: UserProfile) {
         db.run(
             """
-            INSERT OR REPLACE INTO user_profile (id, display_name, height_m, birth_year, bio_note, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT OR REPLACE INTO user_profile (id, display_name, height_m, birth_year, bio_note, hr_max, hr_zones, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             listOf(
                 p.id, p.displayName, p.heightMeters, p.birthYear?.toLong(),
-                p.biologicalContextNote, p.createdAt, p.updatedAt,
+                p.biologicalContextNote, p.hrMax, p.hrZones?.let { JsonCoding.encode(it) },
+                p.createdAt, p.updatedAt,
             ),
         )
     }

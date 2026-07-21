@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0",
-  "note": "Algorithm identities, versions, and tuning constants as DATA rather than code (plan §9 'AlgorithmVersion gains a bundled registry file', §15 'algorithm constants/params live in packages/contracts/algorithms/algorithms.json'). The intent is that the duplicated cross-platform logic stays inside D-4's budget as curve evaluation only — never as two hand-copied constant tables that silently drift. Every entry mirrors the AlgorithmVersion domain type (algorithmId, semver, params, introducedIn); params is numeric-only because AlgorithmVersion.params is [String: Double] on iOS and Map<String, Double> on Kotlin — non-numeric metadata lives in sibling fields, never inside params. This file is shipped in-app and versioned with the app: plan §15 explicitly rules out remote configuration so an algorithm change is always an app update with a changelog, never a silent behaviour change pushed at a user. Bumping a constant is a semver bump and a new AlgorithmVersion row — derived values are append-only (I2), so old rows keep referencing the old semver and are never rewritten.",
+  "version": "0.2.0",
+  "note": "Algorithm identities, versions, and tuning constants as DATA rather than code (plan §9 'AlgorithmVersion gains a bundled registry file', §15 'algorithm constants/params live in packages/contracts/algorithms/algorithms.json'). The intent is that the duplicated cross-platform logic stays inside D-4's budget as curve evaluation only — never as two hand-copied constant tables that silently drift. Every entry mirrors the AlgorithmVersion domain type (algorithmId, semver, params, introducedIn); params is numeric-only because AlgorithmVersion.params is [String: Double] on iOS and Map<String, Double> on Kotlin — non-numeric metadata lives in sibling fields (producesMetricIds, inputMetricIds, paramNotes, and the baseline entry's structured windowTable), never inside params. This file is shipped in-app and versioned with the app: plan §15 explicitly rules out remote configuration so an algorithm change is always an app update with a changelog, never a silent behaviour change pushed at a user. Bumping a constant is a semver bump and a new AlgorithmVersion row — derived values are append-only (I2), so old rows keep referencing the old semver and are never rewritten.",
   "status": "WHAT IS WIRED, AS OF PHASE 0. Both platforms LOAD this file: apps/ios/Sources/Ontology/AlgorithmRegistry.swift and apps/android/.../ontology/AlgorithmRegistry.kt read the bundled mirror and resolve an entry to a frozen AlgorithmVersion, each covered by a test (AlgorithmRegistryTests / AlgorithmRegistryTest) that loads the real asset and asserts a known id, semver and param. Nothing EVALUATES these curves yet — the Phase-2 score engines are the consumers, and until they land no DerivedValue in the app is computed from a constant in this file. That distinction is the point: an earlier revision of this note claimed both platforms already loaded the file and that 'the loading path is fixed in Phase 0', when neither platform had a loader at all and nothing anywhere referenced algorithms.json. Because the sync scripts mirrored it into both bundles and CI gated the mirrors for drift, the file read as load-bearing at review while being inert (audit finding #5). If you delete either AlgorithmRegistry, or let its tests go, correct this paragraph in the same change rather than leaving the claim standing.",
   "provisionalMeans": "Entries marked provisional=true have NOT had their constants validated against data. They exist so the ids and the param SCHEMA are fixed in Phase 0 and the Phase-2 engines tune numbers rather than invent structure. A provisional algorithm sets DerivedValue.provisional = true on every row it produces, so the surface can say so.",
   "levels": {
@@ -10,22 +10,36 @@
   "algorithms": [
     {
       "algorithmId": "baseline.rolling_median_mad",
-      "semver": "1.0.0",
-      "introducedIn": "0.1.0",
+      "semver": "2.0.0",
+      "introducedIn": "0.2.0",
       "provisional": false,
       "producesMetricIds": ["*"],
       "inputMetricIds": ["*"],
-      "methodologyUrl": "docs/algorithms/baseline.md",
-      "summaryEn": "Personal-normal band as a rolling median with median-absolute-deviation spread over a trailing window.",
+      "methodologyUrl": "docs/algorithms/baselines.md",
+      "summaryEn": "Personal-normal band as a robust median with a median-absolute-deviation spread over a per-metric trailing window. Log-normal vitals (HRV) are banded in the log domain; MAD-based outlier rejection removes single wild readings before the band is drawn; the band stays provisional until it has enough points to be honest about.",
       "params": {
         "windowDays": 28,
         "minPoints": 7,
         "madToSigma": 1.4826,
-        "bandSigmas": 1.0
+        "bandSigmas": 1.0,
+        "outlierMadThreshold": 3.5,
+        "establishingFraction": 0.5,
+        "retroactiveGraceDays": 2
       },
+      "windowTable": [
+        { "metrics": ["heart.hrv"], "windowDays": 60, "transform": "log" },
+        { "metrics": ["heart.rhr", "respiratory.rate", "body.wrist_temp_deviation"], "windowDays": 14, "transform": "identity" },
+        { "metrics": ["sleep.time_asleep", "sleep.time_in_bed"], "windowDays": 28, "transform": "identity" }
+      ],
       "paramNotes": {
+        "windowDays": "The DEFAULT trailing window in days for any baseline-eligible metric without an explicit windowTable rule. Overridden per metric by windowTable — HRV 60d, RHR/RR/temp 14d, sleep-need inputs 28d (plan §18). Published rationale in docs/algorithms/baselines.md.",
         "madToSigma": "Standard consistency constant making MAD comparable to a normal-distribution sigma. Not tunable — changing it changes what the band means.",
-        "minPoints": "Below this the baseline stays provisional=true rather than showing a confident band on thin data."
+        "minPoints": "Below this many in-window daily points the baseline stays provisional=true rather than showing a confident band on thin data. A provisional baseline is never presented as a score.",
+        "bandSigmas": "Half-width of the personal band in sigmas (as estimated by madToSigma * MAD). 1.0 keeps the band at roughly one robust standard deviation either side of centre.",
+        "outlierMadThreshold": "A daily point more than this many MADs from the in-window median is rejected before the band is drawn, so one artefactual reading (a bad HRV sample after a late meal, a sensor spike) cannot move the personal normal. Rejection is skipped when MAD is exactly 0 — a zero spread cannot define an outlier, and a lone differing value in an otherwise-flat window is data, not noise. 3.5 follows the Iglewicz–Hoaglin modified-z convention.",
+        "establishingFraction": "The baseline clears 'provisional' only once it has at least minPoints AND at least this fraction of its window filled (plan §18: 'n>=7 and >=half the window'). For a 60d HRV window this means 30 days before HRV is treated as established from a cold start; a first-connect history backfill can clear it on day one.",
+        "retroactiveGraceDays": "A per-day derived score computed more than this many days after the day it describes was 'computed later from history' (e.g. a readiness day recomputed once an import backfilled that week). It is surfaced with the retroactive quality label rather than as a live reading. See docs/algorithms/baselines.md for why this is a read-time-derived label, not a stored column.",
+        "supersedesSemver": "1.0.0 (a single 14-day linear window) remains valid for every baseline row already computed with it. Per I2 those rows are never rewritten; the semver on the row is what explains it, and a later recompute appends a 2.0.0 row rather than mutating the old one."
       }
     },
     {
@@ -149,16 +163,16 @@
       "methodologyUrl": "docs/algorithms/readiness.md",
       "summaryEn": "Weighted composite of each input's z-position against its own personal baseline, mapped to 0-100. Reduced-input variants drop a term and redistribute its weight rather than substituting a default.",
       "params": {
-        "weightHrv": 0.4,
-        "weightRhr": 0.25,
-        "weightSleepPerformance": 0.25,
+        "weightHrv": 0.5,
+        "weightRhr": 0.2,
+        "weightSleepPerformance": 0.2,
         "weightRespiratoryRate": 0.1,
         "zClampSigmas": 2.5,
         "minInputsForFullScore": 3,
         "minInputsToScoreAtAll": 2
       },
       "paramNotes": {
-        "weightHrv": "PROVISIONAL, pending A3. Weights must sum to 1.0 across present inputs; the engine renormalizes over whatever is available.",
+        "weightHrv": "PROVISIONAL, pending A3. BADAN's OWN launch weights (HRV 0.5, RHR 0.2, RR 0.1, sleep 0.2 — plan §11 EPIC-25), deliberately NOT WHOOP's claimed weights; the rationale and citations belong in docs/algorithms/readiness.md when EPIC-25 lands. Weights must sum to 1.0 across present inputs; the engine renormalizes over whatever is available.",
         "zClampSigmas": "Clamps each input's z before weighting so one wild reading (a bad HRV sample after a late meal) cannot dominate the composite.",
         "minInputsToScoreAtAll": "Below this no score is emitted at all. An honest absence beats a confident number built from one input.",
         "supersedesSemver": "1.0.0 remains valid for every row already computed with it. Per I2 those rows are never rewritten; the version on the row is what explains it."
@@ -185,10 +199,14 @@
         "zone2FloorPctHrMax": 60.0,
         "zone3FloorPctHrMax": 70.0,
         "zone4FloorPctHrMax": 80.0,
-        "zone5FloorPctHrMax": 90.0
+        "zone5FloorPctHrMax": 90.0,
+        "hrMaxConstant": 208.0,
+        "hrMaxAgeCoefficient": 0.7
       },
       "paramNotes": {
         "scaleMax": "A3-PENDING. Plan §28 A3 has not chosen between a 0-21 log scale (WHOOP-familiar) and 0-100 (consistent with every other BADAN score). The registry id and canonical unit are scale-independent by design, so resolving A3 changes scaleMax and the zone weights here plus a display unit — it does NOT change effort.day's metric id or force a data migration.",
+        "hrMaxConstant": "Default maximum heart rate = hrMaxConstant - hrMaxAgeCoefficient * age (Tanaka 2001: 208 - 0.7*age), used only when the user has not set their own HR max in profile. The profile value always wins; editing it triggers an append-only historical recompute (EPIC-26, I2). A default, never a measured maximum.",
+        "hrMaxAgeCoefficient": "See hrMaxConstant. Together they seed the zone edges the zoneNFloorPctHrMax percentages are taken against.",
         "zone1Weight": "PROVISIONAL. Roughly geometric so the curve rewards intensity without letting a single hard interval swamp a long easy day.",
         "logCurveK": "PROVISIONAL. Curve steepness. Must keep the accumulation monotonic in both time and zone — EPIC-26 asserts this as a property test.",
         "zone1FloorPctHrMax": "Default zone edges as a percentage of max HR. The user can edit zone edges in profile; edited zones override these and are stored per-user, not here."

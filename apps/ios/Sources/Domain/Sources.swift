@@ -104,14 +104,25 @@ public struct UserProfile: Codable, Hashable, Sendable {
     public var heightMeters: Double?
     public var birthYear: Int?
     public var biologicalContextNote: String?
+    /// Overriding maximum heart rate in bpm, or `nil` to use the age-derived default (EPIC-26
+    /// computes `208 − 0.7·age` from `birthYear`). A physiological attribute of the person — it
+    /// sits here beside height, not in the presentation profile, and `nil` is a meaningful default
+    /// ("derive it"), never "unset to zero". `Double?` because the derived fallback is fractional
+    /// and this layer must not pre-round a value the Effort engine owns the precision of.
+    public var hrMax: Double?
+    /// The user's personal five-zone override, or `nil` to let EPIC-26 derive the zones from
+    /// `hrMax`. Persisted as JSON in `user_profile.hr_zones`; see `HRZones`.
+    public var hrZones: HRZones?
     public var createdAt: Date
     public var updatedAt: Date
 
     public init(id: String, displayName: String? = nil, heightMeters: Double? = nil,
                 birthYear: Int? = nil, biologicalContextNote: String? = nil,
+                hrMax: Double? = nil, hrZones: HRZones? = nil,
                 createdAt: Date, updatedAt: Date) {
         self.id = id; self.displayName = displayName; self.heightMeters = heightMeters
         self.birthYear = birthYear; self.biologicalContextNote = biologicalContextNote
+        self.hrMax = hrMax; self.hrZones = hrZones
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 }

@@ -109,6 +109,13 @@ struct AlgorithmDefinition: Decodable, Identifiable, Hashable {
     /// rendered to a user, which is why it has no Arabic counterpart (the same rule
     /// `SensorQualityMap` applies to the contract's `familyNotes`).
     let paramNotes: [String: String]
+    /// Structured per-metric window/transform rules. Numeric-only `params` cannot express a
+    /// metric→{window, transform} table (a window is numeric but a transform is not, and the
+    /// mapping is keyed by metric id), so it lives here as a sibling field — the same escape hatch
+    /// `producesMetricIds`/`inputMetricIds` use for non-numeric structure. Only
+    /// `baseline.rolling_median_mad` carries one today; every other entry decodes it as empty and
+    /// `BaselineSpec` falls back to the entry's default `windowDays`/identity transform.
+    let windowTable: [BaselineWindowRule]
 
     var id: String { algorithmId }
 
@@ -136,10 +143,33 @@ struct AlgorithmDefinition: Decodable, Identifiable, Hashable {
         methodologyUrl = try c.decodeIfPresent(String.self, forKey: .methodologyUrl) ?? ""
         summaryEn = try c.decodeIfPresent(String.self, forKey: .summaryEn) ?? ""
         paramNotes = try c.decodeIfPresent([String: String].self, forKey: .paramNotes) ?? [:]
+        windowTable = try c.decodeIfPresent([BaselineWindowRule].self, forKey: .windowTable) ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
         case algorithmId, semver, introducedIn, provisional
-        case producesMetricIds, inputMetricIds, methodologyUrl, summaryEn, params, paramNotes
+        case producesMetricIds, inputMetricIds, methodologyUrl, summaryEn, params, paramNotes, windowTable
     }
+}
+
+/// One row of `baseline.rolling_median_mad`'s per-metric window/transform table. A rule names a
+/// set of metric ids and the trailing window (in days) and transform their personal baseline is
+/// built over. `transform` is `"identity"` (band drawn directly on the values) or `"log"` (median
+/// and MAD taken on `ln(value)` for log-normal vitals, then exponentiated back — see
+/// `BaselineSpec`/`docs/algorithms/baselines.md`). An unknown transform string is treated as
+/// identity by the resolver rather than failing the whole contract decode, since a future
+/// transform must not brick baselines for every other metric.
+struct BaselineWindowRule: Decodable, Hashable {
+    let metrics: [String]
+    let windowDays: Int
+    let transform: String
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        metrics = try c.decodeIfPresent([String].self, forKey: .metrics) ?? []
+        windowDays = try c.decode(Int.self, forKey: .windowDays)
+        transform = try c.decodeIfPresent(String.self, forKey: .transform) ?? "identity"
+    }
+
+    private enum CodingKeys: String, CodingKey { case metrics, windowDays, transform }
 }

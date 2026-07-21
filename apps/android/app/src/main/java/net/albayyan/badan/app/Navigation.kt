@@ -16,6 +16,14 @@ sealed interface Route {
     // Detail destinations
     data object Timeline : Route
     data object Sources : Route
+
+    /**
+     * The Health Monitor vitals dashboard (EPIC-27). A pushed detail under Body/Today rather than a
+     * top-level tab: it is a focused read over the same canonical vitals the metric detail shows, and
+     * every tile deep-links onward to `MetricDetail`, so it lives on the detail stack beside them.
+     */
+    data object HealthMonitor : Route
+
     data object Export : Route
     data object SymptomLog : Route
     data object MedicationLog : Route
