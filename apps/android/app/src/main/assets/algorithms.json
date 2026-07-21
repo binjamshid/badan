@@ -295,6 +295,26 @@
       }
     },
     {
+      "algorithmId": "workout.strength.e1rm_brzycki",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["workout.strength.e1rm"],
+      "inputMetricIds": [],
+      "methodologyUrl": "docs/algorithms/strength.md",
+      "summaryEn": "Brzycki estimated one-repetition maximum: weight * 36 / (37 - reps), computed per exercise from logged sets. A second published formula alongside workout.strength.e1rm's Epley curve (EPIC-42/28) — shown side by side rather than one replacing the other, since the two diverge meaningfully at higher rep counts and neither is universally more accurate. Shares workout.strength.e1rm's producesMetricIds on purpose: the registry metric is method-agnostic (an estimated one-rep max), and algorithmId/algorithmVersion on the stored row is what says which formula produced it, the same way composite.readiness_score's 1.0.0/2.0.0 both produce readiness.score.",
+      "params": {
+        "brzyckiConstant": 36.0,
+        "brzyckiRepsCeiling": 37.0,
+        "maxRepsForEstimate": 10.0
+      },
+      "paramNotes": {
+        "brzyckiConstant": "The published Brzycki numerator constant. Stable, not provisional in itself.",
+        "brzyckiRepsCeiling": "The formula's own singularity: at reps=37 the denominator hits zero, and beyond it the estimate goes negative. Never evaluated at or beyond this reps count, regardless of maxRepsForEstimate.",
+        "maxRepsForEstimate": "Above this rep count Brzycki's estimate is widely considered to drift further than Epley's, so no estimate is emitted rather than one that overstates. Deliberately lower than workout.strength.e1rm's cap (12) for exactly that reason."
+      }
+    },
+    {
       "algorithmId": "workout.strength.volume",
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
@@ -316,15 +336,17 @@
       "introducedIn": "0.2.0",
       "provisional": true,
       "producesMetricIds": ["workout.strength.pr"],
-      "inputMetricIds": ["workout.strength.e1rm"],
+      "inputMetricIds": [],
       "methodologyUrl": "docs/algorithms/strength.md",
-      "summaryEn": "Flags a logged set that beats the previous best for that exercise, by weight, by reps at weight, or by estimated 1RM.",
+      "summaryEn": "Flags a logged set that beats the previous best weight for that exercise, within the same rep-range bucket.",
       "params": {
         "minImprovementFraction": 0.005,
         "lookbackDays": 365
       },
       "paramNotes": {
-        "minImprovementFraction": "PROVISIONAL. A floating-point tie must not fire a PR celebration every session."
+        "minImprovementFraction": "PROVISIONAL. A floating-point tie must not fire a PR celebration every session.",
+        "lookbackDays": "A stored record older than this no longer gates a new one, so a long-inactive PR does not stand forever as an unbeatable ceiling.",
+        "_scope": "As shipped (0.1.0), the comparison is weight-only within a (movement, rep-range) bucket — see docs/algorithms/strength.md. Detecting a PR by reps-at-a-given-weight, or by estimated 1RM (which would make workout.strength.e1rm a real input rather than an independent, separately-computed value), is a documented future extension, not yet built. inputMetricIds is empty rather than naming workout.strength.e1rm because nothing here reads an e1RM DerivedValue today."
       }
     },
     {

@@ -35,4 +35,11 @@ sync_file "$ROOT/packages/export-schemas/csv_columns.json"      "$DEST/csv_colum
 # resolves resources by bare name.
 sync_file "$ROOT/packages/contracts/algorithms/algorithms.json" "$DEST/algorithms.json"
 sync_file "$ROOT/packages/contracts/sensor_quality.json"        "$DEST/sensor_quality.json"
+# EPIC-42: the activity/workout taxonomy (29 modalities as shipped — the plan's own "28-modality"
+# label is a round number, not a hard count) the workout OS's activity picker and per-modality
+# metric bundles read from.
+sync_file "$ROOT/packages/contracts/dictionaries/activities.json" "$DEST/activities.json"
+# EPIC-28/42: the curated bilingual strength-movement dictionary the set logger's movement
+# picker draws from (dictionary-vs-custom split, same as beverages.json/behaviors.json).
+sync_file "$ROOT/packages/contracts/dictionaries/movements.json" "$DEST/movements.json"
 echo "Synced canonical data -> $DEST"

@@ -1,0 +1,186 @@
+{
+  "version": "0.1.0",
+  "note": "Curated bilingual (en+ar) strength-movement dictionary (EPIC-28 task 2, absorbed into EPIC-42's workout OS). Seeds the movement picker `StrengthSet.movementId` resolves against; a movement not listed here is still loggable via `StrengthSet.customLabel` — the same dictionary-vs-custom split `beverages.json`/`symptoms.json`/`behaviors.json` already establish. `isBuiltin` mirrors `BeverageDefinition.isBuiltin` so a future user-defined-movement table can follow the identical convention. `muscleGroups` lists PRIMARY movers first; `equipment` lists every common implement the movement is ordinarily performed with (a squat logged as bodyweight and one logged with a barbell are the same movement, different loads). `isCompound` marks a movement that trains multiple joints/muscle groups at once (vs. an isolation movement) — informational only in this slice, no algorithm reads it yet. WELLNESS-SAFE BY CONSTRUCTION: names describe the movement, never a fitness level, a body type, or an implied standard ('bicep curl', never 'beginner curl' or 'toning curl') — same non-judgmental rule behaviors.json states for journal tags.",
+  "movements": [
+    {
+      "id": "squat",
+      "nameEn": "Squat",
+      "nameAr": "القرفصاء",
+      "muscleGroups": ["quadriceps", "glutes", "hamstrings", "core"],
+      "equipment": ["barbell", "dumbbell", "bodyweight"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "bench_press",
+      "nameEn": "Bench press",
+      "nameAr": "ضغط البنش",
+      "muscleGroups": ["chest", "triceps", "shoulders"],
+      "equipment": ["barbell", "dumbbell", "machine"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "deadlift",
+      "nameEn": "Deadlift",
+      "nameAr": "الرفعة الميتة",
+      "muscleGroups": ["hamstrings", "glutes", "back"],
+      "equipment": ["barbell"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "overhead_press",
+      "nameEn": "Overhead press",
+      "nameAr": "الضغط العلوي",
+      "muscleGroups": ["shoulders", "triceps", "core"],
+      "equipment": ["barbell", "dumbbell"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "barbell_row",
+      "nameEn": "Barbell row",
+      "nameAr": "تجديف بالبار",
+      "muscleGroups": ["back", "biceps"],
+      "equipment": ["barbell"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "pull_up",
+      "nameEn": "Pull-up",
+      "nameAr": "العقلة",
+      "muscleGroups": ["back", "biceps"],
+      "equipment": ["bodyweight"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "push_up",
+      "nameEn": "Push-up",
+      "nameAr": "تمرين الضغط",
+      "muscleGroups": ["chest", "triceps", "shoulders", "core"],
+      "equipment": ["bodyweight"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "lunge",
+      "nameEn": "Lunge",
+      "nameAr": "الطعنة",
+      "muscleGroups": ["quadriceps", "glutes", "hamstrings"],
+      "equipment": ["bodyweight", "dumbbell", "barbell"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "hip_thrust",
+      "nameEn": "Hip thrust",
+      "nameAr": "دفع الورك",
+      "muscleGroups": ["glutes", "hamstrings"],
+      "equipment": ["barbell", "bodyweight", "machine"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "romanian_deadlift",
+      "nameEn": "Romanian deadlift",
+      "nameAr": "الرفعة الميتة الرومانية",
+      "muscleGroups": ["hamstrings", "glutes", "back"],
+      "equipment": ["barbell", "dumbbell"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "bicep_curl",
+      "nameEn": "Bicep curl",
+      "nameAr": "تمرين البايسبس",
+      "muscleGroups": ["biceps"],
+      "equipment": ["dumbbell", "barbell", "cable"],
+      "isCompound": false,
+      "isBuiltin": true
+    },
+    {
+      "id": "tricep_extension",
+      "nameEn": "Tricep extension",
+      "nameAr": "تمديد الترايسبس",
+      "muscleGroups": ["triceps"],
+      "equipment": ["dumbbell", "cable"],
+      "isCompound": false,
+      "isBuiltin": true
+    },
+    {
+      "id": "lat_pulldown",
+      "nameEn": "Lat pulldown",
+      "nameAr": "السحب الأمامي",
+      "muscleGroups": ["back", "biceps"],
+      "equipment": ["cable", "machine"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "leg_press",
+      "nameEn": "Leg press",
+      "nameAr": "ضغط الأرجل",
+      "muscleGroups": ["quadriceps", "glutes"],
+      "equipment": ["machine"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "leg_curl",
+      "nameEn": "Leg curl",
+      "nameAr": "ثني الأرجل",
+      "muscleGroups": ["hamstrings"],
+      "equipment": ["machine"],
+      "isCompound": false,
+      "isBuiltin": true
+    },
+    {
+      "id": "leg_extension",
+      "nameEn": "Leg extension",
+      "nameAr": "تمديد الأرجل",
+      "muscleGroups": ["quadriceps"],
+      "equipment": ["machine"],
+      "isCompound": false,
+      "isBuiltin": true
+    },
+    {
+      "id": "plank",
+      "nameEn": "Plank",
+      "nameAr": "تمرين البلانك",
+      "muscleGroups": ["core"],
+      "equipment": ["bodyweight"],
+      "isCompound": false,
+      "isBuiltin": true
+    },
+    {
+      "id": "dip",
+      "nameEn": "Dip",
+      "nameAr": "تمرين الغطس",
+      "muscleGroups": ["triceps", "chest", "shoulders"],
+      "equipment": ["bodyweight", "machine"],
+      "isCompound": true,
+      "isBuiltin": true
+    },
+    {
+      "id": "chest_fly",
+      "nameEn": "Chest fly",
+      "nameAr": "تفتيح الصدر",
+      "muscleGroups": ["chest"],
+      "equipment": ["dumbbell", "cable", "machine"],
+      "isCompound": false,
+      "isBuiltin": true
+    },
+    {
+      "id": "shoulder_lateral_raise",
+      "nameEn": "Shoulder lateral raise",
+      "nameAr": "رفرفة الكتف الجانبية",
+      "muscleGroups": ["shoulders"],
+      "equipment": ["dumbbell", "cable"],
+      "isCompound": false,
+      "isBuiltin": true
+    }
+  ]
+}
