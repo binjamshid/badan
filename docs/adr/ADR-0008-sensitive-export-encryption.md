@@ -185,3 +185,63 @@ Revisit `ExportEncryptor.defaultIterations` when **either**:
   see `docs/runbooks/disaster-recovery.md` §1 on the absence of a restore path); the internal API
   plus tests is the floor this ADR commits to, and is enough to keep the DR runbook's export
   story honest rather than making it worse.
+
+## Addendum: Android parity (EPIC-06)
+
+- Status: Accepted
+- Date: 2026-07-22
+
+The Kotlin mirror of this ADR's container format is implemented in
+`apps/android/app/src/main/java/net/albayyan/badan/export/ExportEncryptor.kt` (`ExportEncryptor`,
+`ExportContainerFile`, `ExportEncryptionException`, `ExportPassphrasePolicy`), wired into
+`ExportRunner.kt`'s `run`/`encryptResult` the same way `ExportRunner.swift` wires the iOS one:
+`scope.includeSensitive` without a passphrase meeting `ExportPassphrasePolicy` throws
+`ExportRunException.SensitiveExportRequiresPassphrase` before any file is written, and a
+successful sensitive run reads its own just-written plaintext files back off disk, seals them
+into one `export.badanenc` container, deletes the plaintext, and re-persists the job with
+`manifest.encrypted = true`. `AdvancedExportScreen.kt`'s passphrase entry+confirm fields
+(`PassphraseFields`) gate the Run button exactly like `ExportCenterScreen`'s do, and carry the
+same "BADAN never stores it. If you forget it, this export cannot be recovered." EN/AR copy
+word-for-word.
+
+No new dependency was needed: `javax.crypto` (`Cipher`/`AES/GCM/NoPadding`,
+`SecretKeyFactory`/`PBKDF2WithHmacSHA256`, `Mac`/`HmacSHA256`) ships every primitive the format
+requires, matching this ADR's constraint that CryptoKit/CommonCrypto on iOS and the platform JCE
+on Android are both "standard primitives only, no new dependencies" — same rule, different
+platform toolbox. Byte-exact agreement with the format above (magic, version, KDF id, big-endian
+iteration count, salt placement, AES-GCM combined nonce/ciphertext/tag ordering, inner multi-file
+layout) required one Android-specific wrinkle worth recording: JCE's `PBEKeySpec` leaves the
+passphrase's `char[]` → byte encoding to the provider, and at least one provider lineage
+(`PBKDF2WithHmacSHA1And8BIT`) is known to fold each character to its low 8 bits rather than use
+UTF-8 — silently wrong only for non-ASCII passphrases, which is exactly BADAN's Arabic-first
+case. `ExportEncryptor.kt` resolves this with a byte-exact reference PBKDF2 implementation
+(`macPbkdf2`, pinned to published RFC 2898 test vectors) and a one-time per-process probe
+(`fastKdfAvailable`) that only trusts the provider's faster `SecretKeyFactory` path once it has
+proven, on a deliberately non-ASCII/emoji probe passphrase, that it agrees with the reference —
+falling back to the reference path otherwise. `ExportPassphrasePolicy.length` also counts Unicode
+extended grapheme clusters via `java.text.BreakIterator` rather than UTF-16 code units, matching
+Swift's `String.count` so a passphrase of, say, ten emoji is accepted or rejected identically on
+both platforms rather than Android being the more lenient one.
+
+**Cross-platform proof.** `packages/fixtures/encryption/` holds two containers under source
+control: `ios-written-v1.badanenc` (produced by the iOS `ExportEncryptor`) and
+`android-written-v1.badanenc` (produced by the Kotlin one), both under the real 600,000-round
+shipped default, both keyed by `manifest.json` (id, passphrase, expected plaintext, SHA-256 of
+the container bytes so a mangled fixture reports as "altered in git" rather than "wrong
+passphrase"). Each platform's test suite decrypts the OTHER platform's container:
+`ExportEncryptorTest.iosWrittenContainerDecryptsOnAndroid` (Kotlin, reads the iOS-written file)
+and `ExportEncryptionTests.testAndroidWrittenFixtureDecryptsOnIOS` (Swift, reads the
+Android-written file) are the epic's acceptance criterion — byte-level container interop proven
+in both directions, not just each platform round-tripping its own output. `ExportEncryptorTest`
+additionally decrypts iOS's original hardcoded format-stability golden fixture
+(`iosFormatStabilityGoldenContainerDecryptsOnAndroid`), and both suites assert a wrong passphrase
+and a tampered Android-written container fail with the identical typed error
+(`IncorrectPassphraseOrTamperedData` / `.incorrectPassphraseOrTamperedData`) as a same-platform
+failure would. All of the above passed as of this addendum
+(`./gradlew :app:testDebugUnitTest :app:assembleDebug`, 22/22 in `ExportEncryptorTest`).
+
+**Known gap, stated rather than hidden:** the 600,000-round KDF has been measured on a JVM
+desktop host (~110-120ms) but not yet on physical Android hardware — `ExportEncryptor.kt`'s own
+doc comment on `DEFAULT_ITERATIONS` records this explicitly. The re-evaluation gate above (revisit
+if wall-clock exceeds 1.5s on the oldest supported device) applies identically to Android; a real
+device measurement is still owed before this gap can close.
