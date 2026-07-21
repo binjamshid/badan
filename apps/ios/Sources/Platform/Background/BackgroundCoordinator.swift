@@ -43,6 +43,16 @@ protocol BackgroundIngestPerforming: AnyObject {
 
     /// Resume the interrupted backfill. `nil` when another ingest holds the lock.
     func resumeBackfill(now: Date) throws -> BackgroundWorkCounts?
+
+    /// Whether an HR-max/zone edit (EPIC-26) has queued a historical SCORE backfill — a pure
+    /// re-derivation over already-ingested data (no HealthKit read), distinct from `needsBackfillResume`
+    /// (an unfinished INGEST). A cheap marker read.
+    func hasPendingScoreBackfill() -> Bool
+
+    /// Run the queued score backfill over its recorded window, append-only (I2). `nil` when nothing is
+    /// queued or another derivation holds the lock; clears the request on success. Idempotent, so an
+    /// expired run that never cleared the request simply re-runs and skips the days it already wrote.
+    func runPendingScoreBackfill(now: Date) throws -> BackgroundWorkCounts?
 }
 
 /// Whether iOS Data Protection currently lets us read protected files.
@@ -183,6 +193,10 @@ final class ImmediateWorkDispatcher: BackgroundWorkDispatching {
 /// missing, pruning a diagnostics table means nothing to them at all.
 enum BackgroundProcessingStep: String, CaseIterable {
     case backfillResume
+    /// Historical SCORE re-derivation queued by an HR-max/zone edit (EPIC-26). Ordered after
+    /// `backfillResume` (ingesting the data a user is missing outranks re-scoring data they already
+    /// have) and before `prune` (housekeeping is last).
+    case scoreBackfill
     case prune
 }
 
@@ -331,11 +345,27 @@ final class BackgroundCoordinator {
         lock.unlock()
         registrar?.scheduleAppRefresh()
 
-        // `needsBackfillResume()` is a DB read; keep it off the scene-transition path.
+        // `needsBackfillResume()` is a DB read; keep it off the scene-transition path. Ask for a heavy
+        // wake when EITHER an ingest backfill is unfinished (needs HealthKit) OR a score backfill is
+        // queued (an HR-max edit — a pure re-derivation that needs no connection), so an edit made just
+        // before backgrounding still gets its BGProcessing wake.
         dispatcher.dispatch(reason: "badan.background.schedule") { [weak self] in
-            guard let self, self.ingest.isHealthKitConnected, self.ingest.needsBackfillResume() else { return }
+            guard let self else { return }
+            let ingestPending = self.ingest.isHealthKitConnected && self.ingest.needsBackfillResume()
+            guard ingestPending || self.ingest.hasPendingScoreBackfill() else { return }
             registrar?.scheduleProcessing()
         }
+    }
+
+    /// Ask for a heavy processing wake now, for a score backfill an HR-max/zone edit just queued
+    /// (EPIC-26). Only expedites: the request is a durable marker, so if the submit is declined or the
+    /// app is killed before the wake, the next `applicationDidEnterBackground` re-schedules it. The
+    /// backfill is deferrable by design (plan §13.7 — no wall-clock promise); this just nudges iOS.
+    func scheduleScoreBackfillProcessing() {
+        lock.lock()
+        let registrar = tasks
+        lock.unlock()
+        registrar?.scheduleProcessing()
     }
 
     // MARK: - Declined submissions
@@ -520,6 +550,12 @@ final class BackgroundCoordinator {
                     if ingest.needsBackfillResume(), let performed = try ingest.resumeBackfill(now: clock.now()) {
                         counts.add(performed)
                     }
+                case .scoreBackfill:
+                    // Whether a score backfill is queued is a durable marker (an HR-max/zone edit set
+                    // it); the runner clears it only on success, so an expired run re-runs the window.
+                    if ingest.hasPendingScoreBackfill(), let performed = try ingest.runPendingScoreBackfill(now: clock.now()) {
+                        counts.add(performed)
+                    }
                 case .prune:
                     counts.pruned += try runs.prune(now: clock.now())
                 }
@@ -647,6 +683,13 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
     private let main: SQLiteConnection
     private let makePort: () -> HealthStorePort?
     private let connected: () -> Bool
+    /// EPIC-26 score backfill. The coordinator re-derives a window (baselines → effort → sleep →
+    /// readiness) and the store holds the queued window. Optional so a bridge built without the score
+    /// engines (e.g. a narrow test) simply reports "nothing to backfill"; the composition root wires
+    /// both. Run under the SAME `ingestLock` as ingest, so a backfill never writes derived rows
+    /// concurrently with an ingest→derive pass.
+    private let derivationCoordinator: DerivationCoordinator?
+    private let scoreBackfillStore: ScoreBackfillRequestStore
 
     /// The single mutex around the ingest→derive chain.
     ///
@@ -672,11 +715,15 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
     static let historyDays = 90
 
     init(seedController: SeedController, main: SQLiteConnection,
-         makePort: @escaping () -> HealthStorePort?, connected: @escaping () -> Bool) {
+         makePort: @escaping () -> HealthStorePort?, connected: @escaping () -> Bool,
+         derivationCoordinator: DerivationCoordinator? = nil,
+         scoreBackfillStore: ScoreBackfillRequestStore = ScoreBackfillRequestStore()) {
         self.seedController = seedController
         self.main = main
         self.makePort = makePort
         self.connected = connected
+        self.derivationCoordinator = derivationCoordinator
+        self.scoreBackfillStore = scoreBackfillStore
     }
 
     var isHealthKitConnected: Bool { connected() }
@@ -713,6 +760,26 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
         guard ingestLock.try() else { return nil }
         defer { ingestLock.unlock() }
         return try performIngest(now: now)
+    }
+
+    func hasPendingScoreBackfill() -> Bool {
+        derivationCoordinator != nil && scoreBackfillStore.pending() != nil
+    }
+
+    /// Re-derive the queued window through the coordinator (baselines → effort → sleep → readiness),
+    /// under the ingest lock so it never overlaps an ingest→derive pass, and clear the request only on
+    /// success. `nil` (leaving the request queued) when nothing is queued, the score engines aren't
+    /// wired, or another derivation holds the lock — so the next wake retries. Returns empty counts:
+    /// the appended derived rows and the cleared request are the evidence; there is no honest existing
+    /// `BackgroundWorkCounts` field for "score-days re-derived", and misusing one would be worse than
+    /// leaving the (still-logged) processing run's payload empty.
+    func runPendingScoreBackfill(now: Date) throws -> BackgroundWorkCounts? {
+        guard let coordinator = derivationCoordinator, let window = scoreBackfillStore.pending() else { return nil }
+        guard ingestLock.try() else { return nil }
+        defer { ingestLock.unlock() }
+        _ = try coordinator.backfill(from: window.from, to: window.to)
+        scoreBackfillStore.clear()
+        return BackgroundWorkCounts()
     }
 
     /// The one ingest path. `ingestHealthData` runs HealthKit's anchored queries, so a repeat call

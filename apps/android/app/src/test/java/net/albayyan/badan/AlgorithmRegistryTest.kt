@@ -64,7 +64,10 @@ class AlgorithmRegistryTest {
     @Test fun knownAlgorithmAndParamResolve() {
         val registry = registry()
         val baseline = registry.definition("baseline.rolling_median_mad")!!
-        assertEquals("1.0.0", baseline.semver)
+        // EPIC-23 bumped this to 2.0.0: the band method fundamentally changed (per-metric windows,
+        // log-domain banding for vitals, MAD outlier rejection). Per I2, rows already stamped 1.0.0
+        // are never rewritten — a recompute appends a 2.0.0 row.
+        assertEquals("2.0.0", baseline.semver)
         assertFalse(baseline.provisional)
         assertEquals(28.0, baseline.params["windowDays"]!!, 1e-9)
         assertEquals(7.0, baseline.params["minPoints"]!!, 1e-9)

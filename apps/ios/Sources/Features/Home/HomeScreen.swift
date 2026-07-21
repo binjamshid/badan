@@ -289,6 +289,9 @@ private struct HomeCasualBody: View {
             if isVisible("readiness") {
                 ReadinessHeroCard(data: data)
             }
+            if isVisible("effort"), let effort = data.effort {
+                EffortCard(effort: effort)
+            }
 
             if isVisible("sleep"), let sleep = data.sleep {
                 SleepModuleCard(sleep: sleep)
@@ -374,6 +377,9 @@ private struct HomePowerBody: View {
             if isVisible("readiness") {
                 ReadinessHeroCard(data: data)
             }
+            if isVisible("effort"), let effort = data.effort {
+                EffortCard(effort: effort)
+            }
 
             // (FIX-04) Power previously showed the whole grid regardless of module visibility.
             // The grid mixes two module ids (steps/active-energy -> "activity",
@@ -419,6 +425,33 @@ private struct HomePowerBody: View {
     }
 }
 
+// MARK: - Shared card chrome
+
+/// The small "icon · title · chevron" header the score cards share, so Readiness, Effort and Sleep
+/// read as one family of tappable cards. Title is a caption (the card's subject), never the hero —
+/// the sentence and value inside carry the weight (the score-fixation guard).
+private struct CardLabelRow: View {
+    @Environment(AppEnvironment.self) private var env
+    let icon: String
+    let title: LocalizedString
+
+    var body: some View {
+        HStack(spacing: BadanSpace.space2) {
+            Image(systemName: icon)
+                .foregroundStyle(BadanColor.primary)
+                .accessibilityHidden(true)
+            Text(title, language: env.language)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+            Spacer(minLength: BadanSpace.space2)
+            Image(systemName: "chevron.forward")
+                .imageScale(.small)
+                .foregroundStyle(BadanColor.textSecondary)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 // MARK: - Readiness hero
 
 private struct ReadinessHeroCard: View {
@@ -437,41 +470,55 @@ private struct ReadinessHeroCard: View {
     var body: some View {
         NavigationLink { MetricDetailScreen(metricId: "readiness.score") } label: {
             BadanCard {
-                VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                    CardLabelRow(icon: MetricFamily.readiness.symbolName, title: Loc.readiness)
                     if let readiness = data.readiness {
-                        StatBox(
-                            value: env.format.integer(Int(readiness.value.rounded())),
-                            label: env.s(Loc.readiness),
-                            unit: "/ \(env.format.integer(100))"
-                        )
-                        HStack(spacing: BadanSpace.space2) {
+                        // SCORE-FIXATION GUARD (plan §16): the plain-language sentence LEADS — it is
+                        // the prominent line — and the number FOLLOWS as a supporting figure, so the
+                        // eye lands on "what this means for me today", not a big anxious numeral.
+                        Text(data.narrative, language: env.language)
+                            .font(BadanFont.sectionTitle)
+                            .foregroundStyle(BadanColor.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space1) {
+                            Text(env.format.integer(Int(readiness.value.rounded())))
+                                .font(BadanFont.numeralM)
+                                .foregroundStyle(BadanColor.textPrimary)
+                            Text("/ \(env.format.integer(100))")
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                            Spacer(minLength: BadanSpace.space2)
                             if readiness.provisional {
                                 ProvisionalBadge(language: env.language)
                             }
-                            if env.depth.showsPowerDetail {
-                                PillLabel(algorithmLabel(readiness), systemImage: "function")
-                                    .environment(\.layoutDirection, .leftToRight)
-                            }
                         }
-                        if data.readinessDayOffset > 0 {
-                            Text(asOfText)
-                                .font(BadanFont.caption)
-                                .foregroundStyle(BadanColor.textSecondary)
-                        }
-                        // Shown at both altitudes now — power already explained the score this
-                        // way; casual gets the same plain-language "why" instead of a separate,
-                        // unlabeled narrative card.
-                        Text(data.narrative, language: env.language)
-                            .font(BadanFont.bodyCompact)
+                        // Freshness is ALWAYS visible (plan §16: "Freshness timestamp always visible"),
+                        // not only when the value is a day or more old.
+                        Text(asOfText)
+                            .font(BadanFont.caption)
                             .foregroundStyle(BadanColor.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if env.depth.showsPowerDetail {
+                            PillLabel(algorithmLabel(readiness), systemImage: "function")
+                                .environment(\.layoutDirection, .leftToRight)
+                        }
+                        // Cold-start honesty: while readiness is still provisional, the calibration
+                        // countdown says how far along its bottleneck input is — "we don't guess
+                        // before we know you" — rather than presenting a not-yet-settled score bare.
+                        if readiness.provisional, let calibration = data.readinessCalibration {
+                            CalibrationNote(calibration: calibration, language: env.language,
+                                            format: env.format, showsDetail: env.depth.showsPowerDetail)
+                        }
                     } else {
-                        Text(Loc.readiness, language: env.language)
-                            .font(BadanFont.sectionTitle)
-                            .foregroundStyle(BadanColor.textPrimary)
+                        // Readiness has not cleared its cold start yet — show the countdown, never a
+                        // fabricated number. What already works (sleep, vitals) is shown below.
                         Text(stillLearningText)
                             .font(BadanFont.bodyCompact)
                             .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let calibration = data.readinessCalibration {
+                            CalibrationNote(calibration: calibration, language: env.language,
+                                            format: env.format, showsDetail: env.depth.showsPowerDetail)
+                        }
                     }
                     if data.trackedCount > 0, data.calibratedCount < data.trackedCount {
                         Text(calibrationText)
@@ -520,47 +567,315 @@ private struct ReadinessHeroCard: View {
     }
 }
 
+// MARK: - Effort card (EPIC-26)
+
+private struct EffortCard: View {
+    @Environment(AppEnvironment.self) private var env
+    let effort: HomeEffortSummary
+
+    private enum Copy {
+        static let guidanceGentler = LocalizedString(
+            en: "A gentler range may suit today.", ar: "قد تناسبك وتيرة ألطف اليوم.")
+        static let guidanceTypical = LocalizedString(
+            en: "Your usual range suits today.", ar: "نطاقك المعتاد يناسب اليوم.")
+        static let guidanceHeadroom = LocalizedString(
+            en: "There's room to push if you want it.", ar: "لديك متّسع للدفع إن أردت.")
+        static let ceilingSuffix = LocalizedString(en: "around {value}", ar: "نحو {value}")
+        static let effortSoFar = LocalizedString(en: "Your effort so far today.", ar: "جهدك حتى الآن اليوم.")
+        static let activityToday = LocalizedString(en: "Activity from your movement today.", ar: "نشاط من حركتك اليوم.")
+        // The reduced-input variant is labelled DISTINCTLY (plan §11 EPIC-26 / §18): a real movement
+        // magnitude, never a zero-looking score, with a specific reason it isn't the zone-based score.
+        static let activityLoadLabel = LocalizedString(en: "Activity load (estimated)", ar: "حمل النشاط (تقديري)")
+        static let activityLoadWhy = LocalizedString(
+            en: "From your movement — continuous heart rate is needed to see effort zones.",
+            ar: "من حركتك — يلزم معدل ضربات قلب مستمر لرؤية نطاقات الجهد.")
+        static let updated = LocalizedString(en: "Updated {time}", ar: "حُدّث {time}")
+    }
+
+    var body: some View {
+        NavigationLink { MetricDetailScreen(metricId: MetricID.effortDay) } label: {
+            BadanCard {
+                VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                    CardLabelRow(icon: MetricFamily.effort.symbolName, title: Loc.effort)
+                    // SENTENCE LEADS (score-fixation guard) — the guidance direction, then the number.
+                    Text(guidanceSentence, language: env.language)
+                        .font(BadanFont.sectionTitle)
+                        .foregroundStyle(BadanColor.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    valueBlock
+                    Text(updatedText)
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var valueBlock: some View {
+        switch effort.kind {
+        case .score(let score):
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space1) {
+                    Text(env.format.integer(Int(score.rounded())))
+                        .font(BadanFont.numeralM)
+                        .foregroundStyle(BadanColor.textPrimary)
+                    Text("/ \(env.format.integer(100))")
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                    Spacer(minLength: BadanSpace.space2)
+                    if effort.provisional {
+                        ProvisionalBadge(language: env.language)
+                    }
+                }
+                EffortProgressBar(fraction: min(1, max(0, score / 100)), ceilingFraction: ceilingFraction)
+                    .frame(height: 8)
+                    .accessibilityHidden(true)
+            }
+        case .activityLoad(let value, let unit):
+            // Reduced-input: a real movement magnitude, DISTINCTLY labelled — never a fake 0–100 score.
+            VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space2) {
+                    Text(HomeEffortActivity.valueText(value: value, unit: unit, format: env.format))
+                        .font(BadanFont.numeralM)
+                        .foregroundStyle(BadanColor.textPrimary)
+                    Spacer(minLength: BadanSpace.space2)
+                    PillLabel(env.s(Copy.activityLoadLabel), systemImage: "figure.walk",
+                              tint: BadanColor.info, filled: false)
+                }
+                Text(Copy.activityLoadWhy, language: env.language)
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// The guidance sentence: the readiness-linked direction when available, else a neutral framing of
+    /// what effort is showing. A gentler day with a personal ceiling appends the soft number.
+    private var guidanceSentence: LocalizedString {
+        guard let band = effort.guidanceBand else {
+            if case .activityLoad = effort.kind { return Copy.activityToday }
+            return Copy.effortSoFar
+        }
+        switch band {
+        case .gentler:
+            guard let ceiling = effort.guidanceCeiling else { return Copy.guidanceGentler }
+            let ceilingText = Copy.ceilingSuffix.filling(
+                ["value": env.format.integer(Int(ceiling.rounded()))]).resolved(env.language)
+            // "A gentler range may suit today: around 40." — the number is a personal soft ceiling
+            // (the user's own effort baseline centre), never a command.
+            return LocalizedString(
+                en: "\(Copy.guidanceGentler.en) \(ceilingText)",
+                ar: "\(Copy.guidanceGentler.ar) \(ceilingText)")
+        case .typical: return Copy.guidanceTypical
+        case .headroom: return Copy.guidanceHeadroom
+        }
+    }
+
+    /// Where the personal ceiling sits on the 0–100 track (gentler days only), so the bar can mark it.
+    private var ceilingFraction: Double? {
+        guard effort.guidanceBand == .gentler, let ceiling = effort.guidanceCeiling else { return nil }
+        return min(1, max(0, ceiling / 100))
+    }
+
+    private var updatedText: String {
+        let relative = HomeDateFormatting.relative(effort.computedAt, env.language, now: env.now())
+        return Copy.updated.filling(["time": relative]).resolved(env.language)
+    }
+}
+
+/// A thin day-progress bar for the zone-based effort score, with an optional tick at the personal
+/// guidance ceiling. `primary` fill — accumulating effort is neutral progress, never a graded state.
+private struct EffortProgressBar: View {
+    let fraction: Double
+    var ceilingFraction: Double?
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(BadanColor.surfaceElevated)
+                Capsule()
+                    .fill(BadanColor.primary.opacity(0.7))
+                    .frame(width: max(0, geo.size.width * fraction))
+                if let ceilingFraction {
+                    Rectangle()
+                        .fill(BadanColor.textSecondary.opacity(0.6))
+                        .frame(width: 2)
+                        .offset(x: geo.size.width * ceilingFraction)
+                }
+            }
+        }
+        .environment(\.layoutDirection, .leftToRight) // progress axis is LTR
+    }
+}
+
+/// Pure formatting for a reduced-input activity load's value+unit, so the "never a bare number"
+/// rendering is unit-testable. Active energy (kcal) and steps (count) each get their localized unit.
+enum HomeEffortActivity {
+    static func valueText(value: Double, unit: String, format: ValueFormatter) -> String {
+        let number = format.integer(Int(value.rounded()))
+        // The activity-load unit is the source metric's canonical unit ("kcal" or "count"); a bare
+        // "count" reads as nothing, so steps show no unit suffix while energy keeps "kcal".
+        switch unit {
+        case "count", "steps", "": return number
+        default: return "\(number) \(unit)"
+        }
+    }
+}
+
 // MARK: - Sleep module
 
 private struct SleepModuleCard: View {
     @Environment(AppEnvironment.self) private var env
     let sleep: HomeSleepSummary
 
+    private enum Copy {
+        static let sleptOfNeed = LocalizedString(en: "Slept {duration} · {pct}% of your need",
+                                                 ar: "نمت {duration} · {pct}٪ من حاجتك")
+        static let sleepDebt = LocalizedString(en: "Sleep debt {duration}", ar: "دين النوم {duration}")
+        static let metNeed = LocalizedString(en: "You met your sleep need last night.", ar: "لبّيت حاجتك للنوم الليلة الماضية.")
+        static let mostOfNeed = LocalizedString(en: "You got most of the sleep you needed.", ar: "حصلت على معظم النوم الذي تحتاجه.")
+        static let lessThanNeed = LocalizedString(en: "You slept less than your body needed.", ar: "نمت أقل مما يحتاجه جسمك.")
+        static let wellShort = LocalizedString(en: "Last night ran well short of your usual need.", ar: "كانت الليلة الماضية أقل بكثير من حاجتك المعتادة.")
+    }
+
     var body: some View {
         NavigationLink { MetricDetailScreen(metricId: MetricID.timeAsleep) } label: {
             BadanCard {
                 VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                    HStack(spacing: BadanSpace.space2) {
-                        Image(systemName: MetricFamily.sleep.symbolName)
-                            .foregroundStyle(BadanColor.primary)
-                            .accessibilityHidden(true)
-                        Text(Loc.lastNight, language: env.language)
+                    CardLabelRow(icon: MetricFamily.sleep.symbolName, title: Loc.lastNight)
+                    if let pct = sleep.performancePercent {
+                        performanceBlock(pct)
+                    } else {
+                        // Cold start / not computed yet: the honest duration + range position, never
+                        // a fabricated performance score.
+                        StatBox(
+                            value: env.format.duration(seconds: sleep.seconds),
+                            label: env.s(MetricFamily.sleep.displayName),
+                            chip: sleep.position.map { p in
+                                StatusChip(position: p, label: env.s(rangeLabel(p)), language: env.language)
+                            }
+                        )
+                    }
+
+                    // Need-vs-actual (EPIC-24): a RANGE, never a fake-exact target. Only when the
+                    // need row exists — otherwise the honest duration above stands alone.
+                    if let needCenter = sleep.needCenterSeconds {
+                        needVsActualBar(needCenter: needCenter)
+                    }
+
+                    if let debt = sleep.debtSeconds, debt >= Self.debtVisibilityThreshold {
+                        Text(env.s(Copy.sleepDebt.filling(["duration": env.format.duration(seconds: debt)])))
                             .font(BadanFont.caption)
                             .foregroundStyle(BadanColor.textSecondary)
-                        Spacer(minLength: BadanSpace.space2)
-                        Image(systemName: "chevron.forward")
-                            .imageScale(.small)
-                            .foregroundStyle(BadanColor.textSecondary)
-                            .accessibilityHidden(true)
                     }
-                    StatBox(
-                        value: env.format.duration(seconds: sleep.seconds),
-                        label: env.s(MetricFamily.sleep.displayName),
-                        chip: sleep.position.map { p in
-                            StatusChip(position: p, label: env.s(rangeLabel(p)), language: env.language)
-                        }
-                    )
-                    if env.depth.showsPowerDetail, sleep.spark.count >= 2 {
-                        // (FIX-07) Date-spaced series init (OPT-098) so a gap in the last 14
-                        // nights renders as a visible gap instead of implying a smooth run.
-                        MetricSparkline(series: sleep.spark)
-                            .frame(height: 36)
-                            .accessibilityHidden(true)
+
+                    // Cold-start note while the sleep-duration baseline is still filling.
+                    if let calibration = sleep.calibration, calibration.provisional {
+                        CalibrationNote(calibration: calibration, language: env.language,
+                                        format: env.format, showsDetail: env.depth.showsPowerDetail)
+                    }
+
+                    // Power depth adds the density: the hypnogram of last night's stages, the debt
+                    // trend, and the nightly duration sparkline.
+                    if env.depth.showsPowerDetail {
+                        powerDetail
                     }
                 }
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// Threshold below which sleep debt is not surfaced — a few minutes of debt is noise, and a card
+    /// that announces "debt 4m" reads as alarming precision about nothing.
+    private static let debtVisibilityThreshold: Double = 30 * 60
+
+    @ViewBuilder
+    private func performanceBlock(_ pct: Double) -> some View {
+        // SCORE-FIXATION GUARD: the plain-language sentence LEADS; the duration + percent follow.
+        Text(performanceSentence(pct), language: env.language)
+            .font(BadanFont.sectionTitle)
+            .foregroundStyle(BadanColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space2) {
+            Text(env.s(Copy.sleptOfNeed.filling([
+                "duration": env.format.duration(seconds: sleep.seconds),
+                "pct": env.format.integer(Int(pct.rounded()))])))
+                .font(BadanFont.bodyCompact)
+                .foregroundStyle(BadanColor.textSecondary)
+            Spacer(minLength: BadanSpace.space2)
+            if sleep.performanceProvisional {
+                ProvisionalBadge(language: env.language)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func needVsActualBar(needCenter: Double) -> some View {
+        let range = SleepNeedRangeReconstruction.range(centerSeconds: needCenter, confidence: sleep.needConfidence)
+        SleepNeedVsActualBar(
+            actualSeconds: sleep.seconds,
+            needLowSeconds: range.low, needCenterSeconds: needCenter, needHighSeconds: range.high,
+            language: env.language,
+            actualText: env.format.duration(seconds: sleep.seconds),
+            needRangeText: "\(env.format.duration(seconds: range.low))–\(env.format.duration(seconds: range.high))")
+    }
+
+    @ViewBuilder
+    private var powerDetail: some View {
+        if !sleep.stages.isEmpty {
+            Hypnogram(stages: sleep.stages, language: env.language)
+        }
+        if sleep.debtSpark.count >= 2 {
+            VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                Text(Self.sleepDebtTrendLabel, language: env.language)
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                MetricSparkline(series: sleep.debtSpark)
+                    .frame(height: 28)
+                    .accessibilityHidden(true)
+            }
+        }
+        if sleep.spark.count >= 2 {
+            // (FIX-07) Date-spaced series init (OPT-098) so a gap in the last 14 nights renders as a
+            // visible gap instead of implying a smooth run.
+            MetricSparkline(series: sleep.spark)
+                .frame(height: 36)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private static let sleepDebtTrendLabel = LocalizedString(en: "Sleep-debt trend", ar: "اتجاه دين النوم")
+
+    private func performanceSentence(_ pct: Double) -> LocalizedString {
+        switch pct {
+        case 90...: return Copy.metNeed
+        case 70..<90: return Copy.mostOfNeed
+        case 50..<70: return Copy.lessThanNeed
+        default: return Copy.wellShort
+        }
+    }
+}
+
+/// Reconstructs the published sleep-need RANGE from a stored `sleep.need` row's centre + confidence.
+///
+/// The engine does not store the band edges — only the centre and the confidence — but the band is a
+/// deterministic function of both plus one published constant (`rangeHalfWidthSeconds`), so the surface
+/// can recover the exact same range the engine computed rather than inventing one. This MIRRORS
+/// `SleepIntelligenceEngine.computeNeed` (the `halfWidth = rangeHalfWidthSeconds · (2 − confidence)`
+/// line); the constant is loaded from the shared contract (never hardcoded), exactly as the anatomy
+/// sheet derives the band multiplier from stored fields rather than duplicating a constant. A missing
+/// confidence is treated as fully uncertain (widest band), so the range never looks tighter than the
+/// data earns.
+enum SleepNeedRangeReconstruction {
+    static func range(centerSeconds: Double, confidence: Double?) -> (low: Double, high: Double) {
+        let spec = SleepSpec.defaultShared
+        let conf = max(0, min(1, confidence ?? 0))
+        let halfWidth = spec.rangeHalfWidthSeconds * (2 - conf)
+        return (low: max(0, centerSeconds - halfWidth), high: centerSeconds + halfWidth)
     }
 }
 
@@ -894,6 +1209,41 @@ struct HomeSleepSummary {
     /// (FIX-07) Date-spaced, not index-spaced — see `HomeKeyMetric.spark`.
     var spark: [(date: Date, value: Double)]
     var provisional: Bool
+    // EPIC-24 sleep-intelligence additions. All optional: when the composition lane hasn't produced
+    // the derived rows yet, the card falls back to duration + calibration, never a fabricated score.
+    /// `sleep.performance` centre percent + its confidence/provisional, when computed for last night.
+    var performancePercent: Double?
+    var performanceProvisional: Bool
+    var performanceConfidence: Double?
+    /// `sleep.need` centre seconds + confidence — enough to reconstruct the published need RANGE
+    /// (see `SleepNeedRangeReconstruction`), so the need-vs-actual bar shows a range, never a point.
+    var needCenterSeconds: Double?
+    var needConfidence: Double?
+    /// Latest `sleep.debt` seconds and its recent trend (date-spaced), for the debt caption + sparkline.
+    var debtSeconds: Double?
+    var debtSpark: [(date: Date, value: Double)]
+    /// Last night's stage rows for the hypnogram (empty when the night carried no stages).
+    var stages: [SessionStage]
+    /// The sleep-duration baseline's calibration, for the cold-start note on the card.
+    var calibration: BaselineCalibration?
+}
+
+/// The Home Effort card's data. Effort is stored under one id (`effort.day`) in two shapes: a
+/// zone-based 0–100 `score`, or — for a sparse-HR day — a reduced-input `activityLoad` with a real
+/// movement magnitude and its own unit. They are rendered DISTINCTLY (plan §11 EPIC-26 / §18): the
+/// reduced variant is never dressed up as a low score, and a day with neither is a gap, not a zero.
+struct HomeEffortSummary {
+    enum Kind: Equatable {
+        case score(Double)                              // 0–100 zone-based effort
+        case activityLoad(value: Double, unit: String)  // reduced-input: raw magnitude + its unit
+    }
+    var kind: Kind
+    var provisional: Bool
+    var computedAt: Date
+    /// The readiness-linked guidance direction + optional personal ceiling (`nil` when there is no
+    /// readiness score to anchor to — no anchor, no suggestion).
+    var guidanceBand: EffortGuidanceBand?
+    var guidanceCeiling: Double?
 }
 
 struct HomeEvent: Identifiable {
@@ -918,7 +1268,12 @@ struct HomeData {
     /// needed are already banked (min across readiness's sleep/RHR inputs), so "Still learning"
     /// reads as a countdown instead of an open-ended wait.
     var readinessProgressDays: Int?
+    /// The calibration state of readiness's bottleneck input baseline, for the cold-start note on the
+    /// hero card (shown when readiness is provisional or not computed yet). `nil` when no contributing
+    /// baseline exists at all.
+    var readinessCalibration: BaselineCalibration?
     var narrative: LocalizedString
+    var effort: HomeEffortSummary?
     var sleep: HomeSleepSummary?
     var metrics: [HomeKeyMetric]
     var medsDue: Int
@@ -1045,13 +1400,15 @@ final class HomeViewModel {
         do {
             let (readiness, dayOffset, readinessDay) = try latestReadiness(inputs, now: now, tz: tz)
             let readinessProgress = readiness == nil ? readinessProgressDays(inputs) : nil
+            let readinessCalibration = try readinessBottleneckCalibration(inputs)
+            let effort = try loadEffort(inputs, now: now, tz: tz, readiness: readiness)
             let sleep = try loadSleep(inputs, now: now, tz: tz)
             let metrics = try loadMetrics(inputs, now: now)
             let meds = try loadMeds(inputs, now: now, tz: tz)
             let insight = try inputs.insightsRepo.recent(limit: 1).first
             let (events, eventsPartial) = inputs.depth.showsPowerDetail ? loadEvents(inputs, now: now) : ([], false)
 
-            let hasAny = readiness != nil || sleep != nil || !metrics.isEmpty
+            let hasAny = readiness != nil || sleep != nil || effort != nil || !metrics.isEmpty
                 || meds.active > 0 || insight != nil || !events.isEmpty
             guard hasAny else {
                 let hasConnectedSource = (try? inputs.catalog.sources())?.contains { $0.status == .active } ?? false
@@ -1064,7 +1421,9 @@ final class HomeViewModel {
                 readinessDayOffset: dayOffset,
                 readinessDate: readinessDay,
                 readinessProgressDays: readinessProgress,
+                readinessCalibration: readinessCalibration,
                 narrative: narrative(for: readiness, sleep: sleep),
+                effort: effort,
                 sleep: sleep,
                 metrics: metrics,
                 medsDue: meds.due,
@@ -1117,9 +1476,10 @@ final class HomeViewModel {
 
     private nonisolated static func loadSleep(_ inputs: HomeFetchInputs, now: Date, tz: String) throws -> HomeSleepSummary? {
         let localNight = DayAttribution.localNight(sessionEnd: now, tz: tz)
+        let primary = try inputs.measurements.primarySleep(localNight: localNight)
         var seconds: Double?
-        if let session = try inputs.measurements.primarySleep(localNight: localNight) {
-            seconds = session.detail.timeAsleepSeconds ?? session.durationSeconds
+        if let primary {
+            seconds = primary.detail.timeAsleepSeconds ?? primary.durationSeconds
         } else if let interval = try inputs.measurements.latestInterval(metricId: MetricID.timeAsleep),
                   // (UX-01-Home) The fallback picks the single most recent sleep record ever
                   // logged with no age bound — unbounded, "Last night" could silently show a
@@ -1132,6 +1492,7 @@ final class HomeViewModel {
 
         let baseline = try inputs.derivation.latestBaseline(metricId: MetricID.timeAsleep)
         let position = baseline?.position(of: seconds)
+        let calibration = baseline.map { BaselineCalibration.from(baseline: $0, spec: BaselineSpec.defaultShared) }
 
         // Kept as a plain 14-day window rather than routed through `DayAttribution` (DATA-11-UI
         // scope note): it's a fixed lookback range for sparkline history, not a day-attribution
@@ -1146,7 +1507,80 @@ final class HomeViewModel {
             .sorted { $0.startAt < $1.startAt }
             .map { (date: $0.startAt, value: $0.detail.timeAsleepSeconds ?? $0.durationSeconds) }
 
-        return HomeSleepSummary(seconds: seconds, position: position, spark: spark, provisional: baseline?.provisional ?? true)
+        // EPIC-24 sleep-intelligence: the derived rows the composition lane persists for last night.
+        // Each read is best-effort (a nil is an honest "not computed yet", never a fabricated value),
+        // so a store hiccup or a night still awaiting recompute costs only the enrichment, not the card.
+        let nightKey = "day:" + localNight
+        let performance = (try? inputs.derivation.latestDerived(metricId: MetricID.sleepPerformance, periodKey: nightKey)) ?? nil
+        let need = (try? inputs.derivation.latestDerived(metricId: MetricID.sleepNeed, periodKey: nightKey)) ?? nil
+        let debt = (try? inputs.derivation.latestDerived(metricId: MetricID.sleepDebt, periodKey: nightKey)) ?? nil
+
+        // Debt trend: the recent `sleep.debt` series, date-spaced so a missed night reads as a gap.
+        let debtSpark: [(date: Date, value: Double)] = ((try? inputs.derivation.latestDerivedSeries(metricId: MetricID.sleepDebt)) ?? [])
+            .compactMap { dv in
+                let key = dv.periodKey.hasPrefix("day:") ? String(dv.periodKey.dropFirst(4)) : dv.periodKey
+                guard let date = DayAttribution.date(fromDayKey: key, tz: tz), date >= from else { return nil }
+                return (date: date, value: dv.value)
+            }
+            .sorted { $0.date < $1.date }
+
+        // Stages for the hypnogram — decorative enrichment, isolated from the primary load (OPT-011).
+        let stages = primary.flatMap { try? inputs.measurements.stages(sessionId: $0.id) } ?? []
+
+        return HomeSleepSummary(
+            seconds: seconds, position: position, spark: spark, provisional: baseline?.provisional ?? true,
+            performancePercent: performance?.value, performanceProvisional: performance?.provisional ?? true,
+            performanceConfidence: performance?.confidence,
+            needCenterSeconds: need?.value, needConfidence: need?.confidence,
+            debtSeconds: debt?.value, debtSpark: debtSpark, stages: stages, calibration: calibration)
+    }
+
+    // MARK: Effort (EPIC-26)
+
+    /// The day's Effort, read from the `effort.day` derived row the composition lane persists. A
+    /// `score_0_100` unit is the zone-based score; any other unit is the reduced-input activity load
+    /// (a real movement magnitude, labelled distinctly — never a zero-looking score). Guidance is the
+    /// readiness-linked direction, computed from the day's readiness value via the engine's own pure
+    /// band function so the surface and the engine can't disagree.
+    private nonisolated static func loadEffort(_ inputs: HomeFetchInputs, now: Date, tz: String,
+                                               readiness: DerivedValue?) throws -> HomeEffortSummary? {
+        // The day's period key, exactly as `latestReadiness` forms today's — so effort and readiness
+        // are read against the same local day.
+        let dayKey = DayAttribution.dayPeriodKey(now, tz: tz)
+        guard let effort = try inputs.derivation.latestDerived(metricId: MetricID.effortDay, periodKey: dayKey) else {
+            return nil
+        }
+        let scoreUnit = inputs.registry.definitionOrFallback(MetricID.effortDay).canonicalUnit
+        let kind: HomeEffortSummary.Kind = effort.unit == scoreUnit
+            ? .score(effort.value)
+            : .activityLoad(value: effort.value, unit: effort.unit)
+
+        // Guidance direction from readiness (pure band function, shared with the engine). Only a
+        // gentler day with an ESTABLISHED personal effort baseline offers a soft ceiling — never a
+        // population number, never a command.
+        var band: EffortGuidanceBand?
+        var ceiling: Double?
+        if let readiness {
+            band = EffortEngine.guidanceBand(readiness: readiness.value)
+            if band == .gentler,
+               let effortBaseline = try inputs.derivation.latestBaseline(metricId: MetricID.effortDay),
+               !effortBaseline.provisional {
+                ceiling = effortBaseline.center
+            }
+        }
+        return HomeEffortSummary(kind: kind, provisional: effort.provisional, computedAt: effort.computedAt,
+                                 guidanceBand: band, guidanceCeiling: ceiling)
+    }
+
+    /// The calibration state of readiness's *bottleneck* input — the contributing baseline with the
+    /// fewest points (RHR, HRV, or sleep duration), i.e. the one still gating a settled readiness. Its
+    /// `BaselineCalibration` drives the cold-start note on the hero card. `nil` when none of readiness's
+    /// inputs has a baseline yet (there is simply nothing to calibrate against to report progress on).
+    private nonisolated static func readinessBottleneckCalibration(_ inputs: HomeFetchInputs) throws -> BaselineCalibration? {
+        let ids = [MetricID.restingHeartRate, MetricID.hrv, MetricID.timeAsleep]
+        let baselines = ids.compactMap { try? inputs.derivation.latestBaseline(metricId: $0) }.compactMap { $0 }
+        guard let bottleneck = baselines.min(by: { $0.nPoints < $1.nPoints }) else { return nil }
+        return BaselineCalibration.from(baseline: bottleneck, spec: BaselineSpec.defaultShared)
     }
 
     // MARK: Key metrics

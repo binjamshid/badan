@@ -98,6 +98,19 @@ data class UserProfile(
     val heightMeters: Double? = null,
     val birthYear: Int? = null,
     val biologicalContextNote: String? = null,
+    /**
+     * Overriding maximum heart rate in bpm, or null to use the age-derived default (EPIC-26
+     * computes `208 − 0.7·age` from [birthYear]). A physiological attribute of the person — it sits
+     * here beside height, not in the presentation profile, and null is a meaningful default
+     * ("derive it"), never "unset to zero". `Double?` because the derived fallback is fractional and
+     * this layer must not pre-round a value the Effort engine owns the precision of.
+     */
+    val hrMax: Double? = null,
+    /**
+     * The user's personal five-zone override, or null to let EPIC-26 derive the zones from [hrMax].
+     * Persisted as JSON in `user_profile.hr_zones`; see [HRZones].
+     */
+    val hrZones: HRZones? = null,
     val createdAt: Long,
     val updatedAt: Long,
 )

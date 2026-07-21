@@ -19,6 +19,14 @@ object MetricId {
     const val sleepLight = "sleep.light"
     const val sleepAwake = "sleep.awake"
 
+    // Sleep intelligence (EPIC-24, derived per localNight by SleepIntelligenceEngine).
+    // `sleepPerformance` is also a soft input to EPIC-25's Readiness composite.
+    const val sleepNeed = "sleep.need"
+    const val sleepPerformance = "sleep.performance"
+    const val sleepDebt = "sleep.debt"
+    const val sleepConsistency = "sleep.consistency"
+    const val sleepDisturbances = "sleep.disturbances"
+
     // Heart
     const val heartRate = "heart.hr"
     const val restingHeartRate = "heart.rhr"
@@ -55,6 +63,28 @@ object MetricId {
     const val energyIn = "nutrition.energy_in"
     const val protein = "nutrition.protein"
     const val water = "nutrition.water"
+
+    // Derived scores
+    /**
+     * The morning Readiness composite (EPIC-25, `ReadinessEngine`). v2 rows are stamped
+     * `composite.readiness_score@2.0.0`; the interim v1 composite `BaselineEngine` still appends keeps
+     * its own id under I2. Mirror of iOS `MetricID.readinessScore`.
+     */
+    const val readinessScore = "readiness.score"
+
+    /**
+     * The daily cardiovascular effort score (EPIC-26, `EffortEngine`) — weighted time-in-zone on the
+     * published saturating curve. A zone-based day carries the registry's `score_0_100` unit; a
+     * sparse-HR (e.g. phone-only) day carries the reduced-input activity load under this SAME id with
+     * an activity unit instead, mutually exclusive per day. Mirror of iOS `MetricID.effortDay`.
+     */
+    const val effortDay = "effort.day"
+
+    /**
+     * Per-workout cardiovascular effort (EPIC-26) — the same curve applied over one session's window,
+     * keyed `session:<id>`. Mirror of iOS `MetricID.effortWorkout`.
+     */
+    const val effortWorkout = "effort.workout"
 
     /** Metrics that get seeded with time-series data in the demo dataset. */
     val seededTimeSeries: List<String> = listOf(

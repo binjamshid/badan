@@ -399,9 +399,16 @@ private struct BodyPillarCard: View {
 // MARK: - Repository tools
 
 private struct BodyToolsCard: View {
+    // EPIC-27: the Health Monitor lives under Body (plan §11 EPIC-27 / §16 IA: "new, under Body";
+    // a sixth tab would regress the documented five-destination shell). Placed first so the vitals
+    // dashboard is the most reachable of Body's tools.
+    private static let healthMonitor = LocalizedString(en: "Health Monitor", ar: "مراقب الصحة")
+
     var body: some View {
         BadanCard(padding: 0) {
             VStack(spacing: 0) {
+                BodyToolLink(icon: "waveform.path.ecg", title: Self.healthMonitor) { HealthMonitorScreen() }
+                BodyToolDivider()
                 BodyToolLink(icon: "square.grid.2x2", title: Loc.allMetrics) { BodyAllMetricsBrowser() }
                 BodyToolDivider()
                 BodyToolLink(icon: "antenna.radiowaves.left.and.right", title: Loc.dataSources) { SourcesScreen() }

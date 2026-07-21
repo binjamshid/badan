@@ -40,12 +40,28 @@ final class AppEnvironment {
     // Services
     let ingestion: IngestionPipeline
     let baselines: BaselineEngine
+    /// EPIC-24/25/26/27 score engines. Constructed here in the composition root (one instance each,
+    /// so every surface reads the same wiring) and run — for the three that WRITE — in their
+    /// cross-metric order by `derivationCoordinator`. `deviation` writes nothing: it is a pure read
+    /// model over the `Baseline` rows the pipeline refreshes, read on demand by the Health Monitor
+    /// surface, so it is wired here but never "recomputed" (see `DeviationEngine`).
+    let sleepIntelligence: SleepIntelligenceEngine
+    let readiness: ReadinessEngine
+    let effort: EffortEngine
+    let deviation: DeviationEngine
+    /// EPIC-23. The one place the writing score engines run in the published sleep → readiness →
+    /// effort order (plan §18). The ingest→derive funnel (`SeedController.deriveAndGenerateInsights`)
+    /// and the background backfill job (`recomputeScoreBackfill`) both go through it.
+    let derivationCoordinator: DerivationCoordinator
     let insightEngine: InsightEngine
     let exporter: ExportRunner
     /// EPIC-04. The background substrate: HealthKit observer wakes, `BGTaskScheduler` tasks, and
     /// the `background_runs` log. Also owns the ingest lock every sync path now goes through —
     /// see `BackgroundIngestBridge.ingestLock`.
     let background: BackgroundCoordinator
+    /// EPIC-26. The durable queue for a historical effort/score re-derivation an HR-max/zone edit
+    /// requests. Written by `requestEffortBackfill`, drained by the BGProcessing `.scoreBackfill` step.
+    let scoreBackfillStore: ScoreBackfillRequestStore
 
     // Live presentation state
     var profile: CustomizationProfile
@@ -139,7 +155,11 @@ final class AppEnvironment {
         self.derivation = DerivationRepository(main)
         self.insightsRepo = InsightRepository(main)
         self.reconciliation = ReconciliationRepository(main)
-        self.catalog = CatalogRepository(main)
+        // Bound as a local (not just `self.catalog`) so the two engine closures below can capture it
+        // without capturing a not-yet-fully-initialized `self` — the same pattern the background
+        // bridge uses for `main`/`backgroundRuns`.
+        let catalog = CatalogRepository(main)
+        self.catalog = catalog
         self.logging = LoggingRepository(main: main, sensitive: sensitive)
         self.exportJobs = ExportJobRepository(main)
         self.profiles = ProfileRepository(main)
@@ -152,6 +172,28 @@ final class AppEnvironment {
                                            clock: clock, deviceId: deviceId)
         self.baselines = BaselineEngine(derivation: derivation, measurements: measurements,
                                         registry: registry, clock: clock, deviceId: deviceId)
+        self.sleepIntelligence = SleepIntelligenceEngine(derivation: derivation, measurements: measurements,
+                                                         clock: clock, deviceId: deviceId)
+        // Readiness resolves a two-source overnight-HRV conflict by source priority (plan §18). The
+        // priority is reconstructed from the persisted source/device catalog via the published
+        // `SensorQualityMap` classes (worn sensor > phone), so it needs no new stored column and
+        // cannot drift from the sensor-class contract — see `readinessSourcePriority`. Capturing the
+        // local `catalog` keeps this off `self` during init.
+        self.readiness = ReadinessEngine(derivation: derivation, measurements: measurements,
+                                         clock: clock, deviceId: deviceId,
+                                         priorityForSource: { sourceId in
+                                             AppEnvironment.readinessSourcePriority(sourceId: sourceId, catalog: catalog)
+                                         })
+        // Effort reads HR max / zones off the live profile per recompute (never a cached copy), so a
+        // mid-session HR-max edit is picked up on the next run — the reason it takes a provider, not a
+        // stored `UserProfile` (see `EffortEngine`).
+        self.effort = EffortEngine(derivation: derivation, measurements: measurements, registry: registry,
+                                   clock: clock, deviceId: deviceId,
+                                   profileProvider: { try catalog.userProfile() })
+        self.deviation = DeviationEngine(derivation: derivation, measurements: measurements,
+                                         catalog: catalog, registry: registry, clock: clock)
+        self.derivationCoordinator = DerivationCoordinator(baselines: baselines, sleep: sleepIntelligence,
+                                                           readiness: readiness, effort: effort)
         self.insightEngine = InsightEngine(insights: insightsRepo, derivation: derivation,
                                            measurements: measurements, templates: templates,
                                            registry: registry, clock: clock, deviceId: deviceId)
@@ -165,13 +207,16 @@ final class AppEnvironment {
         let seedController = SeedController(catalog: catalog, ingestion: ingestion, logging: logging,
                                             measurements: measurements, baselines: baselines,
                                             insightEngine: insightEngine, registry: registry,
-                                            clock: clock, deviceId: deviceId)
+                                            clock: clock, deviceId: deviceId,
+                                            derivationCoordinator: derivationCoordinator)
         self.seedController = seedController
 
         // EPIC-04 wiring. The bridge takes closures rather than reaching back into `self`: it is
         // called from HealthKit's queues and from `BGTaskScheduler`'s, neither of which is the
         // main actor this class is isolated to, so it must not hold a reference to it.
         let connectedKey = Self.healthKitConnectedKey
+        let scoreBackfillStore = ScoreBackfillRequestStore()
+        self.scoreBackfillStore = scoreBackfillStore
         let bridge = BackgroundIngestBridge(
             seedController: seedController,
             main: main,
@@ -187,7 +232,12 @@ final class AppEnvironment {
             // Read from `UserDefaults` rather than the `isHealthKitConnected` property: the
             // property is main-actor-isolated `@Observable` state and this closure runs on
             // background queues. Both read the same key, written together in `connectHealthKit()`.
-            connected: { UserDefaults.standard.bool(forKey: connectedKey) })
+            connected: { UserDefaults.standard.bool(forKey: connectedKey) },
+            // EPIC-26: the score-backfill runner shares the ingest lock (so a re-derivation never
+            // overlaps an ingest→derive) and the same durable request store the composition root
+            // writes to.
+            derivationCoordinator: derivationCoordinator,
+            scoreBackfillStore: scoreBackfillStore)
         self.background = BackgroundCoordinator(runs: backgroundRuns, clock: clock, ingest: bridge,
                                                 protectedData: ProtectedDataMonitor())
 
@@ -554,6 +604,21 @@ final class AppEnvironment {
         }
     }
 
+    // MARK: - Effort backfill (EPIC-26 HR-max/zone edit)
+
+    /// Queue a historical effort/score re-derivation and nudge the background substrate to run it.
+    /// Called by the HR-max/zone editor AFTER it saves the profile: editing the max redraws every HR
+    /// zone, so every effort score in the window is now computed against stale zones and must be
+    /// re-derived (append-only supersession, I2 — the old rows are kept, the new ones win by
+    /// `computedAt`). The work runs in a `BGProcessingTask` — deferrable, heavy, checkpointed — never
+    /// on the editor's thread; this only records the request and asks for a wake. `historyDays` bounds
+    /// the window to the ingested history (a shorter window would leave older scores stale).
+    func requestEffortBackfill(historyDays: Int = BackgroundIngestBridge.historyDays) {
+        let from = DayAttribution.addingDays(-historyDays, to: clock.now(), tz: TimeZone.current.identifier)
+        scoreBackfillStore.request(from: from, to: clock.now())
+        background.scheduleScoreBackfillProcessing()
+    }
+
     // MARK: - Medication reminders (NEW-02/UX-02)
 
     /// Reschedule medication reminders from the *current* active regimens — but only if the
@@ -649,6 +714,29 @@ final class AppEnvironment {
         let id = ULID.newID()
         UserDefaults.standard.set(id, forKey: deviceKey)
         return id
+    }
+
+    // MARK: - Readiness source priority (EPIC-25)
+
+    /// Sensor classes worn on the body, which outrank a phone as the source of an overnight vital —
+    /// the same "watch > phone" ordering ingestion assigns for dedup, but reconstructed at read time
+    /// from the published `SensorQualityMap` classes rather than a stored column that could go stale.
+    private static let wornSensorClasses: Set<String> = ["wrist_wearable", "ring_wearable", "chest_strap"]
+
+    /// The dedup priority of the source that wrote a reading, for Readiness's two-source overnight-HRV
+    /// tie-break (plan §18: "conflicting HRV same-night → priority source wins"). Resolved from the
+    /// persisted source + its devices through the shared sensor-class contract, so it never duplicates
+    /// ingestion's keyword list and cannot drift from it. `0` (equal, falls to the engine's
+    /// deterministic `updatedAt`/`sourceId` tie-break) when the source or its class can't be resolved —
+    /// the honest default, not a guessed winner. Called a handful of times per Readiness compute, on
+    /// the (serialized, off-main) derivation path.
+    static func readinessSourcePriority(sourceId: String, catalog: CatalogRepository) -> Int {
+        guard let source = try? catalog.source(id: sourceId) else { return 0 }
+        let devices = (try? catalog.devices(sourceId: sourceId)) ?? []
+        let classId = SensorQualityMap.shared.classId(for: source, devices: devices)
+        if wornSensorClasses.contains(classId) { return 2 }
+        if classId == "phone_handset" { return 1 }
+        return 0
     }
 }
 

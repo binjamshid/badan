@@ -17,6 +17,13 @@ final class SeedController {
     private let clock: Clock
     private let deviceId: String
     private let tz: String
+    /// EPIC-23. The ordered score pipeline (baselines → sleep → readiness → effort). When present,
+    /// `deriveAndGenerateInsights` runs it INSTEAD of the bare `baselines.recomputeAll`, so every
+    /// ingest→derive path (first-run seed, connect backfill, foreground/background sync) computes the
+    /// full score cluster in the published order. Optional so the headless lifecycle/labeling tests
+    /// that construct a `SeedController` without the score engines keep their existing baseline-only
+    /// behavior unchanged; the composition root always injects it.
+    private let derivationCoordinator: DerivationCoordinator?
 
     /// BUG-16: written only once every step of `seed()` has actually completed — see
     /// `seedIfNeeded`.
@@ -40,10 +47,12 @@ final class SeedController {
 
     init(catalog: CatalogRepository, ingestion: IngestionPipeline, logging: LoggingRepository,
          measurements: MeasurementRepository, baselines: BaselineEngine, insightEngine: InsightEngine,
-         registry: MetricRegistry, clock: Clock, deviceId: String) {
+         registry: MetricRegistry, clock: Clock, deviceId: String,
+         derivationCoordinator: DerivationCoordinator? = nil) {
         self.catalog = catalog; self.ingestion = ingestion; self.logging = logging
         self.measurements = measurements; self.baselines = baselines; self.insightEngine = insightEngine
         self.registry = registry; self.clock = clock; self.deviceId = deviceId
+        self.derivationCoordinator = derivationCoordinator
         self.tz = TimeZone.current.identifier
     }
 
@@ -187,7 +196,14 @@ final class SeedController {
     /// `InsightEngine`), so 14 days stays cheap while making the Insights feed actually reflect
     /// a meaningful slice of history instead of looking sparse next to it (EASE-134).
     func deriveAndGenerateInsights(asOf now: Date) throws {
-        try baselines.recomputeAll(asOf: now)
+        // The score pipeline (EPIC-23/24/25/26) when wired, else the interim baseline-only recompute.
+        // The coordinator runs `baselines.recomputeAll` first itself, so this is a superset of the old
+        // behavior in the defined cross-metric order, not a second baseline pass.
+        if let derivationCoordinator {
+            try derivationCoordinator.recompute(asOf: now, tz: tz)
+        } else {
+            try baselines.recomputeAll(asOf: now)
+        }
         // DATA-11: DST-safe day iteration — see `ingestHealthData` above.
         for dayOffset in 0..<14 {
             let day = DayAttribution.addingDays(-dayOffset, to: now, tz: tz)

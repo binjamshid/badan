@@ -26,6 +26,15 @@ public enum QualityFlag: String, Codable, Hashable, Sendable, CaseIterable {
     case userCorrected
     case provisionalBaseline
     case estimate
+    /// A derived value computed later than the day it describes, from history that arrived after
+    /// the fact (an import/backfill filling in an earlier week). EPIC-23 chose a DEDICATED flag
+    /// over reusing `.estimate`: a retroactively-computed score can ALSO be an estimate, and the
+    /// two facts are independent — "how confident is this number" vs "when/from-what-history was it
+    /// computed" — so collapsing them would erase one. It is a READ-TIME-DERIVED label (from a
+    /// row's `periodKey` vs `computedAt`, `BaselineEngine.isRetroactive`), not a stored column: the
+    /// fact is answerable directly from the data (I1) and needs no migration. See
+    /// `docs/algorithms/baselines.md`.
+    case retroactive
     case tzAssumed
     case lowCoverage
     /// This row was fabricated by `FakeHealthStore` for the "explore with sample data" mode —

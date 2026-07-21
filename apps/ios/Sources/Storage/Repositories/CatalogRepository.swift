@@ -85,22 +85,36 @@ final class CatalogRepository {
 
     // MARK: - User profile
 
+    // `user_profile` is the single local demographic record (D-9: no accounts). The Effort-engine
+    // inputs added at migration v5 — `hr_max` and the `hr_zones` JSON blob — round-trip here rather
+    // than through a separate repository so this row keeps ONE writer: because `saveUserProfile`
+    // replaces the whole row, any writer that did not carry these two columns would silently null a
+    // user's HR override the next time they edited their height. EPIC-26 reads them off this
+    // `UserProfile` (`hrMax`/`hrZones`) and edits them by saving a modified profile back.
     func userProfile() throws -> UserProfile? {
         try db.query("SELECT * FROM user_profile LIMIT 1;").first.map { r in
             UserProfile(id: r.requireString("id"), displayName: r.string("display_name"),
                         heightMeters: r.double("height_m"), birthYear: r.intValue("birth_year"),
-                        biologicalContextNote: r.string("bio_note"), createdAt: r.requireDate("created_at"),
+                        biologicalContextNote: r.string("bio_note"),
+                        hrMax: r.double("hr_max"),
+                        hrZones: JSONCoding.decode(HRZones.self, from: r.string("hr_zones")),
+                        createdAt: r.requireDate("created_at"),
                         updatedAt: r.requireDate("updated_at"))
         }
     }
 
     func saveUserProfile(_ p: UserProfile) throws {
+        // `encodeOrThrow` (not the silent `encode`): a genuine encode failure must fail this write
+        // rather than persist the literal string "null", which would read back as a corrupt-looking
+        // override with no error at write time.
+        let zonesJSON = try p.hrZones.map { try JSONCoding.encodeOrThrow($0) }
         try db.run("""
-            INSERT OR REPLACE INTO user_profile (id, display_name, height_m, birth_year, bio_note, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT OR REPLACE INTO user_profile (id, display_name, height_m, birth_year, bio_note, hr_max, hr_zones, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             [.text(p.id), .string(p.displayName), .double(p.heightMeters), .int(p.birthYear),
-             .string(p.biologicalContextNote), .date(p.createdAt), .date(p.updatedAt)])
+             .string(p.biologicalContextNote), .double(p.hrMax), .string(zonesJSON),
+             .date(p.createdAt), .date(p.updatedAt)])
     }
 
     static func readSource(_ r: SQLiteRow) -> Source {

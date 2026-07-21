@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Functions
+import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +49,8 @@ import net.albayyan.badan.designsystem.BadanSpace
 import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.designsystem.BadanType
 import net.albayyan.badan.designsystem.components.BadanCard
+import net.albayyan.badan.designsystem.components.CalibrationProgress
+import net.albayyan.badan.designsystem.components.CalibrationState
 import net.albayyan.badan.designsystem.components.ChipStatus
 import net.albayyan.badan.designsystem.components.DepthBadge
 import net.albayyan.badan.designsystem.components.LoadState
@@ -162,18 +165,11 @@ private fun HomeHeader(data: HomeData) {
 @Composable
 private fun HomeCasualBody(data: HomeData) {
     val env = LocalAppEnvironment.current
-    val colors = BadanTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s4)) {
+        // The hero now leads with the calm "how am I doing" sentence and follows it with the number
+        // (plan §16), so no separate narrative card is needed here anymore.
         ReadinessHeroCard(data)
-
-        // One calm sentence: the "how am I doing" in plain language.
-        BadanCard {
-            Text(
-                text = env.s(data.narrative),
-                style = BadanType.body,
-                color = colors.textPrimary,
-            )
-        }
+        data.effort?.let { EffortCard(effort = it, readiness = data.readiness) }
 
         if (moduleVisible(env, "sleep")) {
             data.sleep?.let { SleepModuleCard(it) }
@@ -188,6 +184,7 @@ private fun HomeCasualBody(data: HomeData) {
                 MetricModuleCard(metric = it, secondary = data.metric(MetricId.hrv))
             }
         }
+        HealthMonitorEntryCard()
         if (moduleVisible(env, "meds") && env.profile.sensitiveModulesEnabled && data.medsActive > 0) {
             MedsModuleCard(data)
         }
@@ -207,6 +204,7 @@ private fun HomePowerBody(data: HomeData) {
     val colors = BadanTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s5)) {
         ReadinessHeroCard(data)
+        data.effort?.let { EffortCard(effort = it, readiness = data.readiness) }
 
         if (data.metrics.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
@@ -226,6 +224,7 @@ private fun HomePowerBody(data: HomeData) {
         }
 
         data.sleep?.let { SleepModuleCard(it) }
+        HealthMonitorEntryCard()
         if (env.profile.sensitiveModulesEnabled && data.medsActive > 0) {
             MedsModuleCard(data)
         }
@@ -241,24 +240,46 @@ private fun HomePowerBody(data: HomeData) {
 @Composable
 private fun ReadinessHeroCard(data: HomeData) {
     val env = LocalAppEnvironment.current
+    val nav = LocalNavigator.current
     val colors = BadanTheme.colors
-    BadanCard {
+    val readiness = data.readiness
+    // The score is tappable to its anatomy; the calibration state isn't a score yet, so it doesn't
+    // pretend to open one.
+    val cardModifier = if (readiness != null) {
+        Modifier.clickable { nav.push(Route.MetricDetail(MetricId.readinessScore)) }
+    } else {
+        Modifier
+    }
+    BadanCard(modifier = cardModifier) {
         Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
-            val readiness = data.readiness
             if (readiness != null) {
+                // Sentence leads, number follows (plan §16 daily-view rule): the plain-language read
+                // sits above the figure so the score never becomes the first, fixated-on thing.
+                Text(
+                    text = env.s(data.narrative),
+                    style = BadanType.body,
+                    color = colors.textPrimary,
+                )
                 StatBox(
                     value = env.format.integer(readiness.value.roundToInt()),
                     label = env.s(Loc.readiness),
                     unit = "/ ${env.format.integer(100)}",
                 )
-                val showProvisional = readiness.provisional
                 val showAlgorithm = env.depth.showsPowerDetail
-                if (showProvisional || showAlgorithm) {
+                if (readiness.provisional || data.readinessReducedInput || showAlgorithm) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
                     ) {
-                        if (showProvisional) ProvisionalBadge(language = env.language)
+                        if (readiness.provisional) ProvisionalBadge(language = env.language)
+                        // Reduced-input is labelled DISTINCTLY, never silently degraded (plan §18).
+                        if (data.readinessReducedInput) {
+                            PillLabel(
+                                text = env.s(HomeScoreStrings.reducedSignals),
+                                icon = Icons.Filled.Functions,
+                                tint = colors.outOfBand,
+                            )
+                        }
                         if (showAlgorithm) {
                             PillLabel(
                                 text = "${readiness.algorithmId} · ${readiness.algorithmVersion}",
@@ -267,25 +288,104 @@ private fun ReadinessHeroCard(data: HomeData) {
                         }
                     }
                 }
-                if (env.depth.showsPowerDetail) {
-                    Text(
-                        text = env.s(data.narrative),
-                        style = BadanType.bodyCompact,
-                        color = colors.textSecondary,
-                    )
-                }
             } else {
                 Text(
                     text = env.s(Loc.readiness),
                     style = BadanType.sectionTitle,
                     color = colors.textPrimary,
                 )
+                // Honest cold start: show how far calibration has come, not a guessed number.
+                CalibrationState(
+                    progress = data.readinessCalibration ?: CalibrationProgress(nPoints = 0, windowDays = 14),
+                    language = env.language,
+                    arabicDigits = env.profile.arabicDigits,
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Effort
+
+@Composable
+private fun EffortCard(effort: HomeEffortSummary, readiness: DerivedValue?) {
+    val env = LocalAppEnvironment.current
+    val nav = LocalNavigator.current
+    val colors = BadanTheme.colors
+    BadanCard(
+        modifier = Modifier.clickable { nav.push(Route.MetricDetail(effort.metricId)) },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+            if (effort.isReducedInput) {
+                // The sparse-HR (phone-only) day: a labelled activity load, never a shaming zero.
                 Text(
-                    text = env.s(Loc.stillLearning),
-                    style = BadanType.bodyCompact,
+                    text = env.s(HomeScoreStrings.activityLoadLead),
+                    style = BadanType.body,
+                    color = colors.textPrimary,
+                )
+                StatBox(
+                    value = env.format.number(effort.value, 0),
+                    label = env.s(HomeScoreStrings.activityLoad),
+                    unit = effort.unit,
+                    chip = { StatusChip(status = ChipStatus.Info, label = env.s(HomeScoreStrings.reducedSignals)) },
+                )
+            } else {
+                // Zone-based Effort. Guidance leads (wellness-safe, tied to Readiness), number follows.
+                Text(
+                    text = env.s(effortGuidance(readiness)),
+                    style = BadanType.body,
+                    color = colors.textPrimary,
+                )
+                StatBox(
+                    value = env.format.integer(effort.value.roundToInt()),
+                    label = env.s(Loc.effort),
+                    unit = "/ ${env.format.integer(100)}",
+                )
+                if (effort.provisional) ProvisionalBadge(language = env.language)
+            }
+        }
+    }
+}
+
+// MARK: - Health Monitor entry
+
+@Composable
+private fun HealthMonitorEntryCard() {
+    val env = LocalAppEnvironment.current
+    val nav = LocalNavigator.current
+    val colors = BadanTheme.colors
+    BadanCard(
+        modifier = Modifier.clickable { nav.push(Route.HealthMonitor) },
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.MonitorHeart,
+                contentDescription = null,
+                tint = colors.primary,
+                modifier = Modifier.size(24.dp),
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = env.s(HomeScoreStrings.healthMonitorTitle),
+                    style = BadanType.body,
+                    color = colors.textPrimary,
+                )
+                Text(
+                    text = env.s(HomeScoreStrings.healthMonitorSubtitle),
+                    style = BadanType.caption,
                     color = colors.textSecondary,
                 )
             }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = colors.textSecondary,
+                modifier = Modifier.size(20.dp),
+            )
         }
     }
 }
@@ -309,6 +409,28 @@ private fun SleepModuleCard(sleep: HomeSleepSummary) {
                 label = env.s(MetricFamily.SLEEP.displayName),
                 chip = chip,
             )
+            // Sleep performance vs your estimated need (EPIC-24) when the engine has produced one.
+            // Capped at 100% on this calm summary; the detail carries the full nuance.
+            sleep.performancePercent?.let { pct ->
+                val colors = BadanTheme.colors
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+                ) {
+                    Text(
+                        text = env.s(HomeScoreStrings.sleepPerformance),
+                        style = BadanType.caption,
+                        color = colors.textSecondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "${env.format.number(pct.coerceAtMost(100.0), 0)}%",
+                        style = BadanType.monospaceDigits(BadanType.bodyCompact),
+                        color = colors.textPrimary,
+                    )
+                }
+            }
             if (env.depth.showsPowerDetail && sleep.spark.size >= 2) {
                 MetricSparkline(values = sleep.spark, modifier = Modifier.height(36.dp))
             }
@@ -699,6 +821,24 @@ data class HomeSleepSummary(
     val seconds: Double,
     val position: Baseline.Position?,
     val spark: List<Double>,
+    /** Last night's sleep-performance % (EPIC-24), if the sleep engine has produced one. */
+    val performancePercent: Double? = null,
+)
+
+/**
+ * The daily Effort score for the hero card (EPIC-26). [isReducedInput] is true for the labelled
+ * activity-load variant a sparse-HR (phone-only) day produces — a distinct, honest thing, never a
+ * shaming zero-score. Carried as a flag rather than inferred in the view so the card labels it once,
+ * consistently.
+ */
+@Immutable
+data class HomeEffortSummary(
+    val value: Double,
+    val provisional: Boolean,
+    val isReducedInput: Boolean,
+    /** The derived row's own unit: `score_0_100` for a zone-based day, an activity unit otherwise. */
+    val unit: String,
+    val metricId: String,
 )
 
 @Immutable
@@ -713,7 +853,12 @@ data class HomeEvent(
 data class HomeData(
     val date: Long,
     val readiness: DerivedValue?,
+    /** True when the latest Readiness score was computed without the HRV anchor (reduced-input). */
+    val readinessReducedInput: Boolean,
+    /** Cold-start calibration progress shown in place of a Readiness score that can't render yet. */
+    val readinessCalibration: CalibrationProgress?,
     val narrative: LocalizedString,
+    val effort: HomeEffortSummary?,
     val sleep: HomeSleepSummary?,
     val metrics: List<HomeKeyMetric>,
     val medsDue: Int,
@@ -735,13 +880,22 @@ private fun loadHomeData(env: AppEnvironment): LoadState<HomeData> {
     val now = env.now()
     return try {
         val readiness = latestReadiness(env, now, tz)
+        val readinessReduced = readiness?.let { readinessReducedInput(env, it) } ?: false
+        // When Readiness can't render yet, show how far its anchor (RHR) has calibrated — the honest
+        // cold-start wait, not a guessed number (plan §16/§18).
+        val readinessCalibration = if (readiness == null) {
+            CalibrationProgress.from(env.derivation.latestBaseline(MetricId.restingHeartRate), windowDaysFallback = 14)
+        } else {
+            null
+        }
+        val effort = latestEffort(env, now, tz)
         val sleep = loadSleep(env, now, tz)
         val metrics = loadMetrics(env, now)
         val (medsDue, medsActive) = loadMeds(env, now, tz)
         val insight = env.insightsRepo.recent(limit = 1).firstOrNull()
         val events = if (env.depth.showsPowerDetail) loadEvents(env, now) else emptyList()
 
-        val hasAny = readiness != null || sleep != null || metrics.isNotEmpty() ||
+        val hasAny = readiness != null || effort != null || sleep != null || metrics.isNotEmpty() ||
             medsActive > 0 || insight != null
         if (!hasAny) {
             LoadState.Empty(env.s(Loc.nothingYet))
@@ -750,7 +904,10 @@ private fun loadHomeData(env: AppEnvironment): LoadState<HomeData> {
                 HomeData(
                     date = now,
                     readiness = readiness,
+                    readinessReducedInput = readinessReduced,
+                    readinessCalibration = readinessCalibration,
                     narrative = narrative(readiness),
+                    effort = effort,
                     sleep = sleep,
                     metrics = metrics,
                     medsDue = medsDue,
@@ -776,7 +933,37 @@ private fun latestReadiness(env: AppEnvironment, now: Long, tz: String): Derived
     for (offset in 0 until 4) {
         val day = now - offset.toLong() * DAY_MS
         val key = DayAttribution.dayPeriodKey(day, tz)
-        env.derivation.latestDerived(metricId = "readiness.score", periodKey = key)?.let { return it }
+        env.derivation.latestDerived(metricId = MetricId.readinessScore, periodKey = key)?.let { return it }
+    }
+    return null
+}
+
+/**
+ * Whether the latest Readiness score was computed without the HRV anchor — read straight from its own
+ * input manifest (the records that actually fed it) rather than a stored flag, so it stays true to the
+ * lineage. A manifest that failed to load reads as "not reduced" (the calm default): the hero simply
+ * omits the label rather than asserting a degradation it can't prove.
+ */
+private fun readinessReducedInput(env: AppEnvironment, readiness: DerivedValue): Boolean {
+    val manifestId = readiness.inputManifestId ?: return false
+    val manifest = env.derivation.manifest(manifestId) ?: return false
+    return manifest.inputs.none { it.metricId == MetricId.hrv }
+}
+
+// Effort — walk back up to four days for the latest daily Effort score, zone-based or the labelled
+// activity-load variant (distinguished by its unit, never by a magic value).
+private fun latestEffort(env: AppEnvironment, now: Long, tz: String): HomeEffortSummary? {
+    for (offset in 0 until 4) {
+        val day = now - offset.toLong() * DAY_MS
+        val key = DayAttribution.dayPeriodKey(day, tz)
+        val dv = env.derivation.latestDerived(metricId = MetricId.effortDay, periodKey = key) ?: continue
+        return HomeEffortSummary(
+            value = dv.value,
+            provisional = dv.provisional,
+            isReducedInput = dv.unit != "score_0_100",
+            unit = dv.unit,
+            metricId = dv.metricId,
+        )
     }
     return null
 }
@@ -802,7 +989,11 @@ private fun loadSleep(env: AppEnvironment, now: Long, tz: String): HomeSleepSumm
         .sortedBy { it.startAt }
         .map { it.detail.timeAsleepSeconds ?: it.durationSeconds }
 
-    return HomeSleepSummary(seconds = resolved, position = position, spark = spark)
+    // Last night's sleep-performance % (EPIC-24), keyed on the same local night. Absent until the
+    // sleep engine has a personal duration baseline — the card just omits it then, never a zero.
+    val performance = env.derivation.latestDerived(MetricId.sleepPerformance, "day:$localNight")?.value
+
+    return HomeSleepSummary(seconds = resolved, position = position, spark = spark, performancePercent = performance)
 }
 
 // Key metrics — rhr / hrv / steps / active energy, each with baseline position + spark.
@@ -912,4 +1103,26 @@ private fun narrative(readiness: DerivedValue?): LocalizedString {
         else ->
             LocalizedString(en = "A gentler pace may suit you today.", ar = "قد تناسبك وتيرة ألطف اليوم.")
     }
+}
+
+// `effortGuidance` (the Readiness-linked Effort sentence) lives in `HomeScoreModel.kt` so a JVM unit
+// test asserts the copy without loading this Compose file.
+
+/**
+ * Strings for the Phase-2 score cards (Readiness reduced-input, Effort, the Health Monitor entry, the
+ * sleep-performance line). Bilingual with real Arabic; wellness-safe.
+ */
+private object HomeScoreStrings {
+    val reducedSignals = LocalizedString(en = "Fewer signals", ar = "إشارات أقل")
+    val activityLoad = LocalizedString(en = "Activity load", ar = "حِمل النشاط")
+    val activityLoadLead = LocalizedString(
+        en = "Estimated from your movement — no continuous heart rate today.",
+        ar = "مُقدّر من حركتك — لا يوجد معدل ضربات قلب مستمر اليوم.",
+    )
+    val sleepPerformance = LocalizedString(en = "Sleep performance", ar = "أداء النوم")
+    val healthMonitorTitle = LocalizedString(en = "Health Monitor", ar = "مراقب الصحة")
+    val healthMonitorSubtitle = LocalizedString(
+        en = "Your vitals against your usual range",
+        ar = "علاماتك الحيوية مقارنةً بنطاقك المعتاد",
+    )
 }

@@ -280,6 +280,65 @@ final class BackgroundSubstrateTests: XCTestCase {
                        "whether backfill work remains is re-derived from the store, never assumed")
     }
 
+    /// EPIC-26: an HR-max/zone edit queues a score backfill, which the checkpointed processing run
+    /// drains as its own step — after the ingest backfill, before the prune.
+    func testProcessingRunsAPendingScoreBackfill() throws {
+        let ingest = FakeIngest()
+        ingest.needsBackfill = false
+        ingest.pendingScoreBackfill = true
+        let coordinator = makeCoordinator(ingest: ingest)
+
+        XCTAssertTrue(coordinator.runProcessing(isExpired: { false }))
+
+        XCTAssertEqual(ingest.scoreBackfillCallCount, 1, "a queued score backfill must run")
+        XCTAssertEqual(try onlyRun().outcome, .completed)
+    }
+
+    func testProcessingSkipsScoreBackfillWhenNoneIsQueued() throws {
+        let ingest = FakeIngest()
+        ingest.needsBackfill = false
+        ingest.pendingScoreBackfill = false
+        let coordinator = makeCoordinator(ingest: ingest)
+
+        XCTAssertTrue(coordinator.runProcessing(isExpired: { false }))
+
+        XCTAssertEqual(ingest.scoreBackfillCallCount, 0,
+                       "no marker, no work — the step is a no-op when nothing is queued")
+    }
+
+    // MARK: - Score-backfill request store (EPIC-26)
+
+    func testScoreBackfillRequestRoundTripsAndClears() throws {
+        let store = ScoreBackfillRequestStore(defaults: defaults)
+        XCTAssertNil(store.pending(), "no request queued initially")
+
+        let from = Date(timeIntervalSince1970: 1_700_000_000)
+        let to = Date(timeIntervalSince1970: 1_700_000_000 + 90 * 86_400)
+        store.request(from: from, to: to)
+        let pending = try XCTUnwrap(store.pending())
+        XCTAssertEqual(pending.from.epochMillis, from.epochMillis)
+        XCTAssertEqual(pending.to.epochMillis, to.epochMillis)
+
+        store.clear()
+        XCTAssertNil(store.pending(), "cleared request reads as nothing pending")
+    }
+
+    /// Two edits before the job runs collapse into one job whose window is the UNION — the later edit
+    /// must not narrow the earlier one's range and leave days stale against the new max.
+    func testScoreBackfillRequestsWidenToTheirUnion() {
+        let store = ScoreBackfillRequestStore(defaults: defaults)
+        let early = Date(timeIntervalSince1970: 1_700_000_000)
+        let mid = Date(timeIntervalSince1970: 1_700_000_000 + 30 * 86_400)
+        let late = Date(timeIntervalSince1970: 1_700_000_000 + 60 * 86_400)
+
+        store.request(from: mid, to: late)
+        store.request(from: early, to: mid) // widens `from` backward
+
+        let pending = store.pending()
+        XCTAssertEqual(pending?.from.epochMillis, early.epochMillis, "union keeps the earliest from")
+        XCTAssertEqual(pending?.to.epochMillis, late.epochMillis, "union keeps the latest to")
+    }
+
     /// The expiration contract (plan §13.4): checkpoint and exit cleanly, log `expired`, resume on
     /// the next wake. Mirrors `SeedController.needsBackfillResume()`'s pattern — the marker only
     /// skips ahead; the store still has the final say on whether work remains.
@@ -605,6 +664,7 @@ private final class FakeIngest: BackgroundIngestPerforming {
     var stubAnchorAge: TimeInterval?
     var nextCounts = BackgroundWorkCounts()
     var needsBackfill = false
+    var pendingScoreBackfill = false
     /// Simulates another caller holding the ingest lock: the `try*` entry points return `nil`.
     var lockIsHeld = false
     var error: Error?
@@ -612,6 +672,7 @@ private final class FakeIngest: BackgroundIngestPerforming {
     private(set) var ingestCallCount = 0
     private(set) var tryIngestCallCount = 0
     private(set) var resumeBackfillCallCount = 0
+    private(set) var scoreBackfillCallCount = 0
 
     func anchorAge(now: Date) -> TimeInterval? { stubAnchorAge }
 
@@ -634,6 +695,16 @@ private final class FakeIngest: BackgroundIngestPerforming {
         guard !lockIsHeld else { return nil }
         resumeBackfillCallCount += 1
         if let error { throw error }
+        return nextCounts
+    }
+
+    func hasPendingScoreBackfill() -> Bool { pendingScoreBackfill }
+
+    func runPendingScoreBackfill(now: Date) throws -> BackgroundWorkCounts? {
+        guard !lockIsHeld else { return nil }
+        scoreBackfillCallCount += 1
+        if let error { throw error }
+        pendingScoreBackfill = false
         return nextCounts
     }
 }

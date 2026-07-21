@@ -196,6 +196,50 @@ final class DerivationFixTests: XCTestCase {
                        "FIX-08: Arabic rendering should use the Arabic bpm abbreviation")
     }
 
+    // MARK: - FINDING #1 (audit 2026-07-20): baselines are append-only, even at a repeated valid_from
+
+    /// The retry-overwrite regression. A persisted score-backfill that is interrupted and retried
+    /// re-runs with a FIXED `window.to`, so after an interleaved ingest it recomputes a DIFFERENT
+    /// band at the SAME (metric_id, covariate_context, window_days, valid_from). Before migration 6
+    /// that natural key was UNIQUE and `upsertBaseline` used `INSERT OR REPLACE`, so the second
+    /// write DELETED the first — an in-place overwrite of history, violating I2 on the flagship
+    /// auditability differentiator. This asserts both appended rows survive and the newer
+    /// `computed_at` reads as current. Confirmed to FAIL (count == 1) against the old
+    /// `INSERT OR REPLACE` + unique `idx_baseline_identity`; passes (count == 2) after the fix.
+    func testBaselineAppendsAtRepeatedValidFromInsteadOfOverwriting() throws {
+        let derivation = DerivationRepository(db.main)
+        let validFrom = Date(timeIntervalSince1970: 1_800_000_000)
+
+        func makeBaseline(id: String, center: Double, band: (Double, Double), computedAt: Date) -> Baseline {
+            Baseline(id: id, metricId: MetricID.restingHeartRate, windowDays: 14, center: center,
+                     spread: 1, bandLow: band.0, bandHigh: band.1, nPoints: 14, provisional: false,
+                     algorithmVersion: BaselineEngine.baselineAlgorithm.id, validFrom: validFrom,
+                     computedAt: computedAt, unit: "bpm")
+        }
+
+        // First backfill pass writes a band centered on 50.
+        try derivation.upsertBaseline(makeBaseline(id: ULID.newID(), center: 50, band: (48, 52), computedAt: validFrom))
+        // Interrupted-then-retried pass recomputes a DIFFERENT band (an ingest landed between the
+        // two attempts) at the SAME natural key, one hour later — a distinct ULID `id`, newer
+        // `computed_at`. This is the exact write that `INSERT OR REPLACE` used to delete row #1 for.
+        let laterComputedAt = validFrom.addingTimeInterval(3600)
+        try derivation.upsertBaseline(makeBaseline(id: ULID.newID(), center: 60, band: (58, 62), computedAt: laterComputedAt))
+
+        // Both rows must remain — nothing is overwritten (I2).
+        let rows = try db.main.query(
+            "SELECT COUNT(*) AS c FROM baselines WHERE metric_id = ? AND covariate_context = ? AND window_days = ? AND valid_from = ?;",
+            [.text(MetricID.restingHeartRate), .text("default"), .int(14), .date(validFrom)])
+        XCTAssertEqual(Int(rows.first?.int("c") ?? 0), 2,
+                       "a retried backfill must APPEND at a repeated valid_from, not overwrite the prior row")
+
+        // The freshest belief (newer computed_at) is what a reader sees; the older row is retained.
+        let latest = try XCTUnwrap(try derivation.latestBaseline(metricId: MetricID.restingHeartRate))
+        XCTAssertEqual(latest.center, 60, accuracy: 1e-9,
+                       "latestBaseline breaks a shared valid_from by newest computed_at")
+        XCTAssertEqual(latest.computedAt, laterComputedAt,
+                       "the retained older row must not be able to read as current")
+    }
+
     // MARK: - Fixtures
 
     /// A single primary-sleep session crossing local midnight, from one source.

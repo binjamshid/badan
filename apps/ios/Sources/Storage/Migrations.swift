@@ -439,6 +439,61 @@ enum Schema {
             );
             """,
             "CREATE INDEX idx_background_runs_started ON background_runs(started_at DESC);",
+        ]),
+        // Version 5 (plan §11 EPIC-26): the two Effort-engine profile inputs — an HR-max override
+        // and an editable five-zone override — added to `user_profile`. Additive and forward-only:
+        // SQLite `ALTER TABLE ADD COLUMN` appends a nullable column without rewriting existing rows,
+        // so a populated v4 install reaches v5 by running these two ALTERs and keeps every profile
+        // row intact (asserted by `ProfileHRZonesFixTests`).
+        //
+        // Both columns are nullable BY DESIGN, and `NULL` is the meaningful default at each — not
+        // "unset", but an instruction to derive:
+        //   * `hr_max` NULL  → no override; EPIC-26 derives the max from age (`208 − 0.7·age` over
+        //     `birth_year`). Stored as REAL because that formula is fractional and this schema must
+        //     not pre-round a value whose precision the engine owns (NO FALSE PRECISION).
+        //   * `hr_zones` NULL → no personal zone override; EPIC-26 derives the five zones from the
+        //     HR max. Held as JSON TEXT (an `HRZones` blob) so the zone shape can evolve — a
+        //     per-zone label, a %HRR anchor — without another migration, the same reason
+        //     `sessions.detail` is JSON.
+        // This migration only STORES the overrides; the default formula and the zone curve are the
+        // engine's (EPIC-26 stage 2), never this schema's. Byte-equivalent mirror in Android
+        // `Schema.mainMigrations` version 5 — the two statement strings are identical on both
+        // platforms so a divergence is a reviewable diff, not a silent drift.
+        Migration(version: 5, statements: [
+            "ALTER TABLE user_profile ADD COLUMN hr_max REAL;",
+            "ALTER TABLE user_profile ADD COLUMN hr_zones TEXT;",
+        ]),
+        // Version 6 (audit 2026-07-20, FINDING #1): make `baselines` genuinely append-only, so the
+        // repository's "Nothing is overwritten" promise (I2) stops being a lie for the flagship
+        // auditability differentiator. The bug was the shape of THIS index, not the writer alone.
+        //
+        // `idx_baseline_identity` was UNIQUE on the natural key (metric_id, covariate_context,
+        // window_days, valid_from). `DerivationRepository.upsertBaseline` wrote with
+        // `INSERT OR REPLACE`, which on a hit at that unique key does a DELETE-then-INSERT — an
+        // in-place overwrite of prior history. The nightly recompute path never tripped it (it
+        // stamps `valid_from = clock.now()`, so each write lands at a fresh key), but the
+        // persisted score-backfill RETRY re-runs the coordinator with a FIXED `window.to`: an
+        // interrupted-then-retried backfill after an interleaved ingest recomputes a DIFFERENT band
+        // at the SAME `valid_from` and silently deleted the first row. `derived_values` has no such
+        // unique index and is the target shape — it appends and lets the latest read win.
+        //
+        // Forward-only (D-policy: no down-migrations; SQLite has no ALTER INDEX): drop the unique
+        // index and replace it with a NON-unique lookup index on the columns `latestBaseline`
+        // actually filters and orders by (metric_id, covariate_context, valid_from DESC), so that
+        // read stays a fast index scan while a plain `INSERT` can no longer conflict. The `id`
+        // column is still a unique ULID PRIMARY KEY — row identity is unaffected; only the
+        // natural-key UNIQUE constraint is removed, which is exactly what lets two rows share a
+        // `valid_from` and BOTH survive (the retry case), with `computed_at` breaking the tie on read.
+        //
+        // No data repair needed: dropping an index and creating a non-unique one never fail on
+        // existing rows (unlike migration 3's UNIQUE tightening). `IF NOT EXISTS` on the CREATE is
+        // load-bearing for the Android mirror only: Android already shipped `idx_baseline_lookup`
+        // in ITS version 2, so this statement is a no-op there and a create here — keeping the two
+        // platforms' version-6 statement strings byte-identical (a divergence would be a reviewable
+        // diff, not silent drift).
+        Migration(version: 6, statements: [
+            "DROP INDEX IF EXISTS idx_baseline_identity;",
+            "CREATE INDEX IF NOT EXISTS idx_baseline_lookup ON baselines(metric_id, covariate_context, valid_from DESC);",
         ])]
     }
 

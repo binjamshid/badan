@@ -24,11 +24,17 @@ import net.albayyan.badan.domain.PermissionStatus
 import net.albayyan.badan.platform.health.HealthConnectAdapter
 import net.albayyan.badan.platform.health.HealthDateRange
 import net.albayyan.badan.domain.derivation.BaselineEngine
+import net.albayyan.badan.domain.derivation.DerivationCoordinator
+import net.albayyan.badan.domain.derivation.DeviationEngine
+import net.albayyan.badan.domain.derivation.EffortEngine
 import net.albayyan.badan.domain.derivation.InsightEngine
+import net.albayyan.badan.domain.derivation.ReadinessEngine
+import net.albayyan.badan.domain.derivation.SleepIntelligenceEngine
 import net.albayyan.badan.domain.ingestion.IngestionPipeline
 import net.albayyan.badan.export.ExportRunner
 import net.albayyan.badan.ontology.InsightTemplateStore
 import net.albayyan.badan.ontology.MetricRegistry
+import net.albayyan.badan.ontology.SensorQualityMap
 import net.albayyan.badan.ontology.SymptomDictionary
 import net.albayyan.badan.platform.background.BackgroundScheduler
 import net.albayyan.badan.storage.Database
@@ -93,6 +99,32 @@ class AppEnvironment(context: Context) {
         IngestionPipeline(measurements, catalog, reconciliation, registry, clock, deviceId, routes)
     val baselines: BaselineEngine =
         BaselineEngine(derivation, measurements, registry, clock, deviceId)
+    // EPIC-24/25/26/27 score engines. Constructed here in the composition root and — for the three
+    // that WRITE — run in cross-metric order by [derivationCoordinator]. [deviation] writes nothing:
+    // a pure read model over the `Baseline` rows the pipeline refreshes, read on demand by the Health
+    // Monitor surface (see [DeviationEngine]), so it is wired here but never "recomputed".
+    val sensorQuality: SensorQualityMap = SensorQualityMap.from(appContext.assets)
+    val sleepIntelligence: SleepIntelligenceEngine =
+        SleepIntelligenceEngine(derivation, measurements, clock, deviceId)
+    // Readiness resolves a two-source overnight-HRV conflict by source priority (plan §18),
+    // reconstructed from the persisted source/device catalog via the published sensor-class contract
+    // (worn sensor > phone) — no new stored column, cannot drift from that contract. See
+    // [readinessSourcePriority].
+    val readiness: ReadinessEngine =
+        ReadinessEngine(derivation, measurements, clock, deviceId,
+            priorityForSource = { sourceId -> readinessSourcePriority(sourceId) })
+    // Effort reads HR max / zones off the live profile per recompute (never a cached copy) so a
+    // mid-session HR-max edit is picked up on the next run — the reason it takes a provider.
+    val effort: EffortEngine =
+        EffortEngine(derivation, measurements, registry, clock, deviceId,
+            profileProvider = { catalog.userProfile() })
+    val deviation: DeviationEngine =
+        DeviationEngine(derivation, measurements, catalog, registry, sensorQuality, clock)
+    // EPIC-23. The one place the writing score engines run in the published cross-metric order.
+    // Wired into the ingest→derive funnel ([syncHealthConnect], [SeedController]) and the background
+    // backfill job ([recomputeScoreBackfill]).
+    val derivationCoordinator: DerivationCoordinator =
+        DerivationCoordinator(baselines, sleepIntelligence, readiness, effort)
     val insightEngine: InsightEngine =
         InsightEngine(insightsRepo, derivation, measurements, templates, registry, clock, deviceId)
     val exporter: ExportRunner =
@@ -100,7 +132,7 @@ class AppEnvironment(context: Context) {
 
     private val seedController: SeedController =
         SeedController(catalog, ingestion, logging, measurements, baselines, insightEngine, registry,
-            clock, deviceId, prefs)
+            clock, deviceId, prefs, derivationCoordinator)
 
     /** Whether the user is currently looking at the bundled sample dataset rather than their own
      *  data — drives the sample banner and the Export Center's notice. Compose-observable so
@@ -230,7 +262,10 @@ class AppEnvironment(context: Context) {
         val summary = runCatching {
             database.main.transaction {
                 val result = ingestion.ingest(healthConnect, range)
-                baselines.recomputeAll(now)
+                // The full score pipeline in cross-metric order (EPIC-23/24/25/26), replacing the
+                // bare baseline recompute. It runs inside this one transaction, so each engine reads
+                // the prior engine's just-written rows (effort → sleep → readiness) before commit.
+                derivationCoordinator.recompute(now)
                 result
             }
         }.getOrNull()
@@ -336,6 +371,45 @@ class AppEnvironment(context: Context) {
     /** Run the sync immediately at the user's request (EPIC-05 expedited one-off). */
     fun requestSyncNow() {
         runCatching { BackgroundScheduler.runNow(appContext) }
+    }
+
+    // MARK: - Effort backfill (EPIC-26 HR-max/zone edit)
+
+    /**
+     * Queue a historical effort/score re-derivation and enqueue the background job to run it. Called
+     * by the HR-max/zone editor after it saves the profile: editing the max redraws every HR zone, so
+     * every effort score in the window is now computed against stale zones and must be re-derived
+     * (append-only supersession, I2 — old rows kept, new ones win by `computedAt`). The work runs in
+     * [SyncWorker]'s backfill path — deferrable, off the editor's thread. A second edit before the job
+     * runs WIDENS the stored window to the union so no range is silently narrowed. [historyDays] bounds
+     * it to the ingested history.
+     */
+    fun requestEffortBackfill(historyDays: Int = 90) {
+        val now = clock.now()
+        val from = now - historyDays.toLong() * MILLIS_PER_DAY
+        val unionFrom = minOf(from, prefs.getLong(SCORE_BACKFILL_FROM_KEY, Long.MAX_VALUE))
+        val unionTo = maxOf(now, prefs.getLong(SCORE_BACKFILL_TO_KEY, Long.MIN_VALUE))
+        prefs.edit().putLong(SCORE_BACKFILL_FROM_KEY, unionFrom).putLong(SCORE_BACKFILL_TO_KEY, unionTo).apply()
+        runCatching { BackgroundScheduler.runScoreBackfill(appContext) }
+    }
+
+    /** Whether an effort/score backfill is queued (a durable prefs marker). */
+    fun hasPendingScoreBackfill(): Boolean =
+        prefs.contains(SCORE_BACKFILL_FROM_KEY) && prefs.contains(SCORE_BACKFILL_TO_KEY)
+
+    /**
+     * Run the queued effort/score backfill over its window (append-only, I2) in one transaction, then
+     * clear the request. Returns the touched-day/session count, or null when nothing is queued. Runs
+     * on IO — never the caller's thread. If the re-derivation throws it propagates and the request is
+     * left in place, so the next run retries. [SyncWorker] calls this on its backfill path.
+     */
+    suspend fun runPendingScoreBackfill(): Int? = withContext(Dispatchers.IO) {
+        if (!hasPendingScoreBackfill()) return@withContext null
+        val from = prefs.getLong(SCORE_BACKFILL_FROM_KEY, 0L)
+        val to = prefs.getLong(SCORE_BACKFILL_TO_KEY, clock.now())
+        val touched = database.main.transaction { derivationCoordinator.backfill(from, to) }
+        prefs.edit().remove(SCORE_BACKFILL_FROM_KEY).remove(SCORE_BACKFILL_TO_KEY).apply()
+        touched
     }
 
     // Live presentation state (Compose-observable). `profile` starts at the default and is
@@ -480,6 +554,27 @@ class AppEnvironment(context: Context) {
         return id
     }
 
+    // MARK: - Readiness source priority (EPIC-25)
+
+    /**
+     * The dedup priority of the source that wrote a reading, for Readiness's two-source overnight-HRV
+     * tie-break (plan §18: "conflicting HRV same-night -> priority source wins"). Resolved from the
+     * persisted source + its devices through the shared sensor-class contract (worn sensor > phone),
+     * so it never duplicates ingestion's keyword list and cannot drift from it. `0` (equal, falls to
+     * the engine's deterministic `updatedAt`/`sourceId` tie-break) when nothing resolves — the honest
+     * default, not a guessed winner. Called a handful of times per Readiness compute, on the
+     * (serialized, off-main) derivation path.
+     */
+    private fun readinessSourcePriority(sourceId: String): Int {
+        val source = runCatching { catalog.source(sourceId) }.getOrNull() ?: return 0
+        val devices = runCatching { catalog.devices(sourceId) }.getOrNull() ?: emptyList()
+        return when (sensorQuality.classId(source, devices)) {
+            in WORN_SENSOR_CLASSES -> 2
+            "phone_handset" -> 1
+            else -> 0
+        }
+    }
+
     // Registered last, after every property above is initialized, so `shared()` can never hand a
     // caller a half-constructed environment. See [Companion.shared].
     init {
@@ -489,10 +584,18 @@ class AppEnvironment(context: Context) {
     companion object {
         private const val PREFS = "badan.prefs"
         private const val DEVICE_KEY = "badan.deviceId"
+
+        /** Sensor classes worn on the body, which outrank a phone as the source of an overnight vital
+         *  — the same "watch > phone" ordering ingestion assigns for dedup, reconstructed at read time
+         *  from the published `SensorQualityMap` classes rather than a stored column that could stale. */
+        private val WORN_SENSOR_CLASSES = setOf("wrist_wearable", "ring_wearable", "chest_strap")
         private const val ONBOARDING_KEY = "badan.onboardingComplete"
         private const val BACKGROUND_SYNC_KEY = "badan.backgroundSyncEnabled"
         private const val ROUTE_CAPTURE_KEY = "badan.routeCaptureEnabled"
         private const val WRITER_PRIORITY_KEY = "badan.writerPriorityOverrides"
+        // EPIC-26 effort-backfill request window (epoch millis); absent keys => nothing queued.
+        private const val SCORE_BACKFILL_FROM_KEY = "badan.scoreBackfillFromMillis"
+        private const val SCORE_BACKFILL_TO_KEY = "badan.scoreBackfillToMillis"
 
         @Volatile
         private var current: AppEnvironment? = null

@@ -291,6 +291,10 @@ private fun MetricDetailContent(
         HeaderCard(data, latest)
         ChartCard(data, days = chartDays, fullSeries = fullSeries, power = power)
 
+        // EPIC-24: the sleep-intelligence detail (hypnogram + need-vs-actual + debt) — a no-op for
+        // every metric except `sleep.time_asleep`, so it wires in with one call and no branch.
+        SleepIntelligenceSection(data.def.metricId)
+
         if (power) {
             PeriodSelector(periodDays, onPeriodChange)
             ValuesTableCard(seriesWithin(chartDays, fullSeries, env.now()), data, periodDays)

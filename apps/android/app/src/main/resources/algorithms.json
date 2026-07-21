@@ -1,0 +1,343 @@
+{
+  "version": "0.2.0",
+  "note": "Algorithm identities, versions, and tuning constants as DATA rather than code (plan §9 'AlgorithmVersion gains a bundled registry file', §15 'algorithm constants/params live in packages/contracts/algorithms/algorithms.json'). The intent is that the duplicated cross-platform logic stays inside D-4's budget as curve evaluation only — never as two hand-copied constant tables that silently drift. Every entry mirrors the AlgorithmVersion domain type (algorithmId, semver, params, introducedIn); params is numeric-only because AlgorithmVersion.params is [String: Double] on iOS and Map<String, Double> on Kotlin — non-numeric metadata lives in sibling fields (producesMetricIds, inputMetricIds, paramNotes, and the baseline entry's structured windowTable), never inside params. This file is shipped in-app and versioned with the app: plan §15 explicitly rules out remote configuration so an algorithm change is always an app update with a changelog, never a silent behaviour change pushed at a user. Bumping a constant is a semver bump and a new AlgorithmVersion row — derived values are append-only (I2), so old rows keep referencing the old semver and are never rewritten.",
+  "status": "WHAT IS WIRED, AS OF PHASE 0. Both platforms LOAD this file: apps/ios/Sources/Ontology/AlgorithmRegistry.swift and apps/android/.../ontology/AlgorithmRegistry.kt read the bundled mirror and resolve an entry to a frozen AlgorithmVersion, each covered by a test (AlgorithmRegistryTests / AlgorithmRegistryTest) that loads the real asset and asserts a known id, semver and param. Nothing EVALUATES these curves yet — the Phase-2 score engines are the consumers, and until they land no DerivedValue in the app is computed from a constant in this file. That distinction is the point: an earlier revision of this note claimed both platforms already loaded the file and that 'the loading path is fixed in Phase 0', when neither platform had a loader at all and nothing anywhere referenced algorithms.json. Because the sync scripts mirrored it into both bundles and CI gated the mirrors for drift, the file read as load-bearing at review while being inert (audit finding #5). If you delete either AlgorithmRegistry, or let its tests go, correct this paragraph in the same change rather than leaving the claim standing.",
+  "provisionalMeans": "Entries marked provisional=true have NOT had their constants validated against data. They exist so the ids and the param SCHEMA are fixed in Phase 0 and the Phase-2 engines tune numbers rather than invent structure. A provisional algorithm sets DerivedValue.provisional = true on every row it produces, so the surface can say so.",
+  "levels": {
+    "provisional": "Constants are a stated default, not yet validated against data. Derived values computed with a provisional algorithm set DerivedValue.provisional = true.",
+    "stable": "Constants validated and published in docs/algorithms/. Changing one requires a semver bump."
+  },
+  "algorithms": [
+    {
+      "algorithmId": "baseline.rolling_median_mad",
+      "semver": "2.0.0",
+      "introducedIn": "0.2.0",
+      "provisional": false,
+      "producesMetricIds": ["*"],
+      "inputMetricIds": ["*"],
+      "methodologyUrl": "docs/algorithms/baselines.md",
+      "summaryEn": "Personal-normal band as a robust median with a median-absolute-deviation spread over a per-metric trailing window. Log-normal vitals (HRV) are banded in the log domain; MAD-based outlier rejection removes single wild readings before the band is drawn; the band stays provisional until it has enough points to be honest about.",
+      "params": {
+        "windowDays": 28,
+        "minPoints": 7,
+        "madToSigma": 1.4826,
+        "bandSigmas": 1.0,
+        "outlierMadThreshold": 3.5,
+        "establishingFraction": 0.5,
+        "retroactiveGraceDays": 2
+      },
+      "windowTable": [
+        { "metrics": ["heart.hrv"], "windowDays": 60, "transform": "log" },
+        { "metrics": ["heart.rhr", "respiratory.rate", "body.wrist_temp_deviation"], "windowDays": 14, "transform": "identity" },
+        { "metrics": ["sleep.time_asleep", "sleep.time_in_bed"], "windowDays": 28, "transform": "identity" }
+      ],
+      "paramNotes": {
+        "windowDays": "The DEFAULT trailing window in days for any baseline-eligible metric without an explicit windowTable rule. Overridden per metric by windowTable — HRV 60d, RHR/RR/temp 14d, sleep-need inputs 28d (plan §18). Published rationale in docs/algorithms/baselines.md.",
+        "madToSigma": "Standard consistency constant making MAD comparable to a normal-distribution sigma. Not tunable — changing it changes what the band means.",
+        "minPoints": "Below this many in-window daily points the baseline stays provisional=true rather than showing a confident band on thin data. A provisional baseline is never presented as a score.",
+        "bandSigmas": "Half-width of the personal band in sigmas (as estimated by madToSigma * MAD). 1.0 keeps the band at roughly one robust standard deviation either side of centre.",
+        "outlierMadThreshold": "A daily point more than this many MADs from the in-window median is rejected before the band is drawn, so one artefactual reading (a bad HRV sample after a late meal, a sensor spike) cannot move the personal normal. Rejection is skipped when MAD is exactly 0 — a zero spread cannot define an outlier, and a lone differing value in an otherwise-flat window is data, not noise. 3.5 follows the Iglewicz–Hoaglin modified-z convention.",
+        "establishingFraction": "The baseline clears 'provisional' only once it has at least minPoints AND at least this fraction of its window filled (plan §18: 'n>=7 and >=half the window'). For a 60d HRV window this means 30 days before HRV is treated as established from a cold start; a first-connect history backfill can clear it on day one.",
+        "retroactiveGraceDays": "A per-day derived score computed more than this many days after the day it describes was 'computed later from history' (e.g. a readiness day recomputed once an import backfilled that week). It is surfaced with the retroactive quality label rather than as a live reading. See docs/algorithms/baselines.md for why this is a read-time-derived label, not a stored column.",
+        "supersedesSemver": "1.0.0 (a single 14-day linear window) remains valid for every baseline row already computed with it. Per I2 those rows are never rewritten; the semver on the row is what explains it, and a later recompute appends a 2.0.0 row rather than mutating the old one."
+      }
+    },
+    {
+      "algorithmId": "composite.sleep_efficiency",
+      "semver": "1.0.0",
+      "introducedIn": "0.1.0",
+      "provisional": false,
+      "producesMetricIds": ["sleep.efficiency"],
+      "inputMetricIds": ["sleep.time_asleep", "sleep.time_in_bed"],
+      "methodologyUrl": "docs/algorithms/sleep-efficiency.md",
+      "summaryEn": "Time asleep as a share of time in bed.",
+      "params": {}
+    },
+    {
+      "algorithmId": "sleep.need",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["sleep.need"],
+      "inputMetricIds": ["sleep.time_asleep", "sleep.debt", "effort.day"],
+      "methodologyUrl": "docs/algorithms/sleep-need.md",
+      "summaryEn": "Personal baseline duration + a decayed share of accumulated debt + a prior-day effort allowance, minus credit for naps. Emitted as a range, never a fake-exact minutes target (plan §4 principle 9).",
+      "params": {
+        "debtRepaymentFraction": 0.35,
+        "debtDecayHalfLifeDays": 4.0,
+        "effortFactorSecondsPerPoint": 42.0,
+        "napCreditFraction": 0.5,
+        "rangeHalfWidthSeconds": 1800.0,
+        "minNeedSeconds": 18000.0,
+        "maxNeedSeconds": 39600.0
+      },
+      "paramNotes": {
+        "debtRepaymentFraction": "PROVISIONAL. Share of outstanding debt folded into tonight's need; the rest carries forward. Prevents a large debt from producing an unreachable target that only shames the user.",
+        "effortFactorSecondsPerPoint": "PROVISIONAL. Extra sleep need per point of effort.day. Depends on the effort scale, which is A3-pending — re-derive if A3 chooses 0-21.",
+        "rangeHalfWidthSeconds": "The +/- half-width of the displayed range. Widened by the engine when input completeness is low.",
+        "minNeedSeconds": "Floor/ceiling clamps exist so a sparse-data user is never shown an absurd need. They are display honesty, not a recommendation."
+      }
+    },
+    {
+      "algorithmId": "sleep.performance",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["sleep.performance"],
+      "inputMetricIds": ["sleep.time_asleep", "sleep.need"],
+      "methodologyUrl": "docs/algorithms/sleep-need.md",
+      "summaryEn": "Actual sleep as a share of estimated need, bounded, shown as a range when the need estimate's confidence is low.",
+      "params": {
+        "upperBoundPercent": 120.0,
+        "lowConfidenceThreshold": 0.6
+      },
+      "paramNotes": {
+        "upperBoundPercent": "Capped so oversleeping does not read as an unbounded score. Values above the cap are stored uncapped and clamped at the presentation edge only.",
+        "lowConfidenceThreshold": "Below this input-completeness confidence the value renders as a band, not a point."
+      }
+    },
+    {
+      "algorithmId": "sleep.debt",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["sleep.debt"],
+      "inputMetricIds": ["sleep.time_asleep", "sleep.need"],
+      "methodologyUrl": "docs/algorithms/sleep-need.md",
+      "summaryEn": "Rolling accumulator of (need - actual), decaying exponentially so old shortfalls stop counting rather than accumulating forever.",
+      "params": {
+        "decayHalfLifeDays": 7.0,
+        "lookbackDays": 14,
+        "maxDebtSeconds": 72000.0
+      },
+      "paramNotes": {
+        "decayHalfLifeDays": "PROVISIONAL. Without decay a single bad fortnight would follow a user for months, which is neither true nor wellness-safe.",
+        "maxDebtSeconds": "Clamp so the surface cannot display an alarming, ever-growing number."
+      }
+    },
+    {
+      "algorithmId": "sleep.consistency",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["sleep.consistency"],
+      "inputMetricIds": ["sleep.midpoint", "sleep.time_asleep"],
+      "methodologyUrl": "docs/algorithms/sleep-consistency.md",
+      "summaryEn": "0-100 from the variance of bed and wake times across a trailing window; tighter timing scores higher.",
+      "params": {
+        "windowDays": 14,
+        "minNights": 5,
+        "zeroScoreStdevSeconds": 10800.0,
+        "bedWakeWeightSplit": 0.5
+      },
+      "paramNotes": {
+        "zeroScoreStdevSeconds": "PROVISIONAL. The timing spread that maps to 0. 3h chosen so ordinary weekend drift does not floor the score.",
+        "minNights": "Below this the value is provisional=true rather than scoring someone on two nights of data."
+      }
+    },
+    {
+      "algorithmId": "sleep.disturbances",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["sleep.disturbances"],
+      "inputMetricIds": ["sleep.awake"],
+      "methodologyUrl": "docs/algorithms/sleep-consistency.md",
+      "summaryEn": "Count of wake-stage episodes lasting at least a threshold duration.",
+      "params": {
+        "minEpisodeSeconds": 300.0,
+        "mergeGapSeconds": 120.0
+      },
+      "paramNotes": {
+        "minEpisodeSeconds": "PROVISIONAL. Below this a wake episode is stage-classifier noise, not something the sleeper experienced.",
+        "mergeGapSeconds": "Two wake episodes closer than this are one disturbance, so classifier flapping does not inflate the count."
+      }
+    },
+    {
+      "algorithmId": "composite.readiness_score",
+      "semver": "2.0.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["readiness.score"],
+      "inputMetricIds": ["heart.hrv", "heart.rhr", "respiratory.rate", "sleep.performance"],
+      "methodologyUrl": "docs/algorithms/readiness.md",
+      "summaryEn": "Weighted composite of each input's z-position against its own personal baseline, mapped to 0-100. Reduced-input variants drop a term and redistribute its weight rather than substituting a default.",
+      "params": {
+        "weightHrv": 0.5,
+        "weightRhr": 0.2,
+        "weightSleepPerformance": 0.2,
+        "weightRespiratoryRate": 0.1,
+        "zClampSigmas": 2.5,
+        "minInputsForFullScore": 3,
+        "minInputsToScoreAtAll": 2
+      },
+      "paramNotes": {
+        "weightHrv": "PROVISIONAL, pending A3. BADAN's OWN launch weights (HRV 0.5, RHR 0.2, RR 0.1, sleep 0.2 — plan §11 EPIC-25), deliberately NOT WHOOP's claimed weights; the rationale and citations belong in docs/algorithms/readiness.md when EPIC-25 lands. Weights must sum to 1.0 across present inputs; the engine renormalizes over whatever is available.",
+        "zClampSigmas": "Clamps each input's z before weighting so one wild reading (a bad HRV sample after a late meal) cannot dominate the composite.",
+        "minInputsToScoreAtAll": "Below this no score is emitted at all. An honest absence beats a confident number built from one input.",
+        "supersedesSemver": "1.0.0 remains valid for every row already computed with it. Per I2 those rows are never rewritten; the version on the row is what explains it."
+      }
+    },
+    {
+      "algorithmId": "effort.day",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["effort.day"],
+      "inputMetricIds": ["heart.hr"],
+      "methodologyUrl": "docs/algorithms/effort.md",
+      "summaryEn": "Log-curve accumulation over time spent in each heart-rate zone, relative to the user's max HR. Monotonic: more time or higher zones never lower the score.",
+      "params": {
+        "scaleMax": 100.0,
+        "zone1Weight": 1.0,
+        "zone2Weight": 1.6,
+        "zone3Weight": 2.6,
+        "zone4Weight": 4.2,
+        "zone5Weight": 6.8,
+        "logCurveK": 0.045,
+        "zone1FloorPctHrMax": 50.0,
+        "zone2FloorPctHrMax": 60.0,
+        "zone3FloorPctHrMax": 70.0,
+        "zone4FloorPctHrMax": 80.0,
+        "zone5FloorPctHrMax": 90.0,
+        "hrMaxConstant": 208.0,
+        "hrMaxAgeCoefficient": 0.7
+      },
+      "paramNotes": {
+        "scaleMax": "A3-PENDING. Plan §28 A3 has not chosen between a 0-21 log scale (WHOOP-familiar) and 0-100 (consistent with every other BADAN score). The registry id and canonical unit are scale-independent by design, so resolving A3 changes scaleMax and the zone weights here plus a display unit — it does NOT change effort.day's metric id or force a data migration.",
+        "hrMaxConstant": "Default maximum heart rate = hrMaxConstant - hrMaxAgeCoefficient * age (Tanaka 2001: 208 - 0.7*age), used only when the user has not set their own HR max in profile. The profile value always wins; editing it triggers an append-only historical recompute (EPIC-26, I2). A default, never a measured maximum.",
+        "hrMaxAgeCoefficient": "See hrMaxConstant. Together they seed the zone edges the zoneNFloorPctHrMax percentages are taken against.",
+        "zone1Weight": "PROVISIONAL. Roughly geometric so the curve rewards intensity without letting a single hard interval swamp a long easy day.",
+        "logCurveK": "PROVISIONAL. Curve steepness. Must keep the accumulation monotonic in both time and zone — EPIC-26 asserts this as a property test.",
+        "zone1FloorPctHrMax": "Default zone edges as a percentage of max HR. The user can edit zone edges in profile; edited zones override these and are stored per-user, not here."
+      }
+    },
+    {
+      "algorithmId": "effort.workout",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["effort.workout"],
+      "inputMetricIds": ["heart.hr", "workout.duration", "workout.avg_hr", "workout.max_hr"],
+      "methodologyUrl": "docs/algorithms/effort.md",
+      "summaryEn": "The effort.day curve applied over a single session's window instead of the day.",
+      "params": {
+        "scaleMax": 100.0,
+        "logCurveK": 0.045,
+        "sparseHrFallbackMinSamplesPerMinute": 0.5
+      },
+      "paramNotes": {
+        "scaleMax": "A3-PENDING — must stay identical to effort.day's scaleMax or a workout's effort would not be comparable with the day it sits inside.",
+        "sparseHrFallbackMinSamplesPerMinute": "Below this HR sample density the engine emits the labelled reduced-input 'activity load' variant instead of a zone-based score. A user whose watch did not record continuous HR must never be shown a zero — that reads as failure, not as missing data."
+      }
+    },
+    {
+      "algorithmId": "stress.day_trend",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["stress.day_trend"],
+      "inputMetricIds": ["heart.hr", "heart.hrv", "heart.rhr"],
+      "methodologyUrl": "docs/algorithms/stress.md",
+      "summaryEn": "Direction of the day's load signals against the personal baseline. Gated behind an input-density check so a day with thin sampling produces no value rather than a confident-looking one.",
+      "params": {
+        "minSamplesPerHour": 2.0,
+        "minCoveredHours": 8.0,
+        "smoothingHalfLifeHours": 3.0,
+        "zClampSigmas": 2.5
+      },
+      "paramNotes": {
+        "minSamplesPerHour": "PROVISIONAL. The density gate from plan §28's 'stress monitor beyond the density gate design' scope note. Failing the gate emits nothing.",
+        "smoothingHalfLifeHours": "Trend smoothing so the surface shows a direction rather than a jittery instantaneous reading."
+      }
+    },
+    {
+      "algorithmId": "workout.strength.e1rm",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["workout.strength.e1rm"],
+      "inputMetricIds": [],
+      "methodologyUrl": "docs/algorithms/strength.md",
+      "summaryEn": "Epley estimated one-repetition maximum: weight * (1 + reps/30), computed per exercise from logged sets.",
+      "params": {
+        "epleyDivisor": 30.0,
+        "maxRepsForEstimate": 12.0
+      },
+      "paramNotes": {
+        "epleyDivisor": "The published Epley constant. Stable, not provisional in itself — the entry is provisional because the reps cutoff and the choice of Epley over Brzycki are not yet settled.",
+        "maxRepsForEstimate": "Above this rep count the estimate stops being meaningful, so no e1RM is emitted rather than one that overstates."
+      }
+    },
+    {
+      "algorithmId": "workout.strength.volume",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["workout.strength.volume"],
+      "inputMetricIds": [],
+      "methodologyUrl": "docs/algorithms/strength.md",
+      "summaryEn": "Volume load: the sum of weight * reps across a session's working sets.",
+      "params": {
+        "includeWarmupSets": 0.0
+      },
+      "paramNotes": {
+        "includeWarmupSets": "0 = exclude, 1 = include. Boolean-as-double because AlgorithmVersion.params is numeric-only on both platforms; do not widen the type for one flag."
+      }
+    },
+    {
+      "algorithmId": "workout.strength.pr",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["workout.strength.pr"],
+      "inputMetricIds": ["workout.strength.e1rm"],
+      "methodologyUrl": "docs/algorithms/strength.md",
+      "summaryEn": "Flags a logged set that beats the previous best for that exercise, by weight, by reps at weight, or by estimated 1RM.",
+      "params": {
+        "minImprovementFraction": 0.005,
+        "lookbackDays": 365
+      },
+      "paramNotes": {
+        "minImprovementFraction": "PROVISIONAL. A floating-point tie must not fire a PR celebration every session."
+      }
+    },
+    {
+      "algorithmId": "hydration.day_total",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["hydration.volume", "hydration.goal_pct"],
+      "inputMetricIds": ["nutrition.water"],
+      "methodologyUrl": "docs/algorithms/hydration.md",
+      "summaryEn": "Sums the hydration ledger for a local day and expresses it against the user's own goal. The goal is user-set, not computed for them.",
+      "params": {
+        "defaultGoalLitres": 2.0,
+        "goalPctCapPercent": 150.0
+      },
+      "paramNotes": {
+        "defaultGoalLitres": "PROVISIONAL and a STARTING POINT ONLY, never presented as a medical recommendation. The user's own goal, once set, always wins.",
+        "goalPctCapPercent": "Display clamp so an unusually heavy day does not render an alarming percentage."
+      }
+    },
+    {
+      "algorithmId": "cycle.descriptive",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["cycle.day", "cycle.length", "cycle.period_length", "cycle.phase"],
+      "inputMetricIds": ["cycle.flow"],
+      "methodologyUrl": "docs/algorithms/cycle.md",
+      "summaryEn": "Descriptive-only arithmetic over period start and end dates the user recorded. Emits no prediction of any kind.",
+      "params": {
+        "minCyclesForLengthEstimate": 2.0,
+        "maxPlausibleCycleDays": 90.0
+      },
+      "paramNotes": {
+        "minCyclesForLengthEstimate": "Two recorded starts are the minimum that can define one interval. Below this, no cycle.length is emitted.",
+        "maxPlausibleCycleDays": "Intervals longer than this are treated as a gap in logging rather than one very long cycle, so a missed month does not distort the history.",
+        "scopeBoundary": "There is deliberately NO fertile-window, ovulation, or next-period prediction entry in this file. Those are gated behind plan decisions A17/A18 and a retained clinical advisor (A25). Adding a predictive algorithm id here would be the whole gate failing quietly — it must arrive as its own reviewed entry, not as a params tweak to this one."
+      }
+    }
+  ]
+}
