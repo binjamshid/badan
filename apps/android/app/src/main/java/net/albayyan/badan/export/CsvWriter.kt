@@ -1,5 +1,7 @@
 package net.albayyan.badan.export
 
+import net.albayyan.badan.domain.ExportSuppressionCorrection
+import net.albayyan.badan.domain.ExportTombstone
 import java.io.OutputStream
 import java.security.DigestOutputStream
 import java.security.MessageDigest
@@ -311,6 +313,90 @@ class CsvWriter {
          * [dateMillis] is epoch-millis.
          */
         fun iso8601(dateMillis: Long, tzId: String): String = TimestampFormatting.string(dateMillis, tzId)
+    }
+}
+
+/**
+ * The two reconciliation tables a CSV **delta** export carries (§22.6 / EPIC-17), alongside
+ * `raw.csv` / `derived.csv`.
+ *
+ * They exist because the desync a delta creates is format-independent. A delta gathers only LIVE
+ * rows, so a removal or a dedup flip since the cursor is invisible to a consumer that only ever
+ * receives additions — and a CSV consumer is no less entitled to reconcile than a JSON one. The
+ * JSON bundle carries the same two facts as its `deletions[]` and `corrections[]` arrays; these are
+ * the CSV projection of exactly those records, one row per record, same field names, same ordering
+ * ([ExportTombstone.exportSorted] / [ExportSuppressionCorrection.exportSorted] — the single shared
+ * comparators, so the two formats cannot drift apart).
+ *
+ * They ride their own small tables rather than the 26-column contract for the same reason the
+ * hydration set does: a tombstone is not a measurement, and forcing "this record is gone" onto a row
+ * shape built for "this record has value V in unit U" would produce a row a consumer has to guess
+ * at. `record_kind` has no `tombstone` case and inventing one would break the frozen vocabulary.
+ *
+ * **Presence is the delta signal.** Unlike the JSON bundle, a CSV export's `manifest.json` carries
+ * no `is_delta` flag (`ExportManifest` has no delta fields), so `ExportRunner` writes BOTH files —
+ * header-only when nothing was removed or flipped — on every delta run, and neither on any other
+ * run. A consumer that receives them therefore knows the artifact is a delta AND is told
+ * affirmatively that nothing went away, instead of having to distinguish "no removals" from "this
+ * exporter never reports removals". A non-delta CSV export is byte-identical to before. Mirror of
+ * iOS `ExportDeltaCSVWriter`.
+ */
+class ExportDeltaCsvWriter {
+
+    /**
+     * The named CSV files for one delta run. Both are always present (see the type doc) so the
+     * caller writes and checksums them unconditionally on a delta.
+     */
+    fun files(
+        deletions: List<ExportTombstone>,
+        corrections: List<ExportSuppressionCorrection>,
+    ): Map<String, String> = mapOf(
+        DELETIONS_FILE_NAME to deletionsCsv(deletions),
+        CORRECTIONS_FILE_NAME to correctionsCsv(corrections),
+    )
+
+    /**
+     * Rows removed since the cursor. Columns mirror the JSON `deletions[]` object exactly
+     * (`record_id`, `entity`, `deleted_at`), and `deleted_at` is rendered in the row's OWN timezone
+     * — the same offset-carrying instant the bundle writes, never normalized to UTC.
+     */
+    fun deletionsCsv(deletions: List<ExportTombstone>): String {
+        val sb = StringBuilder(row(listOf("record_id", "entity", "deleted_at")))
+        for (t in ExportTombstone.exportSorted(deletions)) {
+            sb.append(CsvWriter.NEWLINE)
+                .append(row(listOf(t.recordId, t.entity, CsvWriter.iso8601(t.deletedAt, t.tzId))))
+        }
+        return sb.append(CsvWriter.NEWLINE).toString()
+    }
+
+    /**
+     * Suppression flips since the cursor. Columns mirror the JSON `corrections[]` object
+     * (`record_id`, `suppressed_by`, `changed_at`); `changed_at` is UTC, matching the bundle,
+     * because a dedup decision is an engine event with no measurement timezone of its own.
+     *
+     * A cleared suppression writes an EMPTY `suppressed_by` cell — CSV has no null, and the column
+     * is a record id, so empty can only mean "no longer suppressed". That is the same convention
+     * every other nullable id column in the export uses.
+     */
+    fun correctionsCsv(corrections: List<ExportSuppressionCorrection>): String {
+        val sb = StringBuilder(row(listOf("record_id", "suppressed_by", "changed_at")))
+        for (c in ExportSuppressionCorrection.exportSorted(corrections)) {
+            sb.append(CsvWriter.NEWLINE)
+                .append(row(listOf(c.recordId, c.suppressedBy ?: "", CsvWriter.iso8601(c.changedAt, "UTC"))))
+        }
+        return sb.append(CsvWriter.NEWLINE).toString()
+    }
+
+    /**
+     * One RFC-4180 line, borrowed from [CsvWriter] so these cells escape identically to every other
+     * exported cell. No `sanitizeText` pass: every column here is a ULID or a timestamp, never free
+     * text, so there is nothing a spreadsheet could read as a formula.
+     */
+    private fun row(cells: List<String>): String = cells.joinToString(",") { CsvWriter.escape(it) }
+
+    companion object {
+        const val DELETIONS_FILE_NAME: String = "deletions.csv"
+        const val CORRECTIONS_FILE_NAME: String = "corrections.csv"
     }
 }
 

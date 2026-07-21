@@ -91,6 +91,100 @@ enum DestinationMessages {
         en: "Exports are filed under BADAN/Exports, by year and month.",
         ar: "تُحفظ الملفات ضمن BADAN/Exports، مرتّبة حسب السنة والشهر.")
 
+    // MARK: - REST destination (EPIC-20)
+
+    /// First-save consent (§12 EPIC-20 / §22.7). The literal sentence the plan specifies, both
+    /// languages. The second half is not decoration: it is the honest correction to the one
+    /// misreading that matters — BADAN did not pick this server, the user did, and BADAN never picks
+    /// one.
+    ///
+    /// **Where it is shown, honestly:** nowhere yet. This build has no screen that *creates* a REST
+    /// destination, so no `restApi` row can exist and this string has no display site. It is defined
+    /// (and pinned by `RESTDestinationTests`) so the sentence is settled in both languages before
+    /// that screen exists — the first-save confirmation on whatever surface adds a REST destination
+    /// is required to present it, and this destination will deliver to any `restApi` row it is
+    /// handed without checking that it was.
+    static let restConsent = LocalizedString(
+        en: "BADAN will send the selected health data to a server you control. "
+            + "BADAN never chooses this destination for you.",
+        ar: "سيرسل بدن البيانات الصحية المحددة إلى خادم تتحكم فيه أنت. "
+            + "لا يختار بدن هذه الوجهة نيابةً عنك أبداً.")
+
+    /// The verification ping reached the server and it accepted a test request. Says exactly what
+    /// happened — a marked probe was accepted — not that a real export has ever been delivered.
+    static let restProbeReachable = LocalizedString(
+        en: "BADAN reached this server and it accepted a test request.",
+        ar: "وصل بدن إلى هذا الخادم وقبِل طلباً تجريبياً.")
+
+    static let restDelivered = LocalizedString(
+        en: "Your export was sent to the server.",
+        ar: "تم إرسال تصديرك إلى الخادم.")
+
+    /// Auth rejected (401/403). "Reauthorize" rather than "choose again": the endpoint is fine, the
+    /// token is not — so this is not a re-pick, it is a new credential.
+    static let restAuthExpired = LocalizedString(
+        en: "The server rejected BADAN's credentials. Update the access token to send here again.",
+        ar: "رفض الخادم بيانات اعتماد بدن. حدّث رمز الوصول للإرسال إلى هنا مرة أخرى.")
+
+    /// No usable token in the Keychain for this destination — never the token value, only its
+    /// absence. Same remedy as an expired one, so it borrows `authExpired`'s status upstream.
+    static let restCredentialMissing = LocalizedString(
+        en: "BADAN has no saved access token for this server. Add one to send here.",
+        ar: "لا يملك بدن رمز وصول محفوظاً لهذا الخادم. أضف واحداً للإرسال إلى هنا.")
+
+    /// The endpoint is not set (no URL) — a configuration gap, not a reachability failure.
+    static let restNotConfigured = LocalizedString(
+        en: "This destination has no server address yet. Add one to send here.",
+        ar: "لا يوجد عنوان خادم لهذه الوجهة بعد. أضف عنواناً للإرسال إلى هنا.")
+
+    /// HTTPS is required and the address is plain `http://`. Blocked **before** any bytes leave the
+    /// device — the message names the reason plainly rather than reporting a network failure that
+    /// never happened.
+    /// `https` goes through the placeholder rather than sitting in the template so it can be bidi-
+    /// isolated: a bare Latin token at the end of an Arabic sentence sits next to the sentence's
+    /// full stop, which is exactly the neutral-run ambiguity `isolated` exists to settle.
+    static var restInsecureBlocked: LocalizedString {
+        LocalizedString(
+            en: "BADAN won't send your data over an unencrypted connection. Use an {scheme} address.",
+            ar: "لن يرسل بدن بياناتك عبر اتصال غير مشفّر. استخدم عنوان {scheme}.")
+            .filling(["scheme": isolated("https")])
+    }
+
+    /// Could not connect at all (timeout, DNS, connection refused) after the capped retries.
+    /// Deliberately says nothing about the endpoint's configuration — a server that is merely down
+    /// is not a destination that needs re-picking.
+    static let restUnreachable = LocalizedString(
+        en: "BADAN couldn't reach this server. It may be offline — BADAN will not keep retrying now.",
+        ar: "تعذّر على بدن الوصول إلى هذا الخادم. قد يكون غير متصل — لن يواصل بدن المحاولة الآن.")
+
+    /// The server answered with an error status. Carries the status code and nothing else — no
+    /// response body is ever surfaced, because a server's error text can quote back what was sent.
+    /// The whole `HTTP 503` token is substituted, not just the number, so the Latin run and its
+    /// digits stay one bidi-isolated unit inside the Arabic parentheses.
+    static func restServerError(status: Int) -> LocalizedString {
+        LocalizedString(en: "The server rejected the export ({code}).",
+                        ar: "رفض الخادم التصدير ({code}).")
+            .filling(["code": isolated("HTTP \(status)")])
+    }
+
+    /// The generated file could not be read back out of BADAN's own staging folder, so there was
+    /// nothing to send. A local problem, and the copy says so — blaming the server for a file BADAN
+    /// could not read would point the user at the wrong thing entirely.
+    static let restSourceUnreadable = LocalizedString(
+        en: "BADAN couldn't read the export file, so nothing was sent.",
+        ar: "تعذّر على بدن قراءة ملف التصدير، لذلك لم يُرسل شيء.")
+
+    /// Partial delivery: an earlier NDJSON part landed and a later one did not. Counts **files**,
+    /// not parts, because that is what the caller passes and what the ledger row records — a part
+    /// can carry several files, so "2 of 5 parts" would be a number the code never computed. States
+    /// both for the same reason the folder message does: "some of it was sent" invites the reader to
+    /// assume the rest did not matter.
+    static func restPartiallyDelivered(sent: Int, expected: Int) -> LocalizedString {
+        LocalizedString(en: "Only {sent} of {expected} files reached the server.",
+                        ar: "وصل {sent} من {expected} ملفات فقط إلى الخادم.")
+            .filling(["sent": "\(sent)", "expected": "\(expected)"])
+    }
+
     // MARK: - Bidi
 
     /// Wrap an LTR path so it renders as one unit inside an Arabic sentence.

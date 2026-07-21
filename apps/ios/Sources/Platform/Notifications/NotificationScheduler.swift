@@ -232,9 +232,16 @@ final class NotificationScheduler {
 
         let full = MedicationReminderPlan.build(regimens: regimens, enabled: enabled, language: language)
         guard !full.isEmpty else { return 0 }
-        // (F6) Cap before scheduling. Without this the OS drops the overflow itself, silently and
-        // in insertion order rather than by time.
-        let (plan, truncated) = MedicationReminderPlan.capped(full, now: now, calendar: calendar)
+        // (F6 + EPIC-32) Cap before scheduling. Without this the OS drops the overflow itself,
+        // silently and in insertion order rather than by time. The ceiling meds may claim is the
+        // 64-pending limit MINUS whatever non-med notices are currently pending, so meds + decision
+        // notices together never exceed 64 and the OS never silently drops a med reminder to fit a
+        // score/hydration notice. When nothing non-med is pending — the default, since every
+        // decision class ships OFF — this is the full 64 and behaviour is unchanged. See
+        // `NotificationDecisionEngine.medPendingLimit`.
+        let nonMedPending = await pendingNonMedRequestCount()
+        let medLimit = NotificationDecisionEngine.medPendingLimit(nonMedPending: nonMedPending)
+        let (plan, truncated) = MedicationReminderPlan.capped(full, limit: medLimit, now: now, calendar: calendar)
 
         for item in plan {
             var components = DateComponents()
@@ -246,6 +253,8 @@ final class NotificationScheduler {
             content.title = MedicationReminderCopy.title.resolved(item.bodyLanguage)
             content.body = MedicationReminderCopy.body.resolved(item.bodyLanguage)
             content.sound = .default
+            // EPIC-32: a med reminder deep-links to the meds surface like every other class.
+            content.userInfo[NotificationDeepLink.userInfoKey] = NotificationClass.meds.deepLink.rawValue
 
             let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
             let request = UNNotificationRequest(identifier: item.identifier, content: content, trigger: trigger)
@@ -270,6 +279,8 @@ final class NotificationScheduler {
         content.title = AutomationPausedCopy.title.resolved(language)
         content.body = AutomationPausedCopy.body.resolved(language)
         content.sound = .default
+        // EPIC-32: an automation-pause notice belongs to the export-health surface — deep-link there.
+        content.userInfo[NotificationDeepLink.userInfoKey] = NotificationClass.exportHealthAlert.deepLink.rawValue
         let request = UNNotificationRequest(
             identifier: AutomationPausedCopy.identifierPrefix + scheduleId,
             content: content, trigger: nil)
@@ -284,16 +295,133 @@ final class NotificationScheduler {
         guard !ids.isEmpty else { return }
         center.removePendingNotificationRequests(withIdentifiers: ids)
     }
+
+    // MARK: - Decision-engine notifications (EPIC-32)
+
+    /// Pending-request counts split into meds vs. everything-else. `med` is what a med reminder
+    /// occupies; `nonMed` is every other pending request (decision notices AND the EPIC-15
+    /// automation-pause notice) — so `med + nonMed` is the true total against the 64 ceiling. This
+    /// is what the decision engine reads for its `pendingMedCount`/`pendingNonMedCount` cap check.
+    func pendingCounts() async -> (med: Int, nonMed: Int) {
+        let pending = await center.pendingNotificationRequests()
+        var med = 0, nonMed = 0
+        for request in pending {
+            if request.identifier.hasPrefix(MedicationReminderPlan.identifierPrefix) { med += 1 }
+            else { nonMed += 1 }
+        }
+        return (med, nonMed)
+    }
+
+    /// Everything currently pending that is NOT a med reminder — the room meds must reserve so the
+    /// two never exceed the 64 ceiling together (see `rescheduleMedicationReminders`).
+    private func pendingNonMedRequestCount() async -> Int {
+        await pendingCounts().nonMed
+    }
+
+    /// Schedule one decision-engine notification for `cls` at `fireDate`. Content is generic and
+    /// value-free (`NotificationClassCopy`), captured now in `language` because a scheduled
+    /// notification's text is static (same limitation as med reminders). The request carries its
+    /// deep link and its ledger row id in `userInfo`. `identifier` is deterministic per class+day at
+    /// the call site so re-scheduling replaces rather than stacks. This method does NO
+    /// budget/cap/opt-in checking — that is the caller's job via `NotificationDecisionEngine`; this
+    /// is the thin I/O shell.
+    ///
+    /// `ledgerRowId` is the `notification_deliveries` row the caller already reserved for this
+    /// notification. It rides along so the delegate can close that row out on delivery without
+    /// guessing which row a fired notification belonged to.
+    func scheduleDecisionNotification(_ cls: NotificationClass, identifier: String, fireDate: Date,
+                                      ledgerRowId: String, language: AppLanguage,
+                                      calendar: Calendar = .current) async {
+        let (title, body) = NotificationClassCopy.content(cls)
+        let content = UNMutableNotificationContent()
+        content.title = title.resolved(language)
+        content.body = body.resolved(language)
+        content.sound = .default
+        content.userInfo[NotificationDeepLink.userInfoKey] = cls.deepLink.rawValue
+        content.userInfo[NotificationDelivery.ledgerRowIdUserInfoKey] = ledgerRowId
+
+        // A future fire date gets a one-shot calendar trigger (the morning summary / wind-down /
+        // hydration classes). An event-driven notice (deviation, export-health) passes a fire date
+        // of "now" and is delivered as soon as the system allows — a calendar trigger for the
+        // current minute may never fire, so `trigger: nil` is used for anything at or in the past.
+        let trigger: UNNotificationTrigger?
+        if fireDate.timeIntervalSinceNow > 1 {
+            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: fireDate)
+            trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        } else {
+            trigger = nil
+        }
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        try? await center.add(request)
+    }
+
+    /// Cancel every pending decision notification for one class (matched by its prefix) — used when
+    /// the user turns that class off. Never touches meds or the automation-pause notice.
+    func cancelDecisionNotifications(_ cls: NotificationClass) async {
+        guard !cls.isMedication else { return }
+        let pending = await center.pendingNotificationRequests()
+        let ids = pending.map(\.identifier).filter { $0.hasPrefix(cls.identifierPrefix) }
+        guard !ids.isEmpty else { return }
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+    }
+
+    /// Cancel every pending decision notification across all non-med classes.
+    func cancelAllDecisionNotifications() async {
+        let pending = await center.pendingNotificationRequests()
+        let ids = pending.map(\.identifier).filter { $0.hasPrefix(NotificationClass.decisionPrefix) }
+        guard !ids.isEmpty else { return }
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+    }
 }
 
 // MARK: - Foreground presentation
 
-/// Presents medication reminders as a banner + sound even while BADAN is in the foreground
-/// (the default is to suppress foreground notifications entirely). Wired as the notification
-/// center's delegate in `BADANApp`.
+/// Presents notifications as a banner + sound even while BADAN is in the foreground (the default
+/// is to suppress foreground notifications entirely), routes a tap to the notification's evidence
+/// surface (EPIC-32 deep links), and closes out the ledger row of any decision notification the app
+/// actually observes. Wired as the notification center's delegate in `BADANApp`.
 final class NotificationForegroundDelegate: NSObject, UNUserNotificationCenterDelegate {
+    /// Called on the main actor with the deep link when the user taps a notification. Set by
+    /// `BADANApp` to hand the target to `AppEnvironment`. A closure rather than a hard reference to
+    /// the environment so the delegate stays constructible before the environment exists.
+    var onOpen: (@MainActor (NotificationDeepLink) -> Void)?
+
+    /// Called on the main actor with a decision notification's ledger row id the moment the app
+    /// observes that notification — a foreground presentation or a tap. Set by `BADANApp` to
+    /// `AppEnvironment.markNotificationDelivered`, for the same reason `onOpen` is a closure.
+    ///
+    /// These two moments are all iOS gives an app: a notification delivered to a lock screen while
+    /// BADAN is not running, and never tapped, is simply not observable, so its row stays
+    /// `scheduled`. Budget accounting is unaffected — `scheduled` and `delivered` both count.
+    var onDelivered: (@MainActor (String) -> Void)?
+
+    /// A notification arrived while BADAN was in the foreground. That IS an observed delivery, so
+    /// the ledger row is closed out here as well as on a tap.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        await Self.reportDelivery(notification, to: onDelivered)
+        return [.banner, .sound]
+    }
+
+    /// The user tapped (or otherwise acted on) a notification. Record the delivery, then resolve its
+    /// stamped deep link and hand it to `onOpen`; a notification with no/unknown deep link is
+    /// dismissed without routing (the delivery is still recorded — it did arrive).
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse) async {
+        await Self.reportDelivery(response.notification, to: onDelivered)
+        let info = response.notification.request.content.userInfo
+        guard let raw = info[NotificationDeepLink.userInfoKey] as? String,
+              let link = NotificationDeepLink(rawValue: raw) else { return }
+        await onOpen?(link)
+    }
+
+    /// Hand the notification's reserved ledger row id to `sink`, if it carries one. Med reminders
+    /// and the EPIC-15 automation-pause notice carry no row id (neither reserves a ledger slot), so
+    /// they fall through silently rather than being attributed to some other class's row.
+    private static func reportDelivery(_ notification: UNNotification,
+                                       to sink: (@MainActor (String) -> Void)?) async {
+        let info = notification.request.content.userInfo
+        guard let rowId = info[NotificationDelivery.ledgerRowIdUserInfoKey] as? String else { return }
+        await sink?(rowId)
     }
 }

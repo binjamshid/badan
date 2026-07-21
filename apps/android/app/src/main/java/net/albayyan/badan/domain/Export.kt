@@ -802,6 +802,21 @@ data class ExportErrorDetail(
     val filesExpected: Int = 0,
     /** Which attempt this was (0 = first). Lets a retry storm be seen as one. */
     val attempt: Int = 0,
+    /**
+     * EPIC-20 — the HTTP status a networked destination was last answered with, and the *only* half
+     * of §22.7's "status code + sanitized reason" that was not already representable here. The
+     * reason is `ExportRun.errorCode`, a closed vocabulary; this is the code, an integer.
+     *
+     * An `Int?` and not the response body, deliberately: a server's error text can echo back the
+     * bytes BADAN just posted, so a body in this column would put health values into the one record
+     * Export Health invites the user to share. Null for every non-network destination, and null when
+     * the endpoint never answered at all (a timeout has no status — that case is carried by
+     * `errorCode == DESTINATION_UNREACHABLE`).
+     *
+     * Additive and migration-free: `error_detail` is a JSON TEXT column, and an older row that
+     * predates this field decodes with it null (`ignoreUnknownKeys` + this default).
+     */
+    val httpStatus: Int? = null,
 )
 
 /**
@@ -914,7 +929,80 @@ data class ExportCursor(
      */
     val destinationId: String,
     val highWatermark: Long,
+    /**
+     * The SHA-256 of the bundle FILE the last successful delta delivered — the chain link the next
+     * run carries forward as its `previous_manifest_sha` (§22.6). Bundle-file sha, not the sha of
+     * the `ExportManifest` struct: it is the value a consumer recomputes from the delivered file, so
+     * `scripts/verify_export_chain.py` can walk the chain from the artifacts alone.
+     */
     val lastManifestSha: ManifestDigest? = null,
     val lastRunId: String? = null,
     val updatedAt: Long,
 )
+
+// ===== §22.6 delta-export reconciliation records =====
+
+/**
+ * One tombstoned row a delta export reports in its `deletions[]` section (§22.6) so a downstream
+ * store can reconcile a removal it would otherwise never learn about — a delta that only ever
+ * *adds* rows can never tell a consumer a record went away.
+ *
+ * [entity] is the bundle array the record lived in (`raw_sample` | `interval_record` | `session`),
+ * matching the `deletions[]` `entity` vocabulary `JsonBundleWriter` already emits. Mirror of iOS
+ * `ExportTombstone`.
+ */
+data class ExportTombstone(
+    val recordId: String,
+    val entity: String,
+    val deletedAt: Long,
+    val tzId: String,
+) {
+    companion object {
+        /**
+         * The canonical emission order for a delta's tombstone set, shared by every format so the
+         * JSON `deletions[]` array and the CSV `deletions.csv` rows list the same removals in the
+         * same sequence. `record_id` alone is a TOTAL order: ids are ULIDs unique across every
+         * table (I8), so no two tombstones can tie and neither platform's sort has a tie to break
+         * differently. Mirror of iOS `ExportTombstone.exportSorted`.
+         */
+        fun exportSorted(tombstones: List<ExportTombstone>): List<ExportTombstone> =
+            tombstones.sortedBy { it.recordId }
+    }
+}
+
+/**
+ * One suppression-flip correction a delta export reports in its `corrections[]` section (§22.6).
+ *
+ * The subtle desync EPIC-17 exists to close: a delta that only adds rows silently corrupts a
+ * downstream store when a dedup decision *reverses* since the last cursor — the row it already has
+ * as authoritative is now suppressed (or a suppressed one now wins) and nothing in an add-only delta
+ * says so. [suppressedBy] is the winning record id when this record is now suppressed, or null when
+ * the flip *cleared* a prior suppression (this record wins again). Mirror of iOS
+ * `ExportSuppressionCorrection`.
+ */
+data class ExportSuppressionCorrection(
+    val recordId: String,
+    val suppressedBy: String?,
+    val changedAt: Long,
+) {
+    companion object {
+        /**
+         * The canonical emission order for a delta's correction set, shared by every format so the
+         * JSON `corrections[]` array and the CSV `corrections.csv` rows apply in the same sequence.
+         *
+         * `record_id`, then `changed_at`, then `suppressed_by` — a TOTAL order, not `record_id`
+         * alone. One record CAN flip more than once inside a single delta window (suppressed by A,
+         * then by B after a source-priority change), so `record_id` alone leaves ties, and while
+         * this platform's sort is stable, Swift's `sorted(by:)` is documented as not guaranteed to
+         * be — a tie would be free to resolve differently on the two platforms, quietly ending the
+         * byte-identical guarantee the shared goldens assert. The `changed_at` tiebreaker also puts
+         * a record's flips in the order they happened, so a consumer applying them in order lands
+         * on that record's current state rather than on an intermediate one. A null [suppressedBy]
+         * sorts as the empty string, which orders a clearing before a re-suppression at the same
+         * instant; that is a tiebreaker of last resort, never a rendered value. Mirror of iOS
+         * `ExportSuppressionCorrection.exportSorted`.
+         */
+        fun exportSorted(corrections: List<ExportSuppressionCorrection>): List<ExportSuppressionCorrection> =
+            corrections.sortedWith(compareBy({ it.recordId }, { it.changedAt }, { it.suppressedBy ?: "" }))
+    }
+}

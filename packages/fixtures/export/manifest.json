@@ -48,6 +48,38 @@
         "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
         "apps/ios/Tests/ExportSchemaParityTests.swift"
       ]
+    },
+    {
+      "id": "delta-input-v1",
+      "file": "delta-chain/delta-input-v1.json",
+      "sha256": "2fc2f83cf10179d29fa121a244c5e149898b67226bd61df5899b5d6a3d798ae4",
+      "role": "Shared INPUT for the EPIC-17 two-run delta sequence (§22.6). Lives in delta-chain/ with its two goldens so scripts/verify_export_chain.py can be pointed at that folder directly — the script reads every *.json in a folder as a candidate chain link, and bundle-v1.json (a full export with no predecessor) would read as a second chain root. This file is skipped by the script because it carries no top-level `manifest.export_id`.",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
+        "apps/ios/Tests/ExportSchemaParityTests.swift"
+      ]
+    },
+    {
+      "id": "delta-run1-v1",
+      "file": "delta-chain/delta-run1-v1.json",
+      "sha256": "d151739bbed5c510b538caee4584e040d86e236e6d5c8f4963e4d846977453d7",
+      "role": "Cross-platform golden — the delta chain's ROOT (previous_manifest_sha null). Its bytes are load-bearing twice over: both suites must produce them, AND delta-run2-v1.json's previous_manifest_sha is sha256 of this exact file, so a byte change here breaks the chain rather than only a comparison.",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
+        "apps/ios/Tests/ExportSchemaParityTests.swift",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "delta-run2-v1",
+      "file": "delta-chain/delta-run2-v1.json",
+      "sha256": "34e8ea8b94cd4ea1f771a696e80e1a484b53b1f00b2135c629d8dc35d1da96c4",
+      "role": "Cross-platform golden — the delta chain's second link: cursor_before meets run 1's cursor_after exactly, previous_manifest_sha equals sha256(delta-run1-v1.json), and corrections[] carries a REVERSED suppression (suppressed_by null).",
+      "readBy": [
+        "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
+        "apps/ios/Tests/ExportSchemaParityTests.swift",
+        ".github/workflows/ci.yml"
+      ]
     }
   ]
 }

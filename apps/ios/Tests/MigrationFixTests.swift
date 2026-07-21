@@ -350,4 +350,127 @@ final class MigrationFixTests: XCTestCase {
                           "\(table) must survive a reset — resetAll re-runs the full migration list")
         }
     }
+
+    // MARK: - v8: reports (§9.12 / EPIC-31) + notification_deliveries (EPIC-32 budget ledger)
+
+    private static let v8MainTables = ["reports", "notification_deliveries"]
+    private static let v8MainIndexes = ["idx_reports_period_algorithm", "idx_notification_deliveries_class_scheduled"]
+
+    /// The acceptance case for v8: a database that already holds real v7 rows (a hydration ledger
+    /// entry, a raw sample) must reach v8 with every one of those rows intact. v8 is additive by
+    /// construction (CREATEs only), and this holds that property in place — an edit that "just
+    /// tidies up" an existing table inside v8 breaks this test rather than a user's database.
+    func testMigratingPopulatedV7DatabaseToV8PreservesData() throws {
+        let conn = try connection(atSchemaVersion: 7)
+        _ = try conn.run("""
+            INSERT INTO raw_samples (id, metric_id, value, unit, original_value, original_unit,
+              start_at, tz_id, source_id, ingestion_path, external_id, measured_at, measured_tz,
+              recorded_at, ingested_at, updated_at, origin_device_id)
+            VALUES ('r-1', 'heart_rate', 60, 'count/min', 60, 'count/min', 0, 'UTC', 'watch-1',
+              'platformStore', 'hk-1', 0, 'UTC', 0, 0, 100, 'dev');
+            """)
+        _ = try conn.run("""
+            INSERT INTO hydration_entries (id, volume_ml, fluid_type, occurred_at, tz_id, original_id,
+              revision, source_id, ingestion_path, measured_at, measured_tz, recorded_at, ingested_at,
+              updated_at, origin_device_id)
+            VALUES ('h-1', 500, 'water', 0, 'UTC', 'h-1', 1, 'manual', 'manual', 0, 'UTC', 0, 0, 100, 'dev');
+            """)
+
+        try Database.migrate(conn, Schema.mainMigrations)
+
+        XCTAssertEqual(try count(conn, "SELECT COUNT(*) AS c FROM raw_samples;"), 1,
+                       "v8 is additive — an upgrade must not touch existing rows")
+        XCTAssertEqual(try count(conn, "SELECT COUNT(*) AS c FROM hydration_entries;"), 1,
+                       "v8 is additive — an upgrade must not touch existing rows")
+        for table in Self.v8MainTables {
+            XCTAssertTrue(try objectExists(conn, type: "table", name: table),
+                          "v8 must create \(table) on the upgrade path, not only on a fresh database")
+        }
+        for index in Self.v8MainIndexes {
+            XCTAssertTrue(try objectExists(conn, type: "index", name: index), "v8 must create \(index)")
+        }
+        XCTAssertEqual(try conn.query("PRAGMA user_version;").first?.int("user_version"),
+                       Int64(Schema.mainMigrations.map(\.version).max() ?? 0),
+                       "the upgraded database must land on the v8 head")
+    }
+
+    /// `idx_reports_period_algorithm` is UNIQUE but partial (`WHERE deleted_at IS NULL`). Both halves
+    /// matter: two live reports must not share a (period, algorithm) identity, but a soft-deleted
+    /// report must release that identity so the user can regenerate a report they deleted — the same
+    /// shape `idx_export_templates_name` uses, for the same reason. Reports are derived and
+    /// regenerable, so unlike `baselines` this is intentionally NOT append-only.
+    func testReportsIdentityIsUniqueAmongLiveRowsOnly() throws {
+        let db = try Database(directory: tempDir)
+        func insertReport(_ id: String, periodKey: String, algorithmVersion: String, deletedAt: Int?) throws {
+            _ = try db.main.run("""
+                INSERT INTO reports (id, period_key, generated_at, algorithm_version_id,
+                  sections_included, sha256, updated_at, origin_device_id, deleted_at)
+                VALUES (?, ?, 0, ?, '[]', 'model-sha', 0, 'dev', ?);
+                """, [.text(id), .text(periodKey), .text(algorithmVersion), .int(deletedAt)])
+        }
+
+        try insertReport("rep-1", periodKey: "week:2026-W29", algorithmVersion: "v1", deletedAt: nil)
+        XCTAssertThrowsError(try insertReport("rep-2", periodKey: "week:2026-W29", algorithmVersion: "v1", deletedAt: nil),
+                             "two live reports must not share (period_key, algorithm_version_id)")
+        XCTAssertNoThrow(try insertReport("rep-3", periodKey: "week:2026-W29", algorithmVersion: "v2", deletedAt: nil),
+                         "a new algorithm version is a genuinely different report, not a duplicate")
+
+        // Soft-delete the original, then regenerate the same period+version — the case a non-partial
+        // index would wrongly block over a row the user can no longer see.
+        _ = try db.main.run("UPDATE reports SET deleted_at = 1 WHERE id = 'rep-1';")
+        XCTAssertNoThrow(try insertReport("rep-4", periodKey: "week:2026-W29", algorithmVersion: "v1", deletedAt: nil),
+                         "a deleted report must release its (period, version) identity so it can be regenerated")
+    }
+
+    /// Both v8 tables are DERIVED/operational, not measurements: `reports` is a rollup BADAN computed
+    /// from provenance-bearing rows, and `notification_deliveries` is value-free scheduling metadata.
+    /// So neither carries the provenance struct (I1 is satisfied by their inputs), but both DO carry
+    /// the convention columns (D-7) — a report is user-deletable and reconcilable, a queued delivery
+    /// transitions state. Asserting the exact column set catches an "obvious" cleanup that adds either
+    /// the wrong columns back.
+    func testV8TablesCarryConventionColumnsButNoProvenance() throws {
+        let db = try Database(directory: tempDir)
+        let reportCols = Set(try db.main.query("PRAGMA table_info(reports);").compactMap { $0.string("name") })
+        XCTAssertEqual(reportCols, ["id", "period_key", "generated_at", "algorithm_version_id",
+                                    "sections_included", "artifact_path", "sha256",
+                                    "updated_at", "origin_device_id", "deleted_at"])
+
+        let deliveryCols = Set(try db.main.query("PRAGMA table_info(notification_deliveries);").compactMap { $0.string("name") })
+        XCTAssertEqual(deliveryCols, ["id", "notification_class", "scheduled_for", "delivered_at",
+                                      "outcome", "updated_at", "origin_device_id", "deleted_at"])
+
+        for provenance in ["source_id", "measured_at", "ingested_at", "ingestion_path", "device_id"] {
+            XCTAssertFalse(reportCols.contains(provenance),
+                           "reports is derived — a \(provenance) column would claim provenance it has not (I1)")
+            XCTAssertFalse(deliveryCols.contains(provenance),
+                           "a notification-log row is metadata — \(provenance) does not belong (EPIC-32 value-free)")
+        }
+        // The notification ledger stores no health value at all — it is metadata by contract.
+        XCTAssertFalse(deliveryCols.contains("value"),
+                       "notification_deliveries is value-free: 'readiness summary at 07:00' is metadata, the score is not stored")
+    }
+
+    /// The budget/cap counting query the ledger exists for must actually run against the shipped
+    /// schema: count this class's deliveries in a scheduled-for window. This is a smoke test of the
+    /// column names + index target, not of EPIC-32's engine logic.
+    func testNotificationDeliveriesBacksTheBudgetCountQuery() throws {
+        let db = try Database(directory: tempDir)
+        func insertDelivery(_ id: String, _ notificationClass: String, scheduledFor: Int, outcome: String) throws {
+            _ = try db.main.run("""
+                INSERT INTO notification_deliveries (id, notification_class, scheduled_for, outcome,
+                  updated_at, origin_device_id)
+                VALUES (?, ?, ?, ?, 0, 'dev');
+                """, [.text(id), .text(notificationClass), .int(scheduledFor), .text(outcome)])
+        }
+
+        try insertDelivery("n-1", "readiness", scheduledFor: 100, outcome: "delivered")
+        try insertDelivery("n-2", "readiness", scheduledFor: 200, outcome: "scheduled")
+        try insertDelivery("n-3", "windDown", scheduledFor: 150, outcome: "delivered")
+
+        let readinessInWindow = try count(db.main, """
+            SELECT COUNT(*) AS c FROM notification_deliveries
+            WHERE notification_class = 'readiness' AND scheduled_for BETWEEN 0 AND 300;
+            """)
+        XCTAssertEqual(readinessInWindow, 2, "the ledger must count queued + delivered rows of a class in a window")
+    }
 }

@@ -37,13 +37,16 @@ enum IntentStrings {
         en: "BADAN couldn't finish that export. The failed attempt is recorded in your export "
             + "history.",
         ar: "لم يتمكّن بدن من إتمام هذا التصدير. وقد سُجّلت المحاولة الفاشلة في سجل التصدير لديك.")
-    /// Shown when a `sinceLastRun` template runs. Says what actually happened rather than
-    /// pretending the incremental path exists — see `IntentExportService.resolvedWindow`.
+    /// Shown when a `sinceLastRun` template runs from a Shortcut and there was NO checkpoint to
+    /// resume from — the only case that still falls back, now that the Shortcut path takes the real
+    /// delta (`IntentExportService.cursor(for:)`). It names the missing checkpoint rather than
+    /// Shortcuts or BADAN, because neither is the reason: a run from inside the app with no
+    /// checkpoint says exactly the same thing (`ExportManageService.sinceLastRunFallbackNotice`).
     static let sinceLastRunFallbackNotice = LocalizedString(
-        en: "This template asks for everything since its last run. BADAN can't do that yet, so it "
-            + "exported the last 30 days instead.",
-        ar: "يطلب هذا القالب كل ما استجدّ منذ آخر تشغيل له. لا يستطيع بدن ذلك بعد، فصدّر آخر ٣٠ "
-            + "يوماً بدلاً من ذلك.")
+        en: "This template asks for everything since its last run, but there's no checkpoint yet — "
+            + "so it exported the last 30 days. The next run picks up from here.",
+        ar: "يطلب هذا القالب كل ما استجدّ منذ آخر تشغيل له، لكن لا توجد نقطة مرجعية بعد — فصدّر آخر "
+            + "٣٠ يوماً. وسيكمل التشغيل التالي من هنا.")
 
     // MARK: - Latest score
 

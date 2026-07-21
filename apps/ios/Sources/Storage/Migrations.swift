@@ -596,6 +596,99 @@ enum Schema {
               goal_target_ml REAL, goal_id TEXT, \(conventionCols)
             );
             """,
+        ]),
+        // Version 8 (plan §9.12 / EPIC-31 + EPIC-32): the two Phase-3A tables — periodic-report
+        // metadata and the notification-delivery budget ledger. Purely additive (CREATEs only), so
+        // an upgrading v7 install reaches v8 without touching an existing row. Byte-equivalent mirror
+        // in Android `Schema.mainMigrations` version 8 — the statement strings are identical on both
+        // platforms so a divergence is a reviewable diff, not silent drift.
+        //
+        // NEITHER table carries provenance columns (I1), for the same reason migration 4 omits them
+        // from `export_runs`/`background_runs`: provenance asserts "a source measured this fact about
+        // the user's body." A report is a rollup BADAN COMPUTED from rows that already carry their own
+        // provenance (it is derived, not measured), and a notification-delivery row is operational
+        // metadata about a scheduling decision — a `measured_at`/`source_id` on either would be a lie.
+        // BOTH carry the convention columns (D-7), and here — unlike the v4 ledgers — that is correct:
+        // a report is a user-visible row deleted from a list and reconcilable across devices, and a
+        // queued delivery is a row that transitions state (scheduled → delivered/suppressed), so
+        // `updated_at`/`origin_device_id`/`deleted_at` all carry meaning rather than being boilerplate.
+        Migration(version: 8, statements: [
+            // §9.12 `Report`. Generated weekly/monthly report METADATA. The rendered artifact (a PDF)
+            // lives as a file and is regenerable, so this row is DERIVED and never a source of truth:
+            // EPIC-31's `ReportBuilder` is a pure function over the derived store, so re-running it
+            // reproduces the same typed model. The row exists so the in-app Reports surface can list
+            // and open reports without re-deriving, and so a rendered file can be checked against what
+            // the store would regenerate.
+            //   * `period_key` — the report's period in the same textual, sortable, language-neutral
+            //     form the rest of the schema uses for period keys (e.g. `week:2026-W29`,
+            //     `month:2026-07`).
+            //   * `algorithm_version_id` — the report-building algorithm version that produced this
+            //     row. Part of the identity (below) because regenerating under a NEW version is a
+            //     genuinely different report, not a replacement of the old one.
+            //   * `sections_included` — JSON array of the section ids present (sleep/effort/readiness/
+            //     adherence/changes), stored whole rather than shredded so the section set can evolve
+            //     without a migration (same reason `sessions.detail` is JSON). An empty week
+            //     legitimately includes fewer sections.
+            //   * `artifact_path` — NULLABLE: the PDF may not have been rendered yet, or may have been
+            //     pruned to reclaim space. A report row is valid without a file on disk — the file is
+            //     regenerable from the model, never the other way round.
+            //   * `sha256` — NOT NULL content hash of the deterministic report MODEL (not of any one
+            //     rendered file). It is the row's integrity anchor: because the builder is
+            //     deterministic, a rendered artifact can be trusted iff re-deriving the model
+            //     reproduces this hash — which is exactly what lets the artifact be "never a source of
+            //     truth" while staying verifiable, and it is always computable even when
+            //     `artifact_path` is NULL.
+            """
+            CREATE TABLE reports (
+              id TEXT PRIMARY KEY, period_key TEXT NOT NULL, generated_at INTEGER NOT NULL,
+              algorithm_version_id TEXT NOT NULL, sections_included TEXT NOT NULL, artifact_path TEXT,
+              sha256 TEXT NOT NULL, \(conventionCols)
+            );
+            """,
+            // §9.12 unique(period_key, algorithm_version_id): one CURRENT report per period per
+            // algorithm version. Regenerating for the same period+version REPLACES rather than
+            // appends — a report is derived and regenerable, so this is deliberately NOT the
+            // append-only shape `baselines`/`derived_values` hold (I2 governs BADAN's beliefs over
+            // time, not a disposable rendered rollup). The predicate is `WHERE deleted_at IS NULL` for
+            // the same reason `idx_export_templates_name` is partial: `reports` carries `deleted_at`,
+            // and a plain UNIQUE would let a soft-deleted report squat on its (period, version)
+            // identity so the user could not regenerate a report they had just deleted. Any
+            // `ON CONFLICT(period_key, algorithm_version_id)` written against this table must repeat
+            // this `WHERE deleted_at IS NULL` predicate verbatim — SQLite requires an ON CONFLICT
+            // target to match a real unique index including its predicate (same constraint migrations
+            // 3 and 4 document).
+            "CREATE UNIQUE INDEX idx_reports_period_algorithm ON reports(period_key, algorithm_version_id) WHERE deleted_at IS NULL;",
+            // EPIC-32 the notification budget ledger. VALUE-FREE by contract: a row records that a
+            // notification of some CLASS was scheduled/delivered, never the health value that
+            // notification was about — "readiness summary scheduled for 07:00" is metadata; the
+            // readiness score is not stored here (same rule as `background_runs.work_done` holding
+            // counts, never values). This table backs the ≤2/day non-med budget AND the 64-pending
+            // cap interplay: EPIC-32 EXTENDS the existing `NotificationScheduler`, it does not replace
+            // it, and the decision engine COUNTS rows here — by class and by day-window — to know what
+            // it has already sent or queued before deciding whether the next notification fits.
+            //   * `notification_class` — the discriminator (readiness|windDown|deviation|exportHealth|
+            //     hydration|meds). Named `notification_class`, not the plan's bare `class`, because
+            //     `class` is a reserved keyword in BOTH host languages (Swift and Kotlin); this
+            //     follows the spirit of migration 4's `trigger`→`trigger_kind` rename — keep storage
+            //     identifiers clear of keywords that trap the next porter or tool. The domain field is
+            //     still "class".
+            //   * `scheduled_for` — the instant the notification is scheduled to fire; the budget
+            //     window is measured over this, not over `delivered_at`.
+            //   * `delivered_at` — NULLABLE: NULL means scheduled/queued but not yet fired. A queued
+            //     row still counts toward what the engine has committed for the day.
+            //   * `outcome` — the delivery's current state (e.g. scheduled|delivered|suppressed|
+            //     cancelled). NOT NULL because a row always HAS a state; the exact enum is EPIC-32's,
+            //     not pinned by the schema.
+            """
+            CREATE TABLE notification_deliveries (
+              id TEXT PRIMARY KEY, notification_class TEXT NOT NULL, scheduled_for INTEGER NOT NULL,
+              delivered_at INTEGER, outcome TEXT NOT NULL, \(conventionCols)
+            );
+            """,
+            // EPIC-32 Index (class, scheduled_for): the budget/cap query is "how many of this class
+            // are scheduled/delivered in this window", a range scan on `scheduled_for` within a class,
+            // so the class leads and `scheduled_for` follows.
+            "CREATE INDEX idx_notification_deliveries_class_scheduled ON notification_deliveries(notification_class, scheduled_for);",
         ])]
     }
 

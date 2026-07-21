@@ -268,6 +268,14 @@ final class BackgroundCoordinator {
     /// evaluation in `runAppRefresh` is simply skipped when this is nil, which is the pre-EPIC-15
     /// no-op). The composition root (`AppEnvironment`) supplies the real engine.
     private let automation: AutomationEngine?
+    /// EPIC-31. The weekly-report generator, evaluated on the light refresh wake alongside due
+    /// automations. Optional and defaulted to nil for the same reason `automation` is: every test
+    /// and pre-EPIC-31 construction site keeps compiling and behaving unchanged, and a build without
+    /// it simply never auto-generates a weekly report (manual regeneration from the screen still
+    /// works). Plan §13.7 honesty: this promises no wall-clock time — it generates the last
+    /// *completed* week whenever a wake lands after that week ended, plus a bounded backfill for
+    /// weeks a run of missed wakes skipped entirely (see `ReportTrigger`).
+    private let reports: ReportGenerationService?
 
     private let lock = NSLock()
     private var observers: HealthKitObserverRegistrar?
@@ -282,7 +290,8 @@ final class BackgroundCoordinator {
          protectedData: ProtectedDataProviding,
          checkpoints: BackgroundCheckpointStore = BackgroundCheckpointStore(),
          dispatcher: BackgroundWorkDispatching = AssertedWorkDispatcher(),
-         automation: AutomationEngine? = nil) {
+         automation: AutomationEngine? = nil,
+         reports: ReportGenerationService? = nil) {
         self.runs = runs
         self.clock = clock
         self.ingest = ingest
@@ -290,6 +299,7 @@ final class BackgroundCoordinator {
         self.checkpoints = checkpoints
         self.dispatcher = dispatcher
         self.automation = automation
+        self.reports = reports
     }
 
     // MARK: - App lifecycle wiring
@@ -506,6 +516,25 @@ final class BackgroundCoordinator {
             //    number merely examined, so the diagnostic means "automations that did work".
             if let automation {
                 counts.automationsEvaluated = evaluateAutomationsBlocking(automation, now: clock.now())
+            }
+
+            // 2b. Generate every weekly report that is due (EPIC-31) — the last completed ISO week
+            //     if it has none yet, plus the bounded gap backfill `ReportTrigger` returns when a
+            //     run of wakes was missed entirely.
+            //     Best-effort and self-contained: a failure here is logged and dropped, never
+            //     allowed to fail the refresh — a report is a regenerable rollup, and the user can
+            //     always regenerate from the screen. Only the model + metadata are persisted here;
+            //     the PDF is rendered on demand (UIKit's print stack has no place on this queue).
+            //     No `BackgroundWorkCounts` field fits "reports generated" and inventing one would
+            //     misuse the cross-platform run ledger, so the evidence is the persisted row.
+            if let reports {
+                do {
+                    _ = try reports.generateDueWeekly(now: clock.now())
+                } catch {
+                    Log.logger.error("""
+                        Weekly report generation failed: \(String(describing: type(of: error)), privacy: .public)
+                        """)
+                }
             }
 
             if isExpired() {

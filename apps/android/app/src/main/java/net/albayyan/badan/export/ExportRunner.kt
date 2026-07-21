@@ -27,8 +27,11 @@ import net.albayyan.badan.domain.ExportRowCounts
 import net.albayyan.badan.domain.ExportRun
 import net.albayyan.badan.domain.ExportScope
 import net.albayyan.badan.domain.ExportStage
+import net.albayyan.badan.domain.ExportSuppressionCorrection
 import net.albayyan.badan.domain.ExportTemplate
+import net.albayyan.badan.domain.ExportTombstone
 import net.albayyan.badan.domain.ExportTrigger
+import net.albayyan.badan.domain.ReconciliationDecision
 import net.albayyan.badan.domain.IngestionPath
 import net.albayyan.badan.domain.IntervalRecord
 import net.albayyan.badan.domain.ManifestDigest
@@ -62,6 +65,7 @@ import net.albayyan.badan.storage.repositories.ExportJobRepository
 import net.albayyan.badan.storage.repositories.ExportRunRepository
 import net.albayyan.badan.storage.repositories.ExportTemplateRepository
 import net.albayyan.badan.storage.repositories.HydrationRepository
+import net.albayyan.badan.storage.repositories.ReconciliationRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
 import net.albayyan.badan.storage.repositories.RouteRepository
@@ -115,6 +119,12 @@ class ExportRunner(
     private val cursors: ExportCursorRepository? = null,
     private val routes: RouteRepository? = null,
     /**
+     * The dedup journal (EPIC-17). Optional/defaulted like the other template collaborators: a
+     * runner built without it simply emits no `corrections[]` (a delta then still carries new rows
+     * and `deletions[]`, just not suppression-flip reconciliation). Only read on the delta path.
+     */
+    private val reconciliation: ReconciliationRepository? = null,
+    /**
      * One [ExportDestinationDelivering] per non-local destination kind. `shareSheet` is handled
      * in-process (the artifacts stay in the temp folder for the UI's share sheet) and needs no
      * entry here; a kind with no registered deliverer fails loudly as `failedDelivery` rather than
@@ -160,12 +170,19 @@ class ExportRunner(
      * plaintext (ADR-0008, EPIC-06). Ignored (and may be omitted) for a non-sensitive scope, which
      * stays exactly the unencrypted behavior it always was.
      */
+    /**
+     * [previousManifestSha] (EPIC-17) is the prior delta's bundle-file sha, carried into THIS
+     * bundle's manifest as `previous_manifest_sha` so a consumer can verify the chain link (§22.6).
+     * Meaningful only alongside a non-null [ingestedSince] (a real delta); a whole-window or
+     * non-delta run ignores it and the manifest's `is_delta` stays false with null cursors.
+     */
     suspend fun run(
         scope: ExportScope,
         format: ExportFormat,
         outputDir: File,
         passphrase: String? = null,
         ingestedSince: Long? = null,
+        previousManifestSha: String? = null,
     ): ExportResult {
         if (scope.includeSensitive && (passphrase == null || !ExportPassphrasePolicy.isValid(passphrase))) {
             throw ExportRunException.SensitiveExportRequiresPassphrase
@@ -232,24 +249,73 @@ class ExportRunner(
         // hydration block/files absent and existing goldens byte-stable.
         val hydrationPayload = gatherHydration(scope, startedAt, ingestedSince)
 
+        // The delta watermark, over the rows the file actually contains (raw/interval/session — the
+        // ingested axis a `sinceLastRun` cursor advances on). Hoisted above generation so the JSON
+        // manifest can carry it as `cursor_after` — the exact value `runTemplate`'s two-phase commit
+        // will advance the cursor to on a successful delivery.
+        val ingestMax = (rawSamples.map { it.provenance.ingestedAt } +
+            intervalRecords.map { it.provenance.ingestedAt } +
+            sessions.map { it.provenance.ingestedAt }).maxOrNull()
+
+        // Delta reconciliation (§22.6), gathered ONLY on a real delta run (`ingestedSince` set). A
+        // delta gathers only LIVE rows, so a removal or dedup flip since the cursor would be
+        // invisible to an add-only consumer; these two queries close that. Both filter on the
+        // deletion/decision instant, not the ingested axis. Re-reporting the same tombstone/flip on
+        // a later run (until the cursor advances past it) is idempotent for a downstream store — the
+        // same forgiving property the cursor's `>` window relies on. Mirror of iOS `run`.
+        //
+        // Gathered for BOTH formats, because the desync is a property of "delta" and not of "JSON":
+        // the cursor advances format-blind (see `runTemplate`'s two-phase commit), so a CSV delta
+        // that dropped these would move its watermark past removals it never reported — the exact
+        // silent desync this section exists to prevent. JSON carries them as the bundle's
+        // `deletions[]`/`corrections[]`; CSV carries them as `deletions.csv` / `corrections.csv`
+        // ([ExportDeltaCsvWriter]), same records, same order.
+        //
+        // Coverage bound, stated rather than papered over: corrections are read from the dedup
+        // JOURNAL (`dedup_decisions`), which is the reversible, inspectable record I3 requires — so
+        // a flip made by writing a row's `suppressed_by` WITHOUT journaling a decision produces no
+        // correction. Every suppression this module's `IngestionPipeline` performs is journaled, but
+        // the bound is NOT vacuous here: `WorkoutDetailScreen`'s "restore" control clears
+        // `suppressed_by` directly and only reverses a journal entry when it found one, so a session
+        // suppressed without a decision (or whose decision was already reversed) is un-suppressed
+        // un-journaled and emits no correction. iOS has no such control, and its own gap is three
+        // `IngestionPipeline` compensation paths — see the mirror of this comment there. Either way
+        // the fix belongs where the flip is written, not in a wider query here.
+        val isDelta = ingestedSince != null
+        var deltaDeletions: List<ExportTombstone> = emptyList()
+        var corrections: List<ExportSuppressionCorrection> = emptyList()
+        if (ingestedSince != null) {
+            deltaDeletions = measurements.tombstones(ingestedSince)
+            reconciliation?.let { corrections = it.decisionsChangedSince(ingestedSince).map(::correctionFrom) }
+        }
+
+        // Delta metadata is stamped ONLY on a real delta run. `ingestMax` is computed for every run
+        // (the cursor two-phase commit needs it regardless), but writing it into a whole-window
+        // manifest as `cursor_after` would publish `is_delta: false` beside a populated window — a
+        // contradiction a consumer cannot resolve, and one that would make a plain "export
+        // everything" file read as a link in an incremental chain. Same for `previous_manifest_sha`:
+        // the caller reads it off the cursor row, which exists as soon as ANY delta has run for that
+        // (template, destination), so a later full export from the same template would otherwise
+        // chain itself to a delta it does not continue. Mirror of iOS `run`.
+        val deltaCursorAfter = if (isDelta) ingestMax else null
+        val deltaPreviousSha = if (isDelta) previousManifestSha else null
+
         val result = when (format) {
             ExportFormat.CSV -> runCsv(
                 scope, exportId, outputDir, startedAt,
                 rawSamples, intervalRecords, sessions, derivedValues, baselines, hydrationPayload,
+                isDelta, deltaDeletions, corrections,
             )
             ExportFormat.JSON -> runJson(
                 scope, exportId, outputDir, startedAt,
                 rawSamples, intervalRecords, sessions, derivedValues, baselines, hydrationPayload,
-                ingestedSince,
+                ingestedSince, isDelta, ingestedSince, deltaCursorAfter, deltaPreviousSha,
+                deltaDeletions, corrections,
             )
         }
 
-        // The delta watermark and ledger row counts, over the rows the file actually contains.
-        // `maxIngestedAt` is the ingested axis a `sinceLastRun` cursor advances on (raw/interval/
-        // session only); logs are derived from the total so the JSON path's log rows are counted.
-        val ingestMax = (rawSamples.map { it.provenance.ingestedAt } +
-            intervalRecords.map { it.provenance.ingestedAt } +
-            sessions.map { it.provenance.ingestedAt }).maxOrNull()
+        // Ledger row counts, over the rows the file actually contains. Logs are derived from the
+        // total so the JSON path's log rows are counted.
         val suppressedCount = rawSamples.count { it.provenance.isSuppressed } +
             intervalRecords.count { it.provenance.isSuppressed } +
             sessions.count { it.provenance.isSuppressed }
@@ -357,6 +423,9 @@ class ExportRunner(
         derivedValues: List<DerivedValue>,
         baselines: List<Baseline>,
         hydration: HydrationExportPayload?,
+        isDelta: Boolean = false,
+        deltaDeletions: List<ExportTombstone> = emptyList(),
+        corrections: List<ExportSuppressionCorrection> = emptyList(),
     ): ExportResult {
         val generatedAt = clock.now()
         val writer = CsvWriter()
@@ -408,8 +477,37 @@ class ExportRunner(
             hydrationRows = hydration.entries.size
         }
 
+        // The CSV delta's reconciliation pair (§22.6). Written on EVERY delta run and on no other
+        // run: their presence is what tells a CSV consumer this artifact is a delta (the CSV
+        // `manifest.json` carries no `is_delta` field), and a header-only file is the affirmative
+        // "nothing was removed / nothing flipped" a reconciling consumer needs — see
+        // [ExportDeltaCsvWriter]'s doc. Checksummed into the manifest exactly like every other CSV,
+        // so tampering or truncation is as detectable here as in raw.csv.
+        //
+        // What this does NOT give a CSV consumer, stated so nobody reads more into it: a CSV export
+        // carries no `previous_manifest_sha`, so the artifacts can be reconciled one by one but the
+        // SEQUENCE cannot be proven complete the way `scripts/verify_export_chain.py` proves it for
+        // JSON bundles. Delta chaining remains a JSON-bundle property (see `chainSha`).
+        if (isDelta) {
+            // Sorted by name (matching iOS) so the file list and the manifest's checksum-key order
+            // are stable and cross-platform-consistent.
+            for ((name, content) in ExportDeltaCsvWriter().files(deltaDeletions, corrections).toSortedMap()) {
+                val bytes = content.toByteArray(Charsets.UTF_8)
+                val file = File(folder, name)
+                file.writeBytes(bytes)
+                checksums[name] = hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+                files += file
+            }
+        }
+
         // The drinks count toward the export total (and the `logs` tally the caller derives from it),
         // so a CSV export's row count reflects the ledger it wrote — matching the JSON path.
+        //
+        // The delta pair is deliberately NOT counted: a tombstone is a record going away, not a
+        // record exported, and `runTemplate` reads `rowCount == 0` as `skippedNoData`. Counting
+        // removals as exported rows would report "this run moved data" for a run that moved none —
+        // and would also stop a deletions-only delta from being re-reported on the next run, which
+        // is the property that makes the tombstone set forgiving.
         val rowCount = rawRows.size + derivedRows.size + hydrationRows
 
         val manifest = makeManifest(exportId, scope, generatedAt, checksums, counts)
@@ -440,6 +538,12 @@ class ExportRunner(
         baselines: List<Baseline>,
         hydration: HydrationExportPayload?,
         ingestedSince: Long? = null,
+        isDelta: Boolean = false,
+        cursorBefore: Long? = null,
+        cursorAfter: Long? = null,
+        previousManifestSha: String? = null,
+        deltaDeletions: List<ExportTombstone> = emptyList(),
+        corrections: List<ExportSuppressionCorrection> = emptyList(),
     ): ExportResult {
         val generatedAt = clock.now()
 
@@ -507,6 +611,9 @@ class ExportRunner(
             manifest = embedded, rawSamples = rawSamples, intervalRecords = intervalRecords,
             sessions = sessions, derivedValues = derivedValues, baselines = baselines,
             symptoms = symptoms, adherence = adherence, workouts = workouts, nutrition = nutrition,
+            isDelta = isDelta, cursorBefore = cursorBefore, cursorAfter = cursorAfter,
+            previousManifestSha = previousManifestSha,
+            additionalDeletions = deltaDeletions, corrections = corrections,
             hydration = hydration, hydrationRedaction = HydrationRedactionPolicy.DEFAULT,
         )
         bundleFile.writeBytes(bundleBytes)
@@ -880,6 +987,34 @@ class ExportRunner(
 
     private fun sha256Hex(bytes: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(bytes))
 
+    /**
+     * Projects a dedup-journal decision onto the delta `corrections[]` record (§22.6). The
+     * suppressed row is the one whose authority flipped; `suppressedBy` is the winner when the
+     * decision is live, or null when it was reversed (the row wins again). `changedAt` is the most
+     * recent flip instant — the reversal if there was one, else the original decision — so a
+     * consumer applies the CURRENT net state, not an intermediate one it never saw. Mirror of iOS
+     * `correction(from:)`.
+     */
+    private fun correctionFrom(d: ReconciliationDecision): ExportSuppressionCorrection =
+        ExportSuppressionCorrection(
+            recordId = d.suppressedRecordId,
+            suppressedBy = if (d.isReversed) null else d.keptRecordId,
+            changedAt = d.reversedAt ?: d.decidedAt,
+        )
+
+    /**
+     * The delta-chain link a successful run stores on the cursor and the ledger: `sha256` of the
+     * delivered bundle file (JSON), which a consumer recomputes from the file to verify the chain.
+     * For CSV — several files, no single bundle, and not a delta-chain vehicle — falls back to the
+     * sha of the `ExportManifest` struct so the ledger field stays populated. Mirror of iOS
+     * `chainSha(for:)`.
+     */
+    private fun chainSha(result: ExportResult): ManifestDigest? {
+        val bundleSha = result.job.manifest?.checksums?.get("bundle.json")
+        if (bundleSha != null) ManifestDigest.of(bundleSha)?.let { return it }
+        return result.job.manifest?.let { ManifestDigest.of(sha256Hex(JsonCoding.encode(it).toByteArray())) }
+    }
+
     // MARK: - EPIC-09/13/14/15/17: template-driven runs, delivery, and the ExportRun ledger
     //
     // Everything below turns a saved `ExportTemplate` into an artifact that has actually been
@@ -980,7 +1115,12 @@ class ExportRunner(
         val result: ExportResult = try {
             when (val agg = template.aggregation) {
                 is ExportAggregation.Raw ->
-                    run(plan.scope, template.format, folder, passphrase, plan.ingestedSince)
+                    // A delta carries the PRIOR run's bundle sha into this bundle's manifest as
+                    // `previous_manifest_sha` — the chain link `verify_export_chain.py` walks. Read
+                    // off the cursor (stored on the last successful delivery), so a retry re-reading
+                    // the same cursor re-emits the same link: the chain stays idempotent.
+                    run(plan.scope, template.format, folder, passphrase, plan.ingestedSince,
+                        cursor?.lastManifestSha?.hex)
                 is ExportAggregation.Bucketed ->
                     runAggregated(plan.scope, template, agg.bucket, agg.method, passphrase,
                         plan.ingestedSince, folder, startedAt)
@@ -1007,7 +1147,12 @@ class ExportRunner(
         }
 
         // 6. Ledger + cursor (two-phase commit).
-        val manifestSha = result.job.manifest?.let { ManifestDigest.of(sha256Hex(JsonCoding.encode(it).toByteArray())) }
+        // The chain link is the delivered BUNDLE'S sha, not the sha of the `ExportManifest` struct:
+        // it is the value a consumer recomputes from the file on disk, so the next run's
+        // `previous_manifest_sha` (read back off this cursor) matches `sha256(bundle.json)` and
+        // `verify_export_chain.py` can walk the chain from the artifacts alone. Falls back to the
+        // struct sha for a format with no single bundle file (CSV), which is not a chain vehicle.
+        val manifestSha = chainSha(result)
         // A delivered run that carried no rows is "there was nothing to export" (§9.5
         // skippedNoData), not a plain success — so an automation that legitimately had nothing to do
         // is distinguishable in Export Health from one that moved data. Matches
@@ -1043,6 +1188,25 @@ class ExportRunner(
         )
         runs.insert(run)
         return TemplateRunResult(run, result, receipt, plan.fellBackFromSinceLastRun)
+    }
+
+    /**
+     * "Re-export everything" (§12 EPIC-17 edge rule): drop the incremental checkpoint for one
+     * (template, destination) so the NEXT `sinceLastRun` run starts from scratch — it re-reads with
+     * no watermark (the disclosed `lastNDays` fallback with a `cursorFallbackNotice`), and a
+     * subsequent run rebuilds a fresh cursor + manifest chain. The chain deliberately breaks here:
+     * the next run's `previous_manifest_sha` is null, marking a new chain root a consumer can see.
+     *
+     * Deliberately a distinct call, never a side effect of a run (the same discipline
+     * `ExportCursorRepository.reset` vs `advance` draws): re-exporting is a user action, never
+     * something a retry can trigger by accident. Returns false — a no-op — when the runner was built
+     * without the cursor collaborator. The UI hook is a later lane; this exposes the capability.
+     * Mirror of iOS `resetCursor`.
+     */
+    fun resetCursor(templateId: String, destinationId: String? = null): Boolean {
+        val cursors = this.cursors ?: return false
+        cursors.reset(templateId, destinationId ?: ExportDestination.SHARE_SHEET_ID)
+        return true
     }
 
     /**
@@ -1124,7 +1288,8 @@ class ExportRunner(
             val name = if (single) {
                 ExportArtifactNaming.fileName(label, start, end, ext, timeZone)
             } else {
-                val role = file.nameWithoutExtension // raw | derived | events | manifest | bundle
+                // raw | derived | events | hydration_* | deletions | corrections | manifest | bundle
+                val role = file.nameWithoutExtension
                 "${ExportArtifactNaming.ROOT_FOLDER}_${slug}_$startStamp-${endStamp}_$role.$ext"
             }
             ExportArtifact(source = file, fileName = name, byteCount = file.length())
@@ -1156,6 +1321,14 @@ class ExportRunner(
     // chain (raw + interval) only; the sensitive namespace is logs, not measurements, so an
     // aggregated file never contains meds/symptoms regardless of `includeSensitive` (which still
     // triggers encryption for defense in depth, matching `run`).
+    //
+    // One limit, named rather than left to be discovered: an aggregated run emits NO `deletions.csv`
+    // / `corrections.csv`, even on a `sinceLastRun` delta. Those tables report by `record_id`, and
+    // an aggregated file has no record ids — its rows are buckets keyed by (metric, bucket, stat),
+    // so a tombstone naming a raw row would point at something that never appeared in the file. A
+    // consumer of bucketed deltas therefore cannot reconcile removals from the artifacts alone and
+    // must periodically take a full-window aggregated export to re-settle its buckets. The
+    // row-level delta (`run`'s raw CSV or JSON path) is the shape that carries reconciliation.
 
     private fun runAggregated(
         scope: ExportScope,

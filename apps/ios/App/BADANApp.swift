@@ -34,6 +34,14 @@ struct BADANApp: App {
             RootView()
                 .environment(env)
                 .task {
+                    // EPIC-32: a notification tap routes to its evidence surface, and every
+                    // notification the app actually observes closes out its budget-ledger row. The
+                    // delegate is constructed without the environment, so both callbacks are wired
+                    // here (on the main actor) once `env` exists.
+                    notificationDelegate.onOpen = { link in env.openDeepLink(link) }
+                    notificationDelegate.onDelivered = { rowId in
+                        env.markNotificationDelivered(ledgerRowId: rowId, at: env.now())
+                    }
                     UNUserNotificationCenter.current().delegate = notificationDelegate
                     await env.bootstrap()
                     // NEW-02/UX-02: self-heal medication-reminder scheduling once per launch
@@ -41,6 +49,9 @@ struct BADANApp: App {
                     // never prompts here — authorization is only ever requested contextually
                     // from the Settings toggle).
                     await env.refreshMedicationReminders()
+                    // EPIC-32: reconcile the budgeted decision notifications the same way — a no-op
+                    // for a user with every class OFF (the default), never prompts.
+                    await env.reconcileDecisionNotifications()
                 }
         }
         // BUG-02: without this, data goes permanently stale after the one connect-time
@@ -65,6 +76,13 @@ struct BADANApp: App {
                 // way to ask whether it is still on, so unconditional re-registration is the only
                 // repair available. Idempotent and cheap.
                 env.background.activate()
+                // EPIC-32: re-arm the budgeted decision notifications on every open, not only at
+                // cold launch. Each enabled class is scheduled as a NON-repeating request (its copy
+                // and its budget slot are decided per day), so once one fires nothing else would arm
+                // the next day's — a warm-launched app that is never terminated would notify once
+                // and then go quiet. Idempotent per class+day via the ledger, a no-op for a user
+                // with every class OFF (the default), and it never prompts.
+                Task { await env.reconcileDecisionNotifications() }
             case .background:
                 let database = env.database
                 // EPIC-04: arm the next best-effort wake. Not a schedule and not a promise —

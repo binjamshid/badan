@@ -83,6 +83,19 @@ final class ReconciliationRepository {
         try db.query("SELECT * FROM dedup_decisions ORDER BY decided_at DESC LIMIT ?;", [.int(limit)]).map(Self.read)
     }
 
+    /// Dedup decisions whose authority FLIPPED since `watermark` — a fresh suppression
+    /// (`decided_at > watermark`) or a reversal (`reversed_at > watermark`) — for a delta export's
+    /// `corrections[]` (§22.6 / EPIC-17). This is the subtle desync EPIC-17 closes: a delta that
+    /// only adds rows silently corrupts a downstream store when a dedup decision reverses, because
+    /// the row it holds as authoritative is now suppressed (or vice versa) and nothing in an
+    /// add-only delta says so. Ordered by `id` for a deterministic, cross-platform-stable array;
+    /// the caller maps each onto the current net `{record_id, suppressed_by, changed_at}`.
+    func decisionsChangedSince(_ watermark: Date) throws -> [ReconciliationDecision] {
+        try db.query("""
+            SELECT * FROM dedup_decisions WHERE decided_at > ? OR reversed_at > ? ORDER BY id ASC;
+            """, [.date(watermark), .date(watermark)]).map(Self.read)
+    }
+
     func markReversed(id: String, at date: Date) throws {
         try db.run("UPDATE dedup_decisions SET reversed_at = ? WHERE id = ?;", [.date(date), .text(id)])
     }

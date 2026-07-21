@@ -34,7 +34,9 @@ interface AutomationDataFreshnessProbing {
  * Fires the "an automation was paused" notification. Best-effort by contract: the load-bearing
  * honesty guarantee is the VISIBLE pause (stored state the UI shows), which holds with no
  * notification permission at all; this is the nudge on top. On Android the notification is delivered
- * only when `POST_NOTIFICATIONS` is granted (EPIC-32 owns that request flow); the pause is not.
+ * only when `POST_NOTIFICATIONS` is granted — EPIC-32 declared that permission and requests it from
+ * the Settings notification toggles, so a user who has opted into any notification class has already
+ * granted it. The pause itself never depends on any of that.
  */
 interface AutomationPauseNotifier {
     fun automationPaused(scheduleId: String, language: AppLanguage)

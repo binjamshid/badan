@@ -172,9 +172,11 @@ class HydrationTest {
 
     // --- v7 migration parity ---
 
-    @Test fun v7IsTheHeadMainMigrationAndCreatesHydrationTables() {
-        val head = Schema.mainMigrations.maxOf { it.version }
-        assertEquals("v7 must be the head main-schema version", 7, head)
+    @Test fun v7CreatesHydrationTables() {
+        // v7 was the head when EPIC-38 shipped; Phase-3A's v8 (reports + notification ledger) now
+        // sits above it, so this test pins what v7 CREATES rather than that it is the maximum version
+        // (the head is pinned by `ProfileHRZonesTest.v8IsTheHeadMainSchemaVersion`).
+        assertTrue("v7 must still exist in the migration list", Schema.mainMigrations.any { it.version == 7 })
         val v7 = Schema.mainMigrations.first { it.version == 7 }.statements.joinToString("\n")
         // The five tables §9.14 mandates this phase.
         for (table in listOf("hydration_entries", "beverage_definitions", "container_presets", "hydration_goals", "hydration_daily_summaries")) {

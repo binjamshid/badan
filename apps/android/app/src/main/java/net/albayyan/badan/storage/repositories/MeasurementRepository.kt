@@ -2,6 +2,7 @@ package net.albayyan.badan.storage.repositories
 
 import net.albayyan.badan.core.MILLIS_PER_DAY
 import net.albayyan.badan.domain.Aggregation
+import net.albayyan.badan.domain.ExportTombstone
 import net.albayyan.badan.domain.IntervalRecord
 import net.albayyan.badan.domain.RawSample
 import net.albayyan.badan.domain.Session
@@ -264,6 +265,37 @@ class MeasurementRepository(private val db: SqliteConnection) {
             listOf(by, updatedAt, recordId),
         )
     }
+
+    /**
+     * The measurement-chain rows tombstoned since [watermark] — for a delta export's `deletions[]`
+     * (§22.6 / EPIC-17). A delta gathers only LIVE rows (every read above filters `deleted_at IS
+     * NULL`), so a row soft-deleted after the last run would otherwise be invisible to a downstream
+     * store that only ever receives additions. This is the one read that deliberately looks PAST
+     * that filter, at `deleted_at` alone.
+     *
+     * The axis is `deleted_at`, not the ingested watermark: a tombstone's job is to report WHEN a
+     * row went away, which the ingested axis says nothing about. `> watermark` (strictly) matches
+     * the cursor's forward-only window; re-reporting a tombstone on a later run until the cursor
+     * advances past it is idempotent for a downstream store. Ordered by `record_id` for a
+     * deterministic, cross-platform-stable array. Mirror of iOS `tombstones(since:)`.
+     */
+    fun tombstones(watermark: Long): List<ExportTombstone> =
+        db.query(
+            """
+            SELECT id, 'raw_sample' AS entity, deleted_at, tz_id FROM raw_samples WHERE deleted_at > ?
+            UNION ALL
+            SELECT id, 'interval_record' AS entity, deleted_at, tz_id FROM interval_records WHERE deleted_at > ?
+            UNION ALL
+            SELECT id, 'session' AS entity, deleted_at, tz_id FROM sessions WHERE deleted_at > ?
+            ORDER BY id ASC;
+            """.trimIndent(),
+            listOf(watermark, watermark, watermark),
+        ).map {
+            ExportTombstone(
+                recordId = it.requireString("id"), entity = it.requireString("entity"),
+                deletedAt = it.requireDate("deleted_at"), tzId = it.requireString("tz_id"),
+            )
+        }
 
     fun session(id: String): Session? =
         db.query("SELECT * FROM sessions WHERE id = ?;", listOf(id)).firstOrNull()?.let { readSession(it) }

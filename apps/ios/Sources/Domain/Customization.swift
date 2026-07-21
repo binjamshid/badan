@@ -47,34 +47,70 @@ public struct HomeModule: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+/// A notification quiet-hours window, in local wall-clock hours. `startHour` is inclusive,
+/// `endHour` exclusive; a window may wrap past midnight (e.g. 22→07). EPIC-32's decision engine
+/// consults it per notification class so a calm nudge never lands in the middle of the night.
+/// Stored as two ints rather than `Date`s because it is a recurring wall-clock rule, not an instant.
+///
+/// Deliberately distinct from `Domain/Automation`'s minute-based `QuietHours` (EPIC-15): that one
+/// carries an export-schedule's `"HH:mm-HH:mm"` storage-string parity contract, this one is an
+/// hour-granularity user preference. Coupling the two types would tie a notification-prefs change to
+/// the automation-schedule storage format for no shared benefit.
+public struct NotificationQuietHours: Codable, Hashable, Sendable {
+    public var startHour: Int   // 0…23, inclusive
+    public var endHour: Int     // 0…23, exclusive (may be < startHour to wrap midnight)
+
+    public init(startHour: Int, endHour: Int) {
+        self.startHour = startHour
+        self.endHour = endHour
+    }
+
+    /// The default night window applied to non-med classes: 22:00 → 07:00 local.
+    public static let defaultNight = NotificationQuietHours(startHour: 22, endHour: 7)
+}
+
 public struct NotificationPreference: Codable, Hashable, Sendable {
     public var morningNarrative: Bool
     public var weeklyDigest: Bool
     public var medicationReminders: Bool
     public var dataPausedAlerts: Bool
+    /// EPIC-32 per-class opt-in for the decision-engine classes, keyed by `NotificationClass`'s
+    /// storage code (`readiness`, `windDown`, `deviation`, `exportHealth`, `hydration`). A missing
+    /// key means OFF — every class is opt-in and ships OFF (the existing convention), so an empty
+    /// map is "nothing enabled". `meds` is deliberately NOT keyed here: it keeps using
+    /// `medicationReminders` above so the existing med-reminder wiring and tests are untouched.
+    public var classOptIn: [String: Bool]
+    /// EPIC-32 quiet-hours window honoured by every non-med decision class. Modeled as one window
+    /// (what a user means by "don't notify me at night"); the engine takes it PER class, so a future
+    /// per-class override slots in without a schema change.
+    public var quietHours: NotificationQuietHours
 
     // STUB-12: `morningNarrative`/`weeklyDigest`/`dataPausedAlerts` used to default `true` —
     // pre-consenting every user to notification categories that have no delivery mechanism at
     // all (`SettingsScreen` hides their toggles for exactly this reason — see NEW-02/UX-02).
     // All four now default `false`; only an explicit, working toggle should ever flip one on.
     public init(morningNarrative: Bool = false, weeklyDigest: Bool = false,
-                medicationReminders: Bool = false, dataPausedAlerts: Bool = false) {
+                medicationReminders: Bool = false, dataPausedAlerts: Bool = false,
+                classOptIn: [String: Bool] = [:], quietHours: NotificationQuietHours = .defaultNight) {
         self.morningNarrative = morningNarrative; self.weeklyDigest = weeklyDigest
         self.medicationReminders = medicationReminders; self.dataPausedAlerts = dataPausedAlerts
+        self.classOptIn = classOptIn; self.quietHours = quietHours
     }
 
-    // STUB-12: tolerant decode — any of these four fields missing from a persisted profile
-    // (an older install, or a preference added after that profile was last saved) decodes to
-    // `false`, matching the new default above, instead of the synthesized all-or-nothing
-    // `Decodable` failing the whole `NotificationPreference` decode — which would fail the
-    // enclosing `CustomizationProfile` decode in turn, and `ProfileRepository.load()` treats any
-    // decode failure as "no saved profile," silently resetting every other preference too.
+    // STUB-12: tolerant decode — any of these fields missing from a persisted profile (an older
+    // install, or a preference added after that profile was last saved) decodes to its default,
+    // instead of the synthesized all-or-nothing `Decodable` failing the whole
+    // `NotificationPreference` decode — which would fail the enclosing `CustomizationProfile` decode
+    // in turn, and `ProfileRepository.load()` treats any decode failure as "no saved profile,"
+    // silently resetting every other preference too.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         morningNarrative = try c.decodeIfPresent(Bool.self, forKey: .morningNarrative) ?? false
         weeklyDigest = try c.decodeIfPresent(Bool.self, forKey: .weeklyDigest) ?? false
         medicationReminders = try c.decodeIfPresent(Bool.self, forKey: .medicationReminders) ?? false
         dataPausedAlerts = try c.decodeIfPresent(Bool.self, forKey: .dataPausedAlerts) ?? false
+        classOptIn = try c.decodeIfPresent([String: Bool].self, forKey: .classOptIn) ?? [:]
+        quietHours = try c.decodeIfPresent(NotificationQuietHours.self, forKey: .quietHours) ?? .defaultNight
     }
 }
 

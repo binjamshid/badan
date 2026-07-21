@@ -2,6 +2,7 @@ package net.albayyan.badan.app
 
 import android.content.Context
 import android.os.Bundle
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -19,6 +20,7 @@ import net.albayyan.badan.core.SystemClock
 import net.albayyan.badan.core.Ulid
 import net.albayyan.badan.domain.CustomizationProfile
 import net.albayyan.badan.domain.DepthPolicy
+import net.albayyan.badan.domain.NotificationQuietHours
 import net.albayyan.badan.domain.PermissionState
 import net.albayyan.badan.domain.PermissionStatus
 import net.albayyan.badan.platform.health.HealthConnectAdapter
@@ -33,11 +35,14 @@ import net.albayyan.badan.domain.derivation.SleepIntelligenceEngine
 import net.albayyan.badan.domain.ingestion.IngestionPipeline
 import net.albayyan.badan.domain.automation.AutomationEngine
 import net.albayyan.badan.domain.automation.ExportRunnerAutomationRunner
+import net.albayyan.badan.domain.reports.ReportBuilder
+import net.albayyan.badan.domain.reports.ReportGenerationService
 import net.albayyan.badan.export.ExportRunner
-import net.albayyan.badan.export.destinations.ContentResolverTreeDocumentGateway
-import net.albayyan.badan.export.destinations.FileFolderDestination
-import net.albayyan.badan.export.destinations.SharedPrefsTreeUriStore
+import net.albayyan.badan.export.destinations.RestDestinationAvailability
 import net.albayyan.badan.platform.notifications.AndroidAutomationPauseNotifier
+import net.albayyan.badan.platform.notifications.AndroidNotificationScheduler
+import net.albayyan.badan.platform.notifications.NotificationClass
+import net.albayyan.badan.platform.notifications.NotificationDecisionEngine
 import net.albayyan.badan.storage.repositories.AutomationDataFreshnessProbe
 import net.albayyan.badan.storage.repositories.AutomationScheduleRepository
 import net.albayyan.badan.storage.repositories.ExportCursorRepository
@@ -59,11 +64,17 @@ import net.albayyan.badan.storage.repositories.HydrationRepository
 import net.albayyan.badan.storage.repositories.InsightRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
+import net.albayyan.badan.storage.repositories.NotificationDeliveryRepository
+import net.albayyan.badan.storage.repositories.NotificationOutcome
 import net.albayyan.badan.storage.repositories.ProfileRepository
 import net.albayyan.badan.storage.repositories.ReadAnchorRepository
 import net.albayyan.badan.storage.repositories.ReconciliationRepository
+import net.albayyan.badan.storage.repositories.ReportRepository
 import net.albayyan.badan.storage.repositories.RouteRepository
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Calendar
+import java.util.TimeZone
 
 /**
  * The composition root and dependency container. Owns the two databases, repositories, services,
@@ -112,6 +123,14 @@ class AppEnvironment(context: Context) {
     val backgroundRuns: BackgroundRunRepository = BackgroundRunRepository(database.main)
     val routes: RouteRepository = RouteRepository(database.main)
     val readAnchors: ReadAnchorRepository = ReadAnchorRepository(database.main)
+    // EPIC-32 notification budget ledger (`notification_deliveries`, migration v8). Main DB — a
+    // scheduling decision is operational metadata, not a health record, and the budget must be
+    // readable without unlocking the sensitive namespace (I7).
+    val notificationDeliveries: NotificationDeliveryRepository =
+        NotificationDeliveryRepository(database.main)
+    // EPIC-31 periodic-report metadata (`reports`, migration v8). Main DB, and DERIVED: the rendered
+    // PDF is a regenerable file; the row is never a source of truth — see [ReportRepository].
+    val reports: ReportRepository = ReportRepository(database.main)
 
     // Services
     val ingestion: IngestionPipeline =
@@ -168,15 +187,18 @@ class AppEnvironment(context: Context) {
             runs = ExportRunRepository(database.main),
             cursors = ExportCursorRepository(database.main),
             routes = RouteRepository(database.main),
+            // EPIC-17: the dedup journal, so a delta run emits suppression-flip `corrections[]` when a
+            // dedup decision reversed since the last cursor (the add-only desync guard).
+            reconciliation = reconciliation,
             // A scheduled/automation export owns the ledger too — a drink is the user's own data (raw
             // data is never paywalled), so the background lane exports it exactly like the share sheet.
             hydration = hydration,
-            deliverers = listOf(
-                FileFolderDestination(
-                    SharedPrefsTreeUriStore(appContext),
-                    ContentResolverTreeDocumentGateway(appContext),
-                ),
-            ),
+            // The registered delivery surface of this build, assembled in one place so "what can
+            // this build send an export to?" has a single answer. EPIC-20's REST deliverer is
+            // deliberately NOT in it — see `RestDestinationAvailability` for the flag, the reason
+            // and everything that has to ship alongside it before it is (including the `INTERNET`
+            // permission this manifest no longer declares).
+            deliverers = RestDestinationAvailability.deliverers(appContext),
         )
         AutomationEngine(
             schedules = AutomationScheduleRepository(database.main),
@@ -187,6 +209,20 @@ class AppEnvironment(context: Context) {
             clock = clock,
         )
     }
+
+    /**
+     * EPIC-31. The pure periodic-report builder (derived store → typed `ReportModel`) and the thin
+     * service that persists its metadata and answers the substrate's "is a weekly report due?". The
+     * PDF renderer is stateless (`ReportRenderer`) so it needs no wiring here.
+     */
+    val reportBuilder: ReportBuilder = ReportBuilder(derivation, logging)
+    val reportGeneration: ReportGenerationService = ReportGenerationService(
+        builder = reportBuilder,
+        reports = reports,
+        clock = clock,
+        deviceId = deviceId,
+        timezone = { TimeZone.getDefault().id },
+    )
 
     private val seedController: SeedController =
         SeedController(catalog, ingestion, logging, measurements, baselines, insightEngine, registry,
@@ -506,6 +542,12 @@ class AppEnvironment(context: Context) {
         // be lost to a force-stop, a "clear data", or an OEM cleaner, and an app launch is the one
         // moment BADAN is guaranteed to be running and able to notice.
         reconcileBackgroundSchedule()
+        // EPIC-32: the same self-heal for the budgeted decision notifications, and for the same
+        // reasons — the enqueued work is one-shot, so a force-stop or an OEM cleaner that drops it
+        // would otherwise end the daily cadence silently. Mirrors the iOS launch reconcile in
+        // `BADANApp`. A no-op for a user with every class OFF (the default) and it never prompts:
+        // requesting POST_NOTIFICATIONS is an explicit-user-action concern owned by Settings.
+        reconcileDecisionNotifications()
         isReady = true
     }
 
@@ -547,6 +589,247 @@ class AppEnvironment(context: Context) {
         onboardingComplete = true
         prefs.edit().putBoolean(ONBOARDING_KEY, true).apply()
     }
+
+    // MARK: - Decision-engine notifications (EPIC-32)
+
+    /**
+     * The Android I/O shell for notifications: channels, the `POST_NOTIFICATIONS` check, posting and
+     * WorkManager scheduling. Every gating decision is made by [NotificationDecisionEngine] before
+     * this is touched.
+     */
+    val notificationScheduler: AndroidNotificationScheduler = AndroidNotificationScheduler(appContext)
+
+    /** The zone every notification day-window and quiet-hours check is evaluated in. */
+    private val notificationZone: ZoneId get() = ZoneId.systemDefault()
+
+    /**
+     * Whether the user has enabled a given notification class. `MEDS` reads the existing
+     * `medicationReminders` preference so the shape matches iOS exactly — but note that Android
+     * schedules no medication reminders at all (standing parity debt, see
+     * [AndroidNotificationScheduler]), so on this platform that branch gates nothing today. Every
+     * other class reads the per-class opt-in map, which defaults every class OFF.
+     */
+    fun isNotificationClassEnabled(cls: NotificationClass): Boolean =
+        if (cls.isMedication) profile.notifications.medicationReminders
+        else profile.notifications.classOptIn[cls.code] ?: false
+
+    /**
+     * Turn one budgeted class on or off. Persists the preference, then reconciles the OS side:
+     * enabling schedules the class's next occurrence (still subject to the budget, quiet hours and
+     * the shared ceiling — a toggle is a request, not a guarantee that a notice fits today), and
+     * disabling cancels its pending work, clears any notice on screen, and marks its still-scheduled
+     * ledger rows `cancelled` so the budget slot it was holding is released.
+     */
+    fun setNotificationClassEnabled(cls: NotificationClass, enabled: Boolean) {
+        update { it.copy(notifications = it.notifications.copy(
+            classOptIn = it.notifications.classOptIn + (cls.code to enabled),
+        )) }
+        if (enabled) {
+            notificationScheduler.ensureChannels(language)
+            reconcileDecisionNotifications()
+        } else {
+            notificationScheduler.cancel(cls)
+            val at = now()
+            ioScope.launch { runCatching { notificationDeliveries.cancelScheduled(cls, at) } }
+        }
+    }
+
+    /** Persist a change to the shared quiet-hours window and re-reconcile what is scheduled. */
+    fun setNotificationQuietHours(quietHours: NotificationQuietHours) {
+        update { it.copy(notifications = it.notifications.copy(quietHours = quietHours)) }
+        reconcileDecisionNotifications()
+    }
+
+    /**
+     * The next time [cls] should fire — the next occurrence of its default local hour, on the wall
+     * clock rather than by adding 24h, so a DST shift does not walk the reminder an hour per season.
+     */
+    fun nextDecisionFireAt(cls: NotificationClass, now: Long, zone: ZoneId): Long {
+        val local = Instant.ofEpochMilli(now).atZone(zone)
+        val hour = NotificationClass.defaultHour(cls)
+        val todayAt = local.toLocalDate().atStartOfDay(zone).plusHours(hour.toLong())
+        val next = if (todayAt.toInstant().toEpochMilli() > now) todayAt else todayAt.plusDays(1)
+        return next.toInstant().toEpochMilli()
+    }
+
+    /**
+     * Bring the time-based decision notifications in line with the current preferences: schedule each
+     * enabled class's next occurrence (subject to the ≤2/day budget, quiet hours, opt-in and the
+     * shared ceiling), and cancel any class the user has turned off. Idempotent — safe to call at
+     * every launch. A no-op for a user with every class OFF (the default), and it never prompts:
+     * requesting `POST_NOTIFICATIONS` is an explicit-user-action concern owned by the settings
+     * screen. When notifications are unavailable it cancels rather than leaving stale work queued,
+     * mirroring the iOS reconcile path.
+     *
+     * The evaluation itself runs off the UI thread because it reads the ledger (SQLite).
+     */
+    fun reconcileDecisionNotifications() {
+        ioScope.launch { reconcileDecisionNotificationsBlocking() }
+    }
+
+    /**
+     * The body of [reconcileDecisionNotifications], run on the caller's thread.
+     *
+     * `SyncWorker` calls this one rather than the fire-and-forget wrapper: a worker's process can be
+     * torn down the instant `doWork` returns, so work handed to [ioScope] from inside it may simply
+     * never happen. Everything here reads the ledger (SQLite), so a UI-thread caller must use the
+     * wrapper above instead.
+     *
+     * Why the periodic wake re-runs this at all: the enqueued notification work is a one-shot per
+     * class, so once it fires nothing would arm the next day's — a class the user enabled would
+     * notify once and go quiet until the next app launch. Riding the existing hourly wake (the same
+     * substrate EPIC-15's automations and EPIC-31's reports use) keeps the cadence going without a
+     * second schedule of its own. Idempotent per class+day via the ledger, so extra wakes are free.
+     */
+    fun reconcileDecisionNotificationsBlocking() {
+        if (!notificationScheduler.canPost()) {
+            notificationScheduler.cancelAll()
+            return
+        }
+        notificationScheduler.ensureChannels(language)
+        val lang = language
+        val quiet = profile.notifications.quietHours
+        for (cls in NotificationClass.timeBased) {
+            if (isNotificationClassEnabled(cls)) {
+                runCatching {
+                    evaluateAndSchedule(cls, nextDecisionFireAt(cls, now(), notificationZone), lang, quiet)
+                }
+            } else {
+                notificationScheduler.cancel(cls)
+            }
+        }
+    }
+
+    /**
+     * Raise an event-driven decision notification (deviation, export-health) now, subject to the same
+     * budget/opt-in/quiet-hours/ceiling gate, and post it immediately when the engine allows. Returns
+     * the verdict so a caller can record or test it. The content is generic and value-free, so
+     * raising it leaks nothing onto the lock screen.
+     *
+     * Nothing calls this yet — not production code, and not the test suite either, which covers the
+     * pure engine's verdicts rather than this adapter. It is the seam a deviation detector or the
+     * export-health surface will call. Its classes are correspondingly absent from
+     * [NotificationClass.userFacing]; wire a producer and add the toggle in the same change.
+     *
+     * Blocking (it reads the ledger), so a future caller must invoke it from a background context
+     * (`SyncWorker` is the intended home), never a Compose click handler.
+     */
+    fun raiseDecisionNotification(cls: NotificationClass, at: Long = now()): NotificationDecisionEngine.Decision {
+        if (!notificationScheduler.canPost()) return NotificationDecisionEngine.Decision.SUPPRESSED_NOT_AUTHORIZED
+        notificationScheduler.ensureChannels(language)
+        return evaluateAndSchedule(cls, at, language, profile.notifications.quietHours)
+    }
+
+    /**
+     * The one place a decision notification is gated and, if allowed, scheduled/posted and recorded.
+     * Reads the day's ledger count and the pending count, asks the pure engine, and on `SCHEDULED`
+     * reserves the ledger row that makes the budget survive the next app open BEFORE handing
+     * anything to the OS. Idempotent per class+day via the ledger check.
+     *
+     * The write order is the whole point. The ≤2/day ceiling is a hard invariant, and the ledger is
+     * the only thing that remembers it across process death — so a notification that went out
+     * without its row would let the next evaluation read a lower count and quietly deliver a third.
+     * Reserving first makes the only possible failure a conservative one: a row with no notification
+     * behind it costs the user a nudge, which is visible and self-corrects the next day, where an
+     * unaccounted notification breaks an invariant nobody can observe breaking.
+     *
+     * A suppressed verdict is written to the ledger too (as `suppressed`, which consumes no budget),
+     * so "why didn't I get my morning summary?" is answerable from recorded history rather than
+     * guesswork — the same reasoning `background_runs` exists for.
+     */
+    private fun evaluateAndSchedule(
+        cls: NotificationClass,
+        fireAt: Long,
+        language: AppLanguage,
+        quietHours: NotificationQuietHours,
+    ): NotificationDecisionEngine.Decision {
+        val zone = notificationZone
+        // Already committed for this class+day — don't stack a duplicate on a second evaluation. The
+        // opt-in is re-read rather than assumed: a class the user turned off after its row was
+        // written did NOT get scheduled by this call, so reporting `SCHEDULED` would name a verdict
+        // that never happened. (The already-written row keeps holding its budget slot until
+        // `setNotificationClassEnabled`'s cancel path releases it; that is its job, not this one's.)
+        if (notificationDeliveries.hasScheduled(cls, fireAt, zone)) {
+            return if (isNotificationClassEnabled(cls)) {
+                NotificationDecisionEngine.Decision.SCHEDULED
+            } else {
+                NotificationDecisionEngine.Decision.SUPPRESSED_OPTED_OUT
+            }
+        }
+
+        val enabled = isNotificationClassEnabled(cls)
+        val context = NotificationDecisionEngine.Context(
+            zone = zone,
+            optedIn = { enabled },
+            quietHours = { quietHours },
+            nonMedScheduledToday = notificationDeliveries.countBudgeted(fireAt, zone),
+            // Android has no medication-reminder scheduler, so nothing med-shaped is ever pending
+            // here. Stated as a literal with this comment rather than silently omitted: the day the
+            // Android med scheduler lands, this is the line that must start reporting its count.
+            pendingMedCount = 0,
+            pendingNonMedCount = notificationDeliveries.pendingNonMedCount(now()),
+        )
+
+        val decision = NotificationDecisionEngine.decide(
+            NotificationDecisionEngine.Candidate(cls, fireAt), context,
+        )
+        val at = now()
+        if (decision != NotificationDecisionEngine.Decision.SCHEDULED) {
+            // Diagnostics only — a suppressed row consumes no budget, so a failed write here changes
+            // nothing the user experiences. Logged rather than swallowed all the same.
+            recordDecisionLedgerRow(cls, fireAt, NotificationOutcome.SUPPRESSED, at)
+            return decision
+        }
+
+        // Reserve the budget slot first — see the note above on why the order is load-bearing.
+        val reserved = runCatching {
+            notificationDeliveries.record(cls, fireAt, NotificationOutcome.SCHEDULED, at, deviceId)
+        }.onFailure {
+            Log.e(TAG, "decision ledger reservation failed for ${cls.code}; not scheduling", it)
+        }.getOrNull() ?: return NotificationDecisionEngine.Decision.SUPPRESSED_LEDGER_UNAVAILABLE
+
+        if (fireAt > at) {
+            // The delivery worker closes this row out when it actually posts.
+            notificationScheduler.schedule(cls, fireAt, language, at)
+        } else {
+            val posted = notificationScheduler.post(cls, language)
+            // Close the reserved row out honestly: `delivered` when the system took it, `suppressed`
+            // (which releases the slot again) when it refused. A failure of THIS write leaves the row
+            // `scheduled`, which over-counts the day rather than under-counting it — the safe way to
+            // be wrong about a hard ceiling.
+            runCatching {
+                if (posted) {
+                    notificationDeliveries.markDelivered(reserved.id, at)
+                } else {
+                    notificationDeliveries.transition(reserved.id, NotificationOutcome.SUPPRESSED, at)
+                }
+            }.onFailure { Log.e(TAG, "closing out the ledger row for ${cls.code} failed", it) }
+        }
+        return decision
+    }
+
+    /**
+     * Append one ledger row, swallowing nothing silently: a failed write goes to the log so a missing
+     * diagnostic row is inspectable rather than invisible. Only ever used for rows that consume NO
+     * budget — the budget-consuming reservation is deliberately not best-effort and lives inline in
+     * [evaluateAndSchedule], where its failure changes the outcome.
+     */
+    private fun recordDecisionLedgerRow(
+        cls: NotificationClass,
+        fireAt: Long,
+        outcome: NotificationOutcome,
+        at: Long,
+    ) {
+        runCatching { notificationDeliveries.record(cls, fireAt, outcome, at, deviceId) }
+            .onFailure { Log.e(TAG, "decision ledger write (${outcome.code}) failed for ${cls.code}", it) }
+    }
+
+    /** Close out [cls]'s reserved ledger row once the OS has accepted the post (delivery worker). */
+    fun markNotificationDelivered(cls: NotificationClass, at: Long) {
+        runCatching { notificationDeliveries.markDeliveredForClass(cls, at) }
+            .onFailure { Log.e(TAG, "marking ${cls.code} delivered failed", it) }
+    }
+
 
     // MARK: - Presentation mutations (persisted)
 
@@ -640,6 +923,14 @@ class AppEnvironment(context: Context) {
     }
 
     companion object {
+        /**
+         * EPIC-32. The budget ledger's writes back the ≤2/day invariant, so a failed write is a fact
+         * worth surfacing rather than a bare `runCatching {}` away. Nothing logged under this tag
+         * names a notification's CONTENT or any health value — only the storage code of the class
+         * and the storage error.
+         */
+        private const val TAG = "BadanNotifications"
+
         private const val PREFS = "badan.prefs"
         private const val DEVICE_KEY = "badan.deviceId"
 

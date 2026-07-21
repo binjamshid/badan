@@ -28,6 +28,7 @@ import net.albayyan.badan.app.Navigator
 import net.albayyan.badan.app.RootScreen
 import net.albayyan.badan.designsystem.BadanTheme
 import net.albayyan.badan.domain.AppTheme
+import net.albayyan.badan.platform.notifications.NotificationDeepLink
 import net.albayyan.badan.platform.shortcuts.ShortcutActions
 
 class MainActivity : ComponentActivity() {
@@ -118,6 +119,29 @@ class MainActivity : ComponentActivity() {
             "insights" -> navigator.selectTab(3)
         }
         handleShortcutIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    /**
+     * EPIC-32 — a tapped notification carries its evidence surface as
+     * [NotificationDeepLink.EXTRA], stamped by `AndroidNotificationScheduler.post`. Routing is at
+     * TAB granularity, matching iOS's `NotificationDeepLink.tab`: every destination here is a
+     * top-level surface that always exists, so a tap always lands somewhere meaningful. Pushing the
+     * exact detail screen (readiness anatomy, the Health Monitor, Export & Automation Health) waits
+     * on the shared navigation-path work — stated plainly rather than claimed.
+     *
+     * Tabs, per `Navigator`: Today = 0, Body = 1, Log = 2, Insights = 3. An intent with no (or an
+     * unrecognized) deep link is left alone rather than bounced to a default tab.
+     */
+    private fun handleNotificationIntent(intent: Intent?) {
+        when (NotificationDeepLink.fromCode(intent?.getStringExtra(NotificationDeepLink.EXTRA))) {
+            NotificationDeepLink.READINESS, NotificationDeepLink.SLEEP -> navigator.selectTab(0)
+            NotificationDeepLink.HEALTH_MONITOR -> navigator.selectTab(1)
+            // The Export Center is reached from Home, so that is where an export-health notice lands.
+            NotificationDeepLink.EXPORT_HEALTH -> navigator.selectTab(0)
+            NotificationDeepLink.HYDRATION, NotificationDeepLink.MEDS -> navigator.selectTab(2)
+            null -> Unit
+        }
     }
 
     /**

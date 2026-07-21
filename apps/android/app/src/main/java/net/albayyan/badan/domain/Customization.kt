@@ -69,12 +69,53 @@ data class HomeModule(
     val order: Int,
 )
 
+/**
+ * A notification quiet-hours window, in local wall-clock hours. [startHour] is inclusive,
+ * [endHour] exclusive; a window may wrap past midnight (e.g. 22→07). EPIC-32's decision engine
+ * consults it per notification class so a calm nudge never lands in the middle of the night.
+ * Stored as two ints rather than instants because it is a recurring wall-clock rule, not a moment.
+ *
+ * Deliberately distinct from `domain.automation`'s minute-based `QuietHours` (EPIC-15): that one
+ * carries an export schedule's `"HH:mm-HH:mm"` storage-string parity contract, this one is an
+ * hour-granularity user preference. Coupling the two would tie a notification-prefs change to the
+ * automation-schedule storage format for no shared benefit. Mirror of iOS `NotificationQuietHours`.
+ */
+@Serializable
+data class NotificationQuietHours(
+    val startHour: Int = DEFAULT_START,   // 0…23, inclusive
+    val endHour: Int = DEFAULT_END,       // 0…23, exclusive (may be < startHour to wrap midnight)
+) {
+    companion object {
+        /** The default night window applied to non-med classes: 22:00 → 07:00 local. */
+        const val DEFAULT_START = 22
+        const val DEFAULT_END = 7
+        val defaultNight = NotificationQuietHours(DEFAULT_START, DEFAULT_END)
+    }
+}
+
 @Serializable
 data class NotificationPreference(
-    val morningNarrative: Boolean = true,
-    val weeklyDigest: Boolean = true,
+    // These three carry no delivery on either platform. iOS (STUB-12) already defaults them off
+    // rather than pre-consenting every user to categories nothing sends; Android matches, so the
+    // two profiles decode to the same state and neither ships a silent "yes" the app cannot honour.
+    val morningNarrative: Boolean = false,
+    val weeklyDigest: Boolean = false,
     val medicationReminders: Boolean = false,
-    val dataPausedAlerts: Boolean = true,
+    val dataPausedAlerts: Boolean = false,
+    /**
+     * EPIC-32 per-class opt-in for the decision-engine classes, keyed by `NotificationClass`'s
+     * storage code (`readiness`, `windDown`, `deviation`, `exportHealth`, `hydration`). A missing
+     * key means OFF — every class is opt-in and ships OFF (the existing convention), so an empty
+     * map is "nothing enabled". `meds` is deliberately NOT keyed here: it keeps using
+     * [medicationReminders] above, so the shape stays identical to iOS.
+     */
+    val classOptIn: Map<String, Boolean> = emptyMap(),
+    /**
+     * EPIC-32 quiet-hours window honoured by every non-med decision class. Modeled as one window
+     * (what a user means by "don't notify me at night"); the engine takes it PER class, so a future
+     * per-class override slots in without a schema change.
+     */
+    val quietHours: NotificationQuietHours = NotificationQuietHours.defaultNight,
 )
 
 enum class GoalDirection(val code: String) {

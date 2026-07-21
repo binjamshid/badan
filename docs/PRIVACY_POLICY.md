@@ -1,15 +1,20 @@
 # BADAN — Privacy Policy
 
-**Last updated: 2026-07-16**
+**Last updated: 2026-07-21**
 **Applies to: BADAN for iOS, version 0.1.0**
 
 BADAN is a private, on-device health repository. This policy describes exactly
 what data the app touches, where it is kept, and what it never does. It is
 written to match how the app actually behaves — not as boilerplate.
 
-The short version: **everything stays on your device.** BADAN has no servers,
-no accounts, and makes no network calls. Nothing you see in the app is ever
-transmitted anywhere by the app.
+The short version: **everything stays on your device.** BADAN has no servers of
+its own, no accounts, and it never sends your data anywhere on its own
+initiative. **Creating an export file involves no network** — that is a property
+of how the app is built, not a setting you have to find. In this version there is
+no way to point an export at a server, so nothing leaves the device except a file
+you hand to another app yourself. If a later version lets you deliver an export
+to a server, it will only ever be a server *you* entered and control; BADAN never
+picks a destination for you. See sections 4 and 5.
 
 ---
 
@@ -79,8 +84,13 @@ databases go with it.
 
 In this version, BADAN:
 
-- **Makes no network calls.** There is no server to talk to. The app has no
-  networking code paths in normal operation.
+- **Makes no network calls.** BADAN has no server of its own to talk to, no
+  analytics, no crash uploads, and no background transfers. **Creating an export
+  file involves no network** — generation happens entirely on your device, and
+  the build is checked for that on every change, so it cannot quietly stop being
+  true. Sending an export somewhere would be a separate, deliberate act with its
+  own code; this version has no way for you to set one up, so no data is
+  transmitted at all.
 - **Has no accounts and no sign-in.**
 - **Uses no third-party SDKs**, no analytics, no crash reporting, no telemetry,
   and no advertising.
@@ -94,9 +104,16 @@ In this version, BADAN:
 
 - **Export.** From Settings → Data & privacy → Export, you can export your data
   as CSV or JSON, accompanied by a checksummed manifest so you can verify
-  integrity. The export is created on your device and handed to you (for example
-  through the iOS share sheet); BADAN does not send it anywhere. What you do with
-  the exported file afterward is your choice.
+  integrity. The export is created on your device with no network involved. It is
+  handed to you (for example through the iOS share sheet) or saved to a folder you
+  picked, and BADAN sends it nowhere. What you do with the exported file afterward
+  is your choice.
+
+  If a later version offers to deliver an export to a server, two things stay
+  true and are worth stating now: the file is still *created* with no network,
+  and the address is one you typed in — BADAN never chooses a destination for
+  you, and it would ask you to confirm that in as many words before the first
+  send.
 - **Delete everything.** Settings → Data management → "Delete all data"
   permanently deletes everything on the device across both databases, including
   anything you logged yourself. This cannot be undone.

@@ -122,10 +122,19 @@ struct ExportManageService {
 
     /// The concrete window a template's `rangeRule` resolves to for a run starting `now`.
     ///
-    /// Kept in step with `IntentExportService.resolvedWindow` on purpose — the two run paths must
-    /// turn the same rule into the same window, or "the Shortcut and the button export different
-    /// data" becomes a real bug. `sinceLastRun` takes §12 EPIC-09's sanctioned no-cursor fallback
-    /// (a bounded window *with a notice*) because the delta chain (EPIC-17) isn't wired yet.
+    /// **`sinceLastRun` on this path is a window, never a delta, and that is a limit of this path
+    /// alone.** `ExportRunner.run` does take an `ingestedSince` watermark — it is an optional
+    /// parameter of the very overload called below — and both `ExportRunner.runTemplate` and
+    /// `IntentExportService` now pass one, resolving the rule through the shared, pure
+    /// `ExportRunner.resolveRange` and advancing the cursor under the two-phase commit. This service
+    /// does neither yet: it still takes §12 EPIC-09's bounded window, and it discloses which of the
+    /// two situations the user is in rather than reporting "no checkpoint yet" when there is one.
+    ///
+    /// So the Export Center button and a Shortcut running the SAME `sinceLastRun` template do not
+    /// currently export the same rows — the Shortcut takes the delta, this takes 30 days and leaves
+    /// the checkpoint untouched. `sinceLastRunIgnoredNotice` is what keeps that from being silent;
+    /// closing it means routing this path through `ExportRunner.resolveRange` the way the other two
+    /// already do, which is a change this lane did not make.
     struct ResolvedWindow {
         let start: Date?
         let end: Date?
@@ -143,16 +152,28 @@ struct ExportManageService {
         case .allTime:
             return ResolvedWindow(start: nil, end: nil, notice: nil)
         case .sinceLastRun:
+            let destinationId = template.destinationId ?? ExportDestination.shareSheetId
+            let hasCursor = cursor(templateId: template.id, destinationId: destinationId) != nil
             return ResolvedWindow(
                 start: DayAttribution.addingDays(-Self.sinceLastRunFallbackDays, to: now, tz: tz),
-                end: now, notice: Self.sinceLastRunFallbackNotice)
+                end: now,
+                notice: hasCursor ? Self.sinceLastRunIgnoredNotice : Self.sinceLastRunFallbackNotice)
         }
     }
 
     static let sinceLastRunFallbackDays = 30
+    /// No cursor exists — the template has never had a delivered delta run. The honest report is
+    /// that there was nothing to resume from.
     static let sinceLastRunFallbackNotice = LocalizedString(
         en: "No checkpoint yet, so this covered the last 30 days.",
         ar: "لا نقطة مرجعية بعد، لذا شمل هذا آخر 30 يوماً.")
+    /// A cursor DOES exist, and this run neither used nor moved it (see `resolvedWindow`). Saying
+    /// "no checkpoint yet" here would be a plain lie to the one user who has a checkpoint, and
+    /// leaving the run silent would let them believe they had just exported their delta.
+    static let sinceLastRunIgnoredNotice = LocalizedString(
+        en: "This covered the last 30 days. Running from here doesn't use or move this template's "
+            + "checkpoint.",
+        ar: "شمل هذا آخر 30 يوماً. التشغيل من هنا لا يستخدم النقطة المرجعية لهذا القالب ولا يحرّكها.")
 
     // MARK: - Running
 

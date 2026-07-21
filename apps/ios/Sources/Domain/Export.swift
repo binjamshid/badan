@@ -749,10 +749,25 @@ public struct ExportErrorDetail: Codable, Hashable, Sendable {
     public var filesExpected: Int
     /// Which attempt this was (0 = first). Lets a retry storm be seen as one.
     public var attempt: Int
+    /// EPIC-20 — the HTTP status a networked destination was last answered with, and the *only*
+    /// half of §22.7's "status code + sanitized reason" that was not already representable here.
+    /// The reason is `ExportRun.errorCode`, a closed vocabulary; this is the code, an integer.
+    ///
+    /// An `Int?` and not the response body, deliberately: a server's error text can echo back the
+    /// bytes BADAN just posted, so a body in this column would put health values into the one
+    /// record Export Health invites the user to share. Nil for every non-network destination, and
+    /// nil when the endpoint never answered at all (a timeout has no status — that case is carried
+    /// by `errorCode == .destinationUnreachable`).
+    ///
+    /// Additive and migration-free: `error_detail` is a JSON TEXT column, and an older row that
+    /// predates this field decodes with it nil.
+    public var httpStatus: Int?
 
-    public init(stage: ExportStage, filesWritten: Int = 0, filesExpected: Int = 0, attempt: Int = 0) {
+    public init(stage: ExportStage, filesWritten: Int = 0, filesExpected: Int = 0, attempt: Int = 0,
+                httpStatus: Int? = nil) {
         self.stage = stage; self.filesWritten = filesWritten
         self.filesExpected = filesExpected; self.attempt = attempt
+        self.httpStatus = httpStatus
     }
 }
 
@@ -882,6 +897,10 @@ public struct ExportCursor: Codable, Hashable, Sendable {
     /// of one. The v4 comment explains what a nullable one does to `sinceLastRun`.
     public var destinationId: String
     public var highWatermark: Date
+    /// The SHA-256 of the bundle FILE the last successful delta delivered — the chain link the next
+    /// run carries forward as its `previous_manifest_sha` (§22.6). Bundle-file sha, not the sha of
+    /// the `ExportManifest` struct: it is the value a consumer recomputes from the delivered file,
+    /// so `scripts/verify_export_chain.py` can walk the chain from the artifacts alone.
     public var lastManifestSha: ManifestDigest?
     public var lastRunId: String?
     public var updatedAt: Date
@@ -891,5 +910,70 @@ public struct ExportCursor: Codable, Hashable, Sendable {
         self.templateId = templateId; self.destinationId = destinationId
         self.highWatermark = highWatermark; self.lastManifestSha = lastManifestSha
         self.lastRunId = lastRunId; self.updatedAt = updatedAt
+    }
+}
+
+// MARK: - §22.6 delta-export reconciliation records
+
+/// One tombstoned row a delta export reports in its `deletions[]` section (§22.6) so a downstream
+/// store can reconcile a removal it would otherwise never learn about — a delta that only ever
+/// *adds* rows can never tell a consumer a record went away.
+///
+/// `entity` is the bundle array the record lived in (`raw_sample` | `interval_record` | `session`),
+/// matching the `deletions[]` `entity` vocabulary `JSONBundleWriter` already emits.
+public struct ExportTombstone: Hashable, Sendable {
+    public var recordId: String
+    public var entity: String
+    public var deletedAt: Date
+    public var tzId: String
+
+    public init(recordId: String, entity: String, deletedAt: Date, tzId: String) {
+        self.recordId = recordId; self.entity = entity
+        self.deletedAt = deletedAt; self.tzId = tzId
+    }
+
+    /// The canonical emission order for a delta's tombstone set, shared by every format so the JSON
+    /// `deletions[]` array and the CSV `deletions.csv` rows list the same removals in the same
+    /// sequence. `record_id` alone is a TOTAL order: ids are ULIDs unique across every table (I8),
+    /// so no two tombstones can tie and neither platform's sort has a tie to break differently.
+    public static func exportSorted(_ tombstones: [ExportTombstone]) -> [ExportTombstone] {
+        tombstones.sorted { $0.recordId < $1.recordId }
+    }
+}
+
+/// One suppression-flip correction a delta export reports in its `corrections[]` section (§22.6).
+///
+/// The subtle desync EPIC-17 exists to close: a delta that only adds rows silently corrupts a
+/// downstream store when a dedup decision *reverses* since the last cursor — the row it already has
+/// as authoritative is now suppressed (or a suppressed one now wins) and nothing in an add-only
+/// delta says so. `suppressedBy` is the winning record id when this record is now suppressed, or
+/// `nil` when the flip *cleared* a prior suppression (this record wins again).
+public struct ExportSuppressionCorrection: Hashable, Sendable {
+    public var recordId: String
+    public var suppressedBy: String?
+    public var changedAt: Date
+
+    public init(recordId: String, suppressedBy: String?, changedAt: Date) {
+        self.recordId = recordId; self.suppressedBy = suppressedBy; self.changedAt = changedAt
+    }
+
+    /// The canonical emission order for a delta's correction set, shared by every format so the JSON
+    /// `corrections[]` array and the CSV `corrections.csv` rows apply in the same sequence.
+    ///
+    /// `record_id`, then `changed_at`, then `suppressed_by` — a TOTAL order, not `record_id` alone.
+    /// One record CAN flip more than once inside a single delta window (suppressed by A, then by B
+    /// after a source-priority change), so `record_id` alone leaves ties, and `Array.sorted(by:)` is
+    /// documented as not guaranteed stable while Kotlin's `sortedWith` is: a tie would be free to
+    /// resolve differently on the two platforms, quietly ending the byte-identical guarantee the
+    /// export goldens assert. The `changed_at` tiebreaker also puts a record's flips in the order
+    /// they happened, so a consumer applying them in order lands on that record's current state
+    /// rather than on an intermediate one. A `nil` `suppressedBy` sorts as the empty string, which
+    /// orders a clearing before a re-suppression at the same instant; that is a tiebreaker of last
+    /// resort, never a rendered value (it renders as JSON `null` / an empty CSV cell).
+    public static func exportSorted(_ corrections: [ExportSuppressionCorrection]) -> [ExportSuppressionCorrection] {
+        corrections.sorted {
+            ($0.recordId, $0.changedAt, $0.suppressedBy ?? "")
+                < ($1.recordId, $1.changedAt, $1.suppressedBy ?? "")
+        }
     }
 }

@@ -403,11 +403,15 @@ private struct BodyToolsCard: View {
     // a sixth tab would regress the documented five-destination shell). Placed first so the vitals
     // dashboard is the most reachable of Body's tools.
     private static let healthMonitor = LocalizedString(en: "Health Monitor", ar: "مراقب الصحة")
+    // EPIC-31: weekly/monthly reports, under Body alongside the other read/export tools.
+    private static let reports = LocalizedString(en: "Reports", ar: "التقارير")
 
     var body: some View {
         BadanCard(padding: 0) {
             VStack(spacing: 0) {
                 BodyToolLink(icon: "waveform.path.ecg", title: Self.healthMonitor) { HealthMonitorScreen() }
+                BodyToolDivider()
+                BodyToolLink(icon: "doc.text", title: Self.reports) { ReportsScreen() }
                 BodyToolDivider()
                 BodyToolLink(icon: "square.grid.2x2", title: Loc.allMetrics) { BodyAllMetricsBrowser() }
                 BodyToolDivider()

@@ -167,6 +167,8 @@ struct JSONBundleWriter {
         cursorBefore: Date? = nil,
         cursorAfter: Date? = nil,
         previousManifestSha: String? = nil,
+        additionalDeletions: [ExportTombstone] = [],
+        corrections: [ExportSuppressionCorrection] = [],
         destination: (name: String, kind: String)? = nil,
         config: [String: CanonicalJSON]? = nil,
         hydration: HydrationExportPayload? = nil,
@@ -178,6 +180,7 @@ struct JSONBundleWriter {
             symptoms: symptoms, adherence: adherence, workouts: workouts, nutrition: nutrition,
             includeRoutes: includeRoutes, isDelta: isDelta, cursorBefore: cursorBefore,
             cursorAfter: cursorAfter, previousManifestSha: previousManifestSha,
+            additionalDeletions: additionalDeletions, corrections: corrections,
             destination: destination, config: config,
             hydration: hydration, hydrationRedaction: hydrationRedaction
         )
@@ -202,6 +205,8 @@ struct JSONBundleWriter {
         cursorBefore: Date? = nil,
         cursorAfter: Date? = nil,
         previousManifestSha: String? = nil,
+        additionalDeletions: [ExportTombstone] = [],
+        corrections: [ExportSuppressionCorrection] = [],
         destination: (name: String, kind: String)? = nil,
         config: [String: CanonicalJSON]? = nil,
         hydration: HydrationExportPayload? = nil,
@@ -266,8 +271,13 @@ struct JSONBundleWriter {
                                         sleepSessions: sleepSessions, workoutSessions: workoutSessions,
                                         derivedValues: derivedValues, symptoms: symptoms,
                                         adherence: adherence, workoutLogs: workouts,
-                                        nutrition: nutrition)
+                                        nutrition: nutrition, additional: additionalDeletions)
         ]
+        // Absent, not empty (§22.6): a delta run with no dedup flips carries NO `corrections` key at
+        // all, exactly as `config`/`logs.hydration` stay absent when empty — so a non-delta bundle,
+        // and the byte-pinned no-corrections golden, are untouched. `{"corrections": []}` would
+        // assert "we checked and nothing flipped", a claim a full (non-delta) run cannot make.
+        if !corrections.isEmpty { members["corrections"] = Self.corrections(corrections) }
         // Absent, not empty: `{"export_templates": []}` would assert the user has no templates,
         // which is a claim this writer is in no position to make.
         if let config { members["config"] = .object(config) }
@@ -639,19 +649,30 @@ struct JSONBundleWriter {
 
     // MARK: - Deletions (§22.6)
 
+    /// `additional` (§22.6) is the delta path's tombstone slice: rows soft-deleted since the cursor
+    /// that are NOT in the data arrays (a delta gathers only live rows, so a removal would otherwise
+    /// be invisible). The two sources are unioned and the whole array is sorted by `record_id`, so
+    /// the output is deterministic regardless of gather order and identical across platforms — the
+    /// no-op case (a single row-derived tombstone, no `additional`) leaves the byte-pinned golden
+    /// unchanged because sorting one element is the identity.
+    ///
+    /// `record_id` alone is a TOTAL order here (unlike `corrections`, which needs a tiebreaker):
+    /// ids are ULIDs unique across every table (I8), and the two sources cannot collide because a
+    /// delta gathers live rows only (`deleted_at IS NULL`) while `additional` is tombstones only.
     private static func deletions(rawSamples: [RawSample], intervalRecords: [IntervalRecord],
                                   sleepSessions: [Session], workoutSessions: [Session],
                                   derivedValues: [DerivedValue], symptoms: [SymptomEntry],
                                   adherence: [AdherenceEvent], workoutLogs: [WorkoutEntry],
-                                  nutrition: [NutritionEntry]) -> CanonicalJSON {
-        var entries: [CanonicalJSON] = []
+                                  nutrition: [NutritionEntry],
+                                  additional: [ExportTombstone] = []) -> CanonicalJSON {
+        var entries: [(recordId: String, json: CanonicalJSON)] = []
         func add(_ recordId: String, _ entity: String, _ deletedAt: Date?, tzId: String) {
             guard let deletedAt else { return }
-            entries.append(.object([
+            entries.append((recordId, .object([
                 "record_id": .string(recordId),
                 "entity": .string(entity),
                 "deleted_at": .string(TimestampFormatting.string(deletedAt, tzId: tzId))
-            ]))
+            ])))
         }
         for row in rawSamples { add(row.id, "raw_sample", row.deletedAt, tzId: row.tzId) }
         for row in intervalRecords { add(row.id, "interval_record", row.deletedAt, tzId: row.tzId) }
@@ -662,7 +683,29 @@ struct JSONBundleWriter {
         for row in adherence { add(row.id, "adherence", row.deletedAt, tzId: row.tzId) }
         for row in workoutLogs { add(row.id, "workout_log", row.deletedAt, tzId: row.tzId) }
         for row in nutrition { add(row.id, "nutrition", row.deletedAt, tzId: row.tzId) }
-        return .array(entries)
+        for t in additional { add(t.recordId, t.entity, t.deletedAt, tzId: t.tzId) }
+        return .array(entries.sorted { $0.recordId < $1.recordId }.map(\.json))
+    }
+
+    /// The `corrections[]` section (§22.6): suppression flips since the cursor.
+    ///
+    /// Ordering is `ExportSuppressionCorrection.exportSorted` — the ONE comparator every format
+    /// uses, so this array and `corrections.csv` (the CSV delta's twin table, written by
+    /// `ExportDeltaCSVWriter`) list the same flips in the same sequence. Its doc explains why the
+    /// order is a total one rather than `record_id` alone.
+    ///
+    /// A `nil` `suppressedBy` renders as JSON `null` — the record's suppression was CLEARED (it wins
+    /// again) — never as an empty string, so a consumer can tell "no longer suppressed" from
+    /// "suppressed by <id>".
+    private static func corrections(_ corrections: [ExportSuppressionCorrection]) -> CanonicalJSON {
+        let ordered = ExportSuppressionCorrection.exportSorted(corrections)
+        return .array(ordered.map { c in
+            CanonicalJSON.object([
+                "record_id": .string(c.recordId),
+                "suppressed_by": .string(nullable: c.suppressedBy),
+                "changed_at": .string(TimestampFormatting.string(c.changedAt, tzId: "UTC"))
+            ])
+        })
     }
 
     // MARK: - Dictionaries

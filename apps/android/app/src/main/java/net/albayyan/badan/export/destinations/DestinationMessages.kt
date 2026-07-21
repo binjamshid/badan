@@ -103,6 +103,105 @@ object DestinationMessages {
         ar = "لم تكن هناك ملفات لحفظها.",
     )
 
+    // -- REST destination (EPIC-20) --
+
+    /**
+     * First-save consent (§12 EPIC-20 / §22.7). The literal sentence the plan specifies, both
+     * languages. The second half is the honest correction to the one misreading that matters: BADAN
+     * did not pick this server, the user did, and BADAN never picks one. Kept byte-identical to iOS.
+     *
+     * **Where it is shown, honestly:** nowhere yet. This build has no screen that *creates* a REST
+     * destination, so no `REST_API` row can exist and this string has no display site. It is defined
+     * (and pinned by `RestDestinationTest`) so the sentence is settled in both languages before that
+     * screen exists — the first-save confirmation on whatever surface adds a REST destination is
+     * required to present it, and this destination will deliver to any `REST_API` row it is handed
+     * without checking that it was.
+     */
+    val restConsent = LocalizedString(
+        en = "BADAN will send the selected health data to a server you control. " +
+            "BADAN never chooses this destination for you.",
+        ar = "سيرسل بدن البيانات الصحية المحددة إلى خادم تتحكم فيه أنت. " +
+            "لا يختار بدن هذه الوجهة نيابةً عنك أبداً.",
+    )
+
+    val restProbeReachable = LocalizedString(
+        en = "BADAN reached this server and it accepted a test request.",
+        ar = "وصل بدن إلى هذا الخادم وقبِل طلباً تجريبياً.",
+    )
+
+    val restDelivered = LocalizedString(
+        en = "Your export was sent to the server.",
+        ar = "تم إرسال تصديرك إلى الخادم.",
+    )
+
+    val restAuthExpired = LocalizedString(
+        en = "The server rejected BADAN's credentials. Update the access token to send here again.",
+        ar = "رفض الخادم بيانات اعتماد بدن. حدّث رمز الوصول للإرسال إلى هنا مرة أخرى.",
+    )
+
+    val restCredentialMissing = LocalizedString(
+        en = "BADAN has no saved access token for this server. Add one to send here.",
+        ar = "لا يملك بدن رمز وصول محفوظاً لهذا الخادم. أضف واحداً للإرسال إلى هنا.",
+    )
+
+    val restNotConfigured = LocalizedString(
+        en = "This destination has no server address yet. Add one to send here.",
+        ar = "لا يوجد عنوان خادم لهذه الوجهة بعد. أضف عنواناً للإرسال إلى هنا.",
+    )
+
+    /**
+     * `https` goes through the placeholder rather than sitting in the template so it can be bidi-
+     * isolated: a bare Latin token at the end of an Arabic sentence sits next to the sentence's full
+     * stop, exactly the neutral-run ambiguity [isolated] exists to settle.
+     */
+    val restInsecureBlocked: LocalizedString
+        get() = LocalizedString(
+            en = "BADAN won't send your data over an unencrypted connection. Use an {scheme} address.",
+            ar = "لن يرسل بدن بياناتك عبر اتصال غير مشفّر. استخدم عنوان {scheme}.",
+        ).filling(mapOf("scheme" to isolated("https")))
+
+    val restUnreachable = LocalizedString(
+        en = "BADAN couldn't reach this server. It may be offline — BADAN will not keep retrying now.",
+        ar = "تعذّر على بدن الوصول إلى هذا الخادم. قد يكون غير متصل — لن يواصل بدن المحاولة الآن.",
+    )
+
+    /**
+     * Carries the status code and nothing else — no response body is ever surfaced, because a
+     * server's error text can quote back what was sent.
+     *
+     * The whole `HTTP 503` token is substituted, not just the number, so the Latin run and its digits
+     * stay one bidi-isolated unit inside the Arabic parentheses. Left un-isolated, the digits are a
+     * neutral run between an RTL word and a closing paren, and the code renders on the wrong side of
+     * `HTTP`. Byte-identical to iOS `DestinationMessages.restServerError`.
+     */
+    fun restServerError(status: Int): LocalizedString =
+        LocalizedString(
+            en = "The server rejected the export ({code}).",
+            ar = "رفض الخادم التصدير ({code}).",
+        ).filling(mapOf("code" to isolated("HTTP $status")))
+
+    /**
+     * The generated file could not be read back out of BADAN's own staging folder, so there was
+     * nothing to send. A local problem, and the copy says so — blaming the server for a file BADAN
+     * could not read would point the user at the wrong thing entirely.
+     */
+    val restSourceUnreadable = LocalizedString(
+        en = "BADAN couldn't read the export file, so nothing was sent.",
+        ar = "تعذّر على بدن قراءة ملف التصدير، لذلك لم يُرسل شيء.",
+    )
+
+    /**
+     * Partial delivery: an earlier NDJSON part landed and a later one did not. Counts **files**, not
+     * parts, because that is what the caller passes and what the ledger row records — a part can
+     * carry several files, so "2 of 5 parts" would be a number the code never computed. States both
+     * for the same reason the folder message does.
+     */
+    fun restPartiallyDelivered(sent: Int, expected: Int): LocalizedString =
+        LocalizedString(
+            en = "Only {sent} of {expected} files reached the server.",
+            ar = "وصل {sent} من {expected} ملفات فقط إلى الخادم.",
+        ).filling(mapOf("sent" to sent.toString(), "expected" to expected.toString()))
+
     // -- Folder picking --
 
     val pickFolder = LocalizedString(en = "Choose a folder", ar = "اختر مجلداً")

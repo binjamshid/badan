@@ -1,0 +1,194 @@
+{
+  "fixtureVersion": "1",
+  "exportSchemaVersion": "1.0.0",
+  "note": "Shared INPUT for the EPIC-17 two-run delta sequence (§22.6). Both suites build their own domain objects from `run1`/`run2`, render them through their own JSON bundle writer, and must produce delta-run1-v1.json / delta-run2-v1.json byte for byte. Same harness contract as export-input-v1.json: epoch-millis and Doubles arrive as STRINGS so neither platform's own number parsing sits between the fixture and the thing under test. run2.previousManifestSha is deliberately absent — it is not a literal, it is sha256(delta-run1-v1.json) as read off disk, which is exactly what a consumer recomputes and what scripts/verify_export_chain.py walks. A fixture that hardcoded it would still pass if the two files stopped chaining.",
+  "run1": {
+    "role": "chain root — no predecessor, so previous_manifest_sha is null. Carries two rows ingested inside the window, one tombstone for a row an EARLIER run already delivered (a delta gathers live rows only, so a removal is invisible without deletions[]), and one live suppression flip.",
+    "isDelta": true,
+    "cursorBeforeMillis": "1784500000000",
+    "cursorAfterMillis": "1784509930000",
+    "deletions": [
+      {
+        "recordId": "01J8ZK0000000000000000GONE",
+        "entity": "raw_sample",
+        "deletedAtMillis": "1784505000000",
+        "tzId": "Asia/Dubai"
+      }
+    ],
+    "corrections": [
+      {
+        "recordId": "01J8ZK000000000000000LOSER",
+        "suppressedBy": "01J8ZK00000000000000WINNER",
+        "changedAtMillis": "1784506000000"
+      }
+    ],
+    "bundleManifest": {
+      "exportId": "01J8ZKDELTA0000000000RUN01",
+      "appVersion": "1.4.0",
+      "platform": "ios",
+      "generatedAtMillis": "1784510000000",
+      "dateRange": "all",
+      "displayLanguage": "en",
+      "unitProfile": "canonical",
+      "timezonePolicy": "timestamps carry original offsets; day boundaries computed in tz-at-measurement",
+      "dedupPolicy": "source-priority v1; suppressed duplicates excluded",
+      "perMetricRowCounts": {
+        "heart.hrv_sdnn": 2
+      },
+      "checksums": {
+        "bundle.json": ""
+      },
+      "dataQualityNote": "Rows reflect stored records only; coverage gaps are not backfilled.",
+      "sampleDataRowCount": 0,
+      "encrypted": false,
+      "scope": {
+        "metricIds": null,
+        "families": null,
+        "startDateMillis": null,
+        "endDateMillis": null,
+        "sourceIds": null,
+        "includeRaw": true,
+        "includeDerived": true,
+        "includeSuppressed": false,
+        "includeSensitive": false,
+        "unitProfile": "canonical",
+        "language": "en"
+      }
+    },
+    "rawSamples": [
+      {
+        "id": "01J8ZK00000000000000DELTA1",
+        "metricId": "heart.hrv_sdnn",
+        "value": "0.0621",
+        "unit": "s",
+        "originalValue": "62.1",
+        "originalUnit": "ms",
+        "startAtMillis": "1784509920000",
+        "endAtMillis": null,
+        "tzId": "Asia/Dubai",
+        "updatedAtMillis": "1784509925000",
+        "originDeviceId": "device-fixture",
+        "deletedAtMillis": null,
+        "provenance": {
+          "sourceId": "com.apple.health",
+          "deviceId": "Apple Watch",
+          "ingestionPath": "platformStore",
+          "externalId": "hk-delta-1",
+          "importBatchId": null,
+          "measuredAtMillis": "1784509920000",
+          "measuredTimezone": "Asia/Dubai",
+          "recordedAtMillis": "1784509925000",
+          "ingestedAtMillis": "1784509928000",
+          "algorithmVersionId": null,
+          "qualityFlags": [],
+          "suppressedBy": null
+        }
+      },
+      {
+        "id": "01J8ZK00000000000000DELTA2",
+        "metricId": "heart.hrv_sdnn",
+        "value": "0.0588",
+        "unit": "s",
+        "originalValue": "58.8",
+        "originalUnit": "ms",
+        "startAtMillis": "1784509921000",
+        "endAtMillis": null,
+        "tzId": "Asia/Dubai",
+        "updatedAtMillis": "1784509926000",
+        "originDeviceId": "device-fixture",
+        "deletedAtMillis": null,
+        "provenance": {
+          "sourceId": "com.apple.health",
+          "deviceId": "Apple Watch",
+          "ingestionPath": "platformStore",
+          "externalId": "hk-delta-2",
+          "importBatchId": null,
+          "measuredAtMillis": "1784509921000",
+          "measuredTimezone": "Asia/Dubai",
+          "recordedAtMillis": "1784509926000",
+          "ingestedAtMillis": "1784509930000",
+          "algorithmVersionId": null,
+          "qualityFlags": [],
+          "suppressedBy": null
+        }
+      }
+    ]
+  },
+  "run2": {
+    "role": "the second link — cursorBefore meets run1's cursorAfter exactly (no gap, no overlap) and previous_manifest_sha is sha256(delta-run1-v1.json). Carries one newly-arrived row and a REVERSED suppression, whose suppressed_by must render as JSON null: the row a consumer holds as suppressed is authoritative again, which an add-only delta would never say.",
+    "isDelta": true,
+    "cursorBeforeMillis": "1784509930000",
+    "cursorAfterMillis": "1784513530000",
+    "deletions": [],
+    "corrections": [
+      {
+        "recordId": "01J8ZK000000000000000LOSER",
+        "suppressedBy": null,
+        "changedAtMillis": "1784512000000"
+      }
+    ],
+    "bundleManifest": {
+      "exportId": "01J8ZKDELTA0000000000RUN02",
+      "appVersion": "1.4.0",
+      "platform": "ios",
+      "generatedAtMillis": "1784513600000",
+      "dateRange": "all",
+      "displayLanguage": "en",
+      "unitProfile": "canonical",
+      "timezonePolicy": "timestamps carry original offsets; day boundaries computed in tz-at-measurement",
+      "dedupPolicy": "source-priority v1; suppressed duplicates excluded",
+      "perMetricRowCounts": {
+        "heart.hrv_sdnn": 1
+      },
+      "checksums": {
+        "bundle.json": ""
+      },
+      "dataQualityNote": "Rows reflect stored records only; coverage gaps are not backfilled.",
+      "sampleDataRowCount": 0,
+      "encrypted": false,
+      "scope": {
+        "metricIds": null,
+        "families": null,
+        "startDateMillis": null,
+        "endDateMillis": null,
+        "sourceIds": null,
+        "includeRaw": true,
+        "includeDerived": true,
+        "includeSuppressed": false,
+        "includeSensitive": false,
+        "unitProfile": "canonical",
+        "language": "en"
+      }
+    },
+    "rawSamples": [
+      {
+        "id": "01J8ZK00000000000000DELTA3",
+        "metricId": "heart.hrv_sdnn",
+        "value": "0.0703",
+        "unit": "s",
+        "originalValue": "70.3",
+        "originalUnit": "ms",
+        "startAtMillis": "1784513520000",
+        "endAtMillis": null,
+        "tzId": "Asia/Dubai",
+        "updatedAtMillis": "1784513525000",
+        "originDeviceId": "device-fixture",
+        "deletedAtMillis": null,
+        "provenance": {
+          "sourceId": "com.apple.health",
+          "deviceId": "Apple Watch",
+          "ingestionPath": "platformStore",
+          "externalId": "hk-delta-3",
+          "importBatchId": null,
+          "measuredAtMillis": "1784513520000",
+          "measuredTimezone": "Asia/Dubai",
+          "recordedAtMillis": "1784513525000",
+          "ingestedAtMillis": "1784513530000",
+          "algorithmVersionId": null,
+          "qualityFlags": [],
+          "suppressedBy": null
+        }
+      }
+    ]
+  }
+}

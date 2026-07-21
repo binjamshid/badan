@@ -46,10 +46,57 @@ private enum BuilderCopy {
 
     static let editTitle = LocalizedString(en: "Edit template", ar: "تعديل القالب")
     /// Shown when editing a template whose range rule the builder can't represent as one of its
-    /// segments (e.g. `sinceLastRun`). The original rule is kept unless the user changes the range.
+    /// segments (an unusual `lastNDays` count). The original rule is kept unless the user changes
+    /// the range.
     static let rulePreserved = LocalizedString(
         en: "This template's date rule is kept as-is unless you change the range above.",
         ar: "يُحتفَظ بقاعدة تاريخ هذا القالب كما هي ما لم تُغيّر النطاق أعلاه.")
+
+    // MARK: Delta (EPIC-17)
+
+    /// The `sinceLastRun` switch. Deliberately worded as "since this template last ran" rather
+    /// than "new data": the checkpoint belongs to the template + destination pair, not to the app,
+    /// so two templates can be at different points in the same history.
+    static let deltaOnly = LocalizedString(
+        en: "Only what's new since the last run",
+        ar: "الجديد فقط منذ آخر تشغيل")
+    /// What the switch actually does, including the two things that surprise people: the checkpoint
+    /// only moves on a run that was delivered, and a delta is taken on when data ARRIVED, not when
+    /// it was measured — which is what stops a late-syncing watch reading from being skipped.
+    static let deltaOnlyHint = LocalizedString(
+        en: "Each run picks up where the last delivered run stopped, so nothing is exported twice. "
+            + "Records that arrive late are still included — the checkpoint follows when data reached "
+            + "BADAN, not when it was measured.",
+        ar: "يبدأ كل تشغيل من حيث توقّف آخر تشغيل تم تسليمه، فلا يُصدَّر أي سجل مرتين. "
+            + "وتبقى السجلات المتأخرة مشمولة — إذ تتبع النقطة المرجعية وقت وصول البيانات إلى بدن، "
+            + "لا وقت قياسها.")
+    /// The first-run behaviour, stated before it happens rather than as a surprise afterwards. The
+    /// number matches `ExportManageService.sinceLastRunFallbackDays` and the runner's own fallback.
+    static func deltaFirstRunNote(_ days: String) -> LocalizedString {
+        LocalizedString(
+            en: "There's no checkpoint until the first run finishes, so that first export covers "
+                + "the last \(days) days and says so.",
+            ar: "لا توجد نقطة مرجعية قبل اكتمال أول تشغيل، لذا يشمل ذلك التصدير الأول آخر \(days) يوماً "
+                + "ويوضّح ذلك.")
+    }
+    /// Shown in the date-range section while the delta switch is on, so the two controls cannot be
+    /// read as contradicting each other. The range picker still governs the immediate Run button;
+    /// it is only the SAVED template that ignores it.
+    static let deltaOverridesRange = LocalizedString(
+        en: "The saved template uses its checkpoint instead of this window. The window above still "
+            + "applies if you run the export now.",
+        ar: "يستخدم القالب المحفوظ نقطته المرجعية بدلاً من هذه المدة. أما المدة أعلاه فتنطبق إن شغّلت "
+            + "التصدير الآن.")
+    /// What moves the checkpoint, and — the half people are actually harmed by not knowing — what
+    /// happens when a run fails. Deliberately does NOT tell the user to put the template on a
+    /// schedule: a scheduled run is the only path that moves the checkpoint today, but every
+    /// template this builder saves is share-sheet-bound, and recommending a route whose file
+    /// nobody ever sees would be the kind of promise this copy exists to avoid.
+    static let deltaCheckpointNote = LocalizedString(
+        en: "The checkpoint only moves after a run finishes and is delivered, so a failed run leaves "
+            + "it where it was and nothing is skipped.",
+        ar: "لا تتحرّك النقطة المرجعية إلا بعد اكتمال التشغيل وتسليمه، لذا يترك التشغيل الفاشل النقطة "
+            + "في مكانها ولا يُتخطّى أي سجل.")
 }
 
 // MARK: - Builder
@@ -82,6 +129,12 @@ struct AdvancedExportBuilderScreen: View {
     @State private var selectedFormats: Set<ExportFormat> = [.csv]
     @State private var range: ExportRange = .last30
     @State private var rangeTouched = false
+    /// EPIC-17. When on, the SAVED template stores `.sinceLastRun` instead of the range segment
+    /// above. It lives here rather than as a fifth segment of `ExportRange` on purpose: "since the
+    /// last run" is a property of a *template* (it needs a template id and a destination to have a
+    /// checkpoint at all), while the range segments also drive the immediate Run button on this
+    /// screen — where a checkpoint that cannot exist would be a control that silently means nothing.
+    @State private var deltaOnly = false
     @State private var customStart: Date = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
     @State private var customEnd: Date = Date()
     @State private var selectedMetricIds: Set<String> = []
@@ -157,6 +210,7 @@ struct AdvancedExportBuilderScreen: View {
             templateName = template.name
             (range, customStart, customEnd) = Self.range(from: template.rangeRule, scope: template.scope,
                                                          now: env.now())
+            deltaOnly = template.rangeRule == .sinceLastRun
             advancedExpanded = true
         }
         if availableSources.isEmpty {
@@ -284,6 +338,7 @@ struct AdvancedExportBuilderScreen: View {
                 .tint(BadanColor.primary)
                 if customRangeInvalid { caption(ExportCopy.customRangeInvalidNotice, tint: BadanColor.outOfBand) }
             }
+            if deltaOnly { caption(BuilderCopy.deltaOverridesRange) }
             if isEditing, editingRuleUnrepresentable, !rangeTouched {
                 caption(BuilderCopy.rulePreserved)
             }
@@ -621,6 +676,8 @@ struct AdvancedExportBuilderScreen: View {
             BadanCard {
                 VStack(alignment: .leading, spacing: BadanSpace.space3) {
                     if !isEditing { caption(BuilderCopy.saveHint) }
+                    deltaToggle
+                    rowDivider
                     TextField(env.s(BuilderCopy.namePlaceholder), text: $templateName)
                         .font(BadanFont.body)
                         .autocorrectionDisabled()
@@ -644,6 +701,43 @@ struct AdvancedExportBuilderScreen: View {
                 }
             }
         }
+    }
+
+    /// EPIC-17 — the control that makes a `sinceLastRun` template reachable at all. Until this
+    /// existed the whole cursor/chain/tombstone machinery was verified by fixtures and CI but had
+    /// no path a user could take to trigger it: the builder could only emit `lastNDays`/`allTime`/
+    /// `fixed`, and Quick Export's presets never produce a delta either.
+    ///
+    /// Everything under the switch is stated up front rather than discovered later: what a delta
+    /// means, what the first run does (there is no checkpoint yet, so it falls back to a bounded
+    /// window *with a notice* — the runner already implements exactly that), and what actually
+    /// advances the checkpoint.
+    private var deltaToggle: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space2) {
+            Toggle(isOn: $deltaOnly) {
+                HStack(spacing: BadanSpace.space3) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .imageScale(.medium)
+                        .foregroundStyle(BadanColor.primary)
+                        .frame(width: 26)
+                        .accessibilityHidden(true)
+                    Text(BuilderCopy.deltaOnly, language: env.language)
+                        .font(BadanFont.body)
+                        .foregroundStyle(BadanColor.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(BadanColor.primary)
+            .frame(minHeight: BadanSpace.touchMin)
+            caption(BuilderCopy.deltaOnlyHint)
+            if deltaOnly {
+                caption(BuilderCopy.deltaFirstRunNote(
+                    env.format.integer(ExportManageService.sinceLastRunFallbackDays)))
+                caption(BuilderCopy.deltaCheckpointNote)
+            }
+        }
+        .animation(BadanMotion.easeInOut(BadanMotion.quick, reduceMotion: reduceMotion),
+                   value: deltaOnly)
     }
 
     private var saveButton: some View {
@@ -710,13 +804,27 @@ struct AdvancedExportBuilderScreen: View {
         }
     }
 
-    /// The rule to store. If editing a rule the builder can't represent (e.g. `sinceLastRun`) and
-    /// the user didn't touch the range picker, keep the original rule rather than silently
-    /// rewriting it.
+    /// The rule to store. If editing a rule the builder can't represent (an unusual `lastNDays`
+    /// count) and the user didn't touch the range picker, keep the original rule rather than
+    /// silently rewriting it; otherwise defer to the pure mapping below.
     private func resolvedRangeRule() -> ExportRangeRule {
+        if deltaOnly { return .sinceLastRun }
         if isEditing, editingRuleUnrepresentable, !rangeTouched, let editing {
             return editing.rangeRule
         }
+        return Self.rangeRule(range: range, deltaOnly: deltaOnly)
+    }
+
+    /// The rule a builder selection saves into a template — pure, so the delta switch's precedence
+    /// is covered by a test rather than only by reading the view.
+    ///
+    /// `deltaOnly` wins outright: `sinceLastRun` is the one rule that is not a window at all, so a
+    /// window segment cannot also be in force. It is a separate parameter rather than a fifth
+    /// `ExportRange` case because those segments also drive this screen's immediate Run button,
+    /// where a checkpoint cannot exist — an ad-hoc run has no template id and no destination to
+    /// hold one.
+    static func rangeRule(range: ExportRange, deltaOnly: Bool) -> ExportRangeRule {
+        if deltaOnly { return .sinceLastRun }
         switch range {
         case .last30: return .lastNDays(30)
         case .last90: return .lastNDays(90)
@@ -725,12 +833,14 @@ struct AdvancedExportBuilderScreen: View {
         }
     }
 
+    /// `sinceLastRun` is no longer in this set: the delta switch above represents it directly, so
+    /// turning the switch OFF on such a template is now a deliberate change to a window rule rather
+    /// than an accident the preservation rule has to guard against.
     private var editingRuleUnrepresentable: Bool {
         guard let rule = editing?.rangeRule else { return false }
         switch rule {
-        case .allTime, .fixed: return false
+        case .allTime, .fixed, .sinceLastRun: return false
         case .lastNDays(let n): return n != 30 && n != 90
-        case .sinceLastRun: return true
         }
     }
 
@@ -762,8 +872,16 @@ struct AdvancedExportBuilderScreen: View {
             return (.last90, Calendar.current.date(byAdding: .day, value: -90, to: now) ?? now, now)
         case .lastNDays(let n):
             return (.custom, Calendar.current.date(byAdding: .day, value: -max(1, n), to: now) ?? now, now)
-        case .allTime, .sinceLastRun:
+        case .allTime:
             return (.all, defaultStart, now)
+        case .sinceLastRun:
+            // A delta is carried by the save section's switch, not by a range segment, so the
+            // segment here is only what the template FALLS BACK TO if the user turns the switch
+            // off. Last-30 rather than all-time deliberately: it matches the runner's own no-cursor
+            // fallback (`ExportRunner.cursorMissingFallbackDays`), so switching delta off produces
+            // the same window the template's own first run would have used — where all-time would
+            // silently turn an incremental template into a full-history dump.
+            return (.last30, defaultStart, now)
         case .fixed:
             return (.custom, scope.startDate ?? defaultStart, scope.endDate ?? now)
         }

@@ -46,6 +46,36 @@ pre-hydration store stay byte-for-byte reproducible (the absent-not-empty rule `
 documents). If the hydration schema changes on purpose, regenerate this file to match the writer's
 new output, then `scripts/check_fixture_hashes.sh --update` to re-record its sha256.
 
+## `delta-chain/` — the EPIC-17 two-run delta sequence (§22.6)
+
+A second, smaller fixture set with the same contract as the three above: one shared input, two
+goldens, both suites must produce them byte for byte.
+
+| File | Role |
+|---|---|
+| `delta-chain/delta-input-v1.json` | the shared **input** — `run1` and `run2`, each a manifest + rows + delta metadata |
+| `delta-chain/delta-run1-v1.json` | the chain **root**: `is_delta: true`, both cursors, `previous_manifest_sha: null`, a `deletions[]` tombstone and a live suppression flip |
+| `delta-chain/delta-run2-v1.json` | the **second link**: `cursor_before` meets run 1's `cursor_after`, and a `corrections[]` entry whose `suppressed_by` is `null` (a reversal) |
+
+Two things make this set different from the full-bundle golden, and both are deliberate.
+
+**`previous_manifest_sha` is not a fixture literal.** Both suites compute it as
+`sha256(delta-run1-v1.json)` off the file on disk — exactly what a downstream consumer recomputes
+to verify the chain. A hardcoded value would keep matching after the two files stopped chaining,
+which is the one failure the field exists to catch. It also means `delta-run1-v1.json`'s bytes are
+load-bearing twice: change them and `delta-run2-v1.json` must be regenerated too, or the chain
+breaks. Regenerate both in the same pass.
+
+**They live in their own folder** so `scripts/verify_export_chain.py` can be pointed straight at it
+(CI does: "Delta export chain verifies, and a tampered chain does not"). That script reads every
+`*.json` in a folder as a candidate link, and `bundle-v1.json` — a full export with no predecessor —
+would read as a second chain root sitting beside the real one. `delta-input-v1.json` shares the
+folder harmlessly: it carries no top-level `manifest.export_id`, so the script skips it.
+
+The delta pair is also validated against `json_bundle.schema.json` in CI, because it is the only
+fixture that exercises the schema's delta fields — `is_delta`, `cursor_before`/`cursor_after`,
+`previous_manifest_sha` and the `corrections[]` section are null or absent in every other bundle here.
+
 ## Why bytes, not parsed structures
 
 A parsed comparison passes while key order, number spelling, string escaping and timestamp

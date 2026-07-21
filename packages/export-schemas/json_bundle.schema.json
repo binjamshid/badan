@@ -163,6 +163,23 @@
         }
       }
     },
+    "corrections": {
+      "description": "Suppression-flip corrections (§22.6): records whose dedup verdict CHANGED since the delta's cursor_before. Present only on a delta bundle that actually has flips — absent, not empty, because a full export makes no claim about what changed since a cursor it never had. This section exists because a delta that only ever adds rows silently desyncs a downstream store when a dedup decision reverses: the row the consumer holds as authoritative is now suppressed (or a suppressed one now wins) and no added row would say so. suppressed_by names the winning record, or is null when the flip CLEARED a prior suppression (the record wins again) — null is meaningful and must not be confused with an absent key. Sorted by record_id so two platforms emit identical bytes.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["record_id", "suppressed_by", "changed_at"],
+        "additionalProperties": false,
+        "properties": {
+          "record_id": { "type": "string" },
+          "suppressed_by": {
+            "description": "The record that now wins, or null when the suppression was reversed and this record is authoritative again.",
+            "type": ["string", "null"]
+          },
+          "changed_at": { "$ref": "#/$defs/timestamp" }
+        }
+      }
+    },
     "config": {
       "description": "The user's own export configuration, included so a backup restores settings rather than only data. Absent — not empty — when the emitting path did not supply it; an empty object would claim the user has no templates.",
       "type": "object",

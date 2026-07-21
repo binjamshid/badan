@@ -8,6 +8,7 @@ import net.albayyan.badan.domain.ExportErrorCode
 import net.albayyan.badan.domain.ExportErrorDetail
 import net.albayyan.badan.domain.ExportOutcome
 import net.albayyan.badan.domain.ExportStage
+import net.albayyan.badan.domain.ManifestDigest
 import java.io.File
 import java.util.TimeZone
 
@@ -97,6 +98,24 @@ data class ExportDeliveryRequest(
      * the choice is visible to a fixture instead of read off the device.
      */
     val timeZone: TimeZone = TimeZone.getDefault(),
+    /**
+     * EPIC-20 seam extension — the manifest's SHA-256 as the runner already computed it for the
+     * `ExportRun` row. A folder copy leaves it null; a REST destination uses it as the
+     * `Idempotency-Key`/`X-Badan-Manifest-Sha` so a retried POST of the *same* bundle replays
+     * idempotently (§22.7). It lives on the request rather than being recomputed inside a
+     * destination because a destination **must not read a writer's internals** — re-deriving the
+     * manifest sha would mean parsing the manifest artifact, exactly the coupling
+     * `export/destinations` is kept free of (§8.3). When null, a REST destination falls back to a
+     * deterministic digest of the delivered bytes, which has the same idempotency property.
+     */
+    val manifestSha: ManifestDigest? = null,
+    /**
+     * EPIC-20 seam extension — the export schema version this bundle was written against, for the
+     * `X-Badan-Schema-Version` header (§22.7). Null for a folder copy; a REST destination falls back
+     * to `ExportSchema.VERSION` (the single build-wide source of truth CI pins across both platforms)
+     * so the header is never silently absent.
+     */
+    val schemaVersion: String? = null,
 )
 
 /**
@@ -172,7 +191,16 @@ data class ExportDeliveryReceipt(
     val needsRepick: Boolean = false,
 )
 
-/** Shared constructor for a value-free delivering-stage [ExportErrorDetail]. */
-internal fun deliveringDetail(filesWritten: Int = 0, filesExpected: Int = 0): ExportErrorDetail =
+/**
+ * Shared constructor for a value-free delivering-stage [ExportErrorDetail].
+ *
+ * [httpStatus] stays null for every file destination — only a networked one (EPIC-20) has a status
+ * code to record, and §22.7 wants exactly that code and nothing else from the response.
+ */
+internal fun deliveringDetail(
+    filesWritten: Int = 0,
+    filesExpected: Int = 0,
+    httpStatus: Int? = null,
+): ExportErrorDetail =
     ExportErrorDetail(stage = ExportStage.DELIVERING, filesWritten = filesWritten,
-        filesExpected = filesExpected)
+        filesExpected = filesExpected, httpStatus = httpStatus)

@@ -39,7 +39,35 @@ final class IntentsTests: XCTestCase {
 
     private var templates: ExportTemplateRepository { ExportTemplateRepository(env.database.main) }
     private var runs: ExportRunRepository { ExportRunRepository(env.database.main) }
+    private var cursors: ExportCursorRepository { ExportCursorRepository(env.database.main) }
     private var service: IntentExportService { IntentExportService(env: env) }
+
+    /// One raw sample with an explicit `ingested_at`, so a delta test can place rows on either side
+    /// of a checkpoint. `measured_at` is deliberately much older than `ingested_at` in these tests:
+    /// a delta filters on the INGESTED axis, and a row measured before a watermark but stored after
+    /// it must still be delivered (the DATA-08 hazard).
+    @discardableResult
+    private func seedSample(ingestedAt: Date) throws -> RawSample {
+        let measured = ingestedAt.addingTimeInterval(-86_400 * 45)
+        let sample = RawSample(
+            id: ULID.newID(), metricId: MetricID.steps, value: 4200, unit: "steps",
+            originalValue: 4200, originalUnit: "steps", startAt: measured, tzId: "UTC",
+            provenance: Provenance(sourceId: deviceId, deviceId: deviceId, ingestionPath: .manual,
+                                   measuredAt: measured, measuredTimezone: "UTC",
+                                   recordedAt: measured, ingestedAt: ingestedAt),
+            updatedAt: ingestedAt, originDeviceId: deviceId)
+        _ = try MeasurementRepository(env.database.main).upsertRawSample(sample)
+        return sample
+    }
+
+    /// The `record_id` column of every row a CSV intent run wrote to `raw.csv`, read off the file on
+    /// disk — these assertions must describe the artifact the Shortcut actually receives.
+    private func exportedRecordIds(_ outcome: IntentExportService.RunOutcome) throws -> [String] {
+        guard let raw = outcome.files.first(where: { $0.url.lastPathComponent == "raw.csv" }) else { return [] }
+        let text = try String(contentsOf: raw.url, encoding: .utf8)
+        return text.components(separatedBy: "\r\n").dropFirst()
+            .compactMap { $0.isEmpty ? nil : String($0.prefix(while: { $0 != "," })) }
+    }
 
     private func makeTemplate(id: String = ULID.newID(), name: String,
                               rangeRule: ExportRangeRule = .lastNDays(7),
@@ -141,12 +169,99 @@ final class IntentsTests: XCTestCase {
 
     // MARK: - Range rules
 
-    func testSinceLastRunFallsBackToAWindowWithANotice() throws {
+    func testSinceLastRunFallsBackToAWindowWithANoticeWhenThereIsNoCursor() throws {
         let t = makeTemplate(name: "Since last", rangeRule: .sinceLastRun)
         try templates.insert(t)
         try seedOneSample()
         let outcome = try service.run(template: t)
         XCTAssertNotNil(outcome.notice, "the sinceLastRun fallback must tell the user the window wasn't literal")
+        let row = try XCTUnwrap(try runs.recent(templateId: t.id).first)
+        XCTAssertEqual(row.errorCode, .cursorMissing,
+                       "the fallback must be durable in the ledger, not only in the Shortcut's reply")
+        XCTAssertFalse(row.outcome.isFailure, "falling back is a note on a successful run, not a failure")
+        // A fallback run establishes nothing: `resolveRange` deliberately does not create a first
+        // cursor, so the next run is still a disclosed fallback rather than a silent delta.
+        XCTAssertNil(try cursors.cursor(templateId: t.id, destinationId: ExportDestination.shareSheetId),
+                     "the fallback run must not silently create a delta cursor")
+    }
+
+    // MARK: - EPIC-17: a Shortcut run of a sinceLastRun template takes the REAL delta
+
+    /// The behavioural half of the A3 finding. Before this, a `sinceLastRun` template run from a
+    /// Shortcut took a fixed 30-day window and ignored `export_cursors` entirely, while the very
+    /// same template run by `ExportRunner.runTemplate` took the delta — so the two entry points
+    /// exported different rows from the same saved configuration and nothing said so.
+    func testShortcutRunOfASinceLastRunTemplateTakesTheDeltaAndAdvancesTheCursor() throws {
+        let t = makeTemplate(name: "Since last", rangeRule: .sinceLastRun)
+        try templates.insert(t)
+        let now = clock.now()
+        // One row already delivered (ingested before the checkpoint) and one that arrived after it.
+        let old = try seedSample(ingestedAt: now.addingTimeInterval(-20_000))
+        try cursors.advance(templateId: t.id, destinationId: ExportDestination.shareSheetId,
+                            to: now.addingTimeInterval(-10_000), lastRunId: "seed",
+                            manifestSha: nil, now: now)
+        let fresh = try seedSample(ingestedAt: now.addingTimeInterval(-1_000))
+
+        let outcome = try service.run(template: t)
+
+        XCTAssertNil(outcome.notice, "a run WITH a checkpoint is a real delta — there is nothing to disclose")
+        let ids = try exportedRecordIds(outcome)
+        XCTAssertTrue(ids.contains(fresh.id), "the row ingested after the checkpoint must be exported")
+        XCTAssertFalse(ids.contains(old.id), "a delta must not re-send a row an earlier run delivered")
+
+        // Two-phase commit: the checkpoint moved, and only to the max ingested_at actually written.
+        let cursor = try XCTUnwrap(try cursors.cursor(templateId: t.id,
+                                                      destinationId: ExportDestination.shareSheetId))
+        XCTAssertEqual(cursor.highWatermark, fresh.provenance.ingestedAt)
+        let row = try XCTUnwrap(try runs.recent(templateId: t.id).first)
+        XCTAssertEqual(row.cursorAfter, fresh.provenance.ingestedAt,
+                       "the ledger records where the run closed its window")
+        XCTAssertNil(row.errorCode, "a real delta is not a fallback")
+    }
+
+    /// The cursor is keyed `(template, destination)`. A Shortcut hands its files to Shortcuts, not
+    /// to whatever folder/endpoint the template pins — so it must continue the share-sheet chain and
+    /// leave the pinned destination's chain untouched. Advancing that one would tell the automation
+    /// its folder had received rows it was never sent, and the automation's next delta would skip
+    /// them forever: the same silent desync, arriving from the other side.
+    func testShortcutRunNeverTouchesAPinnedDestinationsCursor() throws {
+        let folderId = "0000000000DESTFOLDER000001"
+        var t = makeTemplate(name: "Pinned", rangeRule: .sinceLastRun)
+        t.destinationId = folderId
+        try templates.insert(t)
+        let now = clock.now()
+        let watermark = now.addingTimeInterval(-10_000)
+        try cursors.advance(templateId: t.id, destinationId: folderId, to: watermark,
+                            lastRunId: "seed", manifestSha: nil, now: now)
+        _ = try seedSample(ingestedAt: now.addingTimeInterval(-1_000))
+
+        let outcome = try service.run(template: t)
+
+        XCTAssertNotNil(outcome.notice,
+                        "the share-sheet chain has no checkpoint yet, so this run discloses a fallback")
+        XCTAssertEqual(try cursors.cursor(templateId: t.id, destinationId: folderId)?.highWatermark,
+                       watermark, "the pinned destination's checkpoint must not move")
+    }
+
+    /// A delta that found nothing must not close the window. `skippedNoData` is a successful answer
+    /// to "is there anything new", but advancing on it would step the watermark past rows a later
+    /// arrival could still land behind — the same rule `runTemplate` applies.
+    func testADeltaThatFoundNothingLeavesTheCursorWhereItWas() throws {
+        let t = makeTemplate(name: "Since last", rangeRule: .sinceLastRun)
+        try templates.insert(t)
+        let now = clock.now()
+        _ = try seedSample(ingestedAt: now.addingTimeInterval(-20_000))
+        let watermark = now.addingTimeInterval(-10_000)
+        try cursors.advance(templateId: t.id, destinationId: ExportDestination.shareSheetId,
+                            to: watermark, lastRunId: "seed", manifestSha: nil, now: now)
+
+        let outcome = try service.run(template: t)
+
+        XCTAssertEqual(outcome.rowCount, 0)
+        XCTAssertEqual(try runs.recent(templateId: t.id).first?.outcome, .skippedNoData)
+        XCTAssertEqual(try cursors.cursor(templateId: t.id,
+                                          destinationId: ExportDestination.shareSheetId)?.highWatermark,
+                       watermark, "an empty delta closes no window")
     }
 
     // MARK: - Artifact naming (house scheme)
