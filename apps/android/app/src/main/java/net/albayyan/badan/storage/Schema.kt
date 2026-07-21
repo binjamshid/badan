@@ -803,5 +803,39 @@ object Schema {
                     "CREATE INDEX idx_cycle_context_start ON cycle_contexts(cycle_start_at);",
                 )
             ),
+            // Version 4 (EPIC-29): the correlation engine's findings — `derived_values` and
+            // `input_manifests` again, but in the SENSITIVE file this time. Mirror of iOS
+            // `Schema.sensitiveMigrations` version 4, same statements.
+            //
+            // **Why a second copy of two tables that already exist in `badan.db`.** A correlation
+            // finding's metric id IS the disclosure: `journal.correlation.alcohol.readiness.score`
+            // says the user logs alcohol, in a column, in plain text. Writing that row to the main
+            // database would put a lifestyle-revealing fact outside the namespace whose whole
+            // purpose is that turning sensitive records off is a file deletion — the row would
+            // survive `purgeSensitiveNamespace()` and keep saying it. `stress.day_trend` is
+            // sensitive-plus and does live in the main db, and that is consistent rather than
+            // contradictory: its ID names no behaviour, so only its VALUE is sensitive and the
+            // registry's sensitiveClass gate is enough. Here the identifier itself would leak, so
+            // placement has to do the work.
+            //
+            // Same DDL as main migration 1's pair, deliberately byte-for-byte: `DerivedValue` and
+            // `InputManifest` are one domain shape, and a divergent column list would mean two
+            // readers and two ways to be wrong. `CorrelationRepository` is the only writer and
+            // holds the sensitive connection alone (structural I7, as `JournalRepository` does).
+            Migration(
+                version = 4,
+                statements = listOf(
+                    """
+                    CREATE TABLE derived_values (
+                      id TEXT PRIMARY KEY, metric_id TEXT NOT NULL, value REAL NOT NULL, unit TEXT NOT NULL,
+                      period_key TEXT NOT NULL, confidence REAL, provisional INTEGER NOT NULL,
+                      algorithm_id TEXT NOT NULL, algorithm_version TEXT NOT NULL, input_manifest_id TEXT,
+                      computed_at INTEGER NOT NULL, $conventionCols
+                    );
+                    """,
+                    "CREATE INDEX idx_derived_latest ON derived_values(metric_id, period_key, computed_at DESC);",
+                    "CREATE TABLE input_manifests (id TEXT PRIMARY KEY, inputs TEXT NOT NULL);",
+                )
+            ),
         )
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://albayyan.net/badan/schemas/json_bundle/1.0.0",
+  "$id": "https://albayyan.net/badan/schemas/json_bundle/1.1.0",
   "title": "BADAN JSON export bundle",
-  "description": "The v1.0 JSON bundle envelope (execution plan §22.2). This is the PUBLIC face of an export: snake_case keys, ISO-8601 timestamps with a numeric offset, raw and derived in physically separate arrays (I5). BADAN's internal storage is unchanged by this schema — timestamps are epoch-millis in SQLite and are rendered on the way out; do not read this file as a description of the database. Written as a real JSON Schema rather than prose so a downstream consumer can validate a bundle mechanically; scripts/gen_data_dictionary.py reads it to generate DATA_DICTIONARY.md.",
+  "description": "The 1.1.0 JSON bundle envelope (execution plan §22.2). This is the PUBLIC face of an export: snake_case keys, ISO-8601 timestamps with a numeric offset, raw and derived in physically separate arrays (I5). BADAN's internal storage is unchanged by this schema — timestamps are epoch-millis in SQLite and are rendered on the way out; do not read this file as a description of the database. Written as a real JSON Schema rather than prose so a downstream consumer can validate a bundle mechanically; scripts/gen_data_dictionary.py reads it to generate DATA_DICTIONARY.md. 1.1.0 is additive over 1.0.0 — nothing was removed, renamed or retyped; `logs.hydration`, `logs.journal`, `logs.context_statuses` and the root `corrections[]` are the four optional keys it adds. Each is absent-when-empty, so a bundle that carries none of them is shaped exactly as 1.0.0 described.",
   "type": "object",
   "required": [
     "export_schema_version",
@@ -22,8 +22,8 @@
   "additionalProperties": false,
   "properties": {
     "export_schema_version": {
-      "description": "Semver of the export contract this bundle was written against. Additive changes bump the minor, breaking changes bump the major with migration notes in CHANGELOG.md.",
-      "const": "1.0.0"
+      "description": "Semver of the export contract this bundle was written against. Additive changes bump the minor, breaking changes bump the major with migration notes in CHANGELOG.md. A `const` rather than a pattern: this document describes exactly one version, so a bundle declaring another one fails here by name instead of half-validating against a shape it was never written to.",
+      "const": "1.1.0"
     },
     "generated_at": { "$ref": "#/$defs/timestamp" },
     "app": {
@@ -130,7 +130,7 @@
       "items": { "$ref": "#/$defs/baseline" }
     },
     "logs": {
-      "description": "User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `hydration` is normal-class (a logged drink is the user's own data, never paywalled) and appears in a DEFAULT export, but is added ONLY when the export caught at least one drink — an install without the module, or an export whose scope caught no drinks, omits the key entirely rather than emitting an empty block that would assert 'this user logged no drinks'. `journal` is reserved for EPIC-29 and is deliberately absent rather than emitted empty — an empty array would assert 'this user wrote no journal entries', which is not the same claim as 'this build has no journal'.",
+      "description": "User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `hydration` is normal-class (a logged drink is the user's own data, never paywalled) and appears in a DEFAULT export, but is added ONLY when the export caught at least one drink — an install without the module, or an export whose scope caught no drinks, omits the key entirely rather than emitting an empty block that would assert 'this user logged no drinks'. `journal` and `context_statuses` (EPIC-29) are sensitive-plus and follow BOTH rules at once: they require includeSensitive, and each is added only when its own array has rows — an empty array in a default export would assert 'this user logged no behaviors' AND disclose that the behavior log was read at all, which for a lifestyle-revealing family is itself a leak.",
       "type": "object",
       "required": ["symptoms", "adherence", "workouts", "nutrition"],
       "additionalProperties": false,
@@ -143,7 +143,9 @@
           "items": { "$ref": "#/$defs/workout_log" }
         },
         "nutrition": { "type": "array", "items": { "$ref": "#/$defs/nutrition_entry" } },
-        "hydration": { "$ref": "#/$defs/hydration_log" }
+        "hydration": { "$ref": "#/$defs/hydration_log" },
+        "journal": { "type": "array", "items": { "$ref": "#/$defs/journal_entry" } },
+        "context_statuses": { "type": "array", "items": { "$ref": "#/$defs/context_status" } }
       }
     },
     "deletions": {
@@ -524,6 +526,58 @@
       }
     },
 
+    "journal_entry": {
+      "description": "One behavior tag from the journal (EPIC-29 / §9.9) — a raw user assertion, sensitive-plus (I7). Exactly one of `behavior_id` (a behaviors.json key) and `custom_label` (the user's own words) is non-null; the KEY is stored rather than a rendered label so an Arabic-logged journal reads in English and back. `value_kind` says which shape to expect: `boolean` carries a null `value` and null `unit` (the row's existence is the assertion — it is NOT 'happened once'), `count` an integer with no physical unit, `quantity` an amount in `unit`. `recalled` is derived from occurred_at vs provenance.recorded_at and marks the yesterday-recall path; it is DISCLOSURE, not a discount — a recalled entry counts exactly like a live one.",
+      "type": "object",
+      "required": ["record_id", "behavior_id", "custom_label", "value_kind", "value", "unit",
+                   "occurred_at", "timezone", "recalled", "note", "provenance", "value_type",
+                   "is_derived", "updated_at", "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "behavior_id": { "$ref": "#/$defs/nullable_string" },
+        "custom_label": { "$ref": "#/$defs/nullable_string" },
+        "value_kind": { "type": "string", "enum": ["boolean", "count", "quantity"] },
+        "value": { "$ref": "#/$defs/nullable_number" },
+        "unit": { "$ref": "#/$defs/nullable_string" },
+        "occurred_at": { "$ref": "#/$defs/timestamp" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "recalled": { "type": "boolean" },
+        "note": { "$ref": "#/$defs/nullable_string" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "value_type": { "type": "string", "const": "raw" },
+        "is_derived": { "type": "boolean", "const": false },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
+    "context_status": {
+      "description": "A user-declared interval that conditions how values from that period should be READ (EPIC-29 / §9.10) — travel, illness, fasting, altitude, injury, or the user's own label. Sensitive-plus (I7). `end_at` is null exactly when the status is still open, and `open_ended` names that rather than leaving a consumer to infer the null; an export NEVER substitutes 'now' for an end the user did not declare. No confidence, ceiling or adjustment is serialized: a status annotates interpretation and never alters a stored value, so there is no adjusted number here to carry.",
+      "type": "object",
+      "required": ["record_id", "status_id", "custom_label", "start_at", "end_at", "open_ended",
+                   "timezone", "note", "provenance", "value_type", "is_derived", "updated_at",
+                   "origin_device_id", "deleted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "record_id": { "type": "string" },
+        "status_id": { "$ref": "#/$defs/nullable_string" },
+        "custom_label": { "$ref": "#/$defs/nullable_string" },
+        "start_at": { "$ref": "#/$defs/timestamp" },
+        "end_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "open_ended": { "type": "boolean" },
+        "timezone": { "$ref": "#/$defs/timezone" },
+        "note": { "$ref": "#/$defs/nullable_string" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "value_type": { "type": "string", "const": "raw" },
+        "is_derived": { "type": "boolean", "const": false },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "origin_device_id": { "type": "string" },
+        "deleted_at": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+
     "adherence_event": {
       "type": "object",
       "required": ["record_id", "regimen_id", "kind", "scheduled_for", "occurred_at", "timezone",
@@ -771,7 +825,7 @@
       "additionalProperties": false,
       "properties": {
         "export_id": { "type": "string" },
-        "export_schema_version": { "const": "1.0.0" },
+        "export_schema_version": { "const": "1.1.0" },
         "app_version": { "type": "string" },
         "platform": { "type": "string" },
         "generated_at": { "$ref": "#/$defs/timestamp" },

@@ -91,6 +91,11 @@ struct MetricDetailData {
     /// The full canonical series (ascending), tagged with the date it belongs to — computed
     /// once at load time rather than re-derived on every render (PERF-036/037/042).
     var fullSeries: [(date: Date, value: Double)]
+    /// EPIC-29 (plan §18). The caveat sentences for any period the user marked over the day
+    /// `latestDerivedValue` describes — the visible half of "annotate confidence and copy". Empty
+    /// for a raw metric (a recorded reading is not "computed while" anything), empty on an ordinary
+    /// day, and empty when sensitive records are off, since a caveat names a circumstance.
+    var contextCaveats: [LocalizedString] = []
 
     /// The chart reads derived values when there is no raw interval series (composites).
     var usesDerivedSeries: Bool { intervals.isEmpty && !derived.isEmpty }
@@ -113,6 +118,9 @@ struct MetricDetailFetchInputs {
     var derivation: DerivationRepository
     var catalog: CatalogRepository
     var reconciliation: ReconciliationRepository
+    /// EPIC-29. The context seam, read for one thing: the caveat beside a computed value.
+    var contextAnnotations: ContextAnnotationResolver
+    var sensitiveModulesEnabled: Bool
     var depth: DepthPolicy
     var now: Date
     var metricId: String
@@ -130,7 +138,9 @@ final class MetricDetailViewModel {
     func load(_ env: AppEnvironment, metricId: String) async {
         let inputs = MetricDetailFetchInputs(
             registry: env.registry, measurements: env.measurements, derivation: env.derivation,
-            catalog: env.catalog, reconciliation: env.reconciliation, depth: env.depth,
+            catalog: env.catalog, reconciliation: env.reconciliation,
+            contextAnnotations: env.contextAnnotations,
+            sensitiveModulesEnabled: env.profile.sensitiveModulesEnabled, depth: env.depth,
             now: env.now(), metricId: metricId)
 
         let outcome = await Task.detached(priority: .userInitiated) {
@@ -207,10 +217,21 @@ final class MetricDetailViewModel {
                 }
             }
 
+            // EPIC-29: only a COMPUTED value can be "computed while you were travelling" — a raw
+            // reading is a thing the device recorded, and captioning it with a caveat about the
+            // person's usual pattern would be describing the wrong kind of number.
+            let caveats: [LocalizedString]
+            if let latestDerived, def.kind == .derived, inputs.sensitiveModulesEnabled {
+                caveats = try ContextCaveats.forPeriodKey(latestDerived.periodKey, tz: tz,
+                                                          annotations: inputs.contextAnnotations)
+            } else {
+                caveats = []
+            }
+
             let data = MetricDetailData(
                 def: def, baseline: baseline, intervals: intervals, derived: derivedSeries,
                 latestDerivedValue: latestDerived, manifest: manifest, sourceNames: sourceNames,
-                recentDedup: dedup, fullSeries: fullSeries)
+                recentDedup: dedup, fullSeries: fullSeries, contextCaveats: caveats)
 
             return .success(data)
         } catch {
@@ -373,6 +394,10 @@ struct MetricDetailScreen: View {
                             .font(BadanFont.caption.monospacedDigit())
                             .foregroundStyle(BadanColor.textSecondary)
                     }
+                    // EPIC-29: the caveat sits with the value, at both depths — it is the frame the
+                    // number should be read in, not a power-mode detail. Renders nothing on an
+                    // ordinary day.
+                    ContextCaveatNote(caveats: data.contextCaveats, language: env.language)
                 } else {
                     Text(data.def.label(depth: env.depth, language: env.language))
                         .font(BadanFont.sectionTitle)

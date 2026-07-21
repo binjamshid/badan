@@ -3,7 +3,7 @@ import Foundation
 /// A JSON value the export writer controls end to end.
 ///
 /// The bundle is built as one of these and rendered by `CanonicalJSON.render`, rather than being
-/// handed to `JSONEncoder`, because schema 1.0.0 promises the same store and scope produce
+/// handed to `JSONEncoder`, because schema 1.1.0 promises the same store and scope produce
 /// byte-identical output on iOS and Android — and `JSONEncoder`/kotlinx do not agree on the two
 /// things that decide those bytes. Key order is one (`.sortedKeys` sorts, kotlinx emits in
 /// declaration order); number rendering is the worse one (Swift prints an integral `Double` as
@@ -118,7 +118,7 @@ indirect enum CanonicalJSON {
     }
 }
 
-/// Serializes a full export as one self-describing JSON bundle at export schema 1.0.0
+/// Serializes a full export as one self-describing JSON bundle at export schema 1.1.0
 /// (execution plan §22.2).
 ///
 /// Raw and derived are **physically separated** into distinct top-level arrays and never share a
@@ -172,7 +172,8 @@ struct JSONBundleWriter {
         destination: (name: String, kind: String)? = nil,
         config: [String: CanonicalJSON]? = nil,
         hydration: HydrationExportPayload? = nil,
-        hydrationRedaction: HydrationRedactionPolicy = .default
+        hydrationRedaction: HydrationRedactionPolicy = .default,
+        journal: JournalExportPayload? = nil
     ) throws -> Data {
         let json = bundle(
             manifest: manifest, rawSamples: rawSamples, intervalRecords: intervalRecords,
@@ -182,7 +183,7 @@ struct JSONBundleWriter {
             cursorAfter: cursorAfter, previousManifestSha: previousManifestSha,
             additionalDeletions: additionalDeletions, corrections: corrections,
             destination: destination, config: config,
-            hydration: hydration, hydrationRedaction: hydrationRedaction
+            hydration: hydration, hydrationRedaction: hydrationRedaction, journal: journal
         )
         return Data(json.render().utf8)
     }
@@ -210,7 +211,8 @@ struct JSONBundleWriter {
         destination: (name: String, kind: String)? = nil,
         config: [String: CanonicalJSON]? = nil,
         hydration: HydrationExportPayload? = nil,
-        hydrationRedaction: HydrationRedactionPolicy = .default
+        hydrationRedaction: HydrationRedactionPolicy = .default,
+        journal: JournalExportPayload? = nil
     ) -> CanonicalJSON {
         // A workout session lives in `workouts`, not `sessions`. Split before anything counts
         // rows, so `row_counts` describes what was actually serialized rather than what was
@@ -225,6 +227,14 @@ struct JSONBundleWriter {
         // is what keeps a pre-hydration golden byte-identical without a fixture regeneration.
         let hydrationPayload = (hydration?.isEmpty == false) ? hydration : nil
 
+        // Same absent-not-empty rule, for the same reason plus a sharper one (EPIC-29): the two
+        // journal families are sensitive-plus, so an empty `"journal": []` in a default export
+        // would both assert "this user logged no behaviors" AND advertise that the journal exists
+        // and was consulted. Each key is added only when its OWN array has rows, so a user who
+        // declared a travel status but tapped no chips gets `context_statuses` and no `journal`.
+        let journalEntries = journal?.entries ?? []
+        let journalStatuses = journal?.statuses ?? []
+
         var rowCounts: [String: CanonicalJSON] = [
             "raw_samples": .integer(rawSamples.count),
             "interval_records": .integer(intervalRecords.count),
@@ -238,6 +248,8 @@ struct JSONBundleWriter {
             "logs.nutrition": .integer(nutrition.count)
         ]
         if let hydrationPayload { rowCounts["logs.hydration"] = .integer(hydrationPayload.entries.count) }
+        if !journalEntries.isEmpty { rowCounts["logs.journal"] = .integer(journalEntries.count) }
+        if !journalStatuses.isEmpty { rowCounts["logs.context_statuses"] = .integer(journalStatuses.count) }
 
         var members: [String: CanonicalJSON] = [
             "export_schema_version": .string(ExportSchema.version),
@@ -266,7 +278,8 @@ struct JSONBundleWriter {
             "baselines": .array(baselines.map(Self.baseline)),
             "logs": .object(Self.logs(symptoms: symptoms, adherence: adherence, workouts: workouts,
                                       nutrition: nutrition, hydration: hydrationPayload,
-                                      hydrationRedaction: hydrationRedaction)),
+                                      hydrationRedaction: hydrationRedaction,
+                                      journalEntries: journalEntries, contextStatuses: journalStatuses)),
             "deletions": Self.deletions(rawSamples: rawSamples, intervalRecords: intervalRecords,
                                         sleepSessions: sleepSessions, workoutSessions: workoutSessions,
                                         derivedValues: derivedValues, symptoms: symptoms,
@@ -613,9 +626,15 @@ struct JSONBundleWriter {
     /// is the exception: it is added ONLY when a non-empty payload is supplied, so a build without the
     /// module, or an export whose scope caught no drinks, produces the exact bytes it did before
     /// EPIC-38. When present it carries its own redaction manifest (§7A.1).
+    ///
+    /// `journal` and `context_statuses` (EPIC-29) follow the same absent-when-empty rule, each keyed
+    /// off its own array: they are sensitive-plus, so an empty array in a default export would both
+    /// make a claim about the user's behavior log and disclose that the log was read at all.
     static func logs(symptoms: [SymptomEntry], adherence: [AdherenceEvent], workouts: [WorkoutEntry],
                      nutrition: [NutritionEntry], hydration: HydrationExportPayload?,
-                     hydrationRedaction: HydrationRedactionPolicy) -> [String: CanonicalJSON] {
+                     hydrationRedaction: HydrationRedactionPolicy,
+                     journalEntries: [JournalEntry] = [],
+                     contextStatuses: [ContextStatus] = []) -> [String: CanonicalJSON] {
         var members: [String: CanonicalJSON] = [
             "symptoms": .array(symptoms.map(Self.symptom)),
             "adherence": .array(adherence.map(Self.adherence)),
@@ -623,6 +642,8 @@ struct JSONBundleWriter {
             "nutrition": .array(nutrition.map(Self.nutrition))
         ]
         if let hydration { members["hydration"] = HydrationExportJSON.log(hydration, policy: hydrationRedaction) }
+        if !journalEntries.isEmpty { members["journal"] = .array(journalEntries.map(JournalExportJSON.entry)) }
+        if !contextStatuses.isEmpty { members["context_statuses"] = .array(contextStatuses.map(JournalExportJSON.status)) }
         return members
     }
 

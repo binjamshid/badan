@@ -1,4 +1,4 @@
-# BADAN wide layout · schema 1.0.0 · layout wide-v1 · granularity day
+# BADAN wide layout · schema 1.1.0 · layout wide-v1 · granularity day
 date,activity.distance|min,activity.distance|mean,activity.distance|max,activity.floors|min,activity.floors|mean,activity.floors|max,activity.steps|min,activity.steps|mean,activity.steps|max,heart.hr|min,heart.hr|mean,heart.hr|max,respiratory.rate|min,respiratory.rate|mean,respiratory.rate|max
 2026-03-08,500,1000,1500,3,4,5,3000,4000,5000,,,,14,15,16
 2026-06-20,,,,,,,,,,62,70.5,79,,,

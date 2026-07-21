@@ -47,6 +47,21 @@ jobs:
               'apps/ios/Sources/Resources/sensor_quality.json',
               'apps/android/app/src/main/assets/sensor_quality.json',
             ],
+            # Both of these had cp lines in BOTH sync scripts and no entry here — the exact gap the
+            # note above describes, reopened twice. beverages.json arrived with hydration (EPIC-38)
+            # and behaviors.json with the journal (EPIC-29); each shipped a mirror that nothing
+            # compared on a push. behaviors.json matters most of the three-way set: it is the
+            # dictionary the correlation engine splits arms on, so a stale mirror on one platform
+            # means the two compute findings over different behaviour vocabularies and the shared
+            # fixture is the only thing left that would notice.
+            'packages/contracts/dictionaries/beverages.json': [
+              'apps/ios/Sources/Resources/beverages.json',
+              'apps/android/app/src/main/assets/beverages.json',
+            ],
+            'packages/contracts/dictionaries/behaviors.json': [
+              'apps/ios/Sources/Resources/behaviors.json',
+              'apps/android/app/src/main/assets/behaviors.json',
+            ],
           }
           fail = False
           for src, mirrors in canonical.items():
@@ -83,14 +98,26 @@ jobs:
       # is the bundle both platforms are asserted byte-identical on, so validating it validates the
       # shape both writers actually emit.
       #
-      # Two fixtures are validated, not one. bundle-v1.json carries NO drinks, so on its own it
-      # left the logs.hydration schema section (EPIC-38) documented but unexercised — a writer or
-      # schema drift on the hydration block would have passed CI unnoticed. bundle-hydration-v1.json
-      # carries a logs.hydration block shaped as ExportRunner emits it (entries incl. an append-first
-      # revision, summaries with and without a goal, goals, beverages, sources, redaction manifest),
-      # so that section is now schema-checked too. bundle-v1.json stays the byte-stable cross-platform
-      # parity golden and MUST NOT be edited to carry hydration (see packages/fixtures/export/README.md).
-      - name: The export bundle fixtures validate against their own JSON Schema
+      # Four fixtures are validated, not one, because every OPTIONAL key in this schema is a section
+      # that a single full-export fixture leaves untouched. bundle-v1.json carries no drinks, no
+      # journal and no config, so on its own it left each of those sections documented but
+      # unexercised — a writer or schema drift on them would have passed CI unnoticed, which is
+      # exactly what happened three times running (hydration EPIC-38, delta EPIC-17, journal
+      # EPIC-29 each shipped a new key with no fixture behind it).
+      #
+      # bundle-hydration-v1.json covers logs.hydration as ExportRunner emits it (entries incl. an
+      # append-first revision, summaries with and without a goal, goals, beverages, sources,
+      # redaction manifest). bundle-journal-v1.json covers logs.journal + logs.context_statuses and
+      # the root config echo. The delta pair covers is_delta, both cursors, previous_manifest_sha
+      # and corrections[]. bundle-v1.json stays the byte-stable cross-platform parity golden and
+      # MUST NOT be edited to carry any of them (see packages/fixtures/export/README.md): a golden
+      # with none of the optional keys is what proves absent-when-empty still holds.
+      #
+      # The coverage assertion below is the part that keeps this list honest. Validating N fixtures
+      # proves nothing about the N+1th section someone adds next month; requiring every optional key
+      # the schema DECLARES to appear in at least one validated fixture is what makes the omission
+      # fail the build instead of being discovered by a consumer.
+      - name: The export bundle fixtures validate against their own JSON Schema, and exercise every optional key
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --disable-pip-version-check 'jsonschema>=4,<5'
@@ -104,8 +131,11 @@ jobs:
           validator = Draft202012Validator(schema)
 
           fixtures = [
-            'packages/fixtures/export/bundle-v1.json',            # no hydration (parity golden)
+            'packages/fixtures/export/bundle-v1.json',            # no optional keys (parity golden)
             'packages/fixtures/export/bundle-hydration-v1.json',  # exercises logs.hydration
+            # EPIC-29: the only fixture carrying logs.journal + logs.context_statuses (both
+            # sensitive-plus, both absent-when-empty) and the root `config` echo.
+            'packages/fixtures/export/bundle-journal-v1.json',
             # EPIC-17: the delta pair exercises the schema's delta fields — is_delta, both cursors,
             # previous_manifest_sha and the corrections[] section — which a full export leaves null
             # or absent, so nothing else in this list can catch a drift in them.
@@ -113,13 +143,35 @@ jobs:
             'packages/fixtures/export/delta-chain/delta-run2-v1.json',
           ]
           fail = False
+          bundles = {}
           for rel in fixtures:
             bundle = json.loads((root/rel).read_text())
+            bundles[rel] = bundle
             errors = sorted(validator.iter_errors(bundle), key=lambda e: list(e.path))
             for error in errors:
               location = '/'.join(str(p) for p in error.path) or '<root>'
               print(f"::error::{rel} at {location}: {error.message}")
               fail = True
+
+          # Coverage: every optional key, at the root and inside `logs`, must be present in at least
+          # one fixture above. Derived from the schema rather than listed here, so a key added to the
+          # schema without a fixture fails immediately — the check cannot be out of date with the
+          # contract it polices.
+          def optional(node):
+            return [k for k in node.get('properties', {}) if k not in node.get('required', [])]
+
+          sections = {'': (schema, [b for b in bundles.values()]),
+                      'logs.': (schema['properties']['logs'],
+                                [b.get('logs', {}) for b in bundles.values()])}
+          for prefix, (node, instances) in sections.items():
+            for key in optional(node):
+              if not any(key in instance for instance in instances):
+                print(f"::error::no validated fixture carries `{prefix}{key}` — the schema documents "
+                      f"it but nothing here exercises it. Add a fixture that emits it (see "
+                      f"packages/fixtures/export/README.md) rather than deleting this check.")
+                fail = True
+              else:
+                print(f"covered: {prefix}{key}")
           sys.exit(1 if fail else 0)
           PY
       # EPIC-17 / §22.6. Delta export tells people "this file contains only what is new" — a claim
@@ -143,28 +195,50 @@ jobs:
             exit 1
           fi
           echo "delta chain verified; a tampered chain was correctly rejected"
-      # The version lives in four places that must never disagree: the two contract files, and the
-      # constant each platform's writers actually stamp into an artifact. A file labelled 1.0.0
-      # whose writer emits 0.9.0 is worse than an unversioned one — it tells a consumer how to
-      # read bytes that are not there.
-      - name: Export schema version agrees across contracts and both writers
+      # The version lives in several places that must never disagree: the two contract files, the
+      # constant each platform's writers actually stamp into an artifact, the schema's own manifest
+      # section, and the fixture sets that declare which version their bytes were produced at. A
+      # file labelled 1.0.0 whose writer emits 0.9.0 is worse than an unversioned one — it tells a
+      # consumer how to read bytes that are not there.
+      #
+      # The fixture declarations are in the list because they are how a HALF-DONE bump surfaces
+      # cheaply. Bumping the constants without regenerating the goldens leaves a fixture set whose
+      # manifest still claims the old version; the parity suites would catch it, but only on the
+      # runners that have a JVM or a simulator, and a contracts-only change may not reach them.
+      - name: Export schema version agrees across contracts, both writers, and the fixtures
         run: |
           python3 - <<'PY'
           import json, pathlib, re, sys
 
           root = pathlib.Path('.')
           version = json.loads((root/'packages/export-schemas/csv_columns.json').read_text())['version']
+          schema = json.loads((root/'packages/export-schemas/json_bundle.schema.json').read_text())
           swift = (root/'apps/ios/Sources/Export/CSVWriter.swift').read_text()
           kotlin = (root/'apps/android/app/src/main/java/net/albayyan/badan/export/CsvWriter.kt').read_text()
 
           found = {
             'csv_columns.json': version,
-            'json_bundle.schema.json': json.loads(
-              (root/'packages/export-schemas/json_bundle.schema.json').read_text()
-            )['properties']['export_schema_version']['const'],
+            'json_bundle.schema.json (envelope)':
+              schema['properties']['export_schema_version']['const'],
+            # The manifest section repeats the const, so a bump that edited only the envelope would
+            # leave a schema that no real bundle can satisfy in both places at once.
+            'json_bundle.schema.json (manifest)':
+              schema['$defs']['manifest']['properties']['export_schema_version']['const'],
             'ExportSchema.version (iOS)': re.search(r'static let version = "([^"]+)"', swift).group(1),
             'ExportSchema.VERSION (Android)': re.search(r'const val VERSION: String = "([^"]+)"', kotlin).group(1),
           }
+
+          # Fixture sets are DISCOVERED, not listed: any JSON under packages/fixtures/ declaring a
+          # top-level exportSchemaVersion is claiming which contract its bytes were produced at, and
+          # a list here would go stale the first time a fixture set is added — the same rot this
+          # whole step exists to catch.
+          for path in sorted((root/'packages/fixtures').rglob('*.json')):
+            try:
+              declared = json.loads(path.read_text())
+            except json.JSONDecodeError:
+              continue
+            if isinstance(declared, dict) and 'exportSchemaVersion' in declared:
+              found[str(path)] = declared['exportSchemaVersion']
           if len(set(found.values())) != 1:
             for where, value in found.items():
               print(f"::error::{where} says export schema {value}")

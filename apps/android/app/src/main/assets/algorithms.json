@@ -233,22 +233,47 @@
     },
     {
       "algorithmId": "stress.day_trend",
-      "semver": "0.1.0",
+      "semver": "0.2.0",
       "introducedIn": "0.2.0",
       "provisional": true,
       "producesMetricIds": ["stress.day_trend"],
-      "inputMetricIds": ["heart.hr", "heart.hrv", "heart.rhr"],
+      "inputMetricIds": ["heart.hrv"],
       "methodologyUrl": "docs/algorithms/stress.md",
-      "summaryEn": "Direction of the day's load signals against the personal baseline. Gated behind an input-density check so a day with thin sampling produces no value rather than a confident-looking one.",
+      "summaryEn": "A DAILY direction of autonomic load, read from DAYTIME heart-rate-variability sampling against the person's own recent daytime pattern — never a live or instantaneous number. A density detector decides first whether anything may be said at all: below the published samples-per-hour gate the surface is hidden with an explanation about the device's sampling, because an Apple-Watch-class wearable does not record daytime HRV densely enough to support a real-time stress index.",
       "params": {
-        "minSamplesPerHour": 2.0,
-        "minCoveredHours": 8.0,
-        "smoothingHalfLifeHours": 3.0,
-        "zClampSigmas": 2.5
+        "densityWindowDays": 7.0,
+        "denseMinSamplesPerHour": 4.0,
+        "moderateMinSamplesPerHour": 0.5,
+        "minDaysWithDaytimeSamples": 5.0,
+        "minDaytimeHoursInWindow": 24.0,
+        "minDaytimeSamplesPerDay": 2.0,
+        "referenceWindowDays": 28.0,
+        "minReferenceDays": 14.0,
+        "trendWindowDays": 7.0,
+        "minTrendDays": 4.0,
+        "trendHalfLifeDays": 2.0,
+        "zClampSigmas": 2.5,
+        "bandNeutralHalfWidth": 10.0,
+        "moderateConfidenceCap": 0.5,
+        "denseConfidenceCap": 1.0
       },
       "paramNotes": {
-        "minSamplesPerHour": "PROVISIONAL. The density gate from plan §28's 'stress monitor beyond the density gate design' scope note. Failing the gate emits nothing.",
-        "smoothingHalfLifeHours": "Trend smoothing so the surface shows a direction rather than a jittery instantaneous reading."
+        "semverNote": "0.1.0 -> 0.2.0 (EPIC-34). The 0.1.0 params were a Phase-0 placeholder schema (minSamplesPerHour/minCoveredHours/smoothingHalfLifeHours) seeded before the engine existed; no StressEngine ever loaded them, so no DerivedValue anywhere carries stress.day_trend@0.1.0. The bump is still recorded rather than edited in place, because a shipped 0.2.0 bundle contained those constants and I2 auditability is only worth anything if version ids are never quietly reused.",
+        "densityWindowDays": "Trailing local days the density detector measures over. A week, so a couple of unusual days (a flight, a day the watch was off the wrist) cannot flip the surface state on their own.",
+        "denseMinSamplesPerHour": "PROVISIONAL. At or above this DAYTIME sampling rate (samples per waking hour, sleep windows excluded) the data is vendor-grade continuous — roughly a reading every 15 minutes — which is the only density that could support the full intraday index. Reachable in practice only from a continuously-sampling vendor (Oura/Garmin/Samsung, Phase 4); the intraday index itself is NOT implemented in Phase 3, so a dense-classified surface still renders the daily trend and says the intraday view is not available yet.",
+        "moderateMinSamplesPerHour": "PROVISIONAL. The floor for saying anything at all: at least one daytime HRV reading per two waking hours. Below it the surface is HIDDEN with an explanation — the plan's 'biggest false-precision trap' guard. Apple-Watch-only users typically sit around 0.1/hr and are therefore hidden by default, which is a fact about the device's sampling, not a failure of the user or of BADAN.",
+        "minDaysWithDaytimeSamples": "Of densityWindowDays, how many must carry at least one daytime sample. Stops one dense day (a session of guided-breathing readings) from unlocking a surface the rest of the week cannot support.",
+        "minDaytimeHoursInWindow": "Total waking hours the window must contain before a samples-per-hour rate is meaningful at all. Guards the denominator: three samples in one waking hour is 3.0/hr arithmetically and evidence of nothing.",
+        "minDaytimeSamplesPerDay": "Below this many daytime samples a DAY contributes no value to the trend (it is a gap, never imputed). One reading is a point, not a day's central tendency.",
+        "referenceWindowDays": "Trailing window of daily daytime values the personal reference (robust centre + spread) is taken over. Deliberately NOT the heart.hrv baseline from EPIC-23: that baseline is dominated by overnight readings, and overnight HRV runs systematically higher than daytime HRV, so reading a daytime value against it would report 'elevated load' every single day. The reference is daytime-vs-daytime or it is nothing.",
+        "minReferenceDays": "Below this many daily values in the reference window there is no personal daytime pattern to read against, and the surface is hidden as STILL LEARNING — a calibration fact, distinct from the device-sparsity explanation.",
+        "trendWindowDays": "The sliding window the published trend value is computed over. The output describes a WINDOW ENDING on its day, never a moment.",
+        "minTrendDays": "Minimum daily values present inside trendWindowDays before a trend is emitted. Missing days stay gaps.",
+        "trendHalfLifeDays": "Exponential recency weighting inside the trend window: a day's weight is 0.5^(ageInDays / trendHalfLifeDays). Smoothing is in DAYS by construction — there is no intraday smoothing constant here, because there is no intraday output to smooth.",
+        "zClampSigmas": "Robust-z clamp (shared convention with composite.readiness_score) so one extreme daily value moves the trend to the edge of the scale and no further.",
+        "bandNeutralHalfWidth": "Half-width, in points either side of the neutral 50, of the band that reads as 'about your usual'. Coarse on purpose: the honest output of this engine is a direction, not a decimal.",
+        "moderateConfidenceCap": "Hard ceiling on DerivedValue.confidence for a moderate-density trend. A daily trend built from sparse daytime sampling is a low-confidence reading by construction, and the cap is what makes that structural rather than a matter of copy.",
+        "denseConfidenceCap": "The ceiling that would apply to vendor-dense data. Published now so the shape is fixed; unreachable in Phase 3 in practice."
       }
     },
     {
@@ -337,6 +362,45 @@
         "minCyclesForLengthEstimate": "Two recorded starts are the minimum that can define one interval. Below this, no cycle.length is emitted.",
         "maxPlausibleCycleDays": "Intervals longer than this are treated as a gap in logging rather than one very long cycle, so a missed month does not distort the history.",
         "scopeBoundary": "There is deliberately NO fertile-window, ovulation, or next-period prediction entry in this file. Those are gated behind plan decisions A17/A18 and a retained clinical advisor (A25). Adding a predictive algorithm id here would be the whole gate failing quietly — it must arrive as its own reviewed entry, not as a params tweak to this one."
+      }
+    },
+    {
+      "algorithmId": "journal.correlation",
+      "semver": "0.1.0",
+      "introducedIn": "0.2.0",
+      "provisional": true,
+      "producesMetricIds": ["journal.correlation"],
+      "inputMetricIds": ["readiness.score", "sleep.performance", "effort.day"],
+      "methodologyUrl": "docs/algorithms/correlations.md",
+      "summaryEn": "Behaviour-vs-score association (EPIC-29). For one logged behaviour and one daily score, splits the days the user actually journaled into a behaviour-present arm and a behaviour-absent arm, then compares the NEXT DAY's score distribution between the two. Effect size is Cliff's delta and the interval is a percentile bootstrap — NON-PARAMETRIC throughout, because score distributions are skewed and n is small, so a t-test would be assuming a shape the data does not have. Below the minimum-n gates nothing is emitted at all (suppressed, with the shortfall reported); above them an interval spanning zero is reported honestly as 'no clear association' rather than withheld. Findings are association only; this algorithm makes no causal claim and no surface built on it may.",
+      "params": {
+        "lookbackDays": 120.0,
+        "minObservedDays": 14.0,
+        "minDaysPerArm": 5.0,
+        "bootstrapIterations": 2000.0,
+        "bootstrapSeed": 29.0,
+        "ciLowerPercentile": 0.025,
+        "ciUpperPercentile": 0.975,
+        "negligibleDeltaThreshold": 0.147,
+        "smallDeltaThreshold": 0.33,
+        "mediumDeltaThreshold": 0.474,
+        "confidenceFullNDays": 30.0
+      },
+      "paramNotes": {
+        "producesMetricIdsNote": "The one id here is the NAMESPACE row registry.json defines (journal.correlation). Concrete finding ids extend it as journal.correlation.<behaviorId>.<scoreId> — one per behaviour x score pair the user has actually logged enough of. They are deliberately not enumerated in either contract: the set is a product of behaviors.json and the scored ids above, so enumerating it would create ~90 catalogue rows that carry no data and rot the moment a behaviour is added. The namespace row is what fixes the family's unit, sensitivity and bilingual identity; sensitiveClass=sensitivePlus on it is what marks every finding beneath it as lifestyle-revealing (I7).",
+        "lookbackDays": "Trailing local days of journal history the engine analyses. Long enough that a fortnightly behaviour can clear the gates, short enough that a finding describes the person's current life rather than last year's.",
+        "minObservedDays": "MANDATORY GATE, plan §11 EPIC-29. Minimum OBSERVED days (both arms combined, each paired with a next-day score) before any comparison is made. An observed day is one the user journaled at all — a day with no journal activity is not evidence the behaviour was absent, and counting it as absence would be inventing data. Below this the finding is SUPPRESSED, not shown with a caveat.",
+        "minDaysPerArm": "MANDATORY GATE. Minimum days in EACH arm (with / without). A 20-day sample that is 19 with and 1 without describes nothing, and an effect size computed over it would look identical on screen to one computed over a balanced sample.",
+        "bootstrapIterations": "Resamples drawn for the percentile confidence interval. 2000 is the published count; the interval's endpoints are reported to two decimals, and 2000 resamples put the Monte-Carlo noise on a percentile well below that resolution.",
+        "bootstrapSeed": "FIXED, published seed for the deterministic splitmix64 generator both platforms implement. A bootstrap is random by nature, so an unseeded one would give a slightly different interval on every recompute and a different interval on each platform — a finding that changes when you reopen the app is not a finding. The value itself is arbitrary (the epic number); what is load-bearing is that it never changes.",
+        "ciLowerPercentile": "Lower percentile of the resampled Cliff's-delta distribution. With ciUpperPercentile this is a 95% percentile-method interval. The exact index rule is published in docs/algorithms/correlations.md and is part of the cross-platform contract, not an implementation detail.",
+        "ciUpperPercentile": "Upper percentile. An interval that straddles zero is the 'no clear association' outcome, which is reported, never hidden.",
+        "negligibleDeltaThreshold": "|delta| below this reads as a negligible effect. Romano et al. (2006) thresholds for Cliff's delta, used ONLY to pick the strength word in copy and never to gate whether a finding is shown — the interval decides that.",
+        "smallDeltaThreshold": "|delta| below this reads as a small effect.",
+        "mediumDeltaThreshold": "|delta| below this reads as a medium effect; at or above it, large.",
+        "confidenceFullNDays": "Paired-day count at which the sample-size half of the confidence factor saturates. Confidence is sampleFactor x precisionFactor (see the doc); it is NOT a p-value and is never rendered as one.",
+        "contextCeilingNote": "The confidence ceiling applied when the window overlaps a declared ContextStatus is NOT duplicated here. It lives once, in ContextAnnotator.activeContextConfidenceCeiling, alongside the caveat sentences it belongs with — two copies of one number is exactly the drift this contract exists to prevent (same rule stress.day_trend follows for madToSigma).",
+        "noParametricConstants": "There is deliberately no alpha, no critical value, no assumed-sigma and no normality constant in this block. If one ever appears here, the method changed from the published non-parametric one and needs a semver bump and a doc rewrite, not a params tweak."
       }
     }
   ]

@@ -508,6 +508,10 @@ private struct ReadinessHeroCard: View {
                             CalibrationNote(calibration: calibration, language: env.language,
                                             format: env.format, showsDetail: env.depth.showsPowerDetail)
                         }
+                        // EPIC-29: "computed while you were travelling". Renders nothing on an
+                        // ordinary day. The score itself is unchanged — the engine capped this
+                        // row's confidence and nothing else (see `ReadinessResult`).
+                        ContextCaveatNote(caveats: data.readinessContextCaveats, language: env.language)
                     } else {
                         // Readiness has not cleared its cold start yet — show the countdown, never a
                         // fabricated number. What already works (sleep, vitals) is shown below.
@@ -1272,6 +1276,12 @@ struct HomeData {
     /// hero card (shown when readiness is provisional or not computed yet). `nil` when no contributing
     /// baseline exists at all.
     var readinessCalibration: BaselineCalibration?
+    /// EPIC-29 (plan §18). The caveat sentences for any period the user marked over `readinessDate`
+    /// — "computed while you were travelling". Empty on an ordinary day, which is the common case,
+    /// and empty whenever sensitive records are switched off (a caveat names a circumstance, so it
+    /// is sensitive-plus text; the confidence cap the engine already applied is a bare number and
+    /// stays). Resolved at load time from the sensitive store, never carried on the derived row.
+    var readinessContextCaveats: [LocalizedString] = []
     var narrative: LocalizedString
     var effort: HomeEffortSummary?
     var sleep: HomeSleepSummary?
@@ -1307,6 +1317,9 @@ struct HomeFetchInputs {
     var derivation: DerivationRepository
     var catalog: CatalogRepository
     var logging: LoggingRepository
+    /// EPIC-29. The context seam, read here for exactly one thing: the caveat sentences beside the
+    /// readiness value (`ContextCaveats`). Home holds no sensitive connection of its own.
+    var contextAnnotations: ContextAnnotationResolver
     var insightsRepo: InsightRepository
     var registry: MetricRegistry
     var format: ValueFormatter
@@ -1360,7 +1373,8 @@ final class HomeViewModel {
         let generationSnapshot = env.dataGeneration
         let inputs = HomeFetchInputs(
             measurements: env.measurements, derivation: env.derivation, catalog: env.catalog,
-            logging: env.logging, insightsRepo: env.insightsRepo, registry: env.registry,
+            logging: env.logging, contextAnnotations: env.contextAnnotations,
+            insightsRepo: env.insightsRepo, registry: env.registry,
             format: env.format, language: env.language, depth: env.depth,
             nutritionEnabled: profileSnapshot.nutritionEnabled,
             sensitiveModulesEnabled: profileSnapshot.sensitiveModulesEnabled,
@@ -1401,6 +1415,12 @@ final class HomeViewModel {
             let (readiness, dayOffset, readinessDay) = try latestReadiness(inputs, now: now, tz: tz)
             let readinessProgress = readiness == nil ? readinessProgressDays(inputs) : nil
             let readinessCalibration = try readinessBottleneckCalibration(inputs)
+            // EPIC-29: the note beside the score, resolved from the sensitive store at render time
+            // rather than stored on the row (see `ContextCaveats`). Skipped entirely — not merely
+            // hidden — when sensitive records are off, so the read never happens either.
+            let readinessCaveats = (readiness != nil && inputs.sensitiveModulesEnabled)
+                ? try ContextCaveats.forDay(readinessDay, tz: tz, annotations: inputs.contextAnnotations)
+                : []
             let effort = try loadEffort(inputs, now: now, tz: tz, readiness: readiness)
             let sleep = try loadSleep(inputs, now: now, tz: tz)
             let metrics = try loadMetrics(inputs, now: now)
@@ -1422,6 +1442,7 @@ final class HomeViewModel {
                 readinessDate: readinessDay,
                 readinessProgressDays: readinessProgress,
                 readinessCalibration: readinessCalibration,
+                readinessContextCaveats: readinessCaveats,
                 narrative: narrative(for: readiness, sleep: sleep),
                 effort: effort,
                 sleep: sleep,

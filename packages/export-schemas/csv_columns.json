@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§20/56 Export subsystem). Widened 0.1.0 -> 1.0.0 by EPIC-08 under approval A1 (docs/adr/ADR-0009): the 24 columns below are unchanged and un-reordered, and `granularity` + `aggregation_method` are APPENDED at positions 25 and 26. A consumer pinned to the 24-column read parses a 26-column file correctly by name. See CHANGELOG.md.",
+  "version": "1.1.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§20/56 Export subsystem). Widened 0.1.0 -> 1.0.0 by EPIC-08 under approval A1 (docs/adr/ADR-0009): the 24 columns below are unchanged and un-reordered, and `granularity` + `aggregation_method` are APPENDED at positions 25 and 26. 1.1.0 adds NO column and reorders none — the 26 below are the 1.0.0 set exactly; it is the additive minor for what the JSON bundle gained (logs.hydration, corrections[], logs.journal, logs.context_statuses) plus the two extra CSV tables a delta run writes (deletions.csv, corrections.csv), and the version token is shared by every format so one constant moves them together. A consumer pinned to the 24-column read parses a 26-column file correctly by name. See CHANGELOG.md.",
   "csvColumns": [
     {
       "name": "record_id",

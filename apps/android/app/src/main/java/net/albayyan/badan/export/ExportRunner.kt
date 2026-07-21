@@ -65,8 +65,9 @@ import net.albayyan.badan.storage.repositories.ExportJobRepository
 import net.albayyan.badan.storage.repositories.ExportRunRepository
 import net.albayyan.badan.storage.repositories.ExportTemplateRepository
 import net.albayyan.badan.storage.repositories.HydrationRepository
-import net.albayyan.badan.storage.repositories.ReconciliationRepository
+import net.albayyan.badan.storage.repositories.JournalRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
+import net.albayyan.badan.storage.repositories.ReconciliationRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
 import net.albayyan.badan.storage.repositories.RouteRepository
 import java.io.File
@@ -141,6 +142,22 @@ class ExportRunner(
      * exportable on the real export path — raw data is never paywalled. Mirror of iOS's hydration dep.
      */
     private val hydration: HydrationRepository? = null,
+    /**
+     * EPIC-29 behavior journal + declared context intervals (SENSITIVE DB — §9.9/§9.10). Optional and
+     * defaulted to null for the same compile-compatibility reason as [hydration], but the resemblance
+     * stops there: both families are sensitive-plus (I7), so unlike drinks they are gathered ONLY when
+     * `scope.includeSensitive` is set, exactly like symptoms and adherence. A default export carries
+     * neither array, and because the JSON keys are absent-when-empty, it carries no evidence that a
+     * journal was even consulted. This repository holds only the sensitive connection, so a journal row
+     * cannot be read from — or written to — `badan.db` from here. Mirror of iOS's journal dep.
+     *
+     * Divergence worth stating rather than hiding: on Android the structured logs travel ONLY in the
+     * JSON bundle (this runner writes no `events.csv` at all — see [runCsv]), so a CSV export carries
+     * no journal rows on this platform. That is the pre-existing symptoms/adherence gap, not a new one
+     * EPIC-29 introduced; closing it means adding `events.csv` to the Android CSV path for every log
+     * family at once.
+     */
+    private val journal: JournalRepository? = null,
 ) {
 
     /**
@@ -249,6 +266,11 @@ class ExportRunner(
         // hydration block/files absent and existing goldens byte-stable.
         val hydrationPayload = gatherHydration(scope, startedAt, ingestedSince)
 
+        // EPIC-29 journal + context statuses (§9.9/§9.10), sensitive-plus and therefore behind the
+        // SAME `includeSensitive` gate as symptoms/adherence — not the normal-class gate hydration
+        // rides. Gathered here once so the JSON path renders exactly what the gate allowed.
+        val journalPayload = gatherJournal(scope, startedAt, ingestedSince)
+
         // The delta watermark, over the rows the file actually contains (raw/interval/session — the
         // ingested axis a `sinceLastRun` cursor advances on). Hoisted above generation so the JSON
         // manifest can carry it as `cursor_after` — the exact value `runTemplate`'s two-phase commit
@@ -309,6 +331,7 @@ class ExportRunner(
             ExportFormat.JSON -> runJson(
                 scope, exportId, outputDir, startedAt,
                 rawSamples, intervalRecords, sessions, derivedValues, baselines, hydrationPayload,
+                journalPayload,
                 ingestedSince, isDelta, ingestedSince, deltaCursorAfter, deltaPreviousSha,
                 deltaDeletions, corrections,
             )
@@ -537,6 +560,7 @@ class ExportRunner(
         derivedValues: List<DerivedValue>,
         baselines: List<Baseline>,
         hydration: HydrationExportPayload?,
+        journal: JournalExportPayload? = null,
         ingestedSince: Long? = null,
         isDelta: Boolean = false,
         cursorBefore: Long? = null,
@@ -593,9 +617,18 @@ class ExportRunner(
         // null/empty payload (absent-when-empty), so a pre-hydration bundle stays byte-identical.
         val hydrationEntries = hydration?.entries ?: emptyList()
         for (unused in hydrationEntries) counts.bump("hydration.entry")
+        // EPIC-29: same synthetic-id convention as the other log families ("symptoms.entry" etc.),
+        // so the manifest discloses journal rows the way it discloses every other kind. These ids
+        // are export-local labels, not registry metrics — the registry's `journal.correlation.*`
+        // ids belong to the correlation engine's DERIVED rows, a different thing entirely.
+        val journalEntries = journal?.entries ?: emptyList()
+        val journalStatuses = journal?.statuses ?: emptyList()
+        for (unused in journalEntries) counts.bump("journal.entry")
+        for (unused in journalStatuses) counts.bump("context.status")
         val rowCount = rawSamples.size + intervalRecords.size + sessions.size +
             derivedValues.size + baselines.size +
-            symptoms.size + adherence.size + workouts.size + nutrition.size + hydrationEntries.size
+            symptoms.size + adherence.size + workouts.size + nutrition.size + hydrationEntries.size +
+            journalEntries.size + journalStatuses.size
 
         // A single self-contained file cannot checksum itself, so the embedded manifest carries no
         // checksums; the file-level SHA is recorded on the persisted job below.
@@ -615,6 +648,7 @@ class ExportRunner(
             previousManifestSha = previousManifestSha,
             additionalDeletions = deltaDeletions, corrections = corrections,
             hydration = hydration, hydrationRedaction = HydrationRedactionPolicy.DEFAULT,
+            journal = journal,
         )
         bundleFile.writeBytes(bundleBytes)
         bundleDigest.update(bundleBytes)
@@ -930,6 +964,36 @@ class ExportRunner(
         val beverages = if (referenced.isEmpty()) emptyList() else repo.beverages().filter { it.id in referenced }
 
         val payload = HydrationExportPayload(entries = entries, summaries = summaries, goals = goals, beverages = beverages)
+        return if (payload.isEmpty) null else payload
+    }
+
+    /**
+     * Assembles the journal slice (behavior tags + declared context intervals) of an export, or null
+     * when there is nothing to write. Mirrors iOS `ExportRunner.gatherJournal`.
+     *
+     * Gated on `includeSensitive` — NOT the normal-class gate [gatherHydration] uses. Both families
+     * are sensitive-plus (I7): a caffeine/alcohol/travel pattern is lifestyle-revealing, so it leaves
+     * the device only when the user explicitly asked for sensitive data. The consent check lives here
+     * and nowhere else; the writers do not re-derive it.
+     *
+     * Entries are windowed on `occurred_at`, so a tag the user backdated to yesterday exports under
+     * yesterday. Statuses are windowed on `start_at` (see `JournalRepository.statuses`): an export
+     * answers "what did the user declare in this period", so a still-open, year-long status is not
+     * dragged into every window. The delta filter runs on `updatedAt`, matching symptoms/adherence —
+     * a journal entry is not ingested from anywhere, it is typed here, so there is no ingested axis.
+     *
+     * Returns null (never an empty payload) for the absent-not-empty reason plus the I7 one: an empty
+     * `logs.journal` would disclose that a sensitive log was read.
+     */
+    private fun gatherJournal(scope: ExportScope, startedAt: Long, ingestedSince: Long?): JournalExportPayload? {
+        val repo = journal ?: return null
+        if (!scope.includeRaw || !scope.includeSensitive || !logFamilyIncluded("journal", scope)) return null
+
+        val rangeStart = scope.startDate ?: 0L
+        val rangeEnd = scope.endDate ?: startedAt
+        val entries = repo.entries(rangeStart, rangeEnd).filter { ingestedAfter(it.updatedAt, ingestedSince) }
+        val statuses = repo.statuses(rangeStart, rangeEnd).filter { ingestedAfter(it.updatedAt, ingestedSince) }
+        val payload = JournalExportPayload(entries = entries, statuses = statuses)
         return if (payload.isEmpty) null else payload
     }
 

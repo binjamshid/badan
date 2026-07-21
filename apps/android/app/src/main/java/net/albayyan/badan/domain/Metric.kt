@@ -76,6 +76,7 @@ enum class MetricFamily(val code: String) {
     NUTRITION("nutrition"),
     HYDRATION("hydration"),
     SUBJECTIVE("subjective"),
+    JOURNAL("journal"),
     STRESS("stress"),
     CYCLE("cycle"),
     SYMPTOMS("symptoms"),
@@ -96,6 +97,10 @@ enum class MetricFamily(val code: String) {
             NUTRITION -> LocalizedString(en = "Nutrition", ar = "التغذية")
             HYDRATION -> LocalizedString(en = "Hydration", ar = "الترطيب")
             SUBJECTIVE -> LocalizedString(en = "How you feel", ar = "شعورك")
+            // The journal family holds what you DID (behaviour tags) and what BADAN reads out of
+            // it — deliberately distinct from SUBJECTIVE, which is how you FELT. Its one registry
+            // row is the `journal.correlation` namespace (EPIC-29).
+            JOURNAL -> LocalizedString(en = "Journal", ar = "المفكرة")
             // "Stress" names what the family tracks, not a state the reader is in — the metric is a
             // day-level trend (`stress.day_trend`), and the copy inside the family keeps it directional.
             STRESS -> LocalizedString(en = "Stress", ar = "التوتر")
@@ -122,6 +127,7 @@ enum class MetricFamily(val code: String) {
             NUTRITION -> "restaurant"
             HYDRATION -> "water_drop"
             SUBJECTIVE -> "mood"
+            JOURNAL -> "edit_note"
             STRESS -> "psychology"
             CYCLE -> "calendar_month"
             SYMPTOMS -> "healing"

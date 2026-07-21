@@ -52,7 +52,7 @@ import java.security.MessageDigest
  * The Android half of the cross-platform export-schema fixture (Phase-1 exit criterion: "the same
  * store and scope produce byte-identical output on both platforms").
  *
- * What this pins is the *serialization contract* at export schema 1.0.0: given one frozen set of
+ * What this pins is the *serialization contract* at export schema 1.1.0: given one frozen set of
  * records, what exact bytes does BADAN write? That is the layer where the two platforms diverge
  * silently and expensively — `JSONEncoder` sorts keys while kotlinx emits them in declaration
  * order, Swift prints an integral `Double` as `512` and Kotlin as `512.0`, one platform escapes a
@@ -104,7 +104,7 @@ class ExportSchemaParityTest {
      *
      * Compared as raw bytes rather than as parsed JSON on purpose. A parsed comparison passes
      * when key order, number spelling and escaping all differ — which is precisely the set of
-     * things schema 1.0.0 promises are identical, and precisely what a downstream consumer
+     * things schema 1.1.0 promises are identical, and precisely what a downstream consumer
      * checksumming the file cares about. `manifest.checksums` exists because BADAN tells people
      * these files are verifiable; two platforms producing different bytes for the same data would
      * make that promise vacuous.
@@ -294,11 +294,19 @@ class ExportSchemaParityTest {
         }
     }
 
-    /** The 26 columns, in contract order, with the two 1.0.0 additions last (A1). */
+    /**
+     * The 26 columns, in contract order, with the two 1.0.0 additions last (A1).
+     *
+     * The version literal is 1.1.0 and the column set is still the 1.0.0 one — that pairing is the
+     * assertion, not an oversight. 1.1.0 is the additive minor for what the JSON bundle gained
+     * (`logs.hydration`, `corrections[]`, `logs.journal`, `logs.context_statuses`); the version
+     * token is shared by every format, so the CSV contract moves with it while its columns do not.
+     * A future bump that also touches the columns has to edit the list below, which is the point.
+     */
     @Test fun csvColumnsAreTheContractOrder() {
         val contract = Json.parseToJsonElement(File("../../../packages/export-schemas/csv_columns.json").readText())
             .jsonObject
-        assertEquals("1.0.0", contract.getValue("version").jsonPrimitive.content)
+        assertEquals("1.1.0", contract.getValue("version").jsonPrimitive.content)
         assertEquals(ExportSchema.VERSION, contract.getValue("version").jsonPrimitive.content)
         val expected = contract.getValue("csvColumns").jsonArray.map { it.jsonObject.getValue("name").jsonPrimitive.content }
         assertEquals(expected, CsvWriter.columns)

@@ -46,7 +46,10 @@ import net.albayyan.badan.features.export.ExportScreen
 import net.albayyan.badan.features.export.TemplateManagerScreen
 import net.albayyan.badan.features.healthmonitor.HealthMonitorScreen
 import net.albayyan.badan.features.home.HomeScreen
+import net.albayyan.badan.features.insights.CorrelationsScreen
 import net.albayyan.badan.features.insights.InsightsScreen
+import net.albayyan.badan.features.journal.ContextStatusScreen
+import net.albayyan.badan.features.journal.JournalScreen
 import net.albayyan.badan.features.loghub.LogHubScreen
 import net.albayyan.badan.features.medication.MedicationLogScreen
 import net.albayyan.badan.features.metricdetail.MetricDetailScreen
@@ -166,6 +169,9 @@ private fun DetailContent(route: Route) {
         Route.Reports -> ReportsScreen()
         is Route.ReportDetail -> ReportDetailScreen(route.reportId)
         Route.Export -> ExportScreen()
+        Route.Journal -> JournalScreen()
+        Route.ContextStatuses -> ContextStatusScreen()
+        Route.Correlations -> CorrelationsScreen()
         Route.SymptomLog -> SymptomLogScreen()
         Route.MedicationLog -> MedicationLogScreen()
         Route.WorkoutLog -> WorkoutLogScreen()

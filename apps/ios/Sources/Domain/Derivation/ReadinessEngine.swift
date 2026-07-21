@@ -42,16 +42,24 @@ final class ReadinessEngine {
     /// device"). The default `{ _ in 0 }` makes every source equal, falling back to the deterministic
     /// updatedAt/sourceId tie-break — the composition root injects the real priority map.
     private let priorityForSource: (String) -> Int
+    /// EPIC-29 (plan §18 "`ContextStatus` … annotate confidence and copy … never the stored value").
+    /// Resolves what the user declared over the day being scored. A FUNCTION, not a repository: the
+    /// statuses live in the sensitive database and this engine holds only the main one — see
+    /// `ContextAnnotationResolver` for why the boundary is crossed this way. Defaults to "no context
+    /// ever", so an engine constructed without the seam annotates nothing rather than guessing.
+    private let contextAnnotations: ContextAnnotationResolver
 
     init(derivation: DerivationRepository, measurements: MeasurementRepository,
          clock: Clock, deviceId: String, spec: ReadinessSpec = .defaultShared,
-         priorityForSource: @escaping (String) -> Int = { _ in 0 }) {
+         priorityForSource: @escaping (String) -> Int = { _ in 0 },
+         contextAnnotations: @escaping ContextAnnotationResolver = noContextAnnotations) {
         self.derivation = derivation
         self.measurements = measurements
         self.clock = clock
         self.deviceId = deviceId
         self.spec = spec
         self.priorityForSource = priorityForSource
+        self.contextAnnotations = contextAnnotations
     }
 
     /// Frozen v2 identity, resolved from the contract (never hand-written — a change is a contract
@@ -80,7 +88,13 @@ final class ReadinessEngine {
 
         let samples = try resolveInputs(dayKey: dayKey, asOf: asOf, tz: tz)
         guard let computation = Self.composite(present: samples, params: spec.params) else { return nil }
-        let result = ReadinessResult(periodDayKey: dayKey, computation: computation)
+        // The declared context for the day being scored. Resolved AFTER the composite, and kept
+        // beside it rather than inside it: `ReadinessComputation` is the pure, golden-tested output
+        // and a context must not be able to reach into it. See `persist` for what it is allowed to
+        // touch (the confidence, and only on the way to the row).
+        let dayStart = DayAttribution.startOfDay(asOf, tz: tz)
+        let context = try contextAnnotations(dayStart, DayAttribution.addingDays(1, to: dayStart, tz: tz))
+        let result = ReadinessResult(periodDayKey: dayKey, computation: computation, context: context)
 
         try persist(result: result)
         return result
@@ -165,12 +179,19 @@ final class ReadinessEngine {
 
     private func persist(result: ReadinessResult) throws {
         let periodKey = "day:" + result.periodDayKey
+        // The ONE line a declared context affects, anywhere in this engine. `result.score` below is
+        // `result.computation.score` verbatim — a context has no expression that could change it
+        // (`ContextAnnotation` carries a ceiling and sentences and no value field at all), and this
+        // is the only place the annotation is read. Capped confidence also enters the skip check, so
+        // declaring travel after the fact APPENDS a re-annotated row (I2) instead of being ignored
+        // because the value happened to be unchanged.
+        let confidence = result.publishedConfidence
         // Skip only when an identical *v2* row already exists — a v1 legacy row (from the interim
         // BaselineEngine composite) must never block the first v2 write, or the migration would stall.
         if let existing = try derivation.latestDerived(metricId: MetricID.readinessScore, periodKey: periodKey),
            existing.algorithmId == algorithm.algorithmId, existing.algorithmVersion == algorithm.semver,
            Self.approximatelyEqual(existing.value, result.computation.score),
-           Self.approximatelyEqual(existing.confidence ?? -1, result.computation.confidence),
+           Self.approximatelyEqual(existing.confidence ?? -1, confidence),
            existing.provisional == result.computation.provisional {
             return
         }
@@ -190,7 +211,7 @@ final class ReadinessEngine {
             let now = clock.now()
             try derivation.appendDerived(DerivedValue(
                 id: ULID.newID(), metricId: MetricID.readinessScore, value: result.computation.score,
-                unit: "score_0_100", periodKey: periodKey, confidence: result.computation.confidence,
+                unit: "score_0_100", periodKey: periodKey, confidence: confidence,
                 provisional: result.computation.provisional, algorithmId: algorithm.algorithmId,
                 algorithmVersion: algorithm.semver, inputManifestId: manifest.id,
                 computedAt: now, updatedAt: now, originDeviceId: deviceId))
@@ -377,11 +398,33 @@ struct ReadinessComputation: Sendable, Hashable {
     let contributions: [ReadinessContribution]
 }
 
-/// A computed Readiness result for a specific local day — the pure computation plus the day it
-/// describes. What `compute(asOf:)` returns and persists.
+/// A computed Readiness result for a specific local day — the pure computation, the day it
+/// describes, and whatever the user had declared over that day. What `compute(asOf:)` returns and
+/// persists.
+///
+/// The context sits BESIDE the computation, never inside it: `score` is reachable only through
+/// `computation`, which no context can touch, while the only context-derived quantity this type
+/// exposes is `publishedConfidence`. "The number changed because I said I was travelling" therefore
+/// has no expression here — it would take a new stored property, in a review that would have to
+/// argue against this paragraph.
 struct ReadinessResult: Sendable, Hashable {
     let periodDayKey: String
     let computation: ReadinessComputation
+    /// What the user declared over this day (`.none` = an ordinary day, the common case).
+    let context: ContextAnnotation
+
+    init(periodDayKey: String, computation: ReadinessComputation, context: ContextAnnotation = .none) {
+        self.periodDayKey = periodDayKey
+        self.computation = computation
+        self.context = context
+    }
+
+    /// The confidence that goes on the row: the composite's own, capped by any declared context.
+    /// Monotonic downward by `ContextAnnotation.applying(to:)` — a context can only ever make BADAN
+    /// less sure. `applying(to:)` returns nil only for a nil input, which this never is.
+    var publishedConfidence: Double {
+        context.applying(to: computation.confidence) ?? computation.confidence
+    }
 }
 
 // MARK: - Spec (data-driven params, mirror of BaselineSpec)

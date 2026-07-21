@@ -23,6 +23,12 @@ import java.util.TimeZone
  * effort score before readiness never stales the guidance that depends on it. No stored value reads
  * readiness, so there is no cycle.
  *
+ * **Stress (EPIC-34) runs last.** It reads raw daytime `heart.hrv` and nothing else — no baseline,
+ * no sibling score — so its position is free; it runs last because it is the only step whose common
+ * outcome is to write nothing at all, and a reader tracing the produce order should meet the four
+ * composites before the gate. On a day the gate refuses (the default for Apple-Watch-class data)
+ * `compute` persists nothing: no zero, no null row, no "no data" sentinel.
+ *
  * `DeviationEngine` (EPIC-27) is NOT run here: it writes nothing (a pure read model over the
  * `Baseline` rows this pipeline refreshes, built on demand by the Health Monitor surface), so it is
  * constructed in the composition root and read by the UI, never "recomputed".
@@ -37,6 +43,12 @@ class DerivationCoordinator(
     private val sleep: SleepIntelligenceEngine,
     private val readiness: ReadinessEngine,
     private val effort: EffortEngine,
+    /**
+     * EPIC-34. Nullable only so the test fixtures that predate it keep constructing a coordinator
+     * without one; the composition root always passes the real engine, so null here means "a test
+     * that isn't exercising stress", never a shipped configuration.
+     */
+    private val stress: StressEngine? = null,
     private val config: Config = Config(),
 ) {
     /**
@@ -67,6 +79,10 @@ class DerivationCoordinator(
 
         // 4. Readiness — reads today's `sleep.performance` (step 3) + vitals baselines (step 1).
         for (day in days) readiness.compute(day, tz)
+
+        // 5. Stress — the density gate, then (only if it clears) a `stress.day_trend` row. A day the
+        //    gate refuses writes nothing, which is the common case on phone-and-watch-class data.
+        for (day in days) stress?.compute(day, tz)
     }
 
     /**
@@ -87,6 +103,10 @@ class DerivationCoordinator(
         val lastDayStart = DayAttribution.startOfDay(to, tz)
         while (day <= lastDayStart) {
             if (readiness.compute(day, tz) != null) touched += 1
+            // Stress over the same walk, so an import or a first-connect backfill leaves a real
+            // `stress.day_trend` history rather than only today's row. Days the gate refuses are
+            // skipped silently — they are not "touched", because nothing was written for them.
+            if (stress?.compute(day, tz)?.trend != null) touched += 1
             day = DayAttribution.addingDays(1, day, tz)
         }
         return touched

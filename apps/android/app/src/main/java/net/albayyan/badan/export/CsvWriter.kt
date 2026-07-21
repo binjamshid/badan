@@ -22,9 +22,16 @@ import kotlin.math.round
  * you actually emits. EPIC-08 widened it 0.1.0 -> 1.0.0 under approval A1
  * (`docs/adr/ADR-0009-approvals-a1-a2-a3.md`); migration notes in
  * `packages/export-schemas/CHANGELOG.md`.
+ *
+ * 1.1.0 is the additive minor for every optional key added after 1.0.0 shipped: `logs.hydration`
+ * (EPIC-38), the root `corrections[]` array and the CSV delta's `deletions.csv`/`corrections.csv`
+ * (EPIC-17), and `logs.journal` + `logs.context_statuses` (EPIC-29). Bumping this constant is not
+ * bookkeeping — `logs` is `additionalProperties: false`, so a consumer validating a bundle from
+ * this build against the published 1.0.0 schema rejects it. Whenever a writer starts emitting a
+ * key the published version does not describe, this constant moves in the same change.
  */
 object ExportSchema {
-    const val VERSION: String = "1.0.0"
+    const val VERSION: String = "1.1.0"
 
     /**
      * The time resolution a row's value describes (`granularity`, CSV column 25, added

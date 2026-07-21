@@ -86,6 +86,32 @@ object MetricId {
      */
     const val effortWorkout = "effort.workout"
 
+    /**
+     * The DAILY autonomic-load trend (EPIC-34, `StressEngine`) — emitted only when the daytime-HRV
+     * density gate allows it, always keyed `day:<key>`, and never a live or instantaneous reading.
+     * The registry classes it `sensitivePlus`, so it is excluded from any export that does not opt
+     * into sensitive data. Mirror of iOS `MetricID.stressDayTrend`.
+     */
+    const val stressDayTrend = "stress.day_trend"
+
+    /**
+     * The NAMESPACE the journal correlation engine writes under (EPIC-29). Never a metric id on
+     * its own: concrete findings are `journal.correlation.<behaviorId>.<scoreId>`, composed by
+     * [net.albayyan.badan.domain.derivation.CorrelationMetricId]. The registry carries this row
+     * (and only this row) for the family, so anything resolving a finding id resolves its unit,
+     * name and — load-bearing — `sensitiveClass: sensitivePlus` from here. Mirror of iOS
+     * `MetricID.journalCorrelationNamespace`.
+     */
+    const val journalCorrelationNamespace = "journal.correlation"
+
+    /**
+     * The daily scores the correlation engine compares behaviour-present against behaviour-absent
+     * days for. Deliberately a short, closed list rather than "every derived metric": each one is
+     * a published composite with a documented meaning, and correlating a behaviour against every
+     * id in the registry would be a multiple-comparisons machine that manufactures findings.
+     */
+    val correlatedScores: List<String> = listOf(readinessScore, sleepPerformance, effortDay)
+
     /** Metrics that get seeded with time-series data in the demo dataset. */
     val seededTimeSeries: List<String> = listOf(
         restingHeartRate, hrv, steps, activeEnergy, weight, spo2, respiratoryRate,

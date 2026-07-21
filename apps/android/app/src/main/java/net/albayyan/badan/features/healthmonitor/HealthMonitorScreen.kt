@@ -163,6 +163,10 @@ fun HealthMonitorScreen() {
                         color = colors.textSecondary,
                     )
                     model.vitals.forEach { tile -> VitalTileCard(tile) }
+                    // EPIC-34, below the vitals it is read alongside. Self-loading, and renders
+                    // NOTHING it has not earned: on watch-class data the honest outcome is a hidden
+                    // state naming the device fact in the way, and that is what the card shows.
+                    StressCard()
                     // Persistent, mandatory, calm — the exact wording comes from the engine so it
                     // cannot drift between platforms or be forgotten by a view.
                     MedicalDisclaimerFooter(model.disclaimer)

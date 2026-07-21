@@ -24,8 +24,9 @@ set exists in this shape.
 ## `bundle-hydration-v1.json` — a CI schema instance, not a parity golden
 
 `bundle-v1.json` carries no drinks, so validating it against `json_bundle.schema.json` (the CI step
-"The export bundle fixtures validate against their own JSON Schema") never touches the
-`logs.hydration` section EPIC-38 added. That left the hydration schema **documented but unexercised**:
+"The export bundle fixtures validate against their own JSON Schema, and exercise every optional
+key") never touches the `logs.hydration` section EPIC-38 added. That left the hydration schema
+**documented but unexercised**:
 a writer or schema drift on the hydration block — a renamed key, a `const` that moved, a
 required field dropped — would have passed CI unnoticed.
 
@@ -35,8 +36,8 @@ an **append-first revision** (`revision: 2`, `supersedes` the original id, `orig
 per I2), a day summary **with** a goal and one **without** (null `goal_target_ml` / `goal_progress_pct`,
 never `0`), a manual goal and an explicit no-goal, the referenced custom beverage, the aggregated
 provenance sources (I1), and the redaction manifest with `note` structurally withheld (the key is
-absent from every entry, per §7A.1). CI validates **both** files, so the hydration section is now
-schema-checked.
+absent from every entry, per §7A.1). CI validates it alongside `bundle-v1.json`, so the hydration
+section is schema-checked rather than only described.
 
 It is deliberately **not** a cross-platform parity golden. The three goldens above are asserted
 byte-identical by both suites; this file is not — it is a schema-validation instance only, read by
@@ -45,6 +46,35 @@ byte-identical by both suites; this file is not — it is a schema-validation in
 pre-hydration store stay byte-for-byte reproducible (the absent-not-empty rule `JSONBundleWriter`
 documents). If the hydration schema changes on purpose, regenerate this file to match the writer's
 new output, then `scripts/check_fixture_hashes.sh --update` to re-record its sha256.
+
+## `bundle-journal-v1.json` — the same idea, for the journal and the config echo
+
+Same standing as `bundle-hydration-v1.json`: a CI schema instance, not a parity golden. It exists
+because the hydration gap was reopened twice after it was first closed — `corrections[]` arrived
+with delta export (EPIC-17) and `logs.journal` / `logs.context_statuses` with the journal
+(EPIC-29), each documented in the schema and each unexercised by anything CI validated.
+
+It carries the three optional keys no other fixture here does:
+
+- **`logs.journal[]`** — one entry of each `value_kind`. The `boolean` one has a null `value` **and**
+  a null `unit` (its existence is the assertion, not a count of one); the `count` one has an integer
+  and no unit; the `quantity` one carries `min` from `behaviors.json`. A fourth entry is a
+  **custom-label** row (`behavior_id` null) flagged `recalled: true` with `provenance.recorded_at`
+  the morning after `occurred_at`, so the recall disclosure is checkable rather than asserted.
+- **`logs.context_statuses[]`** — one **closed** interval from the taxonomy (`status_id: travel`,
+  `end_at` set, `open_ended: false`) and one **open-ended** custom one (`end_at: null`,
+  `open_ended: true`). The null end is the point: an export never substitutes "now" for an end the
+  user did not declare, so a fixture where both intervals were closed would leave that unproven.
+- **`config`** — the backup path's configuration echo, shaped as `BackupBundle.configObject` emits
+  it for a **plaintext** bundle: templates, schedules, customization, and **no** `export_destinations`
+  key at all (§12 EPIC-18 requirement 3).
+
+The CI step that validates these fixtures also asserts **coverage**: every optional key the schema
+declares — at the root and inside `logs` — must appear in at least one validated fixture, derived
+from the schema rather than from a list in the workflow. That is what makes the next additive block
+fail the build instead of shipping unexercised, which is the failure this file was added to stop
+repeating. If you add an optional key to `json_bundle.schema.json`, add a fixture that carries it in
+the same change.
 
 ## `delta-chain/` — the EPIC-17 two-run delta sequence (§22.6)
 
@@ -79,7 +109,7 @@ fixture that exercises the schema's delta fields — `is_delta`, `cursor_before`
 ## Why bytes, not parsed structures
 
 A parsed comparison passes while key order, number spelling, string escaping and timestamp
-rendering all differ — which is exactly the set of things export schema 1.0.0 promises are
+rendering all differ — which is exactly the set of things export schema 1.1.0 promises are
 identical, and exactly what a consumer checksumming the file cares about. BADAN publishes a
 `sha256` per file in every manifest and tells people the artifact is verifiable; two platforms
 producing different bytes for the same data makes that promise vacuous.

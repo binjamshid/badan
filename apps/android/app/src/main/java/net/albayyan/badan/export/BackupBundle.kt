@@ -152,6 +152,7 @@ object BackupBundle {
         appVersion: String,
         platform: String,
         hydration: HydrationExportPayload? = null,
+        journal: JournalExportPayload? = null,
         includeRoutes: Boolean = false,
         passphrase: String? = null,
     ): Artifact {
@@ -168,6 +169,14 @@ object BackupBundle {
             // A backup carries the drink ledger WHOLE — notes included — because it is the user's
             // complete data, and the bundle already carries every other log's notes unredacted.
             hydration = hydration, hydrationRedaction = HydrationRedactionPolicy(includeNotes = true),
+            // EPIC-29: the journal + context statuses ride the backup for the same reason every
+            // other log family does — a backup is the user's complete data for their own device
+            // migration, and a migration that silently dropped the behavior journal would lose
+            // history no re-sync can rebuild. The CONSENT for writing it back is re-asked on the
+            // receiving device ([RestoreConsent]), which is where an I7 namespace is gated; leaving
+            // it out of the file here would not be privacy, it would be data loss. Null/empty writes
+            // nothing at all, so the byte-pinned backup goldens are untouched.
+            journal = journal,
         )
         val dictionaryData = dataDictionaryMarkdown().toByteArray(Charsets.UTF_8)
 
@@ -507,6 +516,13 @@ object BackupBundle {
         // length of its `entries` array. A backup with no drinks has no `hydration` key → 0, the
         // same absent-not-empty rule the writer follows.
         val hydrationEntries = ((logs?.get("hydration") as? JsonObject)?.get("entries") as? JsonArray)?.size ?: 0
+        // EPIC-29's two sensitive-plus families. Counted (and gated) here for the same reason
+        // symptoms/adherence are: a backup that carries them must re-ask on the RECEIVING device,
+        // and a preview that didn't count them would leave `sensitivePresent` false for a bundle
+        // whose only sensitive content is a behavior journal — the restore screen would then never
+        // show the consent toggle and the rows would land un-authorized.
+        val journalEntries = logCount("journal")
+        val contextStatuses = logCount("context_statuses")
 
         val config = bundle.bundle["config"] as? JsonObject
         fun configArray(key: String): Int = (config?.get(key) as? JsonArray)?.size ?: 0
@@ -530,8 +546,10 @@ object BackupBundle {
                 "logs.workouts" to logCount("workouts"),
                 "logs.nutrition" to logCount("nutrition"),
                 "logs.hydration" to hydrationEntries,
+                "logs.journal" to journalEntries,
+                "logs.context_statuses" to contextStatuses,
             ),
-            sensitivePresent = symptoms > 0 || adherence > 0,
+            sensitivePresent = symptoms > 0 || adherence > 0 || journalEntries > 0 || contextStatuses > 0,
             configCounts = mapOf(
                 "export_templates" to configArray("export_templates"),
                 "export_destinations" to configArray("export_destinations"),
@@ -599,6 +617,8 @@ object BackupBundle {
         if (!consent.includeSensitive) {
             counts["logs.symptoms"] = 0
             counts["logs.adherence"] = 0
+            counts["logs.journal"] = 0
+            counts["logs.context_statuses"] = 0
         }
         return RestorePlan(
             batchId = batchId,

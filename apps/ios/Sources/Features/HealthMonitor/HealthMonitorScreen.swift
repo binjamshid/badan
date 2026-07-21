@@ -91,15 +91,23 @@ final class HealthMonitorViewModel {
 struct HealthMonitorScreen: View {
     @Environment(AppEnvironment.self) private var env
     @State private var vm = HealthMonitorViewModel()
+    /// EPIC-34. A separate view model, not a field on the vitals read model: the stress surface is
+    /// gated by its own density detector and answers "hidden" for most devices, so it must render
+    /// (and explain itself) even when the vitals fan-out fails — hence its own load, outside the
+    /// vitals `StatefulContainer`.
+    @State private var stressVM = StressSurfaceViewModel()
 
     var body: some View {
         ScrollView {
-            StatefulContainer(
-                vm.state,
-                retryTitle: env.s(LoadErrorCopy.retry),
-                onRetry: { Task { await vm.load(env) } }
-            ) { model in
-                content(model)
+            VStack(alignment: .leading, spacing: BadanSpace.space4) {
+                StatefulContainer(
+                    vm.state,
+                    retryTitle: env.s(LoadErrorCopy.retry),
+                    onRetry: { Task { await vm.load(env) } }
+                ) { model in
+                    content(model)
+                }
+                StressTrendCard(vm: stressVM)
             }
             .padding(BadanSpace.space4)
         }
@@ -117,6 +125,9 @@ struct HealthMonitorScreen: View {
         }
         .task(id: HealthMonitorLoadKey(profile: env.profile, generation: env.dataGeneration)) {
             await vm.load(env)
+        }
+        .task(id: HealthMonitorLoadKey(profile: env.profile, generation: env.dataGeneration)) {
+            await stressVM.load(env)
         }
     }
 

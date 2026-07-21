@@ -38,6 +38,46 @@ Branch on that string. Do not sniff the shape.
 
 ---
 
+## 1.1.0 (2026-07-22)
+
+**Nothing you already parse has changed.** No column was added, removed or moved; no JSON key was
+renamed or retyped. If you read 1.0.0 exports today, a 1.1.0 export parses identically — the only
+difference is four optional keys that may be present.
+
+### What is new
+
+| Where | Key | What it is |
+|---|---|---|
+| bundle root | `corrections[]` | Dedup decisions that changed during the run's window, **including reversals** — a `suppressed_by` of `null` means a record you hold as a suppressed duplicate is authoritative again. Present on delta runs only. |
+| CSV folder | `deletions.csv`, `corrections.csv` | The same two facts as CSV tables, written on every delta run. Header-only when there is nothing to report — that empty file is the affirmative "nothing was removed", not a missing file. |
+| `logs` | `hydration` | The drink ledger: entries in mL with their revision chains, per-day summaries, goals, the beverages they reference, and a `redaction` block naming what a default export withholds. |
+| `logs` | `journal[]` | Behavior tags — what the person logged doing. Read `behavior_id` (a stable key) or `custom_label` (their own words); exactly one is set. `value_kind` tells you whether `value`/`unit` are populated. |
+| `logs` | `context_statuses[]` | Declared intervals — travel, illness, fasting, altitude, injury — that say how to *read* values from that period. They never change a stored number. |
+
+### Reading them correctly
+
+- **Absent is not zero.** Each of these keys is written only when it has something to say. A bundle
+  with no `logs.journal` does not tell you the person logged no behaviors; it tells you this export
+  carries none. Do not infer an empty log from an absent key.
+- **`logs.journal` and `logs.context_statuses` require an explicit sensitive-records scope**, the
+  same gate that governs symptoms and medication adherence. A default export never contains them,
+  and such an export is always encrypted.
+- **`logs.hydration` is not sensitive-class** and appears in ordinary exports. Notes on drinks are
+  withheld by default; `logs.hydration.redaction` lists exactly what was left out.
+- **`context_statuses[].end_at` is null when the interval is still open**, and `open_ended` says so
+  explicitly. BADAN never fills in "now" for an end the person did not declare.
+- **A `boolean` journal entry carries a null `value`.** The row's existence is the assertion. It
+  does not mean "once".
+
+### If you validate against the JSON Schema
+
+Fetch [`json_bundle.schema.json`](../packages/export-schemas/json_bundle.schema.json) for the
+version the file declares. The bundle's `logs` object is closed (`additionalProperties: false`), so
+a 1.1.0 bundle checked against the 1.0.0 schema **fails validation** on the new keys even though
+nothing you read has changed. Branch on `export_schema_version`, as above.
+
+---
+
 ## 1.0.0 (2026-07-20)
 
 ### If you already parse 0.1.0, read this

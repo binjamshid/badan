@@ -1,6 +1,6 @@
 {
   "fixtureVersion": "1",
-  "exportSchemaVersion": "1.0.0",
+  "exportSchemaVersion": "1.1.0",
   "note": "The INPUT half of the export parity fixture. Both suites build their own domain objects from these records, run their own CSVWriter/CsvWriter and JSONBundleWriter/JsonBundleWriter, and must produce bundle-v1.json / raw-v1.csv / derived-v1.csv byte for byte. Numbers and epoch-millis are STRINGS on purpose - see README.md 'Why the numbers are strings'.",
 
   "decimalCases": [

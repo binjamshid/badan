@@ -42,6 +42,7 @@ import net.albayyan.badan.designsystem.components.SectionHeader
 import net.albayyan.badan.domain.Baseline
 import net.albayyan.badan.domain.InputManifest
 import net.albayyan.badan.domain.MetricId
+import net.albayyan.badan.designsystem.components.ContextCaveatNote
 
 // MARK: - Strings local to the anatomy sheet
 
@@ -79,6 +80,15 @@ private object AnatomyStrings {
         ar = "محسوبة على جهازك. هذه المعادلة منشورة.",
     )
     val confidence = LocalizedString(en = "Confidence", ar = "الثقة")
+
+    /**
+     * The one sentence that keeps the caveat from being read as "the number was adjusted". Sits under
+     * the caveat in the confidence card, next to the confidence it explains.
+     */
+    val contextValueUnchanged = LocalizedString(
+        en = "The value itself is unchanged — only how confidently it's read.",
+        ar = "القيمة نفسها لم تتغيّر — ما تغيّر هو درجة الثقة في قراءتها فقط.",
+    )
     // Reduced-input honesty (plan §18): a Readiness score computed without the HRV anchor is a
     // DISTINCT thing, labelled — never a full score silently passed off as complete.
     val reducedInputReadiness = LocalizedString(
@@ -321,24 +331,38 @@ private fun ConfidenceCard(data: MetricDetailData) {
     val colors = BadanTheme.colors
     val confidence = data.latestDerivedValue?.confidence ?: return
     BadanCard {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = BadanSpace.touchMin),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
-        ) {
-            Text(text = env.s(AnatomyStrings.confidence), style = BadanType.body, color = colors.textPrimary)
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = env.s(confidenceWord(confidence)),
-                style = BadanType.bodyCompact,
-                color = colors.textSecondary,
-            )
-            if (env.depth.showsPowerDetail) {
+        Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s2)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = BadanSpace.touchMin),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(BadanSpace.s2),
+            ) {
+                Text(text = env.s(AnatomyStrings.confidence), style = BadanType.body, color = colors.textPrimary)
+                Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = "${env.format.number(confidence * 100, 0)}%",
-                    style = BadanType.monospaceDigits(BadanType.bodyCompact),
+                    text = env.s(confidenceWord(confidence)),
+                    style = BadanType.bodyCompact,
+                    color = colors.textSecondary,
+                )
+                if (env.depth.showsPowerDetail) {
+                    Text(
+                        text = "${env.format.number(confidence * 100, 0)}%",
+                        style = BadanType.monospaceDigits(BadanType.bodyCompact),
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+            // EPIC-29 (plan §18). Placed directly under the confidence row because that is the number
+            // a declared period actually moved: the engine capped this row's confidence and left its
+            // value untouched. Saying so where the capped number is shown is the difference between
+            // an unexplained "Lower" and an honest one.
+            if (data.contextCaveats.isNotEmpty()) {
+                ContextCaveatNote(caveats = data.contextCaveats, language = env.language)
+                Text(
+                    text = env.s(AnatomyStrings.contextValueUnchanged),
+                    style = BadanType.caption,
                     color = colors.textSecondary,
                 )
             }

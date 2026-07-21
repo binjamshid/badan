@@ -32,7 +32,8 @@ final class ViewModelPerformanceTests: XCTestCase {
     func testHomeViewModelLoadPerformance() {
         let inputs = HomeFetchInputs(
             measurements: env.measurements, derivation: env.derivation, catalog: env.catalog,
-            logging: env.logging, insightsRepo: env.insightsRepo, registry: env.registry,
+            logging: env.logging, contextAnnotations: env.contextAnnotations,
+            insightsRepo: env.insightsRepo, registry: env.registry,
             format: env.format, language: env.language, depth: env.depth,
             nutritionEnabled: env.profile.nutritionEnabled,
             sensitiveModulesEnabled: env.profile.sensitiveModulesEnabled,

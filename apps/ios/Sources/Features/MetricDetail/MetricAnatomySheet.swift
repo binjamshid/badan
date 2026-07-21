@@ -19,6 +19,11 @@ private enum AnatomyStrings {
     static let confidenceHigh = LocalizedString(en: "High", ar: "عالية")
     static let confidenceModerate = LocalizedString(en: "Moderate", ar: "متوسطة")
     static let confidenceLower = LocalizedString(en: "Lower", ar: "منخفضة")
+    /// The one sentence that keeps the caveat from being read as "the number was adjusted". Sits
+    /// under the caveat in the method card, next to the confidence it explains.
+    static let contextValueUnchanged = LocalizedString(
+        en: "The value itself is unchanged — only how confidently it’s read.",
+        ar: "القيمة نفسها لم تتغيّر — ما تغيّر هو درجة الثقة في قراءتها فقط.")
     static let dedupHeading = LocalizedString(en: "Duplicate handling", ar: "معالجة التكرار")
     static let oneKept = LocalizedString(en: "One source kept, one suppressed.",
                                          ar: "مصدر واحد محتفظ به، وآخر مستبعد.")
@@ -506,6 +511,17 @@ struct MetricAnatomySheet: View {
                 }
                 if let confidence = data.latestDerivedValue?.confidence {
                     infoRow(label: env.s(AnatomyStrings.confidence), value: confidenceLabel(confidence))
+                }
+                // EPIC-29 (plan §18). Placed directly under the confidence row because that is the
+                // number a declared period actually moved: the engine capped this row's confidence
+                // and left its value untouched. Saying so where the capped number is shown is the
+                // difference between an unexplained "Lower" and an honest one.
+                if !data.contextCaveats.isEmpty {
+                    ContextCaveatNote(caveats: data.contextCaveats, language: env.language)
+                    Text(env.s(AnatomyStrings.contextValueUnchanged))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

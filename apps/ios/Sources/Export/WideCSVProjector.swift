@@ -14,7 +14,7 @@ import Foundation
 /// ## Layout
 ///
 /// ```
-/// # BADAN wide layout · schema 1.0.0 · layout wide-v1 · granularity day
+/// # BADAN wide layout · schema 1.1.0 · layout wide-v1 · granularity day
 /// date,activity.steps|sum,heart.hr|max,heart.hr|mean,heart.hr|min
 /// 2026-03-08,8421,142,71.5,53
 /// 2026-03-09,,148,73.2,55
