@@ -42,6 +42,16 @@ final class AppEnvironment {
     /// surfaces (LogHub's Today card, the full Hydration screen) read one connection to `database.
     /// main`, and "where do logged drinks live?" is answerable from this dependency list.
     let hydration: HydrationRepository
+    /// EPIC-29 (plan §9.9/§9.10). The behavior journal and the declared context intervals. Holds
+    /// the SENSITIVE connection only — never `main` — which is what makes I7 structural for these
+    /// two families rather than a rule a future writer has to remember (see `JournalRepository`).
+    let journal: JournalRepository
+    /// EPIC-29. The correlation FINDINGS store — also sensitive-connection-only, and for a stronger
+    /// reason than the journal itself: a finding's metric id (`journal.correlation.alcohol.readiness.score`)
+    /// names the behaviour in plain text, so the row discloses the habit before any value is read
+    /// (see `CorrelationRepository`). Wired here so the correlations surface reads the same store the
+    /// engine writes, rather than opening a second connection of its own.
+    let correlations: CorrelationRepository
     /// Plan §19. Lineage for file imports (Apple Health archive): one `import_batches` row per
     /// import, every imported measurement row stamped with its id, so an import is resumable and
     /// undoable in one tap. Read by the Settings import surface and `makeAppleHealthImporter()`.
@@ -66,6 +76,17 @@ final class AppEnvironment {
     let readiness: ReadinessEngine
     let effort: EffortEngine
     let deviation: DeviationEngine
+    /// EPIC-34. The device-gated stress monitor. Wired here — and passed to `derivationCoordinator`
+    /// — so `stress.day_trend` rows are written by the real ingest→derive pipeline rather than only
+    /// under test. The Health Monitor card still calls `evaluate` (which writes nothing) for the live
+    /// surface state, because a hidden day has to explain itself and no stored row can do that.
+    let stress: StressEngine
+    /// EPIC-29 / plan §18. The I7 seam, resolved once here and shared by every consumer: the score
+    /// engines (which apply its confidence ceiling) and the score SURFACES (which render its caveat
+    /// sentences through `ContextCaveats`). A function, not the sensitive repository — so a screen
+    /// that needs the caveat beside a number never has to hold a sensitive connection to get it.
+    /// See `ContextAnnotationResolver`.
+    let contextAnnotations: ContextAnnotationResolver
     /// EPIC-23. The one place the writing score engines run in the published sleep → readiness →
     /// effort order (plan §18). The ingest→derive funnel (`SeedController.deriveAndGenerateInsights`)
     /// and the background backfill job (`recomputeScoreBackfill`) both go through it.
@@ -187,6 +208,9 @@ final class AppEnvironment {
         self.profiles = ProfileRepository(main)
         self.routes = RouteRepository(main)
         self.hydration = HydrationRepository(main: main)
+        let journal = JournalRepository(sensitive: sensitive)
+        self.journal = journal
+        self.correlations = CorrelationRepository(sensitive: sensitive)
         self.importBatches = ImportBatchRepository(main)
         self.notificationDeliveries = NotificationDeliveryRepository(main)
         let reportRepo = ReportRepository(main)
@@ -199,8 +223,21 @@ final class AppEnvironment {
                                            clock: clock, deviceId: deviceId)
         self.baselines = BaselineEngine(derivation: derivation, measurements: measurements,
                                         registry: registry, clock: clock, deviceId: deviceId)
+        // EPIC-29 / plan §18. The I7 seam: `context_statuses` live in the sensitive database and the
+        // score engines hold only the main one, so the composition root — the one place that
+        // legitimately holds BOTH connections — resolves the annotation and hands the engines a
+        // FUNCTION. What crosses is a confidence ceiling and caveat sentences; only the ceiling is
+        // ever persisted (a bare number that names no circumstance), so no word like "travelling"
+        // reaches `badan.db` and the sensitive purge still takes the disclosure with it.
+        // See `ContextAnnotationResolver`. Captures the local `journal` to stay off `self` during init.
+        let contextAnnotations: ContextAnnotationResolver = { from, to in
+            ContextAnnotator.annotation(from: from, to: to,
+                                        statuses: try journal.statuses(overlapping: from, to: to))
+        }
+        self.contextAnnotations = contextAnnotations
         self.sleepIntelligence = SleepIntelligenceEngine(derivation: derivation, measurements: measurements,
-                                                         clock: clock, deviceId: deviceId)
+                                                         clock: clock, deviceId: deviceId,
+                                                         contextAnnotations: contextAnnotations)
         // Readiness resolves a two-source overnight-HRV conflict by source priority (plan §18). The
         // priority is reconstructed from the persisted source/device catalog via the published
         // `SensorQualityMap` classes (worn sensor > phone), so it needs no new stored column and
@@ -210,7 +247,8 @@ final class AppEnvironment {
                                          clock: clock, deviceId: deviceId,
                                          priorityForSource: { sourceId in
                                              AppEnvironment.readinessSourcePriority(sourceId: sourceId, catalog: catalog)
-                                         })
+                                         },
+                                         contextAnnotations: contextAnnotations)
         // Effort reads HR max / zones off the live profile per recompute (never a cached copy), so a
         // mid-session HR-max edit is picked up on the next run — the reason it takes a provider, not a
         // stored `UserProfile` (see `EffortEngine`).
@@ -219,8 +257,12 @@ final class AppEnvironment {
                                    profileProvider: { try catalog.userProfile() })
         self.deviation = DeviationEngine(derivation: derivation, measurements: measurements,
                                          catalog: catalog, registry: registry, clock: clock)
+        let stress = StressEngine(derivation: derivation, measurements: measurements, registry: registry,
+                                  clock: clock, deviceId: deviceId,
+                                  contextAnnotations: contextAnnotations)
+        self.stress = stress
         self.derivationCoordinator = DerivationCoordinator(baselines: baselines, sleep: sleepIntelligence,
-                                                           readiness: readiness, effort: effort)
+                                                           readiness: readiness, effort: effort, stress: stress)
         self.insightEngine = InsightEngine(insights: insightsRepo, derivation: derivation,
                                            measurements: measurements, templates: templates,
                                            registry: registry, clock: clock, deviceId: deviceId)
@@ -231,7 +273,14 @@ final class AppEnvironment {
                                      // share-sheet exporter must carry the drink ledger too — a
                                      // DEFAULT export includes the user's drinks (notes withheld by
                                      // the writer's default redaction), never paywalled or omitted.
-                                     hydration: hydration)
+                                     hydration: hydration,
+                                     // EPIC-29: the opposite classification — the journal and
+                                     // context statuses are sensitive-plus, so passing the
+                                     // repository here does NOT put them in a default export. The
+                                     // runner gathers them only when `scope.includeSensitive` is
+                                     // set; without this argument the Sensitive toggle would
+                                     // silently omit families its own copy promises.
+                                     journal: journal)
 
         // EPIC-31. The builder is pure over the derived store (+ adherence counts, I7-safe); the
         // service wraps it with the `reports` store and the "due weekly?" rule. The period timezone
@@ -295,6 +344,9 @@ final class AppEnvironment {
             // EPIC-38: a scheduled/automated export must carry drinks too, so a delta or full
             // template run lands the user's hydration exactly as the manual one does.
             hydration: hydration,
+            // EPIC-29: same reasoning, opposite sensitivity — a scheduled template whose scope
+            // carries `includeSensitive` must land the journal too, and one that doesn't must not.
+            journal: journal,
             templates: ExportTemplateRepository(main), destinations: ExportDestinationRepository(main),
             runs: ExportRunRepository(main), cursors: ExportCursorRepository(main),
             routes: RouteRepository(main),

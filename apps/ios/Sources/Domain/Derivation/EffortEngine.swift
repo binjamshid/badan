@@ -31,6 +31,16 @@ import Foundation
 /// a historical recompute that APPENDS fresh rows with a new `computedAt`; the superseded rows keep
 /// their own `computedAt`, value, and algorithm id — free auditability, never a mutation. The pure
 /// math (`accumulate`, `effortScore`) is static so the Android port computes byte-identical numbers.
+///
+/// **Declared context (EPIC-29, plan §18) reaches effort as COPY only, and this engine holds no
+/// resolver.** `ContextStatus` may do exactly two things to a derived result: cap its confidence and
+/// add a caveat sentence. Effort rows store `confidence: nil` — there is no completeness or maturity
+/// model behind an effort score in v1; the row's honesty lives in its `provisional` flag and, for the
+/// phone-only path, in its unit. There is therefore nothing here for a ceiling to cap, and wiring a
+/// `ContextAnnotationResolver` in would be a call whose result is discarded by construction. The
+/// caveat still reaches the reader: the effort surfaces resolve it at display time through
+/// `ContextCaveats`, exactly as they do for readiness and sleep. If `effort.day` ever gains a real
+/// confidence, the resolver belongs here and this paragraph should be deleted in the same change.
 final class EffortEngine {
     private let derivation: DerivationRepository
     private let measurements: MeasurementRepository

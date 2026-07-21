@@ -1,0 +1,946 @@
+{
+  "fixtureSetVersion": "1",
+  "algorithm": "journal.correlation@0.1.0",
+  "note": "Shared INPUT for the EPIC-29 correlation goldens. Each case is one behaviour x score pair already reduced to the engine's day view (dayKey, present, nextDayScore, inDeclaredContext) — the same shape CorrelationEngine.evaluate takes on both platforms, so the two suites exercise the identical decision path with no DB and no clock. Params come from packages/contracts/algorithms/algorithms.json (journal.correlation) and are NOT duplicated here: a fixture that carried its own copy of the gates would keep passing after the contract changed.",
+  "cases": [
+    {
+      "id": "strong-positive",
+      "behaviorId": "wind_down",
+      "scoreId": "readiness.score",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 74.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 61.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 78.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 58.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 71.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 66.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 80.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 55.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 76.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": true,
+          "nextDayScore": 69.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": true,
+          "nextDayScore": 77.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": false,
+          "nextDayScore": 72.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-15",
+          "present": false,
+          "nextDayScore": 57.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "strong-negative",
+      "behaviorId": "alcohol",
+      "scoreId": "sleep.performance",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 62.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 84.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 58.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 88.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 66.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 79.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 55.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 91.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 80.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 82.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": true,
+          "nextDayScore": 60.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": 86.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": true,
+          "nextDayScore": 57.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": false,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-15",
+          "present": false,
+          "nextDayScore": 90.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "null-no-association",
+      "behaviorId": "electrolytes",
+      "scoreId": "readiness.score",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 70.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 72.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 64.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 75.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 69.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 61.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 74.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 68.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 65.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": true,
+          "nextDayScore": 73.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": 71.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": true,
+          "nextDayScore": 66.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": false,
+          "nextDayScore": 67.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-15",
+          "present": false,
+          "nextDayScore": 62.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "exactly-at-gate",
+      "behaviorId": "nap",
+      "scoreId": "effort.day",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 58.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 44.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 61.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 47.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 55.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 41.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 60.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 45.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": false,
+          "nextDayScore": 43.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": 48.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": false,
+          "nextDayScore": 46.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": false,
+          "nextDayScore": 42.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "one-below-gate-total",
+      "behaviorId": "nap",
+      "scoreId": "effort.day",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 58.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 44.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 61.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 47.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 55.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 41.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 49.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 45.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": false,
+          "nextDayScore": 43.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": 48.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": false,
+          "nextDayScore": 46.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "one-below-gate-with-arm",
+      "behaviorId": "sauna_hot_bath",
+      "scoreId": "readiness.score",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 72.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 61.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 70.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 75.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 68.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 65.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": false,
+          "nextDayScore": 58.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 62.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": false,
+          "nextDayScore": 60.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": 64.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": false,
+          "nextDayScore": 57.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": false,
+          "nextDayScore": 66.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "one-below-gate-without-arm",
+      "behaviorId": "caffeine",
+      "scoreId": "readiness.score",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 72.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 61.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 70.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 75.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 68.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 65.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 73.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": true,
+          "nextDayScore": 69.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": true,
+          "nextDayScore": 74.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": true,
+          "nextDayScore": 71.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": true,
+          "nextDayScore": 67.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": true,
+          "nextDayScore": 76.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "context-annotated",
+      "behaviorId": "screen_in_bed",
+      "scoreId": "sleep.performance",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 62.0,
+          "inDeclaredContext": true
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 84.0,
+          "inDeclaredContext": true
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": 58.0,
+          "inDeclaredContext": true
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 88.0,
+          "inDeclaredContext": true
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 66.0,
+          "inDeclaredContext": true
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 79.0,
+          "inDeclaredContext": true
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 55.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": 91.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 61.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 82.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": true,
+          "nextDayScore": 60.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": 86.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": true,
+          "nextDayScore": 57.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": false,
+          "nextDayScore": 60.5,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-15",
+          "present": true,
+          "nextDayScore": 64.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-16",
+          "present": false,
+          "nextDayScore": 90.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-17",
+          "present": true,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-18",
+          "present": false,
+          "nextDayScore": 83.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-19",
+          "present": true,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-20",
+          "present": false,
+          "nextDayScore": 87.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-21",
+          "present": true,
+          "nextDayScore": 56.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-22",
+          "present": false,
+          "nextDayScore": 80.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-23",
+          "present": true,
+          "nextDayScore": 65.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-24",
+          "present": false,
+          "nextDayScore": 89.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-25",
+          "present": true,
+          "nextDayScore": 54.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-26",
+          "present": false,
+          "nextDayScore": 78.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-27",
+          "present": true,
+          "nextDayScore": 81.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-28",
+          "present": false,
+          "nextDayScore": 85.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-29",
+          "present": true,
+          "nextDayScore": 53.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-30",
+          "present": false,
+          "nextDayScore": 92.0,
+          "inDeclaredContext": false
+        }
+      ]
+    },
+    {
+      "id": "unpaired-days-dropped",
+      "behaviorId": "mindfulness",
+      "scoreId": "effort.day",
+      "days": [
+        {
+          "dayKey": "2026-03-01",
+          "present": true,
+          "nextDayScore": 58.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-02",
+          "present": false,
+          "nextDayScore": 44.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-03",
+          "present": true,
+          "nextDayScore": null,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-04",
+          "present": false,
+          "nextDayScore": 47.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-05",
+          "present": true,
+          "nextDayScore": 55.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-06",
+          "present": false,
+          "nextDayScore": 41.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-07",
+          "present": true,
+          "nextDayScore": 63.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-08",
+          "present": false,
+          "nextDayScore": null,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-09",
+          "present": true,
+          "nextDayScore": 59.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-10",
+          "present": false,
+          "nextDayScore": 45.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-11",
+          "present": true,
+          "nextDayScore": 57.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-12",
+          "present": false,
+          "nextDayScore": null,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-13",
+          "present": false,
+          "nextDayScore": 48.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-14",
+          "present": false,
+          "nextDayScore": 46.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-15",
+          "present": false,
+          "nextDayScore": 42.0,
+          "inDeclaredContext": false
+        },
+        {
+          "dayKey": "2026-03-16",
+          "present": false,
+          "nextDayScore": 50.0,
+          "inDeclaredContext": false
+        }
+      ]
+    }
+  ]
+}

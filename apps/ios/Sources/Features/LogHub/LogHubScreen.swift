@@ -18,9 +18,11 @@ private enum LogHubStrings {
         en: "Couldn't load recent activity.",
         ar: "تعذّر تحميل النشاط الأخير."
     )
+    // EPIC-29 added the journal to the sensitive-gated tiles, so this line names it too — a hint
+    // that lists fewer families than the gate actually hides is a false statement about the toggle.
     static let sensitiveHiddenHint = LocalizedString(
-        en: "Symptoms & medications are hidden. Turn on Sensitive records in Settings to log them.",
-        ar: "الأعراض والأدوية مخفية. فعّل السجلات الحساسة من الإعدادات لتسجيلها."
+        en: "The journal, symptoms & medications are hidden. Turn on Sensitive records in Settings to log them.",
+        ar: "المفكرة والأعراض والأدوية مخفية. فعّل السجلات الحساسة من الإعدادات لتسجيلها."
     )
     // Soft, non-blocking plausibility notices — matches WorkoutLogView's kcal/distance pattern
     // (EDGE-15). Never blocks Save; only >0 is actually enforced.
@@ -317,8 +319,18 @@ struct LogHubScreen: View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(Loc.tabLog))
             LazyVGrid(columns: columns, spacing: BadanSpace.space3) {
-                // Symptom & Medication are sensitive — hidden entirely when that module is off.
+                // Journal, Symptom & Medication are sensitive — hidden entirely when that module is
+                // off. The journal joins them because a caffeine/alcohol/screen-in-bed pattern is
+                // lifestyle-revealing in a way a step count is not (I7): its rows live in
+                // `badan_sensitive.db` and are removed by the same purge.
                 if env.profile.sensitiveModulesEnabled {
+                    NavigationLink {
+                        JournalScreen()
+                    } label: {
+                        LogTile(title: env.s(JournalStrings.logTile), systemImage: "note.text")
+                    }
+                    .buttonStyle(.plain)
+
                     NavigationLink {
                         SymptomLogView()
                     } label: {

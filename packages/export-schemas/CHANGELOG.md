@@ -30,6 +30,83 @@ Two rules that make the policy real rather than aspirational:
 
 ---
 
+## 1.1.0 — 2026-07-22
+
+Additive only, per the policy above: nothing in 1.0.0 was removed, renamed, retyped, reordered or
+given a new meaning. A consumer pinned to 1.0.0 keeps parsing every key it already reads.
+
+**This entry is retroactive, and deliberately says so.** The four additions below shipped across
+three separate phases and every one of them landed under an unchanged `export_schema_version` of
+`1.0.0`. That was wrong in a way that is not cosmetic: the bundle's `logs` object is
+`additionalProperties: false`, so a consumer validating a hydration- or journal-bearing bundle
+against the *published* 1.0.0 schema rejects the file BADAN told it how to read. 1.1.0 is the one
+version those additions should have arrived under; they are listed here per phase rather than
+back-dated into 1.0.0, because pretending they were there on 2026-07-20 would be a second untrue
+statement covering the first.
+
+The rule this leaves behind: **a writer that starts emitting a key the published version does not
+describe bumps `ExportSchema.version` in the same change.** `.github/workflows/ci.yml` now checks
+the mechanical half — every optional key the schema declares must appear in at least one fixture
+the schema-validation step actually validates, so the next additive block cannot ship undetected
+the way these three did.
+
+### Added — JSON bundle, `logs.hydration` (Phase 2B, EPIC-38)
+
+- **`logs.hydration`** — the drink ledger: `entries` (canonical mL, each with its revision chain —
+  `revision`, `supersedes`, `original_id` — because a corrected drink appends rather than
+  overwrites, per I2), `summaries` (per-day totals split manual/imported/estimated, with goal
+  progress), `goals`, the referenced `beverages`, aggregated `sources`, and a `redaction` manifest
+  naming what a default export withholds.
+- Normal-class, not sensitive: a logged drink is the user's own data and is never paywalled, so it
+  rides a **default** export. It is added only when the export caught at least one drink — an empty
+  block would assert "this user logged no drinks", which is not the same statement as "this export
+  has nothing to say about drinks".
+- Manifest `row_counts` gains a `logs.hydration` key on the same condition.
+
+### Added — JSON bundle + CSV, delta reconciliation (Phase 3A, EPIC-17)
+
+- **`corrections[]`** (bundle root) — `{record_id, suppressed_by, changed_at}` for dedup decisions
+  that changed inside the run's window, including **reversals** (`suppressed_by: null`, a row a
+  consumer holds as suppressed becoming authoritative again). A delta gathers live rows only, so an
+  add-only stream can otherwise never say a suppression flipped. Absent on a non-delta run.
+- **`deletions.csv` and `corrections.csv`** — the CSV projection of `deletions[]` / `corrections[]`,
+  written beside `raw.csv`/`derived.csv`/`events.csv` on **every** delta run and header-only when
+  there is nothing to report. Two new files in a folder, no change to any existing file: a consumer
+  reading `raw.csv` by name is unaffected.
+- The manifest fields a delta run populates — `is_delta`, `cursor_before`, `cursor_after`,
+  `previous_manifest_sha` — were already specified and documented at 1.0.0 and are **not** new
+  here; EPIC-17 is what started writing them with non-null values.
+
+### Added — JSON bundle, `logs.journal` and `logs.context_statuses` (Phase 3B, EPIC-29)
+
+- **`logs.journal[]`** — behavior tags. Each row carries the behaviors-dictionary **key**
+  (`behavior_id`) or the user's own words (`custom_label`), exactly one of the two; `value_kind`
+  (`boolean | count | quantity`) says which shape `value`/`unit` take, and a `boolean` tag carries
+  a null value because its existence is the assertion, not a count of one. `recalled` discloses the
+  yesterday-recall path without discounting the entry.
+- **`logs.context_statuses[]`** — user-declared intervals (travel, illness, fasting, altitude,
+  injury, or a custom label) that condition how values from that period should be read. `end_at` is
+  null exactly when the status is open, and `open_ended` names that rather than leaving it to be
+  inferred; an export never substitutes "now" for an end the user did not declare. No confidence,
+  ceiling or adjustment is serialized — a status annotates interpretation and never alters a stored
+  value, so there is no adjusted number to carry.
+- Both are **sensitive-plus (I7)** and follow two rules at once: they require an explicit
+  `includeSensitive` scope, *and* each is present only when its own array has rows. An empty array
+  in a default export would assert "this user logged no behaviors" and simultaneously disclose that
+  the behavior log was read at all, which for a lifestyle-revealing family is itself a leak.
+- Manifest `row_counts` gains `logs.journal` / `logs.context_statuses` on the same condition.
+
+### Unchanged
+
+- **CSV columns.** All 26 are exactly the 1.0.0 set, in the same order. No column was added,
+  removed, renamed or retyped at 1.1.0.
+- **Every 1.0.0 key keeps its name, type and meaning.** The four additions are optional and
+  absent-when-empty, so a bundle carrying none of them is byte-shaped exactly as 1.0.0 described —
+  which is why `packages/fixtures/export/bundle-v1.json` needed no change beyond the version token
+  it declares.
+
+---
+
 ## 1.0.0 — 2026-07-20
 
 First stable version. Approved as **A1** in

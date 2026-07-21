@@ -1,6 +1,6 @@
 {
-  "version": "0.1.0",
-  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§22/23/55 Insight generation)",
+  "version": "0.2.0",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§22/23/55 Insight generation) v0.2.0 (EPIC-29) adds the nine journal_correlation_* templates: the three finding outcomes (higher / lower / no clear association), the three suppression messages (total shortfall, too few WITH days, too few WITHOUT days), the context-status disclosure, the power-mode numbers line, and the LOCKED association-not-cause footer that CorrelationEngine appends to every rendered card. Note what is deliberately shipped as a template rather than an empty state: 'no clear association' is a first-class outcome, and suppression below the minimum-n gates has authored, bilingual copy that names the shortfall instead of showing a hedged number. The pre-existing correlation_association template belongs to the metric-vs-metric Correlation Lab (rho-based) and is a different feature — the journal engine does not use it.",
   "templates": [
     {
       "id": "vitals_within_band",
@@ -92,6 +92,69 @@
       "conditionEn": "Metric has stayed within its target band for {value} consecutive days (streak_ge predicate); positive, non-moralizing reinforcement.",
       "textEn": "That's {value} nights in a row your {metric} has landed in a healthy range for you (around {baseline}). Nice consistency.",
       "textAr": "هذه {value} ليالٍ متتالية يبقى فيها {metric} لديك ضمن نطاق جيد بالنسبة لك (حوالي {baseline}). استمرارية رائعة."
+    },
+    {
+      "id": "journal_correlation_not_cause",
+      "metricFamily": "journal",
+      "conditionEn": "LOCKED FOOTER. Appended by CorrelationEngine to EVERY rendered journal-correlation card — the positive, the negative and the null alike — in both languages. It is not selected by a condition and it is not optional: a finding card without this line is the failure mode EPIC-29 exists to prevent, and CorrelationEngineTests / CorrelationEngineGoldenTest assert its presence on every rendered outcome. Changing this wording is a copy-review change (plan §11 'stats-copy review'), not an edit.",
+      "textEn": "This is an association in your own logged data, not a cause.",
+      "textAr": "هذا ارتباط في بياناتك المسجّلة، وليس سببًا."
+    },
+    {
+      "id": "journal_correlation_higher",
+      "metricFamily": "journal",
+      "conditionEn": "Journal correlation passing both minimum-n gates (>= minObservedDays paired days AND >= minDaysPerArm in each arm) whose bootstrap CI lies entirely above zero: next-day scores ran higher after the behaviour. {nPhrase}/{nWithPhrase}/{nWithout} are the day counts, {behavior} the dictionary label, {score} the metric name. {nPhrase} and {nWithPhrase} (not bare {n}/{nWith}) are pre-agreed count-noun phrases: nWith can land in the 3-10 Arabic plural bracket as often as the 11+ bracket, and while nObserved cannot today (minObservedDays is 14), the template does not hardcode a noun form that depends on that constant never dropping — see CorrelationDayCount's doc comment.",
+      "textEn": "Across {nPhrase} you logged, your next-day {score} tended to be higher after {behavior} ({nWithPhrase} with, {nWithout} without).",
+      "textAr": "خلال {nPhrase} سجّلتها، مال {score} في اليوم التالي إلى الارتفاع بعد {behavior} ({nWithPhrase} مع و{nWithout} بدون)."
+    },
+    {
+      "id": "journal_correlation_lower",
+      "metricFamily": "journal",
+      "conditionEn": "Same gates as journal_correlation_higher, bootstrap CI lying entirely below zero: next-day scores ran lower after the behaviour. Phrased as a direction in the user's own numbers, never as a warning and never as advice to stop. {nPhrase}/{nWithPhrase} carry pre-agreed Arabic count-noun form — see journal_correlation_higher's note.",
+      "textEn": "Across {nPhrase} you logged, your next-day {score} tended to be lower after {behavior} ({nWithPhrase} with, {nWithout} without).",
+      "textAr": "خلال {nPhrase} سجّلتها، مال {score} في اليوم التالي إلى الانخفاض بعد {behavior} ({nWithPhrase} مع و{nWithout} بدون)."
+    },
+    {
+      "id": "journal_correlation_none",
+      "metricFamily": "journal",
+      "conditionEn": "Both gates passed and the bootstrap CI spans zero. A FIRST-CLASS SHIPPED OUTCOME, not an empty state: the comparison was made, it had enough days behind it, and it found nothing clear. A correlation feature that only ever renders hits is a slot machine, so this template is authored to the same standard as the two above and is asserted by the null-case golden. {nPhrase}/{nWithPhrase} carry pre-agreed Arabic count-noun form — see journal_correlation_higher's note.",
+      "textEn": "Across {nPhrase} you logged, your next-day {score} looked about the same with and without {behavior} ({nWithPhrase} with, {nWithout} without). No clear association so far.",
+      "textAr": "خلال {nPhrase} سجّلتها، بدا {score} في اليوم التالي متقاربًا مع {behavior} وبدونه ({nWithPhrase} مع و{nWithout} بدون). لا يوجد ارتباط واضح حتى الآن."
+    },
+    {
+      "id": "journal_correlation_needs_days",
+      "metricFamily": "journal",
+      "conditionEn": "SUPPRESSED — fewer than minObservedDays paired days. No finding is computed, stored or shown; this is the 'not yet' row that names the shortfall ({days} more logged days) instead of showing a number with a warning on it. Small-n suppression is a hard invariant, so this template must never be reworded into a hedged finding. {days} arrives pre-formatted by CorrelationDayCount (1 singular / 2 dual / 3-10 plural / 11+ indeclinable, matching StressTrendCard.dayCount / CalibrationCount.dayPhrase / HomeArabicCount.phrase) — it already carries 'more day(s)'/'يومًا إضافيًا' or its correctly-declined equivalent, so no noun or adjective may be hardcoded around it in this template.",
+      "textEn": "There aren't enough logged days yet to compare your {score} with and without {behavior}. About {days} of journaling would let this be looked at.",
+      "textAr": "لا توجد أيام مسجّلة كافية بعد لمقارنة {score} لديك مع {behavior} وبدونه. نحو {days} من التسجيل يتيح النظر في ذلك."
+    },
+    {
+      "id": "journal_correlation_needs_with_days",
+      "metricFamily": "journal",
+      "conditionEn": "SUPPRESSED — enough days overall, but fewer than minDaysPerArm days WITH the behaviour. Named separately from journal_correlation_needs_days because the shortfall is different and so is what would resolve it; a single generic message would tell the user to keep journaling when what is missing is days the behaviour actually happened. {days} is pre-formatted by CorrelationDayCount — see journal_correlation_needs_days's note; no noun/adjective may be hardcoded around it here either.",
+      "textEn": "You've logged plenty of days, but only {nWith} of them included {behavior}. About {days} would let your {score} be compared.",
+      "textAr": "سجّلت أيامًا كثيرة، لكن {nWith} منها فقط تضمّنت {behavior}. نحو {days} يتيح مقارنة {score} لديك."
+    },
+    {
+      "id": "journal_correlation_needs_without_days",
+      "metricFamily": "journal",
+      "conditionEn": "SUPPRESSED — enough days overall, but fewer than minDaysPerArm days WITHOUT the behaviour. A comparison needs both arms; a near-daily habit has almost no 'without' days, and saying so plainly is more honest than a finding built on two of them. {days} is pre-formatted by CorrelationDayCount — see journal_correlation_needs_days's note; no noun/adjective may be hardcoded around it here either.",
+      "textEn": "Almost every day you logged included {behavior}, so there's little to compare it against yet — about {days} would let your {score} be compared.",
+      "textAr": "معظم الأيام التي سجّلتها تضمّنت {behavior}، لذا لا يوجد ما يكفي للمقارنة بعد — نحو {days} يتيح مقارنة {score} لديك."
+    },
+    {
+      "id": "journal_correlation_context",
+      "metricFamily": "journal",
+      "conditionEn": "Appended to a finding whose window overlaps a declared ContextStatus (travel/illness/fasting/altitude/injury). The days are COUNTED and disclosed, never dropped or adjusted — the confidence is capped by ContextAnnotator instead. Says what was done, so the reader can weigh it.",
+      "textEn": "{days} of these days fell inside a period you marked as unusual, so this is shown with lower confidence. Those days are still counted exactly as you logged them.",
+      "textAr": "{days} من هذه الأيام وقعت ضمن فترة وصفتها بأنها غير معتادة، لذلك يُعرض هذا بثقة أقل. وما زالت تلك الأيام محسوبة تمامًا كما سجّلتها."
+    },
+    {
+      "id": "journal_correlation_power_detail",
+      "metricFamily": "journal",
+      "conditionEn": "POWER MODE line for a journal correlation. Renders the same numbers the casual sentence is built from — one computation, two altitudes (D-5), never a second code path. Effect size is Cliff's delta; the interval is a percentile bootstrap over {iterations} resamples with a fixed published seed, so the same data always yields the same interval.",
+      "textEn": "n = {n} ({nWith} with / {nWithout} without) · Cliff's delta {delta} · 95% CI [{ciLow}, {ciHigh}] · bootstrap {iterations} resamples · confidence {confidence}",
+      "textAr": "العدد = {n} ({nWith} مع / {nWithout} بدون) · دلتا كليف {delta} · فاصل ثقة ٩٥٪ [{ciLow}, {ciHigh}] · بوتستراب {iterations} إعادة اعتيان · الثقة {confidence}"
     }
   ],
   "wellnessRules": [

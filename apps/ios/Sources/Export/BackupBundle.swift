@@ -133,6 +133,7 @@ enum BackupBundle {
         symptoms: [SymptomEntry], adherence: [AdherenceEvent],
         workouts: [WorkoutEntry], nutrition: [NutritionEntry],
         hydration: HydrationExportPayload? = nil,
+        journal: JournalExportPayload? = nil,
         includeRoutes: Bool = false,
         templates: [ExportTemplate], destinations: [ExportDestination],
         customization: CanonicalJSON, schedules: [CanonicalJSON],
@@ -157,7 +158,15 @@ enum BackupBundle {
             includeRoutes: includeRoutes, config: config,
             // A backup carries the drink ledger WHOLE — notes included — because it is the user's
             // complete data, and the bundle already carries every other log's notes unredacted.
-            hydration: hydration, hydrationRedaction: HydrationRedactionPolicy(includeNotes: true))
+            hydration: hydration, hydrationRedaction: HydrationRedactionPolicy(includeNotes: true),
+            // EPIC-29: the journal + context statuses ride the backup for the same reason every
+            // other log family does — a backup is the user's complete data for their own device
+            // migration, and a migration that silently dropped the behavior journal would lose
+            // history no re-sync can rebuild. The CONSENT for writing it back is re-asked on the
+            // receiving device (`RestoreConsent`), which is where an I7 namespace is gated; leaving
+            // it out of the file here would not be privacy, it would be data loss. Nil/empty writes
+            // nothing at all, so the byte-pinned backup goldens are untouched.
+            journal: journal)
 
         let dictionaryData = Data(dataDictionaryMarkdown().utf8)
 
@@ -487,11 +496,15 @@ enum BackupBundle {
         var encrypted: Bool
         /// Per-namespace record counts (`raw_samples`, `interval_records`, `sessions`, `workouts`,
         /// `derived_values`, `baselines`, `logs.symptoms`, `logs.adherence`, `logs.workouts`,
-        /// `logs.nutrition`, `logs.hydration`). `logs.hydration` counts the drink *entries* (the
-        /// full ledger, including revisions), the same normal-class family workouts/nutrition are.
+        /// `logs.nutrition`, `logs.hydration`, `logs.journal`, `logs.context_statuses`).
+        /// `logs.hydration` counts the drink *entries* (the full ledger, including revisions), the
+        /// same normal-class family workouts/nutrition are. `logs.journal`/`logs.context_statuses`
+        /// are sensitive-plus (I7) and are zeroed by `plan` without consent, like meds/symptoms.
         var namespaceCounts: [String: Int]
-        /// True when the bundle carries medications/symptoms (I7 namespace). Drives whether the
-        /// restore screen must show the sensitive-consent toggle.
+        /// True when the bundle carries any I7 namespace — medications/symptoms, or EPIC-29's
+        /// behavior journal / context statuses. Drives whether the restore screen must show the
+        /// sensitive-consent toggle, so a bundle whose only sensitive content is a journal still
+        /// re-asks on the receiving device.
         var sensitivePresent: Bool
         var configCounts: [String: Int]
         var hasCustomization: Bool
@@ -508,6 +521,13 @@ enum BackupBundle {
         // length of its `entries` array, not the object itself. A backup with no drinks has no
         // `hydration` key and reads as 0 — same absent-not-empty rule the writer follows.
         let hydrationEntries = ((logs?["hydration"] as? [String: Any])?["entries"] as? [Any])?.count ?? 0
+        // EPIC-29's two sensitive-plus families. Counted (and gated) here for the same reason
+        // symptoms/adherence are: a backup that carries them must re-ask on the RECEIVING device,
+        // and a preview that didn't count them would leave `sensitivePresent` false for a bundle
+        // whose only sensitive content is a behavior journal — the restore screen would then never
+        // show the consent toggle and the rows would land un-authorized.
+        let journalEntries = logCount("journal")
+        let contextStatuses = logCount("context_statuses")
 
         let config = bundle.bundle["config"] as? [String: Any]
         func configArray(_ key: String) -> Int { (config?[key] as? [Any])?.count ?? 0 }
@@ -529,9 +549,11 @@ enum BackupBundle {
                 "logs.adherence": adherence,
                 "logs.workouts": logCount("workouts"),
                 "logs.nutrition": logCount("nutrition"),
-                "logs.hydration": hydrationEntries
+                "logs.hydration": hydrationEntries,
+                "logs.journal": journalEntries,
+                "logs.context_statuses": contextStatuses
             ],
-            sensitivePresent: symptoms > 0 || adherence > 0,
+            sensitivePresent: symptoms > 0 || adherence > 0 || journalEntries > 0 || contextStatuses > 0,
             configCounts: [
                 "export_templates": configArray("export_templates"),
                 "export_destinations": configArray("export_destinations"),
@@ -603,6 +625,8 @@ enum BackupBundle {
         if !consent.includeSensitive {
             counts["logs.symptoms"] = 0
             counts["logs.adherence"] = 0
+            counts["logs.journal"] = 0
+            counts["logs.context_statuses"] = 0
         }
         return RestorePlan(
             batchId: batchId, sourceKind: restoreSourceKind, fileName: fileName,

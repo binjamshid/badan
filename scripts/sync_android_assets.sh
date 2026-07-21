@@ -11,6 +11,10 @@ cp "$ROOT/packages/contracts/insights/templates.json"    "$DEST/insight_template
 cp "$ROOT/packages/contracts/dictionaries/symptoms.json" "$DEST/symptoms.json"
 # EPIC-38: the curated bilingual beverage vocabulary the hydration quick-log picks from.
 cp "$ROOT/packages/contracts/dictionaries/beverages.json" "$DEST/beverages.json"
+# EPIC-29: the curated bilingual behavior vocabulary the daily journal's chips draw from. The
+# DICTIONARY is shipped data (not sensitive — it names what is loggable, not what was logged);
+# the journal ROWS that reference it are sensitive-plus and live in badan_sensitive.db.
+cp "$ROOT/packages/contracts/dictionaries/behaviors.json" "$DEST/behaviors.json"
 cp "$ROOT/packages/export-schemas/csv_columns.json"      "$DEST/csv_columns.json"
 # EPIC-07: algorithm params and the sensor-quality map are shared contracts loaded exactly like
 # registry.json — mirrored here so both platforms evaluate the same constants (plan §15) and show

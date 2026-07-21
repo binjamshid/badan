@@ -81,6 +81,9 @@ import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import net.albayyan.badan.domain.journal.ContextCaveats
+import net.albayyan.badan.domain.MetricKind
+import net.albayyan.badan.designsystem.components.ContextCaveatNote
 
 // MARK: - Strings local to this surface
 
@@ -119,6 +122,13 @@ data class MetricDetailData(
     val manifest: InputManifest?,
     val sourceNames: Map<String, String>,       // sourceId -> display name
     val recentDedup: List<ReconciliationDecision>, // populated only for sleep.time_asleep
+    /**
+     * EPIC-29 (plan §18). The caveat sentences for any period the user marked over the day
+     * [latestDerivedValue] describes — the visible half of "annotate confidence and copy". Empty for
+     * a raw metric (a recorded reading is not "computed while" anything), empty on an ordinary day,
+     * and empty when sensitive records are off, since a caveat names a circumstance.
+     */
+    val contextCaveats: List<LocalizedString> = emptyList(),
 ) {
     /** The chart reads derived values when there is no raw interval series (composites). */
     val usesDerivedSeries: Boolean get() = intervals.isEmpty() && derived.isNotEmpty()
@@ -162,10 +172,21 @@ private suspend fun loadMetricDetail(env: AppEnvironment, metricId: String): Loa
             // Only sleep time-asleep surfaces the dedup decision (one kept, one suppressed).
             val dedup = if (metricId == MetricId.timeAsleep) env.reconciliation.recent(6) else emptyList()
 
+            // EPIC-29: only a COMPUTED value can be "computed while you were travelling" — a raw
+            // reading is a thing the device recorded, and captioning it with a caveat about the
+            // person's usual pattern would be describing the wrong kind of number.
+            val caveats = if (latestDerived != null && def.kind == MetricKind.DERIVED &&
+                env.profile.sensitiveModulesEnabled
+            ) {
+                ContextCaveats.forPeriodKey(latestDerived.periodKey, tz, env.contextAnnotations)
+            } else {
+                emptyList()
+            }
+
             val data = MetricDetailData(
                 def = def, baseline = baseline, intervals = intervals, derived = derivedSeries,
                 latestDerivedValue = latestDerived, manifest = manifest, sourceNames = sourceNames,
-                recentDedup = dedup,
+                recentDedup = dedup, contextCaveats = caveats,
             )
 
             if (data.fullSeries(tz).isEmpty()) {
@@ -328,6 +349,10 @@ private fun HeaderCard(data: MetricDetailData, latest: Pair<Long, Double>?) {
                     style = BadanType.caption,
                     color = colors.textSecondary,
                 )
+                // EPIC-29: the caveat sits with the value, at both depths — it is the frame the
+                // number should be read in, not a power-mode detail. Renders nothing on an ordinary
+                // day, and nothing at all for a raw metric.
+                ContextCaveatNote(caveats = data.contextCaveats, language = env.language)
             } else {
                 Text(
                     text = data.def.label(env.depth, env.language),

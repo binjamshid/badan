@@ -12,6 +12,9 @@ import net.albayyan.badan.ontology.AlgorithmRegistry
 import net.albayyan.badan.storage.repositories.DerivationRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
 import java.util.TimeZone
+import net.albayyan.badan.domain.journal.ContextAnnotation
+import net.albayyan.badan.domain.journal.ContextAnnotationResolver
+import net.albayyan.badan.domain.journal.NO_CONTEXT_ANNOTATIONS
 
 /**
  * EPIC-25 — the morning Readiness composite (`readiness.score` v2), the recovery-equivalent that
@@ -54,6 +57,14 @@ class ReadinessEngine(
      * priority map.
      */
     private val priorityForSource: (String) -> Int = { 0 },
+    /**
+     * EPIC-29 (plan §18 "`ContextStatus` … annotate confidence and copy … never the stored value").
+     * Resolves what the user declared over the day being scored. A FUNCTION, not a repository: the
+     * statuses live in the sensitive database and this engine holds only the main one — see
+     * [ContextAnnotationResolver] for why the boundary is crossed this way. Defaults to "no context
+     * ever", so an engine constructed without the seam annotates nothing rather than guessing.
+     */
+    private val contextAnnotations: ContextAnnotationResolver = NO_CONTEXT_ANNOTATIONS,
 ) {
     /**
      * Frozen v2 identity, resolved from the contract. Superseding the legacy
@@ -79,7 +90,12 @@ class ReadinessEngine(
 
         val samples = resolveInputs(dayKey, asOf, tz)
         val computation = composite(samples, spec.params) ?: return null
-        val result = ReadinessResult(dayKey, computation)
+        // The declared context for the day being scored. Resolved AFTER the composite and kept
+        // BESIDE it: [ReadinessComputation] is the pure, golden-tested output and a context must not
+        // be able to reach into it. See [persist] for the one thing it is allowed to touch.
+        val dayStart = DayAttribution.startOfDay(asOf, tz)
+        val context = contextAnnotations(dayStart, DayAttribution.addingDays(1, dayStart, tz))
+        val result = ReadinessResult(dayKey, computation, context)
 
         persist(result)
         return result
@@ -160,13 +176,19 @@ class ReadinessEngine(
 
     private fun persist(result: ReadinessResult) {
         val periodKey = "day:${result.periodDayKey}"
+        // The ONE line a declared context affects, anywhere in this engine. `result.computation.score`
+        // below is written verbatim — a context has no expression that could change it
+        // ([ContextAnnotation] carries a ceiling and sentences and no value field at all). The capped
+        // confidence also enters the skip check, so declaring travel after the fact APPENDS a
+        // re-annotated row (I2) instead of being ignored because the value happened to be unchanged.
+        val confidence = result.publishedConfidence
         val existing = derivation.latestDerived(MetricId.readinessScore, periodKey)
         // Skip only when an identical *v2* row already exists — a v1 legacy row must never block the
         // first v2 write, or the migration would stall.
         if (existing != null && existing.algorithmId == algorithm.algorithmId &&
             existing.algorithmVersion == algorithm.semver &&
             approximatelyEqual(existing.value, result.computation.score) &&
-            approximatelyEqual(existing.confidence ?: -1.0, result.computation.confidence) &&
+            approximatelyEqual(existing.confidence ?: -1.0, confidence) &&
             existing.provisional == result.computation.provisional
         ) {
             return
@@ -189,7 +211,7 @@ class ReadinessEngine(
         derivation.appendDerived(
             DerivedValue(
                 id = Ulid.newId(), metricId = MetricId.readinessScore, value = result.computation.score,
-                unit = "score_0_100", periodKey = periodKey, confidence = result.computation.confidence,
+                unit = "score_0_100", periodKey = periodKey, confidence = confidence,
                 provisional = result.computation.provisional, algorithmId = algorithm.algorithmId,
                 algorithmVersion = algorithm.semver, inputManifestId = manifest.id,
                 computedAt = now, updatedAt = now, originDeviceId = deviceId,
@@ -346,10 +368,29 @@ data class ReadinessComputation(
 )
 
 /** A computed Readiness result for a specific local day — the pure computation plus the day it describes. */
+/**
+ * A computed Readiness result for a specific local day — the pure computation, the day it describes,
+ * and whatever the user had declared over that day.
+ *
+ * The context sits BESIDE the computation, never inside it: `score` is reachable only through
+ * [computation], which no context can touch, while the only context-derived quantity this type
+ * exposes is [publishedConfidence]. "The number changed because I said I was travelling" therefore
+ * has no expression here.
+ */
 data class ReadinessResult(
     val periodDayKey: String,
     val computation: ReadinessComputation,
-)
+    /** What the user declared over this day (NONE = an ordinary day, the common case). */
+    val context: ContextAnnotation = ContextAnnotation.NONE,
+) {
+    /**
+     * The confidence that goes on the row: the composite's own, capped by any declared context.
+     * Monotonic downward by [ContextAnnotation.applyingTo] — a context can only ever make BADAN less
+     * sure. `applyingTo` returns null only for a null input, which this never is.
+     */
+    val publishedConfidence: Double
+        get() = context.applyingTo(computation.confidence) ?: computation.confidence
+}
 
 // MARK: - Spec (data-driven params, mirror of BaselineSpec)
 

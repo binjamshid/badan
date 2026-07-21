@@ -20,6 +20,9 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+import net.albayyan.badan.domain.journal.ContextAnnotation
+import net.albayyan.badan.domain.journal.ContextAnnotationResolver
+import net.albayyan.badan.domain.journal.NO_CONTEXT_ANNOTATIONS
 
 // MARK: - Pure inputs (platform-identical)
 
@@ -296,6 +299,13 @@ class SleepIntelligenceEngine(
     private val clock: Clock,
     private val deviceId: String,
     private val spec: SleepSpec = SleepSpec.default(),
+    /**
+     * EPIC-29 (plan §18). What the user declared over each night being scored. Resolved PER NIGHT,
+     * not once per run: one recompute emits a fortnight of nights and only some may sit inside a
+     * declared interval. A function rather than the sensitive repository — see
+     * [ContextAnnotationResolver].
+     */
+    private val contextAnnotations: ContextAnnotationResolver = NO_CONTEXT_ANNOTATIONS,
 ) {
 
     // MARK: - DB orchestration (the pure core below is what the JVM goldens assert)
@@ -352,10 +362,26 @@ class SleepIntelligenceEngine(
         }
 
         val scores = score(assembly, baselineArg, effortByDayKey, spec)
-        for (s in scores) appendScore(s, baseline, effortById)
+        for (s in scores) {
+            // One resolve per night, over the local day the night is attributed to — the same
+            // day-attribution rule every other reader of these rows uses. A status declared for the
+            // previous day annotates that day's night, not this one's.
+            val nightStart = DayAttribution.dateFromDayKey(s.localNight, tz)
+            val annotation = if (nightStart != null) {
+                contextAnnotations(nightStart, DayAttribution.addingDays(1, nightStart, tz))
+            } else {
+                ContextAnnotation.NONE
+            }
+            appendScore(s, baseline, effortById, annotation)
+        }
     }
 
-    private fun appendScore(s: SleepNightScore, baseline: Baseline?, effortById: Map<String, DerivedValue>) {
+    private fun appendScore(
+        s: SleepNightScore,
+        baseline: Baseline?,
+        effortById: Map<String, DerivedValue>,
+        context: ContextAnnotation = ContextAnnotation.NONE,
+    ) {
         val priorKey = previousDayKey(s.localNight)
 
         var needId: String? = null
@@ -363,7 +389,7 @@ class SleepIntelligenceEngine(
         if (need != null && baseline != null) {
             val inputs = mutableListOf(InputManifest.Input(baseline.id, MetricId.timeAsleep, baseline.center))
             effortById[priorKey]?.let { inputs.add(InputManifest.Input(it.id, EFFORT_DAY, it.value)) }
-            needId = upsertDerived(MetricId.sleepNeed, need.centerSeconds, "s", s.localNight, need.confidence, spec.need, inputs)
+            needId = upsertDerived(MetricId.sleepNeed, need.centerSeconds, "s", s.localNight, need.confidence, spec.need, inputs, context)
         }
 
         val perf = s.performance
@@ -372,7 +398,7 @@ class SleepIntelligenceEngine(
                 InputManifest.Input(needId, MetricId.sleepNeed, s.need?.centerSeconds ?: 0.0),
                 InputManifest.Input(s.primarySessionId, MetricId.timeAsleep, s.actualAsleepSeconds),
             )
-            upsertDerived(MetricId.sleepPerformance, perf.centerPercent, "percent", s.localNight, perf.confidence, spec.performance, inputs)
+            upsertDerived(MetricId.sleepPerformance, perf.centerPercent, "percent", s.localNight, perf.confidence, spec.performance, inputs, context)
         }
 
         val debt = s.debtSeconds
@@ -392,20 +418,32 @@ class SleepIntelligenceEngine(
                 0.0
             }
             val inputs = s.consistencyWindowSessionIds.map { InputManifest.Input(it, MetricId.timeAsleep, consistency) }
-            upsertDerived(MetricId.sleepConsistency, consistency, "score_0_100", s.localNight, confidence, spec.consistency, inputs)
+            upsertDerived(MetricId.sleepConsistency, consistency, "score_0_100", s.localNight, confidence, spec.consistency, inputs, context)
         }
 
         val disturbances = s.disturbanceCount
         if (disturbances != null) {
             val inputs = listOf(InputManifest.Input(s.primarySessionId, MetricId.sleepAwake, disturbances.toDouble()))
+            // Deliberately NOT context-annotated. This confidence means "the stages were there and we
+            // counted them", not "here is how confidently this reads against your usual" — a count of
+            // observed awake episodes is as true on a travel night as on any other. `sleep.debt` is
+            // likewise unannotated, for the plainer reason that it stores no confidence at all.
             upsertDerived(MetricId.sleepDisturbances, disturbances.toDouble(), "count", s.localNight, 1.0, spec.disturbances, inputs)
         }
     }
 
+    /**
+     * [context] caps the confidence and NOTHING else — [value] is written through untouched, and
+     * [ContextAnnotation] has no value field it could touch it with. Callers pass NONE for the
+     * outputs whose confidence is not an interpretation against the person's usual pattern (see the
+     * disturbance-count note above).
+     */
     private fun upsertDerived(
-        metricId: String, value: Double, unit: String, day: String, confidence: Double?,
+        metricId: String, value: Double, unit: String, day: String, rawConfidence: Double?,
         output: SleepOutputSpec, inputs: List<InputManifest.Input>,
+        context: ContextAnnotation = ContextAnnotation.NONE,
     ): String {
+        val confidence = context.applyingTo(rawConfidence)
         val periodKey = "day:$day"
         // Skip the append only when the latest row is identical on ALL of value, confidence,
         // provisional AND the algorithm identity — a version bump that yields the same value must

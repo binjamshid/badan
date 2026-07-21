@@ -1,13 +1,13 @@
 {
   "fixtureSetVersion": "1",
-  "exportSchemaVersion": "1.0.0",
+  "exportSchemaVersion": "1.1.0",
   "spec": "packages/export-schemas/csv_columns.json + packages/export-schemas/json_bundle.schema.json",
   "note": "Cross-platform export-serialization fixtures for the Phase-1 exit criterion 'the same store and scope produce byte-identical output on both platforms'. export-input-v1.json is the shared INPUT: both suites build their own domain objects from it, run their own writers, and must produce bundle-v1.json / raw-v1.csv / derived-v1.csv byte for byte. Read by apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt and apps/ios/Tests/ExportSchemaParityTests.swift. Neither suite may copy the records or the goldens into its own source — a copy is one more thing that can drift from the artifact it is supposed to police (same reasoning as packages/fixtures/encryption and packages/fixtures/canonicalization).",
   "files": [
     {
       "id": "export-input-v1",
       "file": "export-input-v1.json",
-      "sha256": "23f59fab5054f274e1f8bd9e3497e75735f10534e5dcada3bec33a2f8fb33608",
+      "sha256": "62a019e3f3f39226bfb0ecea90fd971676bb04be40b4a053732b2eed45f3df92",
       "readBy": [
         "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
         "apps/ios/Tests/ExportSchemaParityTests.swift"
@@ -16,7 +16,7 @@
     {
       "id": "bundle-v1",
       "file": "bundle-v1.json",
-      "sha256": "7067d88c3d67111212c56da99152dc3770f9ab3bd4690bd116a2f5779e518b80",
+      "sha256": "9a37d35f7190db8773d1a84a3173336b85f87476ac4e88fc6422420faca16bd1",
       "readBy": [
         "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
         "apps/ios/Tests/ExportSchemaParityTests.swift"
@@ -25,8 +25,17 @@
     {
       "id": "bundle-hydration-v1",
       "file": "bundle-hydration-v1.json",
-      "sha256": "3531284698726100163d3732473d4aab640f205d233fbf5d0964e1261b167437",
+      "sha256": "9561bcb442518ddc79d8eb2f2906c8c4dc97f2bdfd11f4aa0ac952c83df78764",
       "role": "CI schema-validation instance — NOT a cross-platform parity golden. Carries a logs.hydration block (EPIC-38) so the CI JSON-Schema step exercises that section, which bundle-v1.json (no drinks) cannot. Shaped as ExportRunner/HydrationExportJSON emits it, but never asserted byte-identical by the two suites — so it is not regenerated the way the parity goldens are.",
+      "readBy": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "bundle-journal-v1",
+      "file": "bundle-journal-v1.json",
+      "sha256": "fa8a011e49e4b85841e610c06c184c8cc87f1d2d8438a590086ed6480de8fd1a",
+      "role": "CI schema-validation instance — NOT a cross-platform parity golden, same standing as bundle-hydration-v1.json. Carries the three optional keys no other fixture here does: logs.journal + logs.context_statuses (EPIC-29, sensitive-plus) and the root config echo. Shaped as JournalExportJSON / BackupBundle.configObject emit them — all three journal value_kinds including a boolean with null value AND null unit, a custom-label entry flagged recalled, a closed context status and an open-ended one (end_at null, open_ended true) — so the CI 'every optional key is exercised' gate has an instance to point at. Regenerate it, do not edit bundle-v1.json to carry a journal: the no-journal golden staying byte-stable is what proves absent-when-empty.",
       "readBy": [
         ".github/workflows/ci.yml"
       ]
@@ -52,7 +61,7 @@
     {
       "id": "delta-input-v1",
       "file": "delta-chain/delta-input-v1.json",
-      "sha256": "2fc2f83cf10179d29fa121a244c5e149898b67226bd61df5899b5d6a3d798ae4",
+      "sha256": "c28aa40afd8b09a3f7becb6898ffd695becd52c0486ad519a237db0720ae252d",
       "role": "Shared INPUT for the EPIC-17 two-run delta sequence (§22.6). Lives in delta-chain/ with its two goldens so scripts/verify_export_chain.py can be pointed at that folder directly — the script reads every *.json in a folder as a candidate chain link, and bundle-v1.json (a full export with no predecessor) would read as a second chain root. This file is skipped by the script because it carries no top-level `manifest.export_id`.",
       "readBy": [
         "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
@@ -62,7 +71,7 @@
     {
       "id": "delta-run1-v1",
       "file": "delta-chain/delta-run1-v1.json",
-      "sha256": "d151739bbed5c510b538caee4584e040d86e236e6d5c8f4963e4d846977453d7",
+      "sha256": "7fa9e035b51e9640515a13db752077dcfd63fbc1030baadb6c0c48317aa78707",
       "role": "Cross-platform golden — the delta chain's ROOT (previous_manifest_sha null). Its bytes are load-bearing twice over: both suites must produce them, AND delta-run2-v1.json's previous_manifest_sha is sha256 of this exact file, so a byte change here breaks the chain rather than only a comparison.",
       "readBy": [
         "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",
@@ -73,7 +82,7 @@
     {
       "id": "delta-run2-v1",
       "file": "delta-chain/delta-run2-v1.json",
-      "sha256": "34e8ea8b94cd4ea1f771a696e80e1a484b53b1f00b2135c629d8dc35d1da96c4",
+      "sha256": "aa65b19ed1fe6133c609b66fb602e0bdd6648f3e6a76de901d6949948c707306",
       "role": "Cross-platform golden — the delta chain's second link: cursor_before meets run 1's cursor_after exactly, previous_manifest_sha equals sha256(delta-run1-v1.json), and corrections[] carries a REVERSED suppression (suppressed_by null).",
       "readBy": [
         "apps/android/app/src/test/java/net/albayyan/badan/ExportSchemaParityTest.kt",

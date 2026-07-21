@@ -36,7 +36,7 @@ public enum SensitiveClass: String, Codable, Hashable, Sendable {
 /// `.medications` and `.other` stay last because they are the non-registry and unknown buckets.
 public enum MetricFamily: String, Codable, Hashable, Sendable, CaseIterable {
     case sleep, readiness, heart, activity, workout, effort, body, respiratory
-    case nutrition, hydration, subjective, stress, cycle, symptoms, lab, medications, other
+    case nutrition, hydration, subjective, journal, stress, cycle, symptoms, lab, medications, other
 
     public init(rawValueOrOther raw: String) {
         self = MetricFamily(rawValue: raw) ?? .other
@@ -55,6 +55,10 @@ public enum MetricFamily: String, Codable, Hashable, Sendable, CaseIterable {
         case .nutrition: return LocalizedString(en: "Nutrition", ar: "التغذية")
         case .hydration: return LocalizedString(en: "Hydration", ar: "الترطيب")
         case .subjective: return LocalizedString(en: "How you feel", ar: "شعورك")
+        // The journal family holds what you DID (behaviour tags) and what BADAN reads out of it —
+        // deliberately distinct from `.subjective`, which is how you FELT. Its one registry row is
+        // the `journal.correlation` namespace (EPIC-29).
+        case .journal: return LocalizedString(en: "Journal", ar: "المفكرة")
         // "Stress" names what the family tracks, not a state the reader is in — the metric is a
         // day-level trend (`stress.day_trend`), and the copy inside the family keeps it directional.
         case .stress: return LocalizedString(en: "Stress", ar: "التوتر")
@@ -85,6 +89,7 @@ public enum MetricFamily: String, Codable, Hashable, Sendable, CaseIterable {
         case .nutrition: return "fork.knife"
         case .hydration: return "drop.fill"
         case .subjective: return "face.smiling"
+        case .journal: return "note.text"
         case .stress: return "brain.head.profile"
         case .cycle: return "calendar"
         case .symptoms: return "bandage.fill"

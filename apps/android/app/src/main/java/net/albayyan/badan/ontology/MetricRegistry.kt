@@ -89,7 +89,7 @@ class MetricRegistry(metrics: List<MetricDefinition>) {
          * `MetricFamilyParityTest.expectedVersionMatchesTheBundledRegistry` now fails on that gap
          * instead of leaving it to a log nobody reads — update both together.
          */
-        const val EXPECTED_VERSION = "0.2.0"
+        const val EXPECTED_VERSION = "0.2.1"
 
         private fun loadMetrics(assets: AssetManager): List<MetricDefinition> {
             val file = BundleJson.load<RegistryFile>(assets, "registry")

@@ -1,0 +1,26 @@
+{
+  "fixtureSetVersion": "1",
+  "algorithm": "journal.correlation@0.1.0",
+  "spec": "docs/algorithms/correlations.md + packages/contracts/algorithms/algorithms.json (journal.correlation)",
+  "note": "Cross-platform goldens for the EPIC-29 correlation engine. correlation-input-v1.json is the shared INPUT (behaviour x score pairs reduced to the engine's day view); correlation-expected-v1.json is the OUTPUT both platforms must reproduce exactly — the bootstrap is seeded from the contract, so delta and the interval bounds are deterministic doubles and both suites assert them to 1e-12. The set deliberately includes the NULL case (both gates cleared, interval spans zero, must render 'no clear association'), the exactly-at-gate case, and one-below-gate cases for each of the three shortfalls, because the suppression behaviour is the part of this feature that is worth the most and is the easiest to erode. Regenerating: see README.md — the expectations were derived from the published method by a third implementation on purpose.",
+  "files": [
+    {
+      "id": "correlation-input-v1",
+      "file": "correlation-input-v1.json",
+      "sha256": "4671f40b040734bc5c4bbfa435132442d2dc9bbc5b36267562484f2176d9c618",
+      "readBy": [
+        "apps/ios/Tests/CorrelationEngineTests.swift",
+        "apps/android/app/src/test/java/net/albayyan/badan/CorrelationEngineGoldenTest.kt"
+      ]
+    },
+    {
+      "id": "correlation-expected-v1",
+      "file": "correlation-expected-v1.json",
+      "sha256": "f3813a5332419f81ab866bd7093141da45d25a5b47abeee5e06f46b5522c08e7",
+      "readBy": [
+        "apps/ios/Tests/CorrelationEngineTests.swift",
+        "apps/android/app/src/test/java/net/albayyan/badan/CorrelationEngineGoldenTest.kt"
+      ]
+    }
+  ]
+}

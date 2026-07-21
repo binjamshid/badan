@@ -1,6 +1,6 @@
 {
   "fixtureVersion": "1",
-  "exportSchemaVersion": "1.0.0",
+  "exportSchemaVersion": "1.1.0",
   "note": "Shared INPUT for the EPIC-17 two-run delta sequence (§22.6). Both suites build their own domain objects from `run1`/`run2`, render them through their own JSON bundle writer, and must produce delta-run1-v1.json / delta-run2-v1.json byte for byte. Same harness contract as export-input-v1.json: epoch-millis and Doubles arrive as STRINGS so neither platform's own number parsing sits between the fixture and the thing under test. run2.previousManifestSha is deliberately absent — it is not a literal, it is sha256(delta-run1-v1.json) as read off disk, which is exactly what a consumer recomputes and what scripts/verify_export_chain.py walks. A fixture that hardcoded it would still pass if the two files stopped chaining.",
   "run1": {
     "role": "chain root — no predecessor, so previous_manifest_sha is null. Carries two rows ingested inside the window, one tombstone for a row an EARLIER run already delivered (a delta gathers live rows only, so a removal is invisible without deletions[]), and one live suppression flip.",

@@ -25,6 +25,11 @@ import Foundation
 /// 3. **Sleep.** Reads the prior day's `effort.day` (now present, from step 2) and produces
 ///    `sleep.performance`, which readiness consumes.
 /// 4. **Readiness.** Reads today's `sleep.performance` (step 3) plus the vitals baselines (step 1).
+/// 5. **Stress (EPIC-34).** Reads raw daytime `heart.hrv` and nothing else — no baseline, no sibling
+///    score — so its position is free; it runs LAST because it is the only step whose common outcome
+///    is to write nothing at all, and a reader tracing the produce order should meet the four
+///    composites before the gate. On a day the gate refuses (the default for Apple-Watch-class data)
+///    `compute` persists nothing: no zero, no null row, no "no data" sentinel.
 ///
 /// The display chain is still honoured end to end: readiness runs after sleep, and the
 /// readiness-linked effort **guidance** (`EffortEngine.guidance`) is a READ model the UI calls on
@@ -46,6 +51,10 @@ final class DerivationCoordinator {
     private let sleep: SleepIntelligenceEngine
     private let readiness: ReadinessEngine
     private let effort: EffortEngine
+    /// EPIC-34. Optional only so the many test fixtures that predate it keep constructing a
+    /// coordinator without one; the composition root always passes the real engine, so `nil` here
+    /// means "a test that isn't exercising stress", never a shipped configuration.
+    private let stress: StressEngine?
     private let config: Config
 
     /// Windows the coordinator scores over. Not algorithm constants (those live in `algorithms.json`
@@ -64,11 +73,12 @@ final class DerivationCoordinator {
     }
 
     init(baselines: BaselineEngine, sleep: SleepIntelligenceEngine, readiness: ReadinessEngine,
-         effort: EffortEngine, config: Config = .default) {
+         effort: EffortEngine, stress: StressEngine? = nil, config: Config = .default) {
         self.baselines = baselines
         self.sleep = sleep
         self.readiness = readiness
         self.effort = effort
+        self.stress = stress
         self.config = config
     }
 
@@ -110,6 +120,12 @@ final class DerivationCoordinator {
         for day in days {
             try readiness.compute(asOf: day, tz: tz)
         }
+
+        // 5. Stress — the density gate, then (only if it clears) a `stress.day_trend` row. A day the
+        //    gate refuses writes nothing, which is the common case on phone-and-watch-class data.
+        for day in days {
+            try stress?.compute(asOf: day, tz: tz)
+        }
     }
 
     // MARK: - Historical backfill (EPIC-23 score backfill, EPIC-26 HR-max edit)
@@ -145,6 +161,10 @@ final class DerivationCoordinator {
         let lastDayStart = DayAttribution.startOfDay(to, tz: tz)
         while day <= lastDayStart {
             if try readiness.compute(asOf: day, tz: tz) != nil { touched += 1 }
+            // Stress over the same walk, so an import or a first-connect backfill leaves a real
+            // `stress.day_trend` history rather than only today's row. Days the gate refuses are
+            // skipped silently — they are not "touched", because nothing was written for them.
+            if let stress, try stress.compute(asOf: day, tz: tz).trend != nil { touched += 1 }
             day = DayAttribution.addingDays(1, to: day, tz: tz)
         }
         return touched

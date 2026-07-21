@@ -1,7 +1,7 @@
 # BADAN backup — data dictionary
 
 This file travels inside every BADAN backup. It documents the layout of `bundle.json`
-(export schema 1.0.0) and the backup wrapper (backup schema 1.0) so the
+(export schema 1.1.0) and the backup wrapper (backup schema 1.0) so the
 data stays readable without the app.
 
 ## The backup

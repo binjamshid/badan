@@ -1,6 +1,6 @@
 {
   "fixtureSetVersion": "1",
-  "exportSchemaVersion": "1.0.0",
+  "exportSchemaVersion": "1.1.0",
   "spec": "packages/export-schemas/csv_columns.json (granularity + aggregation_method) + BADAN_WHOOP_HAE_EXECUTION_PLAN.md §22.3 (wide layout)",
   "note": "Cross-platform aggregation + wide-projection fixtures (EPIC-13). aggregation-input-v1.json is the shared INPUT: both suites build AggregateInputRow objects and a MetricDefinition map from it, run MetricAggregator (a hint run and a min/avg/max run) and WideCSVProjector, and must produce the goldens byte for byte. records-*.csv are a TEST-ONLY serialization of the aggregator's AggregateRecord output (metric_id, bucket_key, granularity, aggregation_method, value, bucket instants, tz, contributing_tzs, sample_count) — NOT the product's 26-column tidy CSV, which CSVWriter owns and ExportRunner emits. wide-v1.csv IS the product wide layout, projected over the min/avg/max run's records. Read by apps/ios/Tests/GPXAggregationParityTests.swift and apps/android/app/src/test/java/net/albayyan/badan/GpxAggregationParityTest.kt. Regenerating: see README.md.",
   "files": [
@@ -34,7 +34,7 @@
     {
       "id": "wide-v1",
       "file": "wide-v1.csv",
-      "sha256": "9052141ae4d767f4cde42affbb664bd3ce498d4d3f628f05070d9b2986d80a51",
+      "sha256": "2f31828bc7f90c21f7d2db10a11bf1225812b733b481e717661e94f56dc4ee96",
       "readBy": [
         "apps/ios/Tests/GPXAggregationParityTests.swift",
         "apps/android/app/src/test/java/net/albayyan/badan/GpxAggregationParityTest.kt"

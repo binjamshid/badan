@@ -13,6 +13,8 @@ import net.albayyan.badan.domain.ExportScope
 import net.albayyan.badan.domain.ExportSuppressionCorrection
 import net.albayyan.badan.domain.ExportTombstone
 import net.albayyan.badan.domain.IntervalRecord
+import net.albayyan.badan.domain.journal.ContextStatus
+import net.albayyan.badan.domain.journal.JournalEntry
 import net.albayyan.badan.domain.NutritionEntry
 import net.albayyan.badan.domain.Provenance
 import net.albayyan.badan.domain.RawSample
@@ -28,7 +30,7 @@ import java.security.MessageDigest
  * A JSON value the export writer controls end to end. Mirror of iOS `CanonicalJSON`.
  *
  * The bundle is built as one of these and rendered by [render], rather than being handed to
- * kotlinx-serialization, because schema 1.0.0 promises the same store and scope produce
+ * kotlinx-serialization, because schema 1.1.0 promises the same store and scope produce
  * byte-identical output on iOS and Android — and the two platforms' encoders do not agree on the
  * two things that decide those bytes. Key order is one (Swift's `.sortedKeys` sorts, kotlinx
  * emits in declaration order); number rendering is the worse one (Swift prints an integral
@@ -145,7 +147,7 @@ sealed interface CanonicalJson {
 }
 
 /**
- * Serializes a full export as one self-describing JSON bundle at export schema 1.0.0 (execution
+ * Serializes a full export as one self-describing JSON bundle at export schema 1.1.0 (execution
  * plan §22.2). Mirror of iOS `JSONBundleWriter`.
  *
  * Raw and derived are **physically separated** into distinct top-level arrays and never share a
@@ -199,11 +201,12 @@ class JsonBundleWriter {
         config: Map<String, CanonicalJson>? = null,
         hydration: HydrationExportPayload? = null,
         hydrationRedaction: HydrationRedactionPolicy = HydrationRedactionPolicy.DEFAULT,
+        journal: JournalExportPayload? = null,
     ): ByteArray = bundle(
         manifest, rawSamples, intervalRecords, sessions, derivedValues, baselines, symptoms,
         adherence, workouts, nutrition, includeRoutes, sampleDataRowCount, isDelta, cursorBefore,
         cursorAfter, previousManifestSha, additionalDeletions, corrections, destination, config,
-        hydration, hydrationRedaction,
+        hydration, hydrationRedaction, journal,
     ).render().toByteArray(Charsets.UTF_8)
 
     /**
@@ -265,6 +268,7 @@ class JsonBundleWriter {
         config: Map<String, CanonicalJson>? = null,
         hydration: HydrationExportPayload? = null,
         hydrationRedaction: HydrationRedactionPolicy = HydrationRedactionPolicy.DEFAULT,
+        journal: JournalExportPayload? = null,
     ): CanonicalJson {
         // A workout session lives in `workouts`, not `sessions`. Split before anything counts
         // rows, so `row_counts` describes what was actually serialized rather than what was
@@ -279,6 +283,14 @@ class JsonBundleWriter {
         // pre-hydration golden byte-identical without a fixture regeneration.
         val hydrationPayload = if (hydration != null && !hydration.isEmpty) hydration else null
 
+        // Same absent-not-empty rule, for the same reason plus a sharper one (EPIC-29): the two
+        // journal families are sensitive-plus, so an empty `"journal": []` in a default export would
+        // both assert "this user logged no behaviors" AND advertise that the journal exists and was
+        // consulted. Each key is added only when its OWN array has rows, so a user who declared a
+        // travel status but tapped no chips gets `context_statuses` and no `journal`.
+        val journalEntries = journal?.entries.orEmpty()
+        val journalStatuses = journal?.statuses.orEmpty()
+
         val rowCounts: MutableMap<String, CanonicalJson> = linkedMapOf(
             "raw_samples" to CanonicalJson.Int64(rawSamples.size.toLong()),
             "interval_records" to CanonicalJson.Int64(intervalRecords.size.toLong()),
@@ -292,6 +304,10 @@ class JsonBundleWriter {
             "logs.nutrition" to CanonicalJson.Int64(nutrition.size.toLong()),
         )
         if (hydrationPayload != null) rowCounts["logs.hydration"] = CanonicalJson.Int64(hydrationPayload.entries.size.toLong())
+        if (journalEntries.isNotEmpty()) rowCounts["logs.journal"] = CanonicalJson.Int64(journalEntries.size.toLong())
+        if (journalStatuses.isNotEmpty()) {
+            rowCounts["logs.context_statuses"] = CanonicalJson.Int64(journalStatuses.size.toLong())
+        }
 
         val members: LinkedHashMap<String, CanonicalJson> = linkedMapOf(
             "export_schema_version" to CanonicalJson.Str(ExportSchema.VERSION),
@@ -318,7 +334,10 @@ class JsonBundleWriter {
             "derived_values" to CanonicalJson.Arr(derivedValues.map(::derivedValue)),
             "baselines" to CanonicalJson.Arr(baselines.map(::baseline)),
             "logs" to CanonicalJson.Obj(
-                logs(symptoms, adherence, workouts, nutrition, hydrationPayload, hydrationRedaction),
+                logs(
+                    symptoms, adherence, workouts, nutrition, hydrationPayload, hydrationRedaction,
+                    journalEntries, journalStatuses,
+                ),
             ),
             "deletions" to deletions(
                 rawSamples, intervalRecords, sleepSessions, workoutSessions, derivedValues,
@@ -614,6 +633,8 @@ class JsonBundleWriter {
     private fun logs(
         symptoms: List<SymptomEntry>, adherence: List<AdherenceEvent>, workouts: List<WorkoutEntry>,
         nutrition: List<NutritionEntry>, hydration: HydrationExportPayload?, hydrationRedaction: HydrationRedactionPolicy,
+        journalEntries: List<JournalEntry> = emptyList(),
+        contextStatuses: List<ContextStatus> = emptyList(),
     ): Map<String, CanonicalJson> {
         val members: LinkedHashMap<String, CanonicalJson> = linkedMapOf(
             "symptoms" to CanonicalJson.Arr(symptoms.map(::symptom)),
@@ -622,8 +643,83 @@ class JsonBundleWriter {
             "nutrition" to CanonicalJson.Arr(nutrition.map(::nutrition)),
         )
         if (hydration != null) members["hydration"] = hydrationLog(hydration, hydrationRedaction)
+        // EPIC-29: same absent-when-empty rule as hydration, each keyed off its own array — these
+        // are sensitive-plus, so an empty array in a default export would both make a claim about
+        // the user's behavior log and disclose that the log was read at all.
+        if (journalEntries.isNotEmpty()) members["journal"] = CanonicalJson.Arr(journalEntries.map(::journalEntry))
+        if (contextStatuses.isNotEmpty()) {
+            members["context_statuses"] = CanonicalJson.Arr(contextStatuses.map(::contextStatus))
+        }
         return members
     }
+
+    // ===== logs.journal / logs.context_statuses (EPIC-29, §9.9 / §9.10) =====
+    // Byte-equivalent to iOS `JournalExportJSON`. Reuses this class's provenance/timestamp
+    // rendering so a journal entry's `provenance` block is byte-identical to a raw sample's.
+
+    /**
+     * One behavior tag.
+     *
+     * `value`/`unit` are null for a boolean tag rather than coerced to 1/"bool": the bundle should
+     * say what the row says, and a boolean tag asserts "this happened", not "this happened once".
+     * `value_kind` is what tells a reader which of the three shapes to expect.
+     *
+     * `recalled` is emitted beside the two timestamps it comes from, so a consumer can see an entry
+     * was logged after the fact without re-implementing the comparison — and can still check it,
+     * because `occurred_at` and the full provenance (carrying `recorded_at`) are both right there.
+     * It is DISCLOSURE, not a discount: a recalled entry counts exactly like a live one.
+     */
+    private fun journalEntry(e: JournalEntry): CanonicalJson = CanonicalJson.Obj(
+        mapOf(
+            "record_id" to CanonicalJson.Str(e.id),
+            "behavior_id" to CanonicalJson.str(e.behaviorId),
+            "custom_label" to CanonicalJson.str(e.customLabel),
+            "value_kind" to CanonicalJson.Str(e.valueKind.code),
+            "value" to CanonicalJson.num(e.value),
+            "unit" to CanonicalJson.str(e.unit),
+            "occurred_at" to CanonicalJson.Str(TimestampFormatting.string(e.occurredAt, e.tzId)),
+            "timezone" to CanonicalJson.Str(e.tzId),
+            "recalled" to CanonicalJson.Bool(e.isRecalled),
+            "note" to CanonicalJson.str(e.note),
+            "provenance" to provenance(e.provenance, e.tzId),
+            "value_type" to CanonicalJson.Str("raw"),
+            "is_derived" to CanonicalJson.Bool(false),
+            "updated_at" to CanonicalJson.Str(TimestampFormatting.string(e.updatedAt, e.tzId)),
+            "origin_device_id" to CanonicalJson.Str(e.originDeviceId),
+            "deleted_at" to iso(e.deletedAt, e.tzId),
+        ),
+    )
+
+    /**
+     * One declared interval.
+     *
+     * `end_at` is null exactly when the status is still open, and that null is the fact — an export
+     * must not close an interval the user never closed by substituting "now" or the export
+     * timestamp, which would put an end date the user never declared into a file they may hand to
+     * someone else.
+     *
+     * No confidence, ceiling or adjustment is serialized: a status annotates how a value should be
+     * READ (§9.10) and never alters one, so the artifact carries the user's declaration and nothing
+     * computed from it.
+     */
+    private fun contextStatus(s: ContextStatus): CanonicalJson = CanonicalJson.Obj(
+        mapOf(
+            "record_id" to CanonicalJson.Str(s.id),
+            "status_id" to CanonicalJson.str(s.statusId),
+            "custom_label" to CanonicalJson.str(s.customLabel),
+            "start_at" to CanonicalJson.Str(TimestampFormatting.string(s.startAt, s.tzId)),
+            "end_at" to iso(s.endAt, s.tzId),
+            "open_ended" to CanonicalJson.Bool(s.isOpenEnded),
+            "timezone" to CanonicalJson.Str(s.tzId),
+            "note" to CanonicalJson.str(s.note),
+            "provenance" to provenance(s.provenance, s.tzId),
+            "value_type" to CanonicalJson.Str("raw"),
+            "is_derived" to CanonicalJson.Bool(false),
+            "updated_at" to CanonicalJson.Str(TimestampFormatting.string(s.updatedAt, s.tzId)),
+            "origin_device_id" to CanonicalJson.Str(s.originDeviceId),
+            "deleted_at" to iso(s.deletedAt, s.tzId),
+        ),
+    )
 
     // ===== logs.hydration (EPIC-38, §9.14 / §7A.1) =====
     // Reuses this class's own provenance/timestamp rendering so a hydration entry's `provenance`

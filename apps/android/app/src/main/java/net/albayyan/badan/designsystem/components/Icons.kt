@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Cookie
 import androidx.compose.material.icons.filled.DinnerDining
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.GridView
@@ -58,6 +59,7 @@ fun iconForKey(key: String): ImageVector = when (key) {
     "air" -> Icons.Filled.Air
     "restaurant" -> Icons.Filled.Restaurant
     "mood" -> Icons.Filled.Mood
+    "edit_note" -> Icons.Filled.EditNote
     "psychology" -> Icons.Filled.Psychology
     "calendar_month" -> Icons.Filled.CalendarMonth
     "healing" -> Icons.Filled.Healing

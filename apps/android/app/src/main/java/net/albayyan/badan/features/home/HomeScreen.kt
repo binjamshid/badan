@@ -52,6 +52,7 @@ import net.albayyan.badan.designsystem.components.BadanCard
 import net.albayyan.badan.designsystem.components.CalibrationProgress
 import net.albayyan.badan.designsystem.components.CalibrationState
 import net.albayyan.badan.designsystem.components.ChipStatus
+import net.albayyan.badan.designsystem.components.ContextCaveatNote
 import net.albayyan.badan.designsystem.components.DepthBadge
 import net.albayyan.badan.designsystem.components.LoadState
 import net.albayyan.badan.designsystem.components.MetricSparkline
@@ -80,6 +81,7 @@ import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
+import net.albayyan.badan.domain.journal.ContextCaveats
 
 /**
  * The flagship "Today" tab. Answers, at two altitudes over one model: how am I doing, why, and
@@ -288,6 +290,10 @@ private fun ReadinessHeroCard(data: HomeData) {
                         }
                     }
                 }
+                // EPIC-29: "computed while you were travelling". Renders nothing on an ordinary day.
+                // The score itself is unchanged — the engine capped this row's confidence and
+                // nothing else (see `ReadinessResult`).
+                ContextCaveatNote(caveats = data.readinessContextCaveats, language = env.language)
             } else {
                 Text(
                     text = env.s(Loc.readiness),
@@ -857,6 +863,14 @@ data class HomeData(
     val readinessReducedInput: Boolean,
     /** Cold-start calibration progress shown in place of a Readiness score that can't render yet. */
     val readinessCalibration: CalibrationProgress?,
+    /**
+     * EPIC-29 (plan §18). The caveat sentences for any period the user marked over the day the shown
+     * Readiness value belongs to — "computed while you were travelling". Empty on an ordinary day,
+     * which is the common case, and empty whenever sensitive records are switched off (a caveat names
+     * a circumstance, so it is sensitive-plus text; the confidence cap the engine already applied is
+     * a bare number and stays). Resolved at load time, never carried on the derived row.
+     */
+    val readinessContextCaveats: List<LocalizedString> = emptyList(),
     val narrative: LocalizedString,
     val effort: HomeEffortSummary?,
     val sleep: HomeSleepSummary?,
@@ -888,6 +902,14 @@ private fun loadHomeData(env: AppEnvironment): LoadState<HomeData> {
         } else {
             null
         }
+        // EPIC-29: the note beside the score, resolved from the sensitive store at load time rather
+        // than stored on the row (see [ContextCaveats]). Skipped entirely — not merely hidden — when
+        // sensitive records are off, so the read never happens either.
+        val readinessCaveats = if (readiness != null && env.profile.sensitiveModulesEnabled) {
+            ContextCaveats.forPeriodKey(readiness.periodKey, tz, env.contextAnnotations)
+        } else {
+            emptyList()
+        }
         val effort = latestEffort(env, now, tz)
         val sleep = loadSleep(env, now, tz)
         val metrics = loadMetrics(env, now)
@@ -906,6 +928,7 @@ private fun loadHomeData(env: AppEnvironment): LoadState<HomeData> {
                     readiness = readiness,
                     readinessReducedInput = readinessReduced,
                     readinessCalibration = readinessCalibration,
+                    readinessContextCaveats = readinessCaveats,
                     narrative = narrative(readiness),
                     effort = effort,
                     sleep = sleep,

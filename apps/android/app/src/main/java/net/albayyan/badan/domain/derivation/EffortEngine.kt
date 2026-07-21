@@ -44,6 +44,16 @@ import kotlin.math.exp
  * Everything is append-only and driven by an injected [Clock] (INVARIANT I2): editing HR max triggers
  * a historical recompute that APPENDS fresh rows; superseded rows keep their `computedAt`, value and
  * algorithm id. The pure math ([accumulate], [effortScore]) is static so it is byte-identical to iOS.
+ *
+ * **Declared context (EPIC-29, plan §18) reaches effort as COPY only, and this engine holds no
+ * resolver.** A `ContextStatus` may do exactly two things to a derived result: cap its confidence
+ * and add a caveat sentence. Effort rows store `confidence = null` — there is no completeness or
+ * maturity model behind an effort score in v1; the row's honesty lives in its `provisional` flag
+ * and, for the phone-only path, in its unit. There is therefore nothing here for a ceiling to cap,
+ * and wiring a `ContextAnnotationResolver` in would be a call whose result is discarded by
+ * construction. The caveat still reaches the reader: the effort surfaces resolve it at display time
+ * through `ContextCaveats`, exactly as they do for readiness and sleep. If `effort.day` ever gains a
+ * real confidence, the resolver belongs here and this paragraph should be deleted in the same change.
  */
 class EffortEngine(
     private val derivation: DerivationRepository,

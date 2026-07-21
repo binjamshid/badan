@@ -285,14 +285,21 @@ final class SleepIntelligenceEngine {
     private let clock: Clock
     private let deviceId: String
     private let spec: SleepSpec
+    /// EPIC-29 (plan §18). What the user declared over each night being scored. Resolved PER NIGHT,
+    /// not once per run: one recompute emits a fortnight of nights and only some of them may sit
+    /// inside a declared interval. A function rather than the sensitive repository — see
+    /// `ContextAnnotationResolver`.
+    private let contextAnnotations: ContextAnnotationResolver
 
     init(derivation: DerivationRepository, measurements: MeasurementRepository,
-         clock: Clock, deviceId: String, spec: SleepSpec = .defaultShared) {
+         clock: Clock, deviceId: String, spec: SleepSpec = .defaultShared,
+         contextAnnotations: @escaping ContextAnnotationResolver = noContextAnnotations) {
         self.derivation = derivation
         self.measurements = measurements
         self.clock = clock
         self.deviceId = deviceId
         self.spec = spec
+        self.contextAnnotations = contextAnnotations
     }
 
     // MARK: - DB orchestration (iOS-tested; Android mirrors the pure core)
@@ -357,7 +364,14 @@ final class SleepIntelligenceEngine {
 
         try derivation.transaction {
             for s in scores {
-                try appendScore(s, baseline: baseline, effortById: effortById)
+                // One resolve per night, over the local day the night is attributed to — the same
+                // day-attribution rule every other reader of these rows uses. A status the user
+                // declared for the previous day annotates that day's night, not this one's.
+                let nightStart = DayAttribution.date(fromDayKey: s.localNight, tz: tz)
+                let context = try nightStart.map {
+                    try contextAnnotations($0, DayAttribution.addingDays(1, to: $0, tz: tz))
+                } ?? .none
+                try appendScore(s, baseline: baseline, effortById: effortById, context: context)
             }
         }
     }
@@ -367,7 +381,8 @@ final class SleepIntelligenceEngine {
     /// is numerically identical, so a nightly recompute doesn't grow the log by re-confirming
     /// unchanged nights — but still returns the existing row's id so the cross-references stay valid.
     private func appendScore(_ s: SleepNightScore, baseline: Baseline?,
-                             effortById: [String: DerivedValue]) throws {
+                             effortById: [String: DerivedValue],
+                             context: ContextAnnotation = .none) throws {
         let priorKey = Self.previousDayKey(s.localNight)
 
         var needId: String?
@@ -378,7 +393,7 @@ final class SleepIntelligenceEngine {
             }
             needId = try upsertDerived(
                 metricId: MetricID.sleepNeed, value: need.centerSeconds, unit: "s", day: s.localNight,
-                confidence: need.confidence, output: spec.need, inputs: inputs)
+                confidence: need.confidence, output: spec.need, inputs: inputs, context: context)
         }
 
         if let perf = s.performance, let needId {
@@ -388,7 +403,7 @@ final class SleepIntelligenceEngine {
             ]
             _ = try upsertDerived(
                 metricId: MetricID.sleepPerformance, value: perf.centerPercent, unit: "percent", day: s.localNight,
-                confidence: perf.confidence, output: spec.performance, inputs: inputs)
+                confidence: perf.confidence, output: spec.performance, inputs: inputs, context: context)
         }
 
         if let debt = s.debtSeconds, let needId {
@@ -411,11 +426,16 @@ final class SleepIntelligenceEngine {
             }
             _ = try upsertDerived(
                 metricId: MetricID.sleepConsistency, value: consistency, unit: "score_0_100", day: s.localNight,
-                confidence: confidence, output: spec.consistency, inputs: inputs)
+                confidence: confidence, output: spec.consistency, inputs: inputs, context: context)
         }
 
         if let disturbances = s.disturbanceCount {
             let inputs = [InputManifest.Input(recordId: s.primarySessionId, metricId: MetricID.sleepAwake, value: Double(disturbances))]
+            // Deliberately NOT context-annotated. This confidence means "the stages were there and
+            // we counted them", not "here is how confidently this reads against your usual" — a
+            // count of observed awake episodes is as true on a travel night as on any other, and
+            // capping it would say something about the number that is not so. `sleep.debt` is
+            // likewise unannotated for the plainer reason that it stores no confidence at all.
             _ = try upsertDerived(
                 metricId: MetricID.sleepDisturbances, value: Double(disturbances), unit: "count", day: s.localNight,
                 confidence: 1.0, output: spec.disturbances, inputs: inputs)
@@ -424,10 +444,18 @@ final class SleepIntelligenceEngine {
 
     /// Append a derived row unless the latest one for this metric+day is already numerically
     /// identical; either way return the id to reference. Confidence is part of the equality check so
-    /// a night that only changed confidence (e.g. effort arrived late) still appends.
+    /// a night that only changed confidence (e.g. effort arrived late, or a context was declared
+    /// afterwards) still appends.
+    ///
+    /// `context` caps the confidence and NOTHING else — `value` is written through untouched, and
+    /// `ContextAnnotation` has no value field it could touch it with. Callers pass `.none` for the
+    /// outputs whose confidence is not an interpretation against the person's usual pattern (see
+    /// the disturbance-count note above).
     private func upsertDerived(metricId: String, value: Double, unit: String, day: String,
-                               confidence: Double?, output: SleepOutputSpec,
-                               inputs: [InputManifest.Input]) throws -> String {
+                               confidence rawConfidence: Double?, output: SleepOutputSpec,
+                               inputs: [InputManifest.Input],
+                               context: ContextAnnotation = .none) throws -> String {
+        let confidence = context.applying(to: rawConfidence)
         let periodKey = "day:" + day
         // Skip the append only when the latest row is identical on ALL of value, confidence,
         // provisional AND the algorithm identity — a version bump that yields the same value must

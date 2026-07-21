@@ -69,6 +69,7 @@ import net.albayyan.badan.domain.MetricId
 import net.albayyan.badan.domain.Provenance
 import net.albayyan.badan.domain.RawSample
 import net.albayyan.badan.features.hydration.HydrationSection
+import net.albayyan.badan.features.journal.JournalStrings
 import java.util.TimeZone
 
 // MARK: - File-local strings (bilingual; not in the shared catalog)
@@ -127,10 +128,14 @@ fun LogHubScreen() {
     }
 
     val logTypeCells = buildList<@Composable () -> Unit> {
-        // Symptom & Medication are sensitive — hidden entirely when that module is off.
+        // Symptom, Medication & Journal are sensitive — hidden entirely when that module is off.
+        // The journal joins them rather than sitting with the neutral log types because a
+        // caffeine / alcohol / screen-in-bed pattern is lifestyle-revealing in exactly the way I7
+        // classes as sensitive-plus, and its rows live in the same purgeable namespace.
         if (env.profile.sensitiveModulesEnabled) {
             add { LogTile(title = env.s(Loc.logSymptom), iconKey = "healing") { nav.push(Route.SymptomLog) } }
             add { LogTile(title = env.s(Loc.logMedication), iconKey = "medication") { nav.push(Route.MedicationLog) } }
+            add { LogTile(title = env.s(JournalStrings.logTile), iconKey = "edit_note") { nav.push(Route.Journal) } }
         }
         add { LogTile(title = env.s(Loc.logWorkout), iconKey = "directions_run") { nav.push(Route.WorkoutLog) } }
         if (env.profile.nutritionEnabled) {

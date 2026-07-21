@@ -1,6 +1,6 @@
 {
   "fixtureSetVersion": "1",
-  "exportSchemaVersion": "1.0.0",
+  "exportSchemaVersion": "1.1.0",
   "spec": "packages/export-schemas/src/export_bundle.md §22.4 (GPX 1.1 contract)",
   "note": "Cross-platform GPX writer fixtures (EPIC-12). gpx-input-v1.json is the shared INPUT: both suites build their own workout/route/point objects from it, run their own GPXWriter/GpxWriter, and must produce the route_*.gpx goldens byte for byte. Read by apps/ios/Tests/GPXAggregationParityTests.swift and apps/android/app/src/test/java/net/albayyan/badan/GpxAggregationParityTest.kt. Neither suite may copy the records or goldens into its own source — a copy is one more thing that can drift from the artifact it polices (same reasoning as packages/fixtures/export). Regenerating: see README.md; the switch always fails the run so a rewrite can never be mistaken for a pass.",
   "files": [
@@ -16,7 +16,7 @@
     {
       "id": "route-trail",
       "file": "route_01JQZ8WKATRN00000000000001.gpx",
-      "sha256": "7d18ef844755ed5fd1f6d6e792990fcba617425c1847f5a8824d08723d6477ca",
+      "sha256": "7a553d0c0410c4ecd639fb75fc1329fabb9f64e8d8a39834bc0b8ece433c0fe8",
       "readBy": [
         "apps/ios/Tests/GPXAggregationParityTests.swift",
         "apps/android/app/src/test/java/net/albayyan/badan/GpxAggregationParityTest.kt"
@@ -25,7 +25,7 @@
     {
       "id": "route-city",
       "file": "route_01JQZ8WKACTY00000000000002.gpx",
-      "sha256": "730872803b6406a85ddcad161805a1185b157514447634cb195d33c87241028d",
+      "sha256": "79263c3902f546e09c1d272cbaf097f85cf5095f97b086a7e205cce4d933d9dc",
       "readBy": [
         "apps/ios/Tests/GPXAggregationParityTests.swift",
         "apps/android/app/src/test/java/net/albayyan/badan/GpxAggregationParityTest.kt"

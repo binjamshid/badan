@@ -4,7 +4,7 @@
 
 # BADAN export data dictionary
 
-**Export schema version 1.0.0.**
+**Export schema version 1.1.0.**
 
 This is the contract a downstream consumer — a script, a notebook, an analysis agent, a
 clinician's spreadsheet — can rely on. It is generated from the same files the iOS and
@@ -22,7 +22,7 @@ available in every build, to every user, without a subscription.
 
 ## 1. CSV columns
 
-Export schema **1.0.0** — 26 columns, in this exact order.
+Export schema **1.1.0** — 26 columns, in this exact order.
 
 Line endings are CRLF (RFC 4180). The header row is always written, even for zero data
 rows, so an empty file is still a valid self-describing table. Numbers are
@@ -90,7 +90,7 @@ The §22.5 manifest contract, embedded so the artifact is reproducible from its 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `export_id` | `string` | yes |  |
-| `export_schema_version` | `"1.0.0"` (constant) | yes |  |
+| `export_schema_version` | `"1.1.0"` (constant) | yes |  |
 | `app_version` | `string` | yes |  |
 | `platform` | `string` | yes |  |
 | `generated_at` | `string` | yes | ISO-8601 with a NUMERIC offset, rendered in the record's own timezone so the offset is carried rather than normalized to UTC. 'Z' is never emitted; a zero offset renders as +00:00 (§22.1). |
@@ -145,13 +145,13 @@ between them is visible rather than a matter of which file you happened to open.
 
 ## 3. JSON bundle
 
-The v1.0 JSON bundle envelope (execution plan §22.2). This is the PUBLIC face of an export: snake_case keys, ISO-8601 timestamps with a numeric offset, raw and derived in physically separate arrays (I5). BADAN's internal storage is unchanged by this schema — timestamps are epoch-millis in SQLite and are rendered on the way out; do not read this file as a description of the database. Written as a real JSON Schema rather than prose so a downstream consumer can validate a bundle mechanically; scripts/gen_data_dictionary.py reads it to generate DATA_DICTIONARY.md.
+The 1.1.0 JSON bundle envelope (execution plan §22.2). This is the PUBLIC face of an export: snake_case keys, ISO-8601 timestamps with a numeric offset, raw and derived in physically separate arrays (I5). BADAN's internal storage is unchanged by this schema — timestamps are epoch-millis in SQLite and are rendered on the way out; do not read this file as a description of the database. Written as a real JSON Schema rather than prose so a downstream consumer can validate a bundle mechanically; scripts/gen_data_dictionary.py reads it to generate DATA_DICTIONARY.md. 1.1.0 is additive over 1.0.0 — nothing was removed, renamed or retyped; `logs.hydration`, `logs.journal`, `logs.context_statuses` and the root `corrections[]` are the four optional keys it adds. Each is absent-when-empty, so a bundle that carries none of them is shaped exactly as 1.0.0 described.
 
 ### Envelope
 
 | Key | Type | Required | Notes |
 |---|---|---|---|
-| `export_schema_version` | `"1.0.0"` (constant) | yes | Semver of the export contract this bundle was written against. Additive changes bump the minor, breaking changes bump the major with migration notes in CHANGELOG.md. |
+| `export_schema_version` | `"1.1.0"` (constant) | yes | Semver of the export contract this bundle was written against. Additive changes bump the minor, breaking changes bump the major with migration notes in CHANGELOG.md. A `const` rather than a pattern: this document describes exactly one version, so a bundle declaring another one fails here by name instead of half-validating against a shape it was never written to. |
 | `generated_at` | `string` | yes | ISO-8601 with a NUMERIC offset, rendered in the record's own timezone so the offset is carried rather than normalized to UTC. 'Z' is never emitted; a zero offset renders as +00:00 (§22.1). |
 | `app` | object | yes |  |
 | `manifest` | object | yes | The §22.5 manifest contract, embedded so the artifact is reproducible from its own description (D-8). The standalone manifest.json written alongside a CSV export carries the same fields. |
@@ -162,7 +162,7 @@ The v1.0 JSON bundle envelope (execution plan §22.2). This is the PUBLIC face o
 | `workouts` | array of object | yes | Workout episodes as parent objects with references, never flattened. A workout's heart-rate series is referenced by query descriptor into raw_samples, never copied. |
 | `derived_values` | array of object | yes | Engine-computed values. Physically separate from raw (I5) and self-documenting: every row names the algorithm and version that produced it. |
 | `baselines` | array of object | yes |  |
-| `logs` | object | yes | User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `hydration` is normal-class (a logged drink is the user's own data, never paywalled) and appears in a DEFAULT export, but is added ONLY when the export caught at least one drink — an install without the module, or an export whose scope caught no drinks, omits the key entirely rather than emitting an empty block that would assert 'this user logged no drinks'. `journal` is reserved for EPIC-29 and is deliberately absent rather than emitted empty — an empty array would assert 'this user wrote no journal entries', which is not the same claim as 'this build has no journal'. |
+| `logs` | object | yes | User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `hydration` is normal-class (a logged drink is the user's own data, never paywalled) and appears in a DEFAULT export, but is added ONLY when the export caught at least one drink — an install without the module, or an export whose scope caught no drinks, omits the key entirely rather than emitting an empty block that would assert 'this user logged no drinks'. `journal` and `context_statuses` (EPIC-29) are sensitive-plus and follow BOTH rules at once: they require includeSensitive, and each is added only when its own array has rows — an empty array in a default export would assert 'this user logged no behaviors' AND disclose that the behavior log was read at all, which for a lifestyle-revealing family is itself a leak. |
 | `deletions` | array of object | yes | Tombstones: rows present in this bundle that carry a deleted_at. Deletion is recorded, not enacted by omission — a consumer syncing against a prior bundle needs to know a record went away rather than infer it from absence (§22.6). |
 | `corrections` | array of object | no | Suppression-flip corrections (§22.6): records whose dedup verdict CHANGED since the delta's cursor_before. Present only on a delta bundle that actually has flips — absent, not empty, because a full export makes no claim about what changed since a cursor it never had. This section exists because a delta that only ever adds rows silently desyncs a downstream store when a dedup decision reverses: the row the consumer holds as authoritative is now suppressed (or a suppressed one now wins) and no added row would say so. suppressed_by names the winning record, or is null when the flip CLEARED a prior suppression (the record wins again) — null is meaningful and must not be confused with an absent key. Sorted by record_id so two platforms emit identical bytes. |
 | `config` | object | no | The user's own export configuration, included so a backup restores settings rather than only data. Absent — not empty — when the emitting path did not supply it; an empty object would claim the user has no templates. |
@@ -316,7 +316,7 @@ A materialized personal-normal band. Timestamps render at +00:00 because a basel
 
 #### `logs`
 
-User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `hydration` is normal-class (a logged drink is the user's own data, never paywalled) and appears in a DEFAULT export, but is added ONLY when the export caught at least one drink — an install without the module, or an export whose scope caught no drinks, omits the key entirely rather than emitting an empty block that would assert 'this user logged no drinks'. `journal` is reserved for EPIC-29 and is deliberately absent rather than emitted empty — an empty array would assert 'this user wrote no journal entries', which is not the same claim as 'this build has no journal'.
+User-entered structured logs, kept apart from the measurement chain. `symptoms` and `adherence` are sensitive-class (I7) and appear only under an explicit includeSensitive scope. `hydration` is normal-class (a logged drink is the user's own data, never paywalled) and appears in a DEFAULT export, but is added ONLY when the export caught at least one drink — an install without the module, or an export whose scope caught no drinks, omits the key entirely rather than emitting an empty block that would assert 'this user logged no drinks'. `journal` and `context_statuses` (EPIC-29) are sensitive-plus and follow BOTH rules at once: they require includeSensitive, and each is added only when its own array has rows — an empty array in a default export would assert 'this user logged no behaviors' AND disclose that the behavior log was read at all, which for a lifestyle-revealing family is itself a leak.
 
 #### `logs.symptoms[]`
 
@@ -499,6 +499,50 @@ A user-added beverage definition referenced by an exported entry. caffeine/alcoh
 | `ingestion_paths` | array of `platformStore` \| `manual` \| `import` \| `derived` \| `vendor` | yes |  |
 | `entry_count` | `integer` | yes |  |
 
+#### `logs.journal[]`
+
+One behavior tag from the journal (EPIC-29 / §9.9) — a raw user assertion, sensitive-plus (I7). Exactly one of `behavior_id` (a behaviors.json key) and `custom_label` (the user's own words) is non-null; the KEY is stored rather than a rendered label so an Arabic-logged journal reads in English and back. `value_kind` says which shape to expect: `boolean` carries a null `value` and null `unit` (the row's existence is the assertion — it is NOT 'happened once'), `count` an integer with no physical unit, `quantity` an amount in `unit`. `recalled` is derived from occurred_at vs provenance.recorded_at and marks the yesterday-recall path; it is DISCLOSURE, not a discount — a recalled entry counts exactly like a live one.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `record_id` | `string` | yes |  |
+| `behavior_id` | `string` \| `null` | yes |  |
+| `custom_label` | `string` \| `null` | yes |  |
+| `value_kind` | `boolean` \| `count` \| `quantity` | yes |  |
+| `value` | `number` \| `null` | yes |  |
+| `unit` | `string` \| `null` | yes |  |
+| `occurred_at` | `string` | yes | ISO-8601 with a NUMERIC offset, rendered in the record's own timezone so the offset is carried rather than normalized to UTC. 'Z' is never emitted; a zero offset renders as +00:00 (§22.1). |
+| `timezone` | `string` | yes | IANA tz id at measurement (e.g. Asia/Dubai). The basis for day-boundary attribution. |
+| `recalled` | `boolean` | yes |  |
+| `note` | `string` \| `null` | yes |  |
+| `provenance` | object | yes | Embedded on the row itself, never a join (I1/D-3). A record without provenance is a bug, not a shortcut. |
+| `value_type` | `"raw"` (constant) | yes |  |
+| `is_derived` | `false` (constant) | yes |  |
+| `updated_at` | `string` | yes | ISO-8601 with a NUMERIC offset, rendered in the record's own timezone so the offset is carried rather than normalized to UTC. 'Z' is never emitted; a zero offset renders as +00:00 (§22.1). |
+| `origin_device_id` | `string` | yes |  |
+| `deleted_at` | `string` or `null` | yes |  |
+
+#### `logs.context_statuses[]`
+
+A user-declared interval that conditions how values from that period should be READ (EPIC-29 / §9.10) — travel, illness, fasting, altitude, injury, or the user's own label. Sensitive-plus (I7). `end_at` is null exactly when the status is still open, and `open_ended` names that rather than leaving a consumer to infer the null; an export NEVER substitutes 'now' for an end the user did not declare. No confidence, ceiling or adjustment is serialized: a status annotates interpretation and never alters a stored value, so there is no adjusted number here to carry.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `record_id` | `string` | yes |  |
+| `status_id` | `string` \| `null` | yes |  |
+| `custom_label` | `string` \| `null` | yes |  |
+| `start_at` | `string` | yes | ISO-8601 with a NUMERIC offset, rendered in the record's own timezone so the offset is carried rather than normalized to UTC. 'Z' is never emitted; a zero offset renders as +00:00 (§22.1). |
+| `end_at` | `string` or `null` | yes |  |
+| `open_ended` | `boolean` | yes |  |
+| `timezone` | `string` | yes | IANA tz id at measurement (e.g. Asia/Dubai). The basis for day-boundary attribution. |
+| `note` | `string` \| `null` | yes |  |
+| `provenance` | object | yes | Embedded on the row itself, never a join (I1/D-3). A record without provenance is a bug, not a shortcut. |
+| `value_type` | `"raw"` (constant) | yes |  |
+| `is_derived` | `false` (constant) | yes |  |
+| `updated_at` | `string` | yes | ISO-8601 with a NUMERIC offset, rendered in the record's own timezone so the offset is carried rather than normalized to UTC. 'Z' is never emitted; a zero offset renders as +00:00 (§22.1). |
+| `origin_device_id` | `string` | yes |  |
+| `deleted_at` | `string` or `null` | yes |  |
+
 #### `provenance`
 
 Embedded on the row itself, never a join (I1/D-3). A record without provenance is a bug, not a shortcut.
@@ -522,7 +566,7 @@ Embedded on the row itself, never a join (I1/D-3). A record without provenance i
 
 ## 4. Metrics
 
-72 metrics across 15 families, from
+73 metrics across 16 families, from
 `packages/metric-ontology/registry.json`. `metric_id` is the language-stable join key in
 every export; `canonical_unit` is what `canonical_value` is always expressed in,
 regardless of the unit profile applied to the `value` column. Both display names are
@@ -588,6 +632,12 @@ consumer holding an Arabic export needs the Arabic column to map back to a metri
 |---|---|---|---|---|---|---|
 | `hydration.goal_pct` | `percent` | `percent` | derived | Hydration goal progress | نسبة تحقيق هدف السوائل | normal |
 | `hydration.volume` | `L` | `mL` \| `L` \| `fl_oz` | derived | Fluid intake | كمية السوائل | normal |
+
+### `journal`
+
+| Metric id | Canonical unit | Display units | Kind | Name (en) | Name (ar) | Sensitive class |
+|---|---|---|---|---|---|---|
+| `journal.correlation` | `index` | `index` | derived | Behaviour correlation | ارتباط بين سلوك ومؤشر | sensitivePlus |
 
 ### `lab`
 

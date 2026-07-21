@@ -45,6 +45,9 @@ struct InsightsScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space5) {
                 InsightsEmptyFeed()
+                // EPIC-29: reachable even with an empty feed — the correlations surface has its own
+                // honest empty state ("tag a few days"), which is more useful here than nothing.
+                CorrelationsEntryCard()
                 InsightsFooterNote()
             }
             .padding(.horizontal, BadanSpace.space4)
@@ -62,6 +65,11 @@ struct InsightsScreen: View {
                     if !data.weekly.isEmpty {
                         InsightsWeeklyCard(changes: data.weekly)
                     }
+
+                    // EPIC-29. Its own destination rather than cards inlined here: a correlation
+                    // finding needs its gates, its interval and its "association, not cause" line
+                    // beside it, and a feed row has room for none of that.
+                    CorrelationsEntryCard()
 
                     VStack(alignment: .leading, spacing: BadanSpace.space3) {
                         SectionHeader(env.s(InsightsLoc.feedTitle))

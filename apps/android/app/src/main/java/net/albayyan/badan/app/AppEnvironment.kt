@@ -32,6 +32,9 @@ import net.albayyan.badan.domain.derivation.EffortEngine
 import net.albayyan.badan.domain.derivation.InsightEngine
 import net.albayyan.badan.domain.derivation.ReadinessEngine
 import net.albayyan.badan.domain.derivation.SleepIntelligenceEngine
+import net.albayyan.badan.domain.derivation.StressEngine
+import net.albayyan.badan.domain.journal.ContextAnnotationResolver
+import net.albayyan.badan.domain.journal.ContextAnnotator
 import net.albayyan.badan.domain.ingestion.IngestionPipeline
 import net.albayyan.badan.domain.automation.AutomationEngine
 import net.albayyan.badan.domain.automation.ExportRunnerAutomationRunner
@@ -47,6 +50,7 @@ import net.albayyan.badan.storage.repositories.AutomationDataFreshnessProbe
 import net.albayyan.badan.storage.repositories.AutomationScheduleRepository
 import net.albayyan.badan.storage.repositories.ExportCursorRepository
 import net.albayyan.badan.storage.repositories.ExportDestinationRepository
+import net.albayyan.badan.ontology.BehaviorDictionary
 import net.albayyan.badan.ontology.BeverageCatalog
 import net.albayyan.badan.ontology.InsightTemplateStore
 import net.albayyan.badan.ontology.MetricRegistry
@@ -61,6 +65,7 @@ import net.albayyan.badan.storage.repositories.ExportJobRepository
 import net.albayyan.badan.storage.repositories.ExportRunRepository
 import net.albayyan.badan.storage.repositories.ExportTemplateRepository
 import net.albayyan.badan.storage.repositories.HydrationRepository
+import net.albayyan.badan.storage.repositories.JournalRepository
 import net.albayyan.badan.storage.repositories.InsightRepository
 import net.albayyan.badan.storage.repositories.LoggingRepository
 import net.albayyan.badan.storage.repositories.MeasurementRepository
@@ -100,6 +105,10 @@ class AppEnvironment(context: Context) {
     // EPIC-38 built-in beverage vocabulary (`beverages.json`), the curated half of the hydration
     // dictionary-vs-custom split. A dictionary loader beside `symptoms`/`templates`, not a repository.
     val beverages: BeverageCatalog = BeverageCatalog(context.assets)
+    // EPIC-29 curated behavior vocabulary (`behaviors.json`), the curated half of the journal's
+    // dictionary-vs-custom split. The DICTIONARY is shipped data (it names what is loggable, not what
+    // was logged); the journal ROWS that reference it are sensitive-plus and live in the sensitive DB.
+    val behaviors: BehaviorDictionary = BehaviorDictionary(context.assets)
 
     // Repositories
     val measurements: MeasurementRepository = MeasurementRepository(database.main)
@@ -112,6 +121,10 @@ class AppEnvironment(context: Context) {
     // logged drink is normal-class, not sensitive-plus (§9.14). Consumed by the LogHub hydration
     // surface; the pure ledger/goal logic lives in `domain.hydration`.
     val hydration: HydrationRepository = HydrationRepository(database.main)
+    // EPIC-29 behavior journal + declared context intervals (§9.9/§9.10). Holds the SENSITIVE
+    // connection only — never `main` — which is what makes I7 structural for these two families
+    // rather than a rule a future writer has to remember (see [JournalRepository]).
+    val journal: JournalRepository = JournalRepository(database.sensitive)
     val exportJobs: ExportJobRepository = ExportJobRepository(database.main)
     // EPIC-09/10/16 export surfaces. `export_templates` and `export_runs` already exist (migration
     // v4); these repositories were written in Phase 0 but had no caller until the Compose export
@@ -142,15 +155,34 @@ class AppEnvironment(context: Context) {
     // a pure read model over the `Baseline` rows the pipeline refreshes, read on demand by the Health
     // Monitor surface (see [DeviationEngine]), so it is wired here but never "recomputed".
     val sensorQuality: SensorQualityMap = SensorQualityMap.from(appContext.assets)
+
+    /**
+     * EPIC-29 / plan §18. The I7 seam, resolved once here and shared by every consumer: the score
+     * engines (which apply its confidence ceiling) and the score SURFACES (which render its caveat
+     * sentences through [ContextCaveats]).
+     *
+     * `context_statuses` live in the sensitive database and the score engines hold only the main one,
+     * so the composition root — the one place that legitimately holds BOTH connections — resolves the
+     * annotation and hands out a FUNCTION. What crosses is a confidence ceiling and caveat sentences;
+     * only the ceiling is ever persisted (a bare number that names no circumstance), so no word like
+     * "travelling" reaches `badan.db` and the sensitive purge still takes the disclosure with it. See
+     * [ContextAnnotationResolver].
+     */
+    val contextAnnotations: ContextAnnotationResolver = { from, to ->
+        ContextAnnotator.annotation(from, to, journal.statusesOverlapping(from, to))
+    }
+
     val sleepIntelligence: SleepIntelligenceEngine =
-        SleepIntelligenceEngine(derivation, measurements, clock, deviceId)
+        SleepIntelligenceEngine(derivation, measurements, clock, deviceId,
+            contextAnnotations = contextAnnotations)
     // Readiness resolves a two-source overnight-HRV conflict by source priority (plan §18),
     // reconstructed from the persisted source/device catalog via the published sensor-class contract
     // (worn sensor > phone) — no new stored column, cannot drift from that contract. See
     // [readinessSourcePriority].
     val readiness: ReadinessEngine =
         ReadinessEngine(derivation, measurements, clock, deviceId,
-            priorityForSource = { sourceId -> readinessSourcePriority(sourceId) })
+            priorityForSource = { sourceId -> readinessSourcePriority(sourceId) },
+            contextAnnotations = contextAnnotations)
     // Effort reads HR max / zones off the live profile per recompute (never a cached copy) so a
     // mid-session HR-max edit is picked up on the next run — the reason it takes a provider.
     val effort: EffortEngine =
@@ -158,16 +190,30 @@ class AppEnvironment(context: Context) {
             profileProvider = { catalog.userProfile() })
     val deviation: DeviationEngine =
         DeviationEngine(derivation, measurements, catalog, registry, sensorQuality, clock)
+    /**
+     * EPIC-34. The device-gated stress monitor. Wired here — and passed to [derivationCoordinator] —
+     * so `stress.day_trend` rows are written by the real ingest→derive pipeline rather than only
+     * under test. The Health Monitor card still calls `evaluate` (which writes nothing) for the live
+     * surface state, because a hidden day has to explain itself and no stored row can do that.
+     */
+    val stress: StressEngine =
+        StressEngine(derivation, measurements, registry, clock, deviceId,
+            contextAnnotations = contextAnnotations)
     // EPIC-23. The one place the writing score engines run in the published cross-metric order.
     // Wired into the ingest→derive funnel ([syncHealthConnect], [SeedController]) and the background
     // backfill job ([recomputeScoreBackfill]).
     val derivationCoordinator: DerivationCoordinator =
-        DerivationCoordinator(baselines, sleepIntelligence, readiness, effort)
+        DerivationCoordinator(baselines, sleepIntelligence, readiness, effort, stress)
     val insightEngine: InsightEngine =
         InsightEngine(insightsRepo, derivation, measurements, templates, registry, clock, deviceId)
     val exporter: ExportRunner =
         ExportRunner(measurements, derivation, logging, exportJobs, registry, clock, appVersion, deviceId,
-            hydration = hydration)
+            hydration = hydration,
+            // EPIC-29: the opposite classification — the journal and context statuses are
+            // sensitive-plus, so passing the repository here does NOT put them in a default export.
+            // The runner gathers them only when `scope.includeSensitive` is set; without this
+            // argument the Sensitive toggle would silently omit families its own copy promises.
+            journal = journal)
 
     /**
      * EPIC-15 — the scheduling & automation engine, invoked from [SyncWorker] on the periodic wake.
@@ -193,6 +239,9 @@ class AppEnvironment(context: Context) {
             // A scheduled/automation export owns the ledger too — a drink is the user's own data (raw
             // data is never paywalled), so the background lane exports it exactly like the share sheet.
             hydration = hydration,
+            // EPIC-29: same reasoning, opposite sensitivity — a scheduled template whose scope
+            // carries `includeSensitive` must land the journal too, and one that doesn't must not.
+            journal = journal,
             // The registered delivery surface of this build, assembled in one place so "what can
             // this build send an export to?" has a single answer. EPIC-20's REST deliverer is
             // deliberately NOT in it — see `RestDestinationAvailability` for the flag, the reason

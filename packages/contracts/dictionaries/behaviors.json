@@ -1,0 +1,232 @@
+{
+  "version": "0.1.0",
+  "note": "Curated bilingual (en+ar) behavior dictionary for the journal (EPIC-29, plan §9.9 / §11). These are the tags a user taps on the daily journal screen; anything not listed is still loggable as a free-text customLabel (same dictionary-vs-custom split as symptoms.json / beverages.json). Selection rule: every entry is (a) plausibly linked to recovery or sleep and (b) loggable in seconds. NON-JUDGEMENTAL BY CONSTRUCTION — no entry is diagnostic, moralizing, or framed as a failure ('late meal', never 'junk food'; 'less water than usual', never 'dehydrated'); the journal records what happened, it never grades it. valueKind is the shape of the answer: boolean = did it happen at all (no value, no unit), count = how many times/servings (an integer, no physical unit — it counts the behavior itself), quantity = a measured amount in `unit` (a canonical unit that exists in Units.table on both platforms). sensitiveClass is stated per behavior rather than assumed for the family so no future entry can be quietly demoted: every one of these is sensitivePlus, because a caffeine/alcohol/screen/travel pattern is lifestyle-revealing in a way a step count is not (I7) — journal rows live in badan_sensitive.db, export only under includeSensitive, and are removed by the sensitive purge. Behaviors are DISCRETE MOMENTS; a circumstance that lasts (travel, illness, fasting) is a ContextStatus interval instead (§9.10) — travel_day and felt_unwell exist here for the one-tap 'today was one of those days' case and are not a substitute for the interval.",
+  "behaviors": [
+    {
+      "id": "caffeine",
+      "nameEn": "Caffeine",
+      "nameAr": "الكافيين",
+      "valueKind": "count",
+      "category": "stimulants",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "caffeine_late",
+      "nameEn": "Caffeine after noon",
+      "nameAr": "كافيين بعد الظهر",
+      "valueKind": "boolean",
+      "category": "stimulants",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "energy_drink",
+      "nameEn": "Energy drink",
+      "nameAr": "مشروب طاقة",
+      "valueKind": "boolean",
+      "category": "stimulants",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "nicotine",
+      "nameEn": "Nicotine",
+      "nameAr": "النيكوتين",
+      "valueKind": "boolean",
+      "category": "stimulants",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "alcohol",
+      "nameEn": "Alcohol",
+      "nameAr": "الكحول",
+      "valueKind": "count",
+      "category": "alcohol",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "late_meal",
+      "nameEn": "Late meal",
+      "nameAr": "وجبة متأخرة",
+      "valueKind": "boolean",
+      "category": "food",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "large_dinner",
+      "nameEn": "Large dinner",
+      "nameAr": "عشاء دسم",
+      "valueKind": "boolean",
+      "category": "food",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "water_below_usual",
+      "nameEn": "Less water than usual",
+      "nameAr": "ماء أقل من المعتاد",
+      "valueKind": "boolean",
+      "category": "hydration",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "electrolytes",
+      "nameEn": "Electrolytes",
+      "nameAr": "أملاح معدنية (إلكتروليت)",
+      "valueKind": "boolean",
+      "category": "hydration",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "screen_in_bed",
+      "nameEn": "Screen in bed",
+      "nameAr": "شاشة في السرير",
+      "valueKind": "boolean",
+      "category": "evening",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "wind_down",
+      "nameEn": "Wind-down routine",
+      "nameAr": "روتين تهدئة قبل النوم",
+      "valueKind": "boolean",
+      "category": "evening",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "late_work",
+      "nameEn": "Worked late",
+      "nameAr": "عمل حتى وقت متأخر",
+      "valueKind": "boolean",
+      "category": "evening",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "nap",
+      "nameEn": "Nap",
+      "nameAr": "قيلولة",
+      "valueKind": "quantity",
+      "unit": "min",
+      "category": "sleep",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "cool_room",
+      "nameEn": "Cool bedroom",
+      "nameAr": "غرفة نوم باردة",
+      "valueKind": "boolean",
+      "category": "sleep",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "disrupted_night",
+      "nameEn": "Noisy or interrupted night",
+      "nameAr": "ليلة مزعجة أو متقطعة",
+      "valueKind": "boolean",
+      "category": "sleep",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "intense_training",
+      "nameEn": "Intense training",
+      "nameAr": "تمرين شديد",
+      "valueKind": "boolean",
+      "category": "movement",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "evening_workout",
+      "nameEn": "Evening workout",
+      "nameAr": "تمرين مسائي",
+      "valueKind": "boolean",
+      "category": "movement",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "mostly_sitting",
+      "nameEn": "Mostly sitting day",
+      "nameAr": "جلوس معظم اليوم",
+      "valueKind": "boolean",
+      "category": "movement",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "stretching",
+      "nameEn": "Stretching or mobility",
+      "nameAr": "إطالة أو تمارين مرونة",
+      "valueKind": "boolean",
+      "category": "recovery",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "sauna_hot_bath",
+      "nameEn": "Sauna or hot bath",
+      "nameAr": "ساونا أو حمّام ساخن",
+      "valueKind": "boolean",
+      "category": "recovery",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "cold_exposure",
+      "nameEn": "Cold shower or plunge",
+      "nameAr": "دش بارد أو غطس بارد",
+      "valueKind": "boolean",
+      "category": "recovery",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "mindfulness",
+      "nameEn": "Breathing or meditation",
+      "nameAr": "تنفّس أو تأمل",
+      "valueKind": "quantity",
+      "unit": "min",
+      "category": "recovery",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "supplement_magnesium",
+      "nameEn": "Magnesium",
+      "nameAr": "مغنيسيوم",
+      "valueKind": "boolean",
+      "category": "supplements",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "supplement_other",
+      "nameEn": "Other supplement",
+      "nameAr": "مكمّل غذائي آخر",
+      "valueKind": "boolean",
+      "category": "supplements",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "travel_day",
+      "nameEn": "Travel day",
+      "nameAr": "يوم سفر",
+      "valueKind": "boolean",
+      "category": "circumstance",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "demanding_day",
+      "nameEn": "Demanding day",
+      "nameAr": "يوم مُرهِق",
+      "valueKind": "boolean",
+      "category": "circumstance",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "social_evening",
+      "nameEn": "Social evening",
+      "nameAr": "سهرة اجتماعية",
+      "valueKind": "boolean",
+      "category": "circumstance",
+      "sensitiveClass": "sensitivePlus"
+    },
+    {
+      "id": "felt_unwell",
+      "nameEn": "Felt unwell",
+      "nameAr": "شعور بالتوعّك",
+      "valueKind": "boolean",
+      "category": "circumstance",
+      "sensitiveClass": "sensitivePlus"
+    }
+  ]
+}

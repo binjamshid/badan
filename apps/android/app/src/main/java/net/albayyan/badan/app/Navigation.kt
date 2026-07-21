@@ -25,6 +25,32 @@ sealed interface Route {
     data object HealthMonitor : Route
 
     data object Export : Route
+
+    /**
+     * The daily behaviour journal (EPIC-29). A pushed detail from the Log tab beside the other
+     * capture surfaces, and reachable from the correlations screen's empty state — the two places a
+     * user forms the intention to log one.
+     *
+     * Sensitive-plus: every row it writes lives in `badan_sensitive.db`, so its entry point is gated
+     * on the sensitive-modules toggle exactly like [SymptomLog] and [MedicationLog].
+     */
+    data object Journal : Route
+
+    /**
+     * The context-status manager (EPIC-29): the declared travel / illness / fasting intervals that
+     * annotate how a value should be READ. Reached from the journal's app bar rather than given its
+     * own tile — declaring a period is a rarer act than logging a behaviour, and the journal is
+     * where the user already is when they think of it.
+     */
+    data object ContextStatuses : Route
+
+    /**
+     * The correlations surface (EPIC-29) — behaviour-vs-score findings, the "no clear association"
+     * results, and the below-gate rows that name how many more days they need. Pushed from the
+     * Insights tab, whose feed it extends rather than replaces.
+     */
+    data object Correlations : Route
+
     data object SymptomLog : Route
     data object MedicationLog : Route
     data object WorkoutLog : Route

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
@@ -135,6 +136,15 @@ fun InsightsScreen() {
                     WeeklyCard(data.weekly)
                 }
 
+                // EPIC-29. A door rather than an inline feed: correlations are computed over a
+                // trailing window and carry their own gate copy, sample sizes and locked
+                // association-not-cause line, none of which compresses into a feed card without
+                // losing the part that makes it honest. Gated on the sensitive-modules toggle,
+                // like every other journal entry point (I7).
+                if (env.profile.sensitiveModulesEnabled) {
+                    CorrelationsEntryCard()
+                }
+
                 Column(verticalArrangement = Arrangement.spacedBy(BadanSpace.s3)) {
                     SectionHeader(env.s(InsightsStrings.feedTitle))
                     if (data.insights.isEmpty()) {
@@ -230,6 +240,68 @@ private fun WeeklyStatusChip(change: WeeklyChange) {
         StatusChip(status = ChipStatus.Info, label = env.s(Loc.stillLearning))
     } else {
         StatusChip(position = position, label = env.s(rangeLabel(position)))
+    }
+}
+
+// MARK: - Correlations door (EPIC-29)
+
+/**
+ * The Insights-feed row that opens the correlations list. Mirror of iOS `CorrelationsEntryCard`.
+ *
+ * It renders a title and one subtitle naming what the surface compares — the behaviours you tag,
+ * against your next-day scores — and deliberately claims nothing about a result. The
+ * association-not-cause line is not made here: `CorrelationRenderer` attaches it to every card the
+ * screen itself renders, so it always sits beside the finding it qualifies rather than being said
+ * once at a door and forgotten inside.
+ *
+ * The subtitle is why the call site gates this row on the sensitive-modules toggle: naming what the
+ * surface is about would advertise the family the toggle exists to hide.
+ */
+@Composable
+private fun CorrelationsEntryCard() {
+    val env = LocalAppEnvironment.current
+    val nav = LocalNavigator.current
+    val colors = BadanTheme.colors
+    BadanCard(
+        modifier = Modifier.clickable(onClickLabel = env.s(CorrelationsStrings.title)) {
+            nav.push(Route.Correlations)
+        },
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BadanSpace.touchMin),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BadanSpace.s3),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Insights,
+                contentDescription = null,
+                tint = colors.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = env.s(CorrelationsStrings.title),
+                    style = BadanType.bodyCompact.copy(fontWeight = FontWeight.Medium),
+                    color = colors.textPrimary,
+                )
+                Text(
+                    text = env.s(CorrelationsStrings.openSubtitle),
+                    style = BadanType.caption,
+                    color = colors.textSecondary,
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = colors.textSecondary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 

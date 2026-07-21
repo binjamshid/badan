@@ -277,6 +277,7 @@ val MetricFamily.sensorQualityKey: String
         MetricFamily.NUTRITION -> "nutrition"
         MetricFamily.HYDRATION -> "hydration"
         MetricFamily.SUBJECTIVE -> "subjective"
+        MetricFamily.JOURNAL -> "journal"
         MetricFamily.STRESS -> "stress"
         MetricFamily.CYCLE -> "cycle"
         MetricFamily.SYMPTOMS -> "symptoms"

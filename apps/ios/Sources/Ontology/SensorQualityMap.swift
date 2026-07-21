@@ -234,6 +234,7 @@ extension MetricFamily {
         case .nutrition: return "nutrition"
         case .hydration: return "hydration"
         case .subjective: return "subjective"
+        case .journal: return "journal"
         case .stress: return "stress"
         case .cycle: return "cycle"
         case .symptoms: return "symptoms"

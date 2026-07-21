@@ -10,24 +10,31 @@ import net.albayyan.badan.domain.InsightTemplate
  * Wellness-language rules are carried for reference and lint tooling. Mirror of the iOS
  * `InsightTemplateStore`.
  */
-class InsightTemplateStore(assets: AssetManager) {
+class InsightTemplateStore internal constructor(
+    val templates: List<InsightTemplate>,
+    val wellnessRules: List<String> = emptyList(),
+) {
+    private val byId: Map<String, InsightTemplate> = templates.keyedFirst { it.templateId }
 
-    val templates: List<InsightTemplate>
-    val wellnessRules: List<String>
-    private val byId: Map<String, InsightTemplate>
+    /**
+     * The shipped path: templates from the bundled asset.
+     *
+     * The primary constructor above takes the parsed lists instead, mirroring the iOS
+     * `init(templates:wellnessRules:)` injection point. That exists so a pure-JVM unit test can
+     * render against the canonical `packages/contracts/insights/templates.json` without an
+     * [AssetManager] — the correlation goldens need the real authored copy, and a hand-written
+     * fixture of the templates would be one more thing that can drift from the contract it is
+     * supposed to police.
+     */
+    constructor(assets: AssetManager) : this(BundleJson.load<InsightFile>(assets, "insight_templates") ?: InsightFile())
+
+    internal constructor(file: InsightFile) : this(file.templates, file.wellnessRules ?: emptyList())
+
+    fun template(id: String): InsightTemplate? = byId[id]
 
     @Serializable
-    private data class InsightFile(
+    internal data class InsightFile(
         val templates: List<InsightTemplate> = emptyList(),
         val wellnessRules: List<String>? = null,
     )
-
-    init {
-        val file = BundleJson.load<InsightFile>(assets, "insight_templates")
-        templates = file?.templates ?: emptyList()
-        wellnessRules = file?.wellnessRules ?: emptyList()
-        byId = templates.keyedFirst { it.templateId }
-    }
-
-    fun template(id: String): InsightTemplate? = byId[id]
 }

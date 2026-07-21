@@ -20,6 +20,10 @@ rewritten. This is the transparency that separates BADAN from a black-box wellne
 - **Honest cold start** — nothing renders as a score while its inputs are provisional; reduced-input
   variants are labelled distinctly, never silently degraded, never imputed.
 - **Wellness-safe language** — never diagnostic, never alarmist.
+- **Association, never cause** — where an algorithm relates two things (EPIC-29's behaviour
+  correlations today), it publishes its sample size and its uncertainty, suppresses below its
+  minimum-n gates rather than hedging, reports null results as results, and says on every card that
+  what it found is a pattern in the user's own numbers and not a cause.
 
 ## Index
 
@@ -29,7 +33,8 @@ rewritten. This is the transparency that separates BADAN from a black-box wellne
 | `sleep.need` / `.performance` / `.debt` / `.consistency` / `.disturbances` | [sleep.md](sleep.md) | **Published (0.1.0, provisional)** | EPIC-24 |
 | `composite.readiness_score` | [readiness.md](readiness.md) · [readiness-vs-whoop.md](readiness-vs-whoop.md) | **Published (2.0.0, provisional)** | EPIC-25 |
 | `effort.day` / `effort.workout` | [effort.md](effort.md) | **Published (0.1.0, provisional)** | EPIC-26 |
-| `stress.day_trend` | _forthcoming_ | Provisional constants seeded | EPIC-27 |
+| `stress.day_trend` | [stress.md](stress.md) | **Published (0.2.0, provisional)** | EPIC-34 |
+| `journal.correlation` | [correlations.md](correlations.md) | **Published (0.1.0, provisional)** | EPIC-29 |
 | `workout.strength.*` | _forthcoming_ | Provisional constants seeded | EPIC-28 |
 | `hydration.day_total` | _forthcoming_ | Provisional constants seeded | EPIC-07A |
 | `cycle.descriptive` | _forthcoming_ | Provisional constants seeded | EPIC-30 |

@@ -48,6 +48,14 @@ final class ExportRunner {
     /// the user's own data and is never paywalled or withheld. Only the free-text `note` is redacted,
     /// and structurally, by the default `HydrationRedactionPolicy` — never by the sensitive gate.
     private let hydration: HydrationRepository?
+    /// The behavior journal + context statuses (EPIC-29), or nil. Optional-and-defaulted for the
+    /// same compile-compatibility reason as `hydration` — but the resemblance stops there: both
+    /// families are SENSITIVE-PLUS (I7), so unlike drinks they are gathered only when the scope's
+    /// `includeSensitive` is set, exactly like symptoms and adherence. A default export carries
+    /// neither array, and because the JSON keys are absent-when-empty, it carries no evidence that
+    /// a journal was even consulted. This repository holds only the sensitive connection, so a
+    /// journal row cannot be read from — or written to — `badan.db` from here.
+    private let journal: JournalRepository?
     private let exportJobs: ExportJobRepository
     private let registry: MetricRegistry
     private let clock: Clock
@@ -78,6 +86,7 @@ final class ExportRunner {
          logging: LoggingRepository, exportJobs: ExportJobRepository,
          registry: MetricRegistry, clock: Clock, appVersion: String, deviceId: String,
          hydration: HydrationRepository? = nil,
+         journal: JournalRepository? = nil,
          templates: ExportTemplateRepository? = nil, destinations: ExportDestinationRepository? = nil,
          runs: ExportRunRepository? = nil, cursors: ExportCursorRepository? = nil,
          routes: RouteRepository? = nil, deliverers: [ExportDestinationDelivering] = [],
@@ -86,6 +95,7 @@ final class ExportRunner {
         self.derivation = derivation
         self.logging = logging
         self.hydration = hydration
+        self.journal = journal
         self.exportJobs = exportJobs
         self.registry = registry
         self.clock = clock
@@ -251,6 +261,17 @@ final class ExportRunner {
                 ? try logging.adherence(from: rangeStart, to: rangeEnd)
                     .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) } : []
 
+            // The behavior journal + declared context intervals (EPIC-29), sensitive-plus (I7) and
+            // therefore behind the SAME `includeSensitive` gate as symptoms/adherence — not the
+            // normal-class gate hydration rides. Gathered from the sensitive connection only.
+            //
+            // Journal entries are windowed on `occurred_at`, so a tag the user backdated to
+            // yesterday exports under yesterday. Statuses are windowed on `start_at` (see
+            // `JournalRepository.statuses(from:to:)`): an export answers "what did the user declare
+            // in this period", so a still-open, year-long status is not dragged into every window.
+            let journalPayload = (wantRaw && scope.includeSensitive && logFamilyIncluded("journal", scope))
+                ? try gatherJournal(from: rangeStart, to: rangeEnd, ingestedSince: ingestedSince) : nil
+
             // The delta watermark, computed over the rows the file actually contains (raw/interval/
             // session — the ingested axis a `sinceLastRun` cursor advances on), so a derived- or
             // log-only export reports `nil` and leaves the cursor untouched. Hoisted above
@@ -319,7 +340,7 @@ final class ExportRunner {
                                     derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
                                     symptoms: symptoms, adherence: adherence,
                                     workouts: gathered.workouts, nutrition: gathered.nutrition,
-                                    hydration: gathered.hydration,
+                                    hydration: gathered.hydration, journal: journalPayload,
                                     isDelta: isDelta, deltaDeletions: deltaDeletions,
                                     corrections: corrections)
             case .json:
@@ -330,7 +351,7 @@ final class ExportRunner {
                                      derivedRangeFallbackCount: gathered.derivedRangeFallbackCount,
                                      symptoms: symptoms, adherence: adherence,
                                      workouts: gathered.workouts, nutrition: gathered.nutrition,
-                                     hydration: gathered.hydration,
+                                     hydration: gathered.hydration, journal: journalPayload,
                                      isDelta: isDelta, cursorBefore: ingestedSince, cursorAfter: deltaCursorAfter,
                                      previousManifestSha: deltaPreviousSha,
                                      deltaDeletions: deltaDeletions, corrections: corrections)
@@ -342,7 +363,8 @@ final class ExportRunner {
                 measurements: gathered.rawSamples.count, intervals: gathered.intervalRecords.count,
                 sessions: gathered.sessions.count,
                 logs: symptoms.count + adherence.count + gathered.workouts.count + gathered.nutrition.count
-                    + (gathered.hydration?.entries.count ?? 0),
+                    + (gathered.hydration?.entries.count ?? 0)
+                    + (journalPayload?.entries.count ?? 0) + (journalPayload?.statuses.count ?? 0),
                 derived: gathered.derivedValues.count + gathered.baselines.count,
                 suppressed: suppressedCount)
 
@@ -436,6 +458,27 @@ final class ExportRunner {
     ///
     /// MUST be called inside `run`'s `measurements.transaction` snapshot — the drink ledger shares
     /// the main-DB connection, so this nested same-thread read joins that one transaction (EDGE-03).
+    /// Gathers the journal slice (behavior tags + declared context intervals) within the window,
+    /// or returns nil when the module isn't wired in or nothing falls in range. Nil — not an empty
+    /// payload — for the same absent-not-empty reason `gatherHydration` returns nil, plus the I7
+    /// one: an empty `logs.journal` would disclose that a sensitive log was read.
+    ///
+    /// Callers MUST have checked `scope.includeSensitive` first; this function does not re-derive
+    /// the consent gate, so there is exactly one place it lives (the `run` gather above).
+    ///
+    /// The delta filter runs on `updatedAt`, matching symptoms/adherence: a journal entry is not
+    /// ingested from anywhere, it is typed here, so there is no ingested axis to filter on.
+    private func gatherJournal(from rangeStart: Date, to rangeEnd: Date,
+                               ingestedSince: Date?) throws -> JournalExportPayload? {
+        guard let journal else { return nil }
+        let entries = try journal.entries(from: rangeStart, to: rangeEnd)
+            .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) }
+        let statuses = try journal.statuses(from: rangeStart, to: rangeEnd)
+            .filter { Self.ingestedAfter($0.updatedAt, ingestedSince) }
+        let payload = JournalExportPayload(entries: entries, statuses: statuses)
+        return payload.isEmpty ? nil : payload
+    }
+
     private func gatherHydration(from rangeStart: Date, to rangeEnd: Date,
                                  ingestedSince: Date?) throws -> HydrationExportPayload? {
         guard let hydration else { return nil }
@@ -512,6 +555,7 @@ final class ExportRunner {
                         derivedRangeFallbackCount: Int, symptoms: [SymptomEntry], adherence: [AdherenceEvent],
                         workouts: [WorkoutEntry], nutrition: [NutritionEntry],
                         hydration: HydrationExportPayload?,
+                        journal: JournalExportPayload? = nil,
                         isDelta: Bool = false,
                         deltaDeletions: [ExportTombstone] = [],
                         corrections: [ExportSuppressionCorrection] = []) throws -> ExportResult {
@@ -528,10 +572,18 @@ final class ExportRunner {
         let derivedRows = derivedValues.map { rowFor(derived: $0, scope) }
             + baselines.map { rowFor(baseline: $0, scope) }
         let regimenNames = Self.regimenNameLookup(adherence: adherence, logging: logging)
+        // Journal tags and context intervals join the same events.csv rather than getting their own
+        // files (the way hydration did): unlike a drink ledger, both are exactly the shape
+        // events.csv already carries — a labelled thing that happened at a time — and a CSV-only
+        // consumer should find them beside the symptoms they will be read against. They are here
+        // only when the scope opted into sensitive data; `journal` is nil otherwise, so a default
+        // export's events.csv is byte-identical to before.
         let eventRows = symptoms.map { rowForEvent(symptom: $0, scope) }
             + adherence.map { rowForEvent(adherence: $0, regimenNames: regimenNames, scope) }
             + workouts.map { rowForEvent(workout: $0, scope) }
             + nutrition.map { rowForEvent(nutrition: $0, scope) }
+            + (journal?.entries ?? []).map { rowForEvent(journal: $0, scope) }
+            + (journal?.statuses ?? []).map { rowForEvent(contextStatus: $0, scope) }
 
         // Written and hashed directly, chunk by chunk, so the full CSV is never simultaneously
         // resident as a `String` and a second `Data` copy, and doesn't need a separate
@@ -635,6 +687,7 @@ final class ExportRunner {
                          derivedRangeFallbackCount: Int, symptoms: [SymptomEntry], adherence: [AdherenceEvent],
                          workouts: [WorkoutEntry], nutrition: [NutritionEntry],
                          hydration: HydrationExportPayload?,
+                         journal: JournalExportPayload? = nil,
                          isDelta: Bool = false, cursorBefore: Date? = nil, cursorAfter: Date? = nil,
                          previousManifestSha: String? = nil,
                          deltaDeletions: [ExportTombstone] = [],
@@ -652,10 +705,17 @@ final class ExportRunner {
         addCounts(workouts.map { _ in "activity.workout" }, into: &counts)
         addCounts(nutrition.map { _ in "nutrition.entry" }, into: &counts)
         addCounts((hydration?.entries ?? []).map { _ in "hydration.entry" }, into: &counts)
+        // Same synthetic-id convention as the other log families ("symptoms.entry" etc.), so the
+        // manifest discloses journal rows the way it discloses every other kind. These ids are
+        // export-local labels, not registry metrics — the registry's `journal.correlation.*` ids
+        // belong to the correlation engine's DERIVED rows, which are a different thing entirely.
+        addCounts((journal?.entries ?? []).map { _ in "journal.entry" }, into: &counts)
+        addCounts((journal?.statuses ?? []).map { _ in "context.status" }, into: &counts)
         let rowCount = rawSamples.count + intervalRecords.count + sessions.count
             + derivedValues.count + baselines.count
             + symptoms.count + adherence.count + workouts.count + nutrition.count
             + (hydration?.entries.count ?? 0)
+            + (journal?.entries.count ?? 0) + (journal?.statuses.count ?? 0)
 
         let sampleRows = Self.sampleDataRowCount(rawSamples: rawSamples,
                                                  intervalRecords: intervalRecords, sessions: sessions)
@@ -676,7 +736,7 @@ final class ExportRunner {
             isDelta: isDelta, cursorBefore: cursorBefore, cursorAfter: cursorAfter,
             previousManifestSha: previousManifestSha,
             additionalDeletions: deltaDeletions, corrections: corrections,
-            hydration: hydration, hydrationRedaction: .default)
+            hydration: hydration, hydrationRedaction: .default, journal: journal)
         let bundleURL = folder.appendingPathComponent("bundle.json")
         try bundleData.write(to: bundleURL, options: .completeFileProtection)
 
@@ -1034,6 +1094,89 @@ final class ExportRunner {
             sourceDevice: n.originDeviceId,
             ingestionPath: IngestionPath.manual.rawValue,
             qualityFlags: flags.joined(separator: ";")
+        )
+    }
+
+    /// Journal entries (EPIC-29): `value` is the assertion the row makes — 1 for a `boolean` tag
+    /// ("it happened"), the count or amount otherwise — and `unit` follows the entry's own
+    /// `valueKind`, so a nap's 45 lands as minutes and two coffees as a unitless count.
+    ///
+    /// The `boolean` → 1 mapping is a CSV-contract accommodation (the value column is always
+    /// populated), not a claim that the behavior happened exactly once; `value_kind:boolean` in
+    /// `quality_flags` is what tells a consumer to read the 1 as a yes. The JSON bundle, which has
+    /// no such constraint, keeps `value` null for those rows instead.
+    ///
+    /// `recalled` rides `quality_flags` when the entry was logged after the fact (yesterday
+    /// recall). It is disclosure, not a discount — the row counts exactly like a live one — and it
+    /// stays checkable because `timestamp_start` (when it happened) and `recorded_at` (when it was
+    /// typed) are both in the row.
+    private func rowForEvent(journal e: JournalEntry, _ scope: ExportScope) -> ExportRow {
+        let display = BehaviorDictionary.shared.displayName(forId: e.behaviorId, customLabel: e.customLabel)
+            .resolved(scope.language)
+        let value: Double
+        let unit: String
+        switch e.valueKind {
+        case .boolean: value = 1; unit = "bool"
+        case .count: value = e.value ?? 0; unit = "count"
+        case .quantity: value = e.value ?? 0; unit = e.unit ?? ""
+        }
+        var flags = ["value_kind:\(e.valueKind.rawValue)"]
+        if e.isRecalled { flags.append("recalled") }
+        return ExportRow(
+            recordId: e.id,
+            recordKind: "event",
+            metricId: "journal.entry",
+            metricDisplay: display,
+            value: CSVWriter.decimal(value),
+            unit: unit,
+            canonicalValue: CSVWriter.decimal(value),
+            canonicalUnit: unit,
+            valueType: "raw",
+            isDerived: false,
+            timestampStart: CSVWriter.iso8601(e.occurredAt, tzId: e.tzId),
+            timezone: e.tzId,
+            recordedAt: CSVWriter.iso8601(e.provenance.recordedAt, tzId: e.tzId),
+            sourceApp: e.provenance.sourceId,
+            sourceDevice: e.provenance.deviceId ?? e.originDeviceId,
+            ingestionPath: e.provenance.ingestionPath.rawValue,
+            qualityFlags: flags.joined(separator: ";")
+        )
+    }
+
+    /// Context statuses (EPIC-29 / §9.10): the interval lives in `timestamp_start`/`timestamp_end`,
+    /// and `value` is a flat 1 meaning "this circumstance was declared".
+    ///
+    /// Duration is deliberately NOT the value. An open-ended status has no end, and computing one
+    /// from "now" would write an end instant the user never declared into a file they may hand to
+    /// someone else — so an ongoing status exports with an empty `timestamp_end`, which is the
+    /// honest cell, and `open_ended` in `quality_flags` names it rather than leaving a consumer to
+    /// infer the blank.
+    ///
+    /// Nothing about confidence appears on this row. A status annotates how a value should be READ
+    /// and never alters one, so there is no adjusted number here to export.
+    private func rowForEvent(contextStatus s: ContextStatus, _ scope: ExportScope) -> ExportRow {
+        var flags: [String] = []
+        if let statusId = s.statusId { flags.append("status:\(statusId)") }
+        if s.isOpenEnded { flags.append("open_ended") }
+        return ExportRow(
+            recordId: s.id,
+            recordKind: "event",
+            metricId: "context.status",
+            metricDisplay: s.displayLabel.resolved(scope.language),
+            value: CSVWriter.decimal(1),
+            unit: "bool",
+            canonicalValue: CSVWriter.decimal(1),
+            canonicalUnit: "bool",
+            valueType: "raw",
+            isDerived: false,
+            timestampStart: CSVWriter.iso8601(s.startAt, tzId: s.tzId),
+            timestampEnd: s.endAt.map { CSVWriter.iso8601($0, tzId: s.tzId) },
+            timezone: s.tzId,
+            recordedAt: CSVWriter.iso8601(s.provenance.recordedAt, tzId: s.tzId),
+            sourceApp: s.provenance.sourceId,
+            sourceDevice: s.provenance.deviceId ?? s.originDeviceId,
+            ingestionPath: s.provenance.ingestionPath.rawValue,
+            qualityFlags: flags.isEmpty ? nil : flags.joined(separator: ";")
         )
     }
 
