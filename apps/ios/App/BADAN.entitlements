@@ -35,5 +35,17 @@
 	     handler breaks this entitlement's value silently and for good. -->
 	<key>com.apple.developer.healthkit.background-delivery</key>
 	<true/>
+	<!-- EPIC-33 (Phase 3D). Shared container between BADAN and the BadanWidgets extension for the
+	     bounded AmbientSnapshotDto only (today's ring score, one-sentence narrative, meds-due list,
+	     last-night sleep summary — never a database, never raw health values). WidgetKit extensions
+	     cannot open the SQLCipher store directly (extension memory limits, key-availability-before-
+	     first-unlock, cross-process locking), so this is the ONLY channel between the app and its
+	     widgets. Both BADAN.entitlements and BadanWidgets.entitlements must declare the identical
+	     group id or the extension silently reads an empty/nonexistent container instead of failing
+	     loudly — there is no runtime error for a mismatched group id, only missing data. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.net.binjamshid.badan</string>
+	</array>
 </dict>
 </plist>

@@ -33,6 +33,14 @@ struct BADANApp: App {
         WindowGroup {
             RootView()
                 .environment(env)
+                // FIX-4 (Phase 3D audit): the four EPIC-33 widgets open BADAN via a
+                // `badan://deeplink/<token>` URL (`badan` scheme registered in project.yml's
+                // `CFBundleURLTypes`). Routes through the exact same `AppEnvironment.
+                // pendingDeepLink` / `MainTabView.onChange` mechanism a tapped notification
+                // already uses — see `AppEnvironment.handleDeepLinkURL(_:)`'s doc.
+                .onOpenURL { url in
+                    env.handleDeepLinkURL(url)
+                }
                 .task {
                     // EPIC-32: a notification tap routes to its evidence surface, and every
                     // notification the app actually observes closes out its budget-ledger row. The

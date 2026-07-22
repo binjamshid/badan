@@ -63,6 +63,13 @@ final class AppEnvironment {
     /// EPIC-31 (migration v8). Periodic-report METADATA (`reports` rows). The rendered PDF is a
     /// regenerable file; the row is derived and never a source of truth — see `ReportRepository`.
     let reports: ReportRepository
+    /// EPIC-33 (Phase 3D). Assembles and writes the bounded ambient snapshot the `BadanWidgets`
+    /// extension reads from the shared app-group container — see `AmbientSnapshotWriter`'s header.
+    /// Wired here (not constructed ad hoc) so every trigger — `bumpDataGeneration()` below, the
+    /// meds-due consent toggle, and the sensitive-records purge, both in
+    /// `PrivacySecuritySettingsScreen` — shares the same actor instance (and so the same debounce
+    /// state, now genuinely serialized rather than merely intended to be — see the type's header).
+    let ambientSnapshotWriter: AmbientSnapshotWriter
 
     // Services
     let ingestion: IngestionPipeline
@@ -135,17 +142,39 @@ final class AppEnvironment {
     var isStorageFallback: Bool = false
 
     /// BUG-12/13/EDGE-13: the one data-change signal every screen can key its reload off of.
-    /// Bumped after anything that can change what's on disk out from under an already-loaded
+    /// Bumped after ANYTHING that can change what's on disk out from under an already-loaded
     /// screen — a pipeline run (bootstrap's first-run seed, `connectHealthKit`'s backfill,
-    /// `syncIfStale`'s foreground re-sync), `resetDemoData`, and the sensitive-module
-    /// re-enable path in `update(_:)`. Screens fold this into their `.task(id:)` identity
-    /// (alongside `profile`) so a bump always forces a reload regardless of the screen's own
-    /// staleness guard. Log flows outside this file's scope (Workout/Nutrition/Symptom/
-    /// Medication) can't bump this yet — see the fix notes on the screens that read it for how
-    /// that gap is covered in the meantime.
+    /// `syncIfStale`'s foreground re-sync), `resetDemoData`, the sensitive-module re-enable path
+    /// in `update(_:)`, and — the overwhelming majority of real call sites — a plain manual
+    /// log/edit action with no derivation involved at all: a hydration entry, a symptom log, a
+    /// medication adherence tap, a workout save, a journal edit, and more (grep `bumpDataGeneration
+    /// ()` for the full, current list; this comment does not try to enumerate it, precisely
+    /// because the point is that it fires from ordinary writes, not from some closed set of
+    /// derivation-triggering flows). Screens fold this into their `.task(id:)` identity (alongside
+    /// `profile`) so a bump always forces a reload regardless of the screen's own staleness guard.
     private(set) var dataGeneration: Int = 0
 
-    func bumpDataGeneration() { dataGeneration += 1 }
+    func bumpDataGeneration() {
+        dataGeneration += 1
+        // EPIC-33 (Phase 3D): this is a general "something in the user's data changed, refresh
+        // anything downstream" signal — NOT a derivation-specific one. The call above already
+        // fires from plain log/edit actions with no derivation pass behind them at all (see the
+        // doc on `dataGeneration`), and this is exactly the same signal `AmbientSnapshotWriter`
+        // needs to refresh what the widgets show, for the same reason: a freshly-logged
+        // medication or a freshly-saved workout is just as much "the ambient snapshot might now be
+        // stale" as a real score recomputation is. Values are captured here, on the main actor,
+        // before crossing into the detached task (matching every other lifecycle entry point in
+        // this file) — `writeIfNeeded` debounces internally, so a rapid burst of bumps still
+        // writes (and reloads widget timelines) only once.
+        let language = profile.language
+        let medsDueConsent = profile.consentWidgetMedsDue
+        let now = clock.now()
+        let writer = ambientSnapshotWriter
+        Task.detached(priority: .utility) {
+            await writer.writeIfNeeded(now: now, tz: TimeZone.current.identifier, language: language,
+                                       medsDueConsentGranted: medsDueConsent)
+        }
+    }
 
     /// DEBUG-only staged-feature flags, separate from the persisted `CustomizationProfile`
     /// (FEAT-297).
@@ -204,6 +233,11 @@ final class AppEnvironment {
         let catalog = CatalogRepository(main)
         self.catalog = catalog
         self.logging = LoggingRepository(main: main, sensitive: sensitive)
+        // EPIC-33 (Phase 3D). Reads the same main-DB repositories every other engine here shares;
+        // needs no sensitive-DB access beyond `logging` (medications only — never symptoms).
+        self.ambientSnapshotWriter = AmbientSnapshotWriter(
+            derivation: derivation, measurements: measurements, logging: logging,
+            insights: insightsRepo, store: AmbientSnapshotStore(), clock: clock)
         self.exportJobs = ExportJobRepository(main)
         self.profiles = ProfileRepository(main)
         self.routes = RouteRepository(main)
@@ -797,6 +831,29 @@ final class AppEnvironment {
 
     /// Route a tapped notification to its evidence surface (`MainTabView` observes `pendingDeepLink`).
     func openDeepLink(_ link: NotificationDeepLink) { pendingDeepLink = link }
+
+    /// FIX-4 (Phase 3D audit, EPIC-33's own definition-of-done): entry point for the
+    /// `badan://deeplink/<token>` URL the four EPIC-33 widgets open
+    /// (`WidgetDeepLinkToken.url` in `apps/ios/BadanWidgets/BadanWidgetsBundle.swift`), wired from
+    /// `BADANApp.swift`'s `.onOpenURL`. Parses `<token>` out of the URL and resolves it through the
+    /// EXACT SAME entry point a tapped notification already uses (`openDeepLink(_:)` above) —
+    /// deliberately not a second, parallel routing mechanism. `WidgetDeepLinkToken`'s three tokens
+    /// ("readiness", "sleep", "meds") are already exactly `NotificationDeepLink`'s raw values, so
+    /// no new case or token remap was needed here — see `WidgetDeepLinkTests.swift`, which checks
+    /// both sides against each other.
+    ///
+    /// A URL with the wrong scheme/host, or a token this build's `NotificationDeepLink` doesn't
+    /// recognize (e.g. an OLDER widget extension still installed after an app downgrade), is
+    /// silently ignored: opening BADAN at all is still a success, there is simply nowhere further
+    /// to route — the same honest-no-op posture `AmbientSnapshotStore`'s N-1 schema tolerance
+    /// takes on a shape it doesn't fully recognize, rather than a crash or an error surfaced to
+    /// the user for a tap they didn't make wrong.
+    func handleDeepLinkURL(_ url: URL) {
+        guard url.scheme == "badan", url.host == "deeplink" else { return }
+        let token = url.lastPathComponent
+        guard let link = NotificationDeepLink(rawValue: token) else { return }
+        openDeepLink(link)
+    }
 
     /// The default local fire hour for a time-based class. Constants (not magic literals at the
     /// call site) so the schedule is legible and one place changes it.
