@@ -113,17 +113,58 @@ public struct WorkoutSession: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
-public extension WorkoutSessionDetail {
-    /// Builds the v1.1 extended detail payload from a state machine's final snapshot plus the v1
-    /// totals a platform adapter already assembled. This is the pure seam a later slice's
-    /// finalize step calls once `machine.state == .persisted`: it composes the payload, but never
-    /// itself touches a repository or `sessions` — owning that write is finalize/export-writer
-    /// territory, out of scope here (same boundary `WorkoutCheckpointRepository.clear` respects
-    /// from the other side).
-    static func finalizing(from machine: WorkoutStateMachine, base: WorkoutDetail,
-                          qualitySummaryRef: String? = nil,
-                          childRefs: WorkoutChildTableRefs = WorkoutChildTableRefs()) -> WorkoutSessionDetail {
-        WorkoutSessionDetail(base: base, stateHistory: machine.stateHistory,
-                            qualitySummaryRef: qualitySummaryRef, childRefs: childRefs)
+// MARK: - Read-time assembly (EPIC-42 slice 2)
+//
+// Slice 1 could not yet answer whether `WorkoutSessionDetail`/`WorkoutChildTableRefs` would end up
+// a WRITE-time payload (composed once at finalize and persisted verbatim) or a READ-time view
+// (assembled on demand from already-persisted rows) — hence `finalizing(from:base:...)` above,
+// its best guess at the former. Slice 2's actual persistence design answered that question the
+// other way: a finalized live session extends `WorkoutDetail` directly (Measurements.swift) with
+// new optional fields and is written through the EXISTING `MeasurementRepository.upsertSession(_:)`
+// — there is no second, parallel `WorkoutSessionDetail`-shaped write path. That makes
+// `finalizing(from:...)` genuinely superseded (nothing calls it, and nothing should: it would be a
+// second way to build the same payload that could drift from the one `WorkoutSessionCoordinator.
+// finalize()` actually persists) — it has been REMOVED rather than left as dead code.
+//
+// `WorkoutSessionDetail`/`WorkoutChildTableRefs` themselves are not dead, though: they are exactly
+// the shape a READ path needs, so they are repurposed here as that — an aggregate assembled by
+// joining a `sessions` row against its `workout_quality` and `strength_sets` children AT READ TIME,
+// never stored as its own blob. `WorkoutSession.isLive`/`endAt` still describe a live-vs-finished
+// session the same way; only how `detail` gets built has changed.
+// Plain `extension` (not `public extension`) — `assemble` takes `[WorkoutQualityRow]`, a type this
+// slice deliberately keeps internal (see that struct's own doc), and a `public extension`'s
+// unannotated members are implicitly public in Swift, which would hit the same "public API can't
+// expose a less-visible type" wall `WorkoutSessionCoordinator.init`'s own doc explains. `internal`
+// is exactly as reachable to every file in this single-target app as `public` would be.
+extension WorkoutSession {
+    /// Assembles the workout OS's session aggregate by joining `session` (a `kind == .workout`
+    /// row) against `qualityRows`/`strengthSets` — both expected to be freshly queried by the
+    /// caller for `session.id` (e.g. `WorkoutCheckpointRepository.qualityRows(sessionId:)` and
+    /// `StrengthSetRepository.sets(sessionId:)`), never cached — so `childRefs` and
+    /// `qualitySummaryRef` always describe what is actually on disk right now rather than what was
+    /// true the instant the session finalized (I5: raw and derived stay separable and current).
+    ///
+    /// Returns nil when `session` isn't actually a workout row (`detail.workout == nil`) — there
+    /// is nothing to assemble. `stateHistory`/`degradedConditions` fall back to empty for a session
+    /// with no live-tracking pedigree (ingested from a platform store, or finalized before this
+    /// slice's extended `WorkoutDetail` fields existed) rather than failing — matching
+    /// `WorkoutDetail`'s own additive-optional contract.
+    static func assemble(session: Session, qualityRows: [WorkoutQualityRow],
+                        strengthSets: [StrengthSet]) -> WorkoutSession? {
+        guard let workout = session.detail.workout else { return nil }
+        let liveSets = StrengthSetLedger.liveSets(strengthSets)
+        let latestQuality = qualityRows.max(by: { $0.computedAt < $1.computedAt })
+        let childRefs = WorkoutChildTableRefs(
+            hasCheckpoint: false,   // a persisted `sessions` row is, by definition, no longer live
+            strengthSetCount: liveSets.count,
+            intervalCount: 0,       // no interval engine in this slice (see this file's top-level doc)
+            qualityRecordCount: qualityRows.count)
+        let detail = WorkoutSessionDetail(
+            base: workout,
+            stateHistory: workout.stateHistory ?? [],
+            qualitySummaryRef: workout.qualitySummaryRef ?? latestQuality?.id,
+            childRefs: childRefs)
+        return WorkoutSession(id: session.id, activityType: workout.activityType,
+                             startAt: session.startAt, endAt: session.endAt, detail: detail)
     }
 }

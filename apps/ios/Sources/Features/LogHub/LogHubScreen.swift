@@ -18,6 +18,9 @@ private enum LogHubStrings {
         en: "Couldn't load recent activity.",
         ar: "تعذّر تحميل النشاط الأخير."
     )
+    // EPIC-42 slice 2: the live-tracking entry point, distinct from the manual "Workout" log tile
+    // right beside it (that one stays a post-hoc entry; this one starts a tracked session now).
+    static let startWorkout = LocalizedString(en: "Start a workout", ar: "ابدأ تمريناً")
     // EPIC-29 added the journal to the sensitive-gated tiles, so this line names it too — a hint
     // that lists fewer families than the gate actually hides is a false statement about the toggle.
     static let sensitiveHiddenHint = LocalizedString(
@@ -350,6 +353,16 @@ struct LogHubScreen: View {
                     WorkoutLogView()
                 } label: {
                     LogTile(title: env.s(Loc.logWorkout), systemImage: "figure.run")
+                }
+                .buttonStyle(.plain)
+
+                // EPIC-42 slice 2: live, BADAN-tracked workouts — additive to (never a replacement
+                // for) the manual post-hoc logger above. "Workout" stays how you write down a
+                // session after the fact; this is how you track one as it happens.
+                NavigationLink {
+                    WorkoutHomeScreen()
+                } label: {
+                    LogTile(title: env.s(LogHubStrings.startWorkout), systemImage: "timer")
                 }
                 .buttonStyle(.plain)
 

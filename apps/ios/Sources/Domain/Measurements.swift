@@ -144,12 +144,39 @@ public struct WorkoutDetail: Codable, Hashable, Sendable {
     /// `startAt`/`endAt`.
     public var hrSeriesRef: String?
 
+    // MARK: - EPIC-42 slice 2 (live-tracked BADAN sessions) — additive, all-optional per this
+    // struct's own contract above. A workout ingested from a platform store never populates these
+    // (there is no BADAN `WorkoutStateMachine` behind it), and a session written before this slice
+    // decodes them as nil rather than failing, exactly like `SessionDetail.workout`'s own precedent.
+
+    /// Every lifecycle transition `WorkoutStateMachine` recorded for a BADAN-tracked LIVE session,
+    /// captured once at `WorkoutSessionCoordinator.finalize()` from the now-terminal machine's own
+    /// `stateHistory` — never updated afterward (a persisted session's story is fixed the instant
+    /// it finalizes). Powers a post-workout "auto-paused at 12:03, resumed at 12:05" readout.
+    public var stateHistory: [WorkoutStateTransition]?
+    /// Degraded conditions (low battery, sensor dropout…) that were active at any point during a
+    /// BADAN-tracked LIVE session. Nil for the same reason `stateHistory` is — no live-tracking
+    /// pedigree to report, not "nothing went wrong."
+    public var degradedConditions: Set<WorkoutDegradedCondition>?
+    /// `workout_quality.id` of this session's SESSION-LEVEL quality summary row (currently only
+    /// ever the `metricFamily == "strength"` row `WorkoutQuality.computeStrengthQuality` produces),
+    /// when one was computed at finalize. Nil is the honest default: a cardio-only session has no
+    /// strength sets to summarize, and a session finalized before this field existed never had one
+    /// under this name either way.
+    public var qualitySummaryRef: String?
+
     public init(schemaVersion: Int = WorkoutDetail.currentSchemaVersion, activityType: String,
                 totals: WorkoutTotals = WorkoutTotals(), sourceWorkoutUUID: String,
-                routeRef: String? = nil, hrSeriesRef: String? = nil) {
+                routeRef: String? = nil, hrSeriesRef: String? = nil,
+                stateHistory: [WorkoutStateTransition]? = nil,
+                degradedConditions: Set<WorkoutDegradedCondition>? = nil,
+                qualitySummaryRef: String? = nil) {
         self.schemaVersion = schemaVersion; self.activityType = activityType; self.totals = totals
         self.sourceWorkoutUUID = sourceWorkoutUUID; self.routeRef = routeRef
         self.hrSeriesRef = hrSeriesRef
+        self.stateHistory = stateHistory
+        self.degradedConditions = degradedConditions
+        self.qualitySummaryRef = qualitySummaryRef
     }
 }
 
