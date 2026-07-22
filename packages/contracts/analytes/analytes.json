@@ -1,0 +1,110 @@
+{
+  "version": "0.1.0",
+  "note": "Curated bilingual (en+ar) analyte ontology for the lab notebook (EPIC-41, Phase 3E MVP, plan §7A.4/§9.17). Spans all 20 named categories (cbc, iron, metabolic, liver, kidney, lipids, glucose, glycemic, thyroid, reproductive, vitamins, inflammation, urinalysis, micro_culture, allergy, drug_monitoring, genetic_meta, custom, user_defined, derived) with a REASONABLE REPRESENTATIVE SET per category — this is explicitly NOT exhaustive or clinically complete for an MVP; growing it is expected and does not require a schema change (an analyte missing from this file is still fully loggable via LabResult.customLabel, never blocked — §7A.4 reject: no closed analyte dictionary). `user_defined` intentionally ships ZERO rows here: that category exists for a future user-authored analyte definition created at runtime (out of this slice's scope, since it touches no Features/ surface), not for a static example row. `loincCode` is null wherever this file's authors were not confident of the exact code — a wrong LOINC code is worse than an absent one, so coverage here is intentionally partial; treat every null as 'not yet verified', not 'has none'. `conversionSafetyClass` is `safe` ONLY where `UnitNormalization.swift` carries an explicit, cited, published conversion formula for that exact id — every other analyte is `none`/`conditional`/`unsafe` and its value/unit are shown exactly as reported, with no auto-computed second unit. `canonicalUnit` is the unit a `safe`-class analyte's `canonicalValue` is expressed in (deliberately NOT required to already exist in Core/Units.swift's Units.table — see AnalyteDefinition's own doc comment in LabModels.swift for why); for `none`/`conditional`/`unsafe` analytes it is simply the most common as-reported unit, shown for reference only. `qualitative` (used as a canonicalUnit placeholder below) is a BADAN-internal, non-UCUM marker meaning 'this result is not a magnitude' — see units.json.",
+  "analytes": [
+    { "id": "wbc", "nameEn": "White blood cell count", "nameAr": "عدد كريات الدم البيضاء", "category": "cbc", "loincCode": "6690-2", "canonicalUnit": "x10^9/L", "conversionSafetyClass": "none" },
+    { "id": "rbc", "nameEn": "Red blood cell count", "nameAr": "عدد كريات الدم الحمراء", "category": "cbc", "loincCode": null, "canonicalUnit": "x10^12/L", "conversionSafetyClass": "none" },
+    { "id": "hemoglobin", "nameEn": "Hemoglobin", "nameAr": "الهيموغلوبين", "category": "cbc", "loincCode": "718-7", "canonicalUnit": "g/dL", "conversionSafetyClass": "none" },
+    { "id": "hematocrit", "nameEn": "Hematocrit", "nameAr": "الهيماتوكريت", "category": "cbc", "loincCode": "4544-3", "canonicalUnit": "%", "conversionSafetyClass": "none" },
+    { "id": "platelets", "nameEn": "Platelet count", "nameAr": "عدد الصفائح الدموية", "category": "cbc", "loincCode": "777-3", "canonicalUnit": "x10^9/L", "conversionSafetyClass": "none" },
+    { "id": "mcv", "nameEn": "Mean corpuscular volume", "nameAr": "متوسط حجم الكرية", "category": "cbc", "loincCode": null, "canonicalUnit": "fL", "conversionSafetyClass": "none" },
+    { "id": "mch", "nameEn": "Mean corpuscular hemoglobin", "nameAr": "متوسط هيموغلوبين الكرية", "category": "cbc", "loincCode": null, "canonicalUnit": "pg", "conversionSafetyClass": "none" },
+    { "id": "mchc", "nameEn": "Mean corpuscular hemoglobin concentration", "nameAr": "متوسط تركيز هيموغلوبين الكرية", "category": "cbc", "loincCode": null, "canonicalUnit": "g/dL", "conversionSafetyClass": "none" },
+    { "id": "rdw", "nameEn": "Red cell distribution width", "nameAr": "توزع حجم الكريات الحمراء", "category": "cbc", "loincCode": null, "canonicalUnit": "%", "conversionSafetyClass": "none" },
+    { "id": "neutrophils_pct", "nameEn": "Neutrophils (%)", "nameAr": "العدلات (نسبة مئوية)", "category": "cbc", "loincCode": null, "canonicalUnit": "%", "conversionSafetyClass": "unsafe" },
+    { "id": "neutrophils_abs", "nameEn": "Neutrophils (absolute)", "nameAr": "العدلات (العدد المطلق)", "category": "cbc", "loincCode": null, "canonicalUnit": "x10^9/L", "conversionSafetyClass": "unsafe" },
+    { "id": "lymphocytes_pct", "nameEn": "Lymphocytes (%)", "nameAr": "الخلايا اللمفاوية (نسبة مئوية)", "category": "cbc", "loincCode": null, "canonicalUnit": "%", "conversionSafetyClass": "unsafe" },
+    { "id": "lymphocytes_abs", "nameEn": "Lymphocytes (absolute)", "nameAr": "الخلايا اللمفاوية (العدد المطلق)", "category": "cbc", "loincCode": null, "canonicalUnit": "x10^9/L", "conversionSafetyClass": "unsafe" },
+
+    { "id": "serum_iron", "nameEn": "Serum iron", "nameAr": "الحديد في الدم", "category": "iron", "loincCode": null, "canonicalUnit": "ug/dL", "conversionSafetyClass": "none" },
+    { "id": "tibc", "nameEn": "Total iron-binding capacity", "nameAr": "السعة الكلية لارتباط الحديد", "category": "iron", "loincCode": null, "canonicalUnit": "ug/dL", "conversionSafetyClass": "none" },
+    { "id": "transferrin_saturation", "nameEn": "Transferrin saturation", "nameAr": "تشبع الترانسفيرين", "category": "iron", "loincCode": null, "canonicalUnit": "%", "conversionSafetyClass": "none" },
+    { "id": "ferritin", "nameEn": "Ferritin", "nameAr": "الفيريتين", "category": "iron", "loincCode": "2276-4", "canonicalUnit": "ng/mL", "conversionSafetyClass": "none" },
+
+    { "id": "sodium", "nameEn": "Sodium", "nameAr": "الصوديوم", "category": "metabolic", "loincCode": "2951-2", "canonicalUnit": "mmol/L", "conversionSafetyClass": "none" },
+    { "id": "potassium", "nameEn": "Potassium", "nameAr": "البوتاسيوم", "category": "metabolic", "loincCode": "2823-3", "canonicalUnit": "mmol/L", "conversionSafetyClass": "none" },
+    { "id": "chloride", "nameEn": "Chloride", "nameAr": "الكلوريد", "category": "metabolic", "loincCode": "2075-0", "canonicalUnit": "mmol/L", "conversionSafetyClass": "none" },
+    { "id": "co2_bicarbonate", "nameEn": "Carbon dioxide (bicarbonate)", "nameAr": "ثاني أكسيد الكربون (البيكربونات)", "category": "metabolic", "loincCode": null, "canonicalUnit": "mmol/L", "conversionSafetyClass": "none" },
+    { "id": "bun", "nameEn": "Blood urea nitrogen", "nameAr": "نيتروجين يوريا الدم", "category": "metabolic", "loincCode": "3094-0", "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "creatinine", "nameEn": "Creatinine", "nameAr": "الكرياتينين", "category": "metabolic", "loincCode": "2160-0", "canonicalUnit": "umol/L", "conversionSafetyClass": "safe" },
+    { "id": "calcium", "nameEn": "Calcium", "nameAr": "الكالسيوم", "category": "metabolic", "loincCode": null, "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "magnesium", "nameEn": "Magnesium", "nameAr": "المغنيسيوم", "category": "metabolic", "loincCode": null, "canonicalUnit": "mg/dL", "conversionSafetyClass": "none" },
+    { "id": "phosphate", "nameEn": "Phosphate", "nameAr": "الفوسفات", "category": "metabolic", "loincCode": null, "canonicalUnit": "mg/dL", "conversionSafetyClass": "none" },
+
+    { "id": "alt", "nameEn": "ALT (alanine aminotransferase)", "nameAr": "إنزيم ALT (ناقلة أمين الألانين)", "category": "liver", "loincCode": "1742-6", "canonicalUnit": "U/L", "conversionSafetyClass": "none" },
+    { "id": "ast", "nameEn": "AST (aspartate aminotransferase)", "nameAr": "إنزيم AST (ناقلة أمين الأسبارتات)", "category": "liver", "loincCode": "1920-8", "canonicalUnit": "U/L", "conversionSafetyClass": "none" },
+    { "id": "alp", "nameEn": "Alkaline phosphatase", "nameAr": "الفوسفاتاز القلوي", "category": "liver", "loincCode": null, "canonicalUnit": "U/L", "conversionSafetyClass": "none" },
+    { "id": "ggt", "nameEn": "GGT (gamma-glutamyl transferase)", "nameAr": "إنزيم GGT (ناقلة غاما غلوتاميل)", "category": "liver", "loincCode": null, "canonicalUnit": "U/L", "conversionSafetyClass": "none" },
+    { "id": "total_bilirubin", "nameEn": "Total bilirubin", "nameAr": "البيليروبين الكلي", "category": "liver", "loincCode": "1975-2", "canonicalUnit": "umol/L", "conversionSafetyClass": "safe" },
+    { "id": "direct_bilirubin", "nameEn": "Direct bilirubin", "nameAr": "البيليروبين المباشر", "category": "liver", "loincCode": null, "canonicalUnit": "umol/L", "conversionSafetyClass": "safe" },
+    { "id": "albumin", "nameEn": "Albumin", "nameAr": "الألبومين", "category": "liver", "loincCode": "1751-7", "canonicalUnit": "g/dL", "conversionSafetyClass": "none" },
+    { "id": "total_protein", "nameEn": "Total protein", "nameAr": "البروتين الكلي", "category": "liver", "loincCode": null, "canonicalUnit": "g/dL", "conversionSafetyClass": "none" },
+
+    { "id": "uric_acid", "nameEn": "Uric acid", "nameAr": "حمض اليوريك", "category": "kidney", "loincCode": null, "canonicalUnit": "umol/L", "conversionSafetyClass": "safe" },
+    { "id": "cystatin_c", "nameEn": "Cystatin C", "nameAr": "السيستاتين سي", "category": "kidney", "loincCode": null, "canonicalUnit": "mg/L", "conversionSafetyClass": "none" },
+
+    { "id": "total_cholesterol", "nameEn": "Total cholesterol", "nameAr": "الكوليسترول الكلي", "category": "lipids", "loincCode": "2093-3", "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "ldl", "nameEn": "LDL cholesterol", "nameAr": "الكوليسترول منخفض الكثافة (LDL)", "category": "lipids", "loincCode": "13457-7", "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "hdl", "nameEn": "HDL cholesterol", "nameAr": "الكوليسترول عالي الكثافة (HDL)", "category": "lipids", "loincCode": "2085-9", "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "non_hdl_cholesterol", "nameEn": "Non-HDL cholesterol", "nameAr": "الكوليسترول غير عالي الكثافة", "category": "lipids", "loincCode": null, "canonicalUnit": "mg/dL", "conversionSafetyClass": "none" },
+    { "id": "triglycerides", "nameEn": "Triglycerides", "nameAr": "الدهون الثلاثية", "category": "lipids", "loincCode": "2571-8", "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "lipoprotein_a", "nameEn": "Lipoprotein(a)", "nameAr": "البروتين الدهني (أ)", "category": "lipids", "loincCode": null, "canonicalUnit": "mg/dL", "conversionSafetyClass": "none" },
+
+    { "id": "glucose_fasting", "nameEn": "Fasting glucose", "nameAr": "سكر الدم الصائم", "category": "glucose", "loincCode": "1558-6", "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "glucose_random", "nameEn": "Random glucose", "nameAr": "سكر الدم العشوائي", "category": "glucose", "loincCode": null, "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "ogtt_2h_glucose", "nameEn": "Oral glucose tolerance test, 2-hour", "nameAr": "اختبار تحمل الجلوكوز الفموي، بعد ساعتين", "category": "glucose", "loincCode": null, "canonicalUnit": "mmol/L", "conversionSafetyClass": "safe" },
+    { "id": "fasting_insulin", "nameEn": "Fasting insulin", "nameAr": "الأنسولين الصائم", "category": "glucose", "loincCode": null, "canonicalUnit": "uIU/mL", "conversionSafetyClass": "none" },
+
+    { "id": "hba1c", "nameEn": "Hemoglobin A1c", "nameAr": "الهيموغلوبين السكري (A1c)", "category": "glycemic", "loincCode": "4548-4", "canonicalUnit": "%", "conversionSafetyClass": "safe" },
+    { "id": "fructosamine", "nameEn": "Fructosamine", "nameAr": "الفركتوزامين", "category": "glycemic", "loincCode": null, "canonicalUnit": "umol/L", "conversionSafetyClass": "none" },
+
+    { "id": "tsh", "nameEn": "Thyroid-stimulating hormone", "nameAr": "الهرمون المنبه للغدة الدرقية", "category": "thyroid", "loincCode": "3016-3", "canonicalUnit": "mIU/L", "conversionSafetyClass": "none" },
+    { "id": "free_t4", "nameEn": "Free T4", "nameAr": "الثيروكسين الحر (T4)", "category": "thyroid", "loincCode": null, "canonicalUnit": "ng/dL", "conversionSafetyClass": "none" },
+    { "id": "free_t3", "nameEn": "Free T3", "nameAr": "ثلاثي يودوثيرونين الحر (T3)", "category": "thyroid", "loincCode": null, "canonicalUnit": "pg/mL", "conversionSafetyClass": "none" },
+    { "id": "total_t4", "nameEn": "Total T4", "nameAr": "الثيروكسين الكلي (T4)", "category": "thyroid", "loincCode": null, "canonicalUnit": "ug/dL", "conversionSafetyClass": "none" },
+    { "id": "anti_tpo", "nameEn": "Thyroid peroxidase antibodies", "nameAr": "الأجسام المضادة لبيروكسيداز الغدة الدرقية", "category": "thyroid", "loincCode": null, "canonicalUnit": "IU/mL", "conversionSafetyClass": "none" },
+
+    { "id": "fsh", "nameEn": "Follicle-stimulating hormone", "nameAr": "الهرمون المنبه للجريب", "category": "reproductive", "loincCode": "15067-2", "canonicalUnit": "mIU/mL", "conversionSafetyClass": "none" },
+    { "id": "lh", "nameEn": "Luteinizing hormone", "nameAr": "الهرمون الملوتن", "category": "reproductive", "loincCode": null, "canonicalUnit": "mIU/mL", "conversionSafetyClass": "none" },
+    { "id": "estradiol", "nameEn": "Estradiol", "nameAr": "الإستراديول", "category": "reproductive", "loincCode": null, "canonicalUnit": "pg/mL", "conversionSafetyClass": "none" },
+    { "id": "progesterone", "nameEn": "Progesterone", "nameAr": "البروجسترون", "category": "reproductive", "loincCode": null, "canonicalUnit": "ng/mL", "conversionSafetyClass": "none" },
+    { "id": "testosterone_total", "nameEn": "Total testosterone", "nameAr": "التستوستيرون الكلي", "category": "reproductive", "loincCode": null, "canonicalUnit": "ng/dL", "conversionSafetyClass": "none" },
+    { "id": "beta_hcg", "nameEn": "Beta-hCG (quantitative)", "nameAr": "الهرمون الموجه للغدد التناسلية المشيمية (كمي)", "category": "reproductive", "loincCode": null, "canonicalUnit": "mIU/mL", "conversionSafetyClass": "none" },
+
+    { "id": "vitamin_d_25oh", "nameEn": "Vitamin D (25-hydroxy)", "nameAr": "فيتامين د (25-هيدروكسي)", "category": "vitamins", "loincCode": "1989-3", "canonicalUnit": "ng/mL", "conversionSafetyClass": "conditional" },
+    { "id": "vitamin_b12", "nameEn": "Vitamin B12", "nameAr": "فيتامين ب12", "category": "vitamins", "loincCode": null, "canonicalUnit": "pg/mL", "conversionSafetyClass": "none" },
+    { "id": "folate", "nameEn": "Folate", "nameAr": "الفولات", "category": "vitamins", "loincCode": null, "canonicalUnit": "ng/mL", "conversionSafetyClass": "none" },
+
+    { "id": "crp", "nameEn": "C-reactive protein", "nameAr": "البروتين التفاعلي سي", "category": "inflammation", "loincCode": "1988-5", "canonicalUnit": "mg/L", "conversionSafetyClass": "none" },
+    { "id": "esr", "nameEn": "Erythrocyte sedimentation rate", "nameAr": "معدل ترسيب كريات الدم الحمراء", "category": "inflammation", "loincCode": "4537-7", "canonicalUnit": "mm/hr", "conversionSafetyClass": "none" },
+    { "id": "procalcitonin", "nameEn": "Procalcitonin", "nameAr": "البروكالسيتونين", "category": "inflammation", "loincCode": null, "canonicalUnit": "ng/mL", "conversionSafetyClass": "none" },
+
+    { "id": "urine_protein", "nameEn": "Urine protein (quantitative)", "nameAr": "بروتين البول (كمي)", "category": "urinalysis", "loincCode": null, "canonicalUnit": "mg/dL", "conversionSafetyClass": "none" },
+    { "id": "urine_glucose_dipstick", "nameEn": "Urine glucose (dipstick)", "nameAr": "سكر البول (شريط الفحص)", "category": "urinalysis", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+    { "id": "urine_blood_dipstick", "nameEn": "Urine blood (dipstick)", "nameAr": "دم في البول (شريط الفحص)", "category": "urinalysis", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+    { "id": "urine_leukocyte_esterase", "nameEn": "Urine leukocyte esterase", "nameAr": "إستريز الكريات البيضاء في البول", "category": "urinalysis", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+
+    { "id": "urine_culture", "nameEn": "Urine culture", "nameAr": "زراعة البول", "category": "micro_culture", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+    { "id": "blood_culture", "nameEn": "Blood culture", "nameAr": "زراعة الدم", "category": "micro_culture", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+    { "id": "stool_culture", "nameEn": "Stool culture", "nameAr": "زراعة البراز", "category": "micro_culture", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+    { "id": "throat_culture", "nameEn": "Throat culture", "nameAr": "زراعة الحلق", "category": "micro_culture", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+
+    { "id": "total_ige", "nameEn": "Total IgE", "nameAr": "الغلوبولين المناعي هـ الكلي", "category": "allergy", "loincCode": null, "canonicalUnit": "IU/mL", "conversionSafetyClass": "none" },
+    { "id": "peanut_ige", "nameEn": "Peanut-specific IgE", "nameAr": "الغلوبولين المناعي هـ النوعي للفول السوداني", "category": "allergy", "loincCode": null, "canonicalUnit": "kU/L", "conversionSafetyClass": "none" },
+    { "id": "shellfish_ige", "nameEn": "Shellfish-specific IgE", "nameAr": "الغلوبولين المناعي هـ النوعي للمحار", "category": "allergy", "loincCode": null, "canonicalUnit": "kU/L", "conversionSafetyClass": "none" },
+
+    { "id": "vancomycin_trough", "nameEn": "Vancomycin trough level", "nameAr": "مستوى الفانكومايسين (القاع)", "category": "drug_monitoring", "loincCode": null, "canonicalUnit": "ug/mL", "conversionSafetyClass": "none" },
+    { "id": "digoxin_level", "nameEn": "Digoxin level", "nameAr": "مستوى الديجوكسين", "category": "drug_monitoring", "loincCode": null, "canonicalUnit": "ng/mL", "conversionSafetyClass": "none" },
+    { "id": "lithium_level", "nameEn": "Lithium level", "nameAr": "مستوى الليثيوم", "category": "drug_monitoring", "loincCode": null, "canonicalUnit": "mmol/L", "conversionSafetyClass": "none" },
+    { "id": "phenytoin_level", "nameEn": "Phenytoin level", "nameAr": "مستوى الفينيتوين", "category": "drug_monitoring", "loincCode": null, "canonicalUnit": "ug/mL", "conversionSafetyClass": "none" },
+
+    { "id": "brca1_result", "nameEn": "BRCA1 genetic test result", "nameAr": "نتيجة اختبار جين BRCA1", "category": "genetic_meta", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+    { "id": "factor_v_leiden", "nameEn": "Factor V Leiden result", "nameAr": "نتيجة عامل الخثار الوراثي V ليدن", "category": "genetic_meta", "loincCode": null, "canonicalUnit": "qualitative", "conversionSafetyClass": "none" },
+
+    { "id": "zinc_level", "nameEn": "Zinc", "nameAr": "الزنك", "category": "custom", "loincCode": null, "canonicalUnit": "ug/dL", "conversionSafetyClass": "none" },
+    { "id": "copper_level", "nameEn": "Copper", "nameAr": "النحاس", "category": "custom", "loincCode": null, "canonicalUnit": "ug/dL", "conversionSafetyClass": "none" },
+
+    { "id": "egfr", "nameEn": "Estimated glomerular filtration rate (eGFR)", "nameAr": "معدل الترشيح الكبيبي المقدر", "category": "derived", "loincCode": null, "canonicalUnit": "mL/min/1.73m2", "conversionSafetyClass": "none" },
+    { "id": "ldl_calculated", "nameEn": "LDL cholesterol (calculated)", "nameAr": "الكوليسترول منخفض الكثافة (محسوب)", "category": "derived", "loincCode": null, "canonicalUnit": "mg/dL", "conversionSafetyClass": "none" }
+  ]
+}

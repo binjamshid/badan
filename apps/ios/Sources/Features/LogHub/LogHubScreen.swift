@@ -374,6 +374,25 @@ struct LogHubScreen: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                // EPIC-41 (Phase 3E) — the lab notebook's entry point. "Add a result" (manual
+                // entry) and "Scan/import a report" are both logging actions, so the Log tab is
+                // where this slice wires them in — matching how Workout's own logging surfaces
+                // live here rather than on a dedicated sixth tab. Reuses `MetricFamily.lab`'s
+                // own bilingual name/icon (Ontology's existing registry vocabulary for this
+                // family) rather than inventing separate copy, so this tile and any future
+                // Body-tab lab pillar can never say two different things for the same family.
+                // Always visible (not gated behind `sensitiveModulesEnabled`, unlike the
+                // meds/symptoms/journal tiles above): those tiles hide a whole optional-tracking
+                // module the user can turn off; a lab notebook is core tracked health data in the
+                // same sense weight/workouts are, and I7's sensitive-plus namespace is a STORAGE
+                // guarantee (see `LabNotebookHomeScreen`'s own doc), not a visibility gate.
+                NavigationLink {
+                    LabNotebookHomeScreen()
+                } label: {
+                    LogTile(title: env.s(MetricFamily.lab.displayName), systemImage: MetricFamily.lab.symbolName)
+                }
+                .buttonStyle(.plain)
             }
             // Explains the (intentional) disappearance of two tiles instead of leaving it silent.
             if !env.profile.sensitiveModulesEnabled {

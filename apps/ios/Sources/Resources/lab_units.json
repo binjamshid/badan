@@ -1,0 +1,31 @@
+{
+  "version": "0.1.0",
+  "note": "The unit vocabulary analytes.json's canonicalUnit/rawUnit values draw from — a reference/display dictionary (bilingual names + best-effort UCUM code), NOT a conversion-factor table. This is a deliberate difference from Core/Units.swift's `Units.table` (symbol -> {base, factor, offset}): a lab conversion like mg/dL<->mmol/L is MOLAR-MASS-derived and differs per analyte (glucose's factor is not creatinine's), so a single global factor per unit pair — which is exactly what Units.table holds, correctly, for physical dimensions like mass/length/time — would be WRONG here. The actual per-analyte conversions this app performs live in apps/ios/Sources/Domain/Labs/UnitNormalization.swift's own small, cited table, not in this file and not in Units.swift. This file exists purely so a unit symbol has a bilingual label and a documented meaning; do not add factor/offset fields here — that would be inventing a second, incompatible unit-conversion system alongside Units.swift, which this file must not do. `ucum` is null where this file's authors were not confident of the exact UCUM string (mirrors analytes.json's own loincCode discipline: absent rather than guessed) — `qualitative` is BADAN-internal and has no UCUM equivalent at all, since it marks a result that isn't a magnitude (a dipstick read, a culture growth description, a genetic test call).",
+  "units": [
+    { "symbol": "g/dL", "ucum": "g/dL", "kind": "mass-concentration", "nameEn": "grams per deciliter", "nameAr": "غرام لكل ديسيلتر" },
+    { "symbol": "mg/dL", "ucum": "mg/dL", "kind": "mass-concentration", "nameEn": "milligrams per deciliter", "nameAr": "ملغم لكل ديسيلتر" },
+    { "symbol": "mg/L", "ucum": "mg/L", "kind": "mass-concentration", "nameEn": "milligrams per liter", "nameAr": "ملغم لكل لتر" },
+    { "symbol": "ug/dL", "ucum": "ug/dL", "kind": "mass-concentration", "nameEn": "micrograms per deciliter", "nameAr": "ميكروغرام لكل ديسيلتر" },
+    { "symbol": "ug/mL", "ucum": "ug/mL", "kind": "mass-concentration", "nameEn": "micrograms per milliliter", "nameAr": "ميكروغرام لكل ملليلتر" },
+    { "symbol": "ng/mL", "ucum": "ng/mL", "kind": "mass-concentration", "nameEn": "nanograms per milliliter", "nameAr": "نانوغرام لكل ملليلتر" },
+    { "symbol": "ng/dL", "ucum": "ng/dL", "kind": "mass-concentration", "nameEn": "nanograms per deciliter", "nameAr": "نانوغرام لكل ديسيلتر" },
+    { "symbol": "pg/mL", "ucum": "pg/mL", "kind": "mass-concentration", "nameEn": "picograms per milliliter", "nameAr": "بيكوغرام لكل ملليلتر" },
+    { "symbol": "pg", "ucum": "pg", "kind": "mass", "nameEn": "picograms", "nameAr": "بيكوغرام" },
+    { "symbol": "fL", "ucum": "fL", "kind": "volume", "nameEn": "femtoliters", "nameAr": "فمتولتر" },
+    { "symbol": "mmol/L", "ucum": "mmol/L", "kind": "molar-concentration", "nameEn": "millimoles per liter", "nameAr": "ميلي مول لكل لتر" },
+    { "symbol": "umol/L", "ucum": "umol/L", "kind": "molar-concentration", "nameEn": "micromoles per liter", "nameAr": "ميكرومول لكل لتر" },
+    { "symbol": "mmol/mol", "ucum": "mmol/mol", "kind": "ratio", "nameEn": "millimoles per mole", "nameAr": "ميلي مول لكل مول" },
+    { "symbol": "%", "ucum": "%", "kind": "ratio", "nameEn": "percent", "nameAr": "بالمئة" },
+    { "symbol": "x10^9/L", "ucum": "10*9/L", "kind": "count-concentration", "nameEn": "×10⁹ per liter", "nameAr": "×١٠⁹ لكل لتر" },
+    { "symbol": "x10^12/L", "ucum": "10*12/L", "kind": "count-concentration", "nameEn": "×10¹² per liter", "nameAr": "×١٠¹² لكل لتر" },
+    { "symbol": "U/L", "ucum": "U/L", "kind": "enzymatic-activity-concentration", "nameEn": "units per liter", "nameAr": "وحدة لكل لتر" },
+    { "symbol": "IU/mL", "ucum": "[IU]/mL", "kind": "activity-concentration", "nameEn": "international units per milliliter", "nameAr": "وحدة دولية لكل ملليلتر" },
+    { "symbol": "mIU/mL", "ucum": "m[IU]/mL", "kind": "activity-concentration", "nameEn": "milli-international units per milliliter", "nameAr": "ملي وحدة دولية لكل ملليلتر" },
+    { "symbol": "mIU/L", "ucum": "m[IU]/L", "kind": "activity-concentration", "nameEn": "milli-international units per liter", "nameAr": "ملي وحدة دولية لكل لتر" },
+    { "symbol": "uIU/mL", "ucum": "u[IU]/mL", "kind": "activity-concentration", "nameEn": "micro-international units per milliliter", "nameAr": "ميكرو وحدة دولية لكل ملليلتر" },
+    { "symbol": "kU/L", "ucum": "k[IU]/L", "kind": "activity-concentration", "nameEn": "kilo-units per liter", "nameAr": "كيلو وحدة لكل لتر" },
+    { "symbol": "mm/hr", "ucum": "mm/h", "kind": "rate", "nameEn": "millimeters per hour", "nameAr": "ملم لكل ساعة" },
+    { "symbol": "mL/min/1.73m2", "ucum": null, "kind": "flow-rate-normalized", "nameEn": "milliliters per minute per 1.73m² body surface area", "nameAr": "ملليلتر بالدقيقة لكل 1.73 م² من مساحة سطح الجسم" },
+    { "symbol": "qualitative", "ucum": null, "kind": "non-physical", "nameEn": "qualitative (no physical unit)", "nameAr": "نوعي (بدون وحدة فيزيائية)" }
+  ]
+}

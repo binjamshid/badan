@@ -42,4 +42,9 @@ sync_file "$ROOT/packages/contracts/dictionaries/activities.json" "$DEST/activit
 # EPIC-28/42: the curated bilingual strength-movement dictionary the set logger's movement
 # picker draws from (dictionary-vs-custom split, same as beverages.json/behaviors.json).
 sync_file "$ROOT/packages/contracts/dictionaries/movements.json" "$DEST/movements.json"
+# EPIC-41 (Phase 3E, lab notebook MVP): the curated bilingual analyte ontology + its unit
+# vocabulary. Same dictionary-vs-custom split as beverages.json/behaviors.json/movements.json — an
+# analyte not listed here is still fully loggable via LabResult.customLabel, never blocked.
+sync_file "$ROOT/packages/contracts/analytes/analytes.json" "$DEST/analytes.json"
+sync_file "$ROOT/packages/contracts/analytes/units.json"    "$DEST/lab_units.json"
 echo "Synced canonical data -> $DEST"

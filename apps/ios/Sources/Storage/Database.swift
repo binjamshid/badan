@@ -9,6 +9,26 @@ final class Database {
     let sensitive: SQLiteConnection
     let directory: URL
 
+    /// Extra cleanup `purgeSensitiveNamespace()` runs alongside its own file deletion, for
+    /// sensitive-plus data that lives OUTSIDE the sensitive SQLite file itself — today, exactly
+    /// one registrant: `DocumentVault`'s on-disk encrypted lab-document store (LAB-02). `Database`
+    /// deliberately knows nothing about what a hook does or where its files live; the vault (or
+    /// any future non-SQL sensitive store) registers its own wipe here rather than `Database`
+    /// reaching into that type's internals, which would make every new sensitive-plus storage
+    /// mechanism a `Database.swift` edit instead of a self-contained addition at its own call site.
+    private var sensitiveWipeHooks: [() throws -> Void] = []
+
+    /// Registers a callback to run every time `purgeSensitiveNamespace()` runs — "turn off
+    /// sensitive records" must delete every non-SQL sensitive artifact a hook owns (e.g. vaulted
+    /// document files), not just the sensitive DB's own rows, or the purge's central promise
+    /// ("gone from this device") would be false for exactly the data a hook was registered to
+    /// protect. Hooks run every purge for the lifetime of this `Database` instance; there is no
+    /// unregister, matching how `sensitive`/`main` themselves are never torn down independently of
+    /// the whole object.
+    func registerSensitiveWipeHook(_ hook: @escaping () throws -> Void) {
+        sensitiveWipeHooks.append(hook)
+    }
+
     /// Read-back result of `applyHardening` for this database's directory, or `nil` when
     /// `hardenDirectory` was never requested (`inMemoryFallback()`). `docs/PRIVACY_POLICY.md` §3
     /// states unconditionally that both databases are "Excluded from iCloud and device backups"
@@ -193,6 +213,18 @@ final class Database {
             let url = directory.appendingPathComponent(Self.sensitiveFilename + suffix)
             try? FileManager.default.removeItem(at: url)
         }
+        // Run every registered non-SQL sensitive-data wipe (today: `DocumentVault`'s vaulted
+        // document files) alongside the DB file removal above. Same discipline as `removeError`
+        // just above it: a failed hook must not be silently swallowed by `try?` — "turn off
+        // sensitive records" is a false claim the moment ANY sensitive artifact survives it,
+        // whether that artifact is a database row or a file a hook owns. All hooks still run even
+        // after one throws (one broken hook must not stop another's cleanup from happening), and
+        // the FIRST hook failure is what ultimately surfaces to the caller (below), consistent
+        // with `removeError` capturing the first/primary failure rather than the last.
+        var wipeHookError: Error?
+        for hook in sensitiveWipeHooks {
+            do { try hook() } catch { if wipeHookError == nil { wipeHookError = error } }
+        }
         // Reopen (and re-migrate) regardless of whether the delete above succeeded, so the
         // connection — and every repository already holding a reference to it — stays usable
         // either way; a failed purge must not also leave sensitive logging broken for the rest
@@ -204,6 +236,7 @@ final class Database {
         try sensitive.execute("PRAGMA auto_vacuum = INCREMENTAL;")
         try Self.migrate(sensitive, Schema.sensitiveMigrations)
         if let removeError { throw removeError }
+        if let wipeHookError { throw wipeHookError }
     }
 
     /// Developer reset: wipe both databases and recreate empty schemas. Used by the
