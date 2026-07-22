@@ -1043,6 +1043,171 @@ enum Schema {
             """,
             "CREATE INDEX idx_derived_latest ON derived_values(metric_id, period_key, computed_at DESC);",
             "CREATE TABLE input_manifests (id TEXT PRIMARY KEY, inputs TEXT NOT NULL);",
+        ]),
+        // Version 5 (plan §9.17 / EPIC-41, Phase 3E MVP): the lab-notebook entity set — manual entry
+        // + on-device-OCR-only ingestion, four-concept reference ranges, append-only trends. Purely
+        // additive (CREATEs only), so an upgrading v4 sensitive install reaches v5 without touching
+        // an existing row.
+        //
+        // SENSITIVE, not main (I7): a lab result's identifier space can itself disclose (a result
+        // naming e.g. an HIV or fertility-treatment marker says something about the user before any
+        // VALUE is read) — the exact same reasoning `CorrelationRepository`'s header gives for why
+        // its `derived_values` copy lives here rather than in `badan.db`; placement carries the
+        // guarantee for these seven tables, not a per-row consent flag alone. `lab_reports`/
+        // `lab_results` additionally carry an explicit `sensitivity_tier` column
+        // (standard/high/veryHigh) for finer-grained UI/export treatment ON TOP of the namespace
+        // boundary — never as a SUBSTITUTE for it.
+        //
+        // SCOPE, stated plainly: this migration creates exactly the tables `LabModels.swift` needs
+        // for its non-vault, non-OCR-pipeline entities. `SourceDocument`/`OCRExtraction` (the
+        // encrypted document vault + OCR pipeline itself) are a PARALLEL lane's tables —
+        // `lab_reports.document_ref` below is an OPAQUE reference string into whatever table that
+        // lane creates, never a foreign key this migration defines.
+        //
+        // FOUR-CONCEPT REFERENCE-RANGE LAW (hard schema requirement, plan §7A.4): `reference_ranges`
+        // below carries ONLY the source-printed interval + the source-printed flag — concepts 1 and
+        // 2. Personal baseline (concept 3) lives in `derived_trends`; a user-defined threshold
+        // (concept 4) is not persisted at all this slice (see `ReferenceRangeEngine.UserLabThreshold`
+        // for why). No table here has a column that could hold more than one of the four concepts,
+        // which makes conflating them a compile-time impossibility rather than a discipline someone
+        // has to remember to uphold.
+        Migration(version: 5, statements: [
+            // `LabReport`. `ingestion_path` is a bare column (not embedded `provenanceCols`) because
+            // a report's provenance story this slice ever produces is exactly one of two values —
+            // manual or fileImport (an on-device-OCR-parsed document) — and the measurement-bearing
+            // half of provenance (WHEN was an analyte actually measured, in what timezone, by what
+            // algorithm/OCR version) belongs on each `LabResult` below, not duplicated here across
+            // every result in the report (the same reason migration 9's `strength_sets` does not
+            // repeat its parent session's provenance). `collection_at`/`tz_id` are NOT NULL — even
+            // the smallest quick single-marker manual entry needs a date its one result is filed
+            // under. `reported_at` is nullable and never invented when absent.
+            """
+            CREATE TABLE lab_reports (
+              id TEXT PRIMARY KEY, source_lab_name TEXT, collection_at INTEGER NOT NULL,
+              reported_at INTEGER, tz_id TEXT NOT NULL, document_ref TEXT, review_state TEXT NOT NULL,
+              ingestion_path TEXT NOT NULL, sensitivity_tier TEXT NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_lab_reports_collection ON lab_reports(collection_at DESC);",
+            // `LabPanel`. A named group within one report ("CBC", "Lipid Panel") — `name` is kept as
+            // printed (notebook law: structure where safe, source wording where not); `sort_order`
+            // preserves the order panels appeared on the source document/entry.
+            """
+            CREATE TABLE lab_panels (
+              id TEXT PRIMARY KEY, report_id TEXT NOT NULL, name TEXT NOT NULL,
+              sort_order INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_lab_panels_report ON lab_panels(report_id, sort_order);",
+            // `LabResult`. The one table in this migration carrying full embedded `provenanceCols`
+            // (I1): unlike `strength_sets`/`route_points` (children whose parent's ONE provenance
+            // covers every child row), different results within the SAME report can legitimately
+            // have different `measured_at` instants (a glucose-tolerance panel draws at 0/60/120
+            // minutes) and, after a LAB-16 amendment or a manual correction, a different
+            // `ingestion_path`/`algorithm_version_id` than their siblings (an OCR-parsed value
+            // corrected by hand is a DIFFERENT provenance story for that one result alone).
+            // `analyte_id`/`custom_label` mirror the `journal_entries`/`strength_sets` "dictionary
+            // key OR free text" split — exactly one is set — so an unrecognized marker is never
+            // blocked (§7A.4 reject: no closed analyte dictionary). `numeric_value`/`raw_unit` are
+            // the as-reported parse; `canonical_value`/`canonical_unit` are the ADDITIONAL
+            // safe-class-only conversion (`UnitNormalization`) — two independent column pairs, so a
+            // non-safe-class result can carry the first without the second ever being fabricated.
+            // `original_id`/`supersedes`/`revision` are the same append-first revision chain
+            // `hydration_entries`/`strength_sets` already established: a correction or a LAB-16
+            // amendment APPENDS a new row, never UPDATEs a logged result.
+            """
+            CREATE TABLE lab_results (
+              id TEXT PRIMARY KEY, report_id TEXT NOT NULL, panel_id TEXT, analyte_id TEXT,
+              custom_label TEXT, raw_value_text TEXT NOT NULL, comparator TEXT, numeric_value REAL,
+              raw_unit TEXT, canonical_value REAL, canonical_unit TEXT, result_type TEXT NOT NULL,
+              review_state TEXT NOT NULL, sensitivity_tier TEXT NOT NULL, original_id TEXT NOT NULL,
+              supersedes TEXT, revision INTEGER NOT NULL, \(provenanceCols), \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_lab_results_report ON lab_results(report_id);",
+            "CREATE INDEX idx_lab_results_panel ON lab_results(panel_id) WHERE panel_id IS NOT NULL;",
+            // The marker-browser/trend read (LAB-04/LAB-12): one analyte's history across time,
+            // mirroring `idx_journal_behavior_occurred`'s (dictionary-key, timestamp) shape exactly.
+            "CREATE INDEX idx_lab_results_analyte_measured ON lab_results(analyte_id, measured_at);",
+            "CREATE INDEX idx_lab_results_original ON lab_results(original_id);",
+            "CREATE INDEX idx_lab_results_supersedes ON lab_results(supersedes) WHERE supersedes IS NOT NULL;",
+            // `ReferenceRange`. Concepts 1+2 of the four-concept law ONLY (see migration-level
+            // comment above) — one row per result, both fields left NULL exactly when the source
+            // printed nothing (never backfilled from a generic table at write time or read time).
+            // `source_interval_text` holds a printed interval that isn't a clean low/high pair
+            // ("Negative", "<5", "Not established") so source wording is preserved even when it
+            // can't be structured into two numbers.
+            """
+            CREATE TABLE reference_ranges (
+              id TEXT PRIMARY KEY, result_id TEXT NOT NULL, source_interval_low REAL,
+              source_interval_high REAL, source_interval_text TEXT, source_interval_unit TEXT,
+              source_flag TEXT, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_reference_ranges_result ON reference_ranges(result_id);",
+            // `UserCorrection`. An append-only overlay, never destructive — covers a field-level fix
+            // on either a `LabReport` or a `LabResult` (`target_type` discriminates) for the cases
+            // that don't warrant minting a whole new `LabResult` revision (e.g. a `LabReport`'s
+            // `source_lab_name` was mistyped). NO update/delete path is ever defined against this
+            // table in the repository (I2-flavored) — a correction, once recorded, is permanent
+            // audit trail.
+            """
+            CREATE TABLE user_corrections (
+              id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+              field_name TEXT NOT NULL, previous_value_text TEXT, corrected_value_text TEXT NOT NULL,
+              reason TEXT, corrected_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_user_corrections_target ON user_corrections(target_type, target_id, corrected_at DESC);",
+            // `LabAnnotation`. A free-text note or clinician question tied to a report or result —
+            // the visit-prep differentiator. `resolved` is a plain user-toggled flag
+            // (asked-and-answered), never a diagnostic state.
+            """
+            CREATE TABLE lab_annotations (
+              id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+              kind TEXT NOT NULL, text TEXT NOT NULL, resolved INTEGER NOT NULL,
+              created_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_lab_annotations_target ON lab_annotations(target_type, target_id);",
+            // `DerivedTrend`. Concept 3 of the four-concept law, computed by `ReferenceRangeEngine`
+            // and append-only (I2) exactly like `baselines`/the sensitive DB's own `derived_values`
+            // (migration 4) — a recompute appends a fresh row at a new `computed_at`/`valid_from`
+            // rather than overwriting the prior belief. `analyte_id` holds `LabResult.analyteKey`
+            // (the dictionary id OR a normalized custom-label key), so an unrecognized marker still
+            // accumulates a trend. NO unique natural-key index — mirrors migration 6's FIX to
+            // `idx_baseline_lookup`, not the original `idx_baseline_identity` bug it replaced — a
+            // plain lookup index only, so a plain INSERT can never collide and silently
+            // delete-then-replace prior history.
+            """
+            CREATE TABLE derived_trends (
+              id TEXT PRIMARY KEY, analyte_id TEXT NOT NULL, window_days INTEGER NOT NULL,
+              method TEXT NOT NULL, center REAL NOT NULL, spread REAL NOT NULL, band_low REAL NOT NULL,
+              band_high REAL NOT NULL, n_points INTEGER NOT NULL, provisional INTEGER NOT NULL,
+              algorithm_version TEXT NOT NULL, unit TEXT NOT NULL, valid_from INTEGER NOT NULL,
+              computed_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_derived_trends_lookup ON derived_trends(analyte_id, valid_from DESC);",
+            // `SourceDocument` (LAB-02). The document-vault lane's metadata row for a vaulted
+            // PDF/photo — the encrypted bytes themselves live on disk (`DocumentVault.swift`),
+            // never in this database; this row is hash+metadata only. Schema reproduced verbatim
+            // from `SourceDocumentRepository.swift`'s own header, which was written against this
+            // exact DDL ahead of this migration landing (parallel-lane build, EPIC-41). The
+            // partial-unique index on `sha256` backs the "same PDF imported twice" duplicate check
+            // (LAB-02) without letting a soft-deleted document permanently squat on a hash a user
+            // might legitimately re-import later — the same live-row-only-uniqueness pattern
+            // `idx_export_templates_name`/`idx_reports_period_algorithm` already use.
+            """
+            CREATE TABLE source_documents (
+              id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, mime_type TEXT NOT NULL,
+              original_file_name TEXT, page_count INTEGER NOT NULL, ocr_status TEXT NOT NULL,
+              vault_file_ref TEXT NOT NULL, sensitivity_tier TEXT NOT NULL, imported_at INTEGER NOT NULL,
+              \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_source_documents_imported ON source_documents(imported_at DESC);",
+            "CREATE UNIQUE INDEX idx_source_documents_sha256 ON source_documents(sha256) WHERE deleted_at IS NULL;",
         ])]
     }
 }
