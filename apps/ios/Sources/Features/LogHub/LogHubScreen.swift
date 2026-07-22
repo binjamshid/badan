@@ -393,6 +393,21 @@ struct LogHubScreen: View {
                     LogTile(title: env.s(MetricFamily.lab.displayName), systemImage: MetricFamily.lab.symbolName)
                 }
                 .buttonStyle(.plain)
+
+                // EPIC-39 (Phase 3F slice 2) — the cycle module's entry point. Always visible
+                // (not gated behind `sensitiveModulesEnabled` the way Journal/Symptom/Medication
+                // are, and not gated behind `cycleModuleEnabled` either): if the tile itself were
+                // hidden until the module is enabled, there would be no way for a user to ever
+                // discover and turn it on in the first place. The destination is what's
+                // conditional instead — `CycleHomeScreen` is another lane's screen, referenced
+                // here by name only; the Integrate phase reconciles cross-lane routing if it isn't
+                // present yet in this checkout.
+                NavigationLink {
+                    env.profile.cycleModuleEnabled ? AnyView(CycleHomeScreen()) : AnyView(CycleConsentScreen())
+                } label: {
+                    LogTile(title: env.s(MetricFamily.cycle.displayName), systemImage: MetricFamily.cycle.symbolName)
+                }
+                .buttonStyle(.plain)
             }
             // Explains the (intentional) disappearance of two tiles instead of leaving it silent.
             if !env.profile.sensitiveModulesEnabled {
