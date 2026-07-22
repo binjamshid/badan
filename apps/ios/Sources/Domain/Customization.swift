@@ -183,6 +183,20 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     /// snapshot ONLY when this is `true`; the widget extension never sees a medication name
     /// otherwise (see `AmbientSnapshotDto.medsDue`'s doc).
     public var consentWidgetMedsDue: Bool
+    /// EPIC-39 (Phase 3F slice 2). Master enable/disable for the cycle-tracking module — default
+    /// `false` (opt-in): the module stays off until the user explicitly turns it on from
+    /// `CycleConsentScreen`. Deliberately distinct from `sensitiveModulesEnabled` (which gates
+    /// Journal/Symptom/Medication as one bundle): the cycle module's own LogHub tile stays
+    /// UNCONDITIONALLY visible even while this is `false` (unlike those three), because otherwise
+    /// there would be no way for a user to ever discover and enable it in the first place — see
+    /// `LogHubScreen`'s own tile routing.
+    public var cycleModuleEnabled: Bool
+    /// EPIC-39 (Phase 3F slice 2). CYCLE-08's "pause" control: keeps period/flow logging and
+    /// history fully working, but is the gate `CycleModuleServices.refreshAll` checks before
+    /// running the phase-conditioned baseline recompute on top of the always-appended
+    /// prediction/phase-estimate rows. Default `false` (predictions/phase-conditioned baselines run
+    /// normally once the module itself is on).
+    public var cyclePredictionsPaused: Bool
 
     public init(depthPolicy: DepthPolicy = .casual, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
                 unitOverrides: [String: String] = [:], unitProfile: UnitProfileMode = .display,
@@ -192,7 +206,9 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 hydrationEnabled: Bool = true,
                 defaultLandingTab: Int? = nil,
                 sessionPreferences: SessionPreferences = SessionPreferences(),
-                consentWidgetMedsDue: Bool = false) {
+                consentWidgetMedsDue: Bool = false,
+                cycleModuleEnabled: Bool = false,
+                cyclePredictionsPaused: Bool = false) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -201,6 +217,8 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.hydrationEnabled = hydrationEnabled
         self.defaultLandingTab = defaultLandingTab; self.sessionPreferences = sessionPreferences
         self.consentWidgetMedsDue = consentWidgetMedsDue
+        self.cycleModuleEnabled = cycleModuleEnabled
+        self.cyclePredictionsPaused = cyclePredictionsPaused
     }
 
     // Custom decode so a profile JSON persisted before these two fields existed still loads
@@ -235,6 +253,12 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // above, and load-bearing here specifically because the safe default for a brand-new
         // sensitive-plus consent key is "not granted," never "on because the field was missing."
         consentWidgetMedsDue = try c.decodeIfPresent(Bool.self, forKey: .consentWidgetMedsDue) ?? false
+        // decodeIfPresent (not decode): a profile persisted before these two cycle-module keys
+        // existed must still load — a missing key defaults to the safe, opt-in-off state (both
+        // `false`), never a whole-profile decode failure, which `ProfileRepository.load()` would
+        // silently reset every other preference over.
+        cycleModuleEnabled = try c.decodeIfPresent(Bool.self, forKey: .cycleModuleEnabled) ?? false
+        cyclePredictionsPaused = try c.decodeIfPresent(Bool.self, forKey: .cyclePredictionsPaused) ?? false
     }
 
     public static let defaultModules: [HomeModule] = [
