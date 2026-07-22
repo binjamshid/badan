@@ -13,6 +13,9 @@ struct PrivacySecuritySettingsScreen: View {
     @State private var showResetConfirm = false
     @State private var transientNotice: LocalizedString?
 
+    // EPIC-43: Device Hub's entry point.
+    private static let manageDevicesTitle = LocalizedString(en: "Manage devices", ar: "إدارة الأجهزة")
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: BadanSpace.space6) {
@@ -152,6 +155,18 @@ struct PrivacySecuritySettingsScreen: View {
                     NavigationLink { SourcesScreen() } label: {
                         SettingsNavRowLabel(icon: "antenna.radiowaves.left.and.right",
                                             title: Loc.dataSources)
+                    }
+                    .buttonStyle(.plain)
+                    settingsDivider
+                    // EPIC-43. `SourcesScreen` above stays the casual, read-only projection
+                    // ("what's connected") exactly as it is — this is the additional, more
+                    // powerful view: per-device health (healthy/needs-attention/disconnected),
+                    // sync history, a raw data browser, and the reconciliation ledger ("why am I
+                    // seeing this value?"). One new entry point, so it's never a screen with no
+                    // real path from a user tap.
+                    NavigationLink { DeviceHubScreen() } label: {
+                        SettingsNavRowLabel(icon: "point.3.connected.trianglepath.dotted",
+                                            title: Self.manageDevicesTitle)
                     }
                     .buttonStyle(.plain)
                     settingsDivider

@@ -16,6 +16,43 @@ public enum SourceStatus: String, Codable, Hashable, Sendable {
     case hidden
 }
 
+/// EPIC-43 (plan §9.19): the primary provenance signal for HOW a source/device connects — a
+/// finer-grained classification than `SourceType`, which only distinguishes platform-store vs.
+/// manual vs. import vs. vendor. Every case here is a real, already-scoped integration route from
+/// plan §7A.6's doctrine table; there is no `bleBloodPressure`/`bleThermometer`/`blePulseOximeter`
+/// case because those three surfaces are gated behind approval A25 (a retained clinical advisor)
+/// and are on the founder's standing do-not-build list — they are not represented here even as an
+/// unused case.
+public enum ConnectionType: String, Codable, Hashable, Sendable {
+    case healthkit
+    case healthConnect = "health_connect"
+    case bleDirect = "ble_direct"
+    case fitnessMachine = "fitness_machine"
+    case manual
+    case vendorOAuth = "vendor_oauth"
+    case vendorSDK = "vendor_sdk"
+    case broker
+    case fileImport = "file_import"
+}
+
+/// EPIC-43 (plan §9.19): what a source/device can PROVIDE — independent of `ConnectionType`
+/// (which says HOW it connects). A BLE chest strap and a BLE cycling computer are both
+/// `.bleDirect`, but only one carries `.heartRateChestStrap`; `ConflictDecisionEngine`'s
+/// chest-strap-beats-wrist default reads exactly this distinction (via a caller-supplied
+/// `CandidateReading.classification`, not this enum directly — see that type's own doc). No
+/// blood-pressure/thermometer/pulse-oximeter case, for the same do-not-build reason
+/// `ConnectionType` omits `bleDirect`'s clinically-adjacent siblings.
+public enum DeviceCapability: String, Codable, Hashable, Sendable {
+    case heartRate = "heart_rate"
+    case heartRateChestStrap = "heart_rate_chest_strap"
+    case cyclingPower = "cycling_power"
+    case cyclingSpeedCadence = "cycling_speed_cadence"
+    case runningSpeedCadence = "running_speed_cadence"
+    case fitnessMachine = "fitness_machine"
+    case weightScale = "weight_scale"
+    case bodyComposition = "body_composition"
+}
+
 public struct Source: Codable, Hashable, Sendable, Identifiable {
     public var id: String
     public var type: SourceType
@@ -27,16 +64,26 @@ public struct Source: Codable, Hashable, Sendable, Identifiable {
     public var updatedAt: Date
     public var originDeviceId: String
     public var deletedAt: Date?
+    // MARK: - EPIC-43 (plan §9.19) — additive, all-optional per this struct's own contract above.
+    // A source written before this slice (or by `CatalogRepository`, which does not populate these
+    // yet — see migration 10's own doc) decodes them as `nil` rather than failing, exactly like
+    // `WorkoutDetail`'s EPIC-42 slice-2 fields: Swift's synthesized decoder treats a missing key for
+    // an `Optional` as `nil`, which is the whole reason these are added optionals rather than a
+    // second, parallel struct.
+    public var connectionType: ConnectionType?
+    public var capabilities: Set<DeviceCapability>?
 
     public init(
         id: String, type: SourceType, displayName: String, platformBundleId: String? = nil,
         status: SourceStatus = .active, connectedAt: Date? = nil, lastDeliveryAt: Date? = nil,
-        updatedAt: Date, originDeviceId: String, deletedAt: Date? = nil
+        updatedAt: Date, originDeviceId: String, deletedAt: Date? = nil,
+        connectionType: ConnectionType? = nil, capabilities: Set<DeviceCapability>? = nil
     ) {
         self.id = id; self.type = type; self.displayName = displayName
         self.platformBundleId = platformBundleId; self.status = status
         self.connectedAt = connectedAt; self.lastDeliveryAt = lastDeliveryAt
         self.updatedAt = updatedAt; self.originDeviceId = originDeviceId; self.deletedAt = deletedAt
+        self.connectionType = connectionType; self.capabilities = capabilities
     }
 }
 
@@ -50,13 +97,18 @@ public struct Device: Codable, Hashable, Sendable, Identifiable {
     public var updatedAt: Date
     public var originDeviceId: String
     public var deletedAt: Date?
+    // MARK: - EPIC-43 (plan §9.19) — additive, all-optional; see `Source`'s own doc above for why.
+    public var connectionType: ConnectionType?
+    public var capabilities: Set<DeviceCapability>?
 
     public init(id: String, sourceId: String, name: String, model: String? = nil,
                 firstSeen: Date, lastSeen: Date, updatedAt: Date, originDeviceId: String,
-                deletedAt: Date? = nil) {
+                deletedAt: Date? = nil, connectionType: ConnectionType? = nil,
+                capabilities: Set<DeviceCapability>? = nil) {
         self.id = id; self.sourceId = sourceId; self.name = name; self.model = model
         self.firstSeen = firstSeen; self.lastSeen = lastSeen; self.updatedAt = updatedAt
         self.originDeviceId = originDeviceId; self.deletedAt = deletedAt
+        self.connectionType = connectionType; self.capabilities = capabilities
     }
 }
 

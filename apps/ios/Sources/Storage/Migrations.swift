@@ -835,6 +835,70 @@ enum Schema {
             );
             """,
             "CREATE INDEX idx_workout_quality_session ON workout_quality(session_id);",
+        ]),
+        // Version 10 (plan §7A.6 / §9.19, EPIC-43 ungated core): device-ecosystem reconciliation v2's
+        // two new tables, plus additive connection/capability columns on the two existing device-
+        // identity tables. Purely additive (CREATEs + ALTERs only), so an upgrading v9 install reaches
+        // v10 without touching an existing row.
+        //
+        // `data_conflicts` and `source_priority_rules` are genuinely NEW concepts (a detected-but-
+        // unresolved disagreement, and a per-metric default priority order) — the existing
+        // `dedup_decisions` table remains the one and only `ReconciliationDecision` ledger per the
+        // plan's own §9.19 text ("the existing dedup_decisions table serves as the immutable
+        // ReconciliationDecision ledger, rule refs extended"); NEITHER new table is a parallel
+        // decisions journal, and nothing here touches `dedup_decisions` itself.
+        //
+        // `data_conflicts` carries the full convention-column set (D-7: `updated_at`/
+        // `origin_device_id`/`deleted_at`) because a conflict transitions state (unresolved ->
+        // resolved) and is reconcilable across devices — closer in shape to `notification_deliveries`
+        // (migration 8) than to the append-only, no-lifecycle ledgers migration 4 documents. It carries
+        // NO provenance columns (I1): a conflict is a statement ABOUT two-or-more existing provenance-
+        // carrying records, not a measurement of its own — the same reason `derived_values`/
+        // `workout_quality` omit provenance, just applied to a detection row instead of a computation.
+        // `candidate_record_ids` is a JSON array (not a join table) for the same reason
+        // `sessions.detail` is JSON: the set of disagreeing records is fixed at detection time and
+        // never independently queried by a third table, so a normalized child table would add a join
+        // with no read this schema actually needs.
+        //
+        // `source_priority_rules` deliberately carries NO unique constraint on `metric_id` — see
+        // `SourcePriorityRuleRepository`'s own header doc for why (it sidesteps the exact
+        // `INSERT OR REPLACE` + partial-unique-index interaction migration 4's `idx_export_templates_name`
+        // comment already warns about elsewhere); `idx_source_priority_rules_metric` is a plain lookup
+        // index, not a uniqueness guarantee, and reads pick the freshest live row explicitly.
+        //
+        // `sources`/`source_devices` gain two nullable columns each — `connection_type` (the
+        // `ConnectionType` enum's raw value) and `capabilities` (a JSON array of `DeviceCapability` raw
+        // values) — additive exactly like migration 5's `hr_max`/`hr_zones` ALTERs. NULL is the correct
+        // default for an upgraded row: an existing HealthKit/HealthConnect source predates this column
+        // and has never been asked what connection type or capabilities it has, which is a different
+        // fact from "connects by an empty/unknown method." NOTE (scope, stated plainly so a future
+        // reader doesn't assume otherwise): `CatalogRepository` — the existing reader/writer of both
+        // tables — is NOT updated in this migration's slice to populate or read these two columns; that
+        // repository wiring, and any real writer that would set `connection_type = ble_direct` (which
+        // needs the follow-up slice's real `CBCentralManager`-backed adapter to ever exist), are out of
+        // scope here. The columns exist so the schema is ready; nothing in this slice claims they are
+        // wired end to end yet.
+        Migration(version: 10, statements: [
+            """
+            CREATE TABLE data_conflicts (
+              id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, window_start INTEGER NOT NULL,
+              window_end INTEGER NOT NULL, candidate_record_ids TEXT NOT NULL, status TEXT NOT NULL,
+              resolved_by_decision_id TEXT, detected_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_data_conflicts_status ON data_conflicts(status, detected_at DESC) WHERE deleted_at IS NULL;",
+            "CREATE INDEX idx_data_conflicts_scope ON data_conflicts(scope_key, window_start);",
+            """
+            CREATE TABLE source_priority_rules (
+              id TEXT PRIMARY KEY, metric_id TEXT NOT NULL, priority_order TEXT NOT NULL,
+              is_user_override INTEGER NOT NULL, created_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_source_priority_rules_metric ON source_priority_rules(metric_id, updated_at DESC);",
+            "ALTER TABLE sources ADD COLUMN connection_type TEXT;",
+            "ALTER TABLE sources ADD COLUMN capabilities TEXT;",
+            "ALTER TABLE source_devices ADD COLUMN connection_type TEXT;",
+            "ALTER TABLE source_devices ADD COLUMN capabilities TEXT;",
         ])]
     }
 
