@@ -59,7 +59,12 @@ enum RepRangeBucket: String, Codable, Hashable, Sendable, CaseIterable {
 /// `canonicalUnit: "count"` — the DerivedValue itself is an occurrence flag (`value == 1`), and
 /// the actual weight/reps that earned it ride in the `InputManifest` under the same `stat:`
 /// convention `CorrelationEngine.manifestInputs` established.
-struct PersonalRecord: Sendable, Hashable {
+// `public` (only this one type, not its members — internal-default members stay internal, which
+// is already module-wide visible) because EPIC-42 slice 2's frozen `WorkoutSessionCoordinator`
+// contract exposes `WorkoutSessionSummary.newPersonalRecords: [PersonalRecord]` as a `public`
+// property — a `public` property cannot carry a less-visible element type, so this struct has to
+// be at least as visible as that summary. Nothing about `PersonalRecord`'s own behavior changes.
+public struct PersonalRecord: Sendable, Hashable {
     let movementId: String
     let bucket: RepRangeBucket
     let weightKg: Double

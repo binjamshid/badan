@@ -70,4 +70,70 @@ final class WorkoutCheckpointRepository {
             hotState: hotState, lastCheckpointAt: r.requireDate("last_checkpoint_at"),
             originDeviceId: r.requireString("origin_device_id"))
     }
+
+    // MARK: - Workout quality (EPIC-42 slice 2)
+    //
+    // `workout_quality` (migration 9) had no repository yet — slice 1 built `strength_sets`'
+    // (`StrengthSetRepository`) and `workout_checkpoints`' (this type) but left the third child
+    // table for whichever slice first needed to WRITE a session-level quality summary, which is
+    // `WorkoutSessionCoordinator.finalize()`. These methods live here rather than in a new,
+    // dedicated repository file because that coordinator's constructor is a FROZEN cross-lane
+    // contract that already threads THIS repository through (checkpoint/strength-set/measurement/
+    // derivation — four total) with no room for a fifth; adding the minimal read/write surface to
+    // an existing, already-injected repository was the only option that didn't require silently
+    // widening that frozen signature. `strength_sets` itself is untouched — these methods only
+    // ever reach `workout_quality`.
+
+    private static let qualityColumns =
+        "id, session_id, metric_family, completeness, continuity, accuracy, primary_source_id, algorithm_version, computed_at"
+    private static let qualityPlaceholders = "?, ?, ?, ?, ?, ?, ?, ?, ?"
+
+    /// Appends one `workout_quality` row — a session's quality is computed exactly once, at
+    /// finalize, so there is nothing to overwrite (I2-flavored, matching `derived_values`'
+    /// append-only shape): a future recompute would insert a NEW row with a fresh id rather than
+    /// reusing this one.
+    func insertQualityRow(id: String, sessionId: String, summary: StrengthQualitySummary,
+                          updatedAt: Date, originDeviceId: String) throws {
+        try db.run("""
+            INSERT INTO workout_quality (\(Self.qualityColumns), \(Rows.convColumns))
+            VALUES (\(Self.qualityPlaceholders), \(Rows.convPlaceholders));
+            """,
+            [.text(id), .text(sessionId), .text(summary.metricFamily), .double(summary.completeness),
+             .double(summary.continuity), .double(summary.accuracy), .string(summary.primarySourceId),
+             .text(summary.algorithmVersion), .date(summary.computedAt)]
+            + Rows.convParams(updatedAt: updatedAt, originDeviceId: originDeviceId, deletedAt: nil))
+    }
+
+    /// Every quality row for one session (normally exactly one per `metricFamily`), oldest first —
+    /// the read half `WorkoutSession.assemble(session:qualityRows:strengthSets:)` joins against.
+    func qualityRows(sessionId: String) throws -> [WorkoutQualityRow] {
+        try db.query("""
+            SELECT * FROM workout_quality WHERE session_id = ? AND deleted_at IS NULL
+            ORDER BY computed_at ASC;
+            """, [.text(sessionId)]).map(Self.readQualityRow)
+    }
+
+    private static func readQualityRow(_ r: SQLiteRow) -> WorkoutQualityRow {
+        WorkoutQualityRow(
+            id: r.requireString("id"), sessionId: r.requireString("session_id"),
+            metricFamily: r.requireString("metric_family"), completeness: r.double("completeness"),
+            continuity: r.double("continuity"), accuracy: r.double("accuracy"),
+            primarySourceId: r.string("primary_source_id"),
+            algorithmVersion: r.requireString("algorithm_version"), computedAt: r.requireDate("computed_at"))
+    }
+}
+
+/// One stored `workout_quality` row. Mirrors `StrengthQualitySummary` (`WorkoutQuality.swift`) but
+/// adds the identity columns (`id`, `sessionId`) a row on disk carries that a pure compute-time
+/// value doesn't need.
+struct WorkoutQualityRow: Sendable, Hashable {
+    let id: String
+    let sessionId: String
+    let metricFamily: String
+    let completeness: Double?
+    let continuity: Double?
+    let accuracy: Double?
+    let primarySourceId: String?
+    let algorithmVersion: String
+    let computedAt: Date
 }
