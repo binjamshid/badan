@@ -42,6 +42,12 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/BADAN.entitlements
         ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "NoorMono NoorQalam Mizan Hilal"
         ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
+    dependencies:
+      # EPIC-33 (Phase 3D). Embeds the widget extension into the app bundle so it ships and
+      # installs alongside BADAN — without this the extension target builds but nothing ever
+      # copies it into BADAN.app/PlugIns, and no widget would ever appear in the widget gallery.
+      - target: BadanWidgets
+        embed: true
     # `App/Info.plist` is GENERATED from this block on every `xcodegen generate` and is
     # gitignored for exactly that reason — editing the plist directly works until the next
     # generate silently reverts it. This block is the only authoritative copy. The same is
@@ -54,6 +60,14 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleLocalizations: [en, ar]
+        # FIX-4 (Phase 3D audit): registers the `badan://` scheme the four EPIC-33 widgets open
+        # (`WidgetDeepLinkToken.url` in `apps/ios/BadanWidgets/BadanWidgetsBundle.swift`) —
+        # `badan://deeplink/<token>`, handled by `BADANApp.swift`'s `.onOpenURL` via
+        # `AppEnvironment.handleDeepLinkURL(_:)`. EPIC-33's own definition of done names deep-link
+        # resolution as part of this wave, not a deferred item.
+        CFBundleURLTypes:
+          - CFBundleURLName: net.binjamshid.badan.deeplink
+            CFBundleURLSchemes: [badan]
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -115,6 +129,40 @@ targets:
         # turns out to touch no CoreLocation-facing surface at all, delete this key rather than
         # carrying an unused location declaration into review.
         NSLocationWhenInUseUsageDescription: "BADAN uses location access only to read the routes your Apple Watch or iPhone already saved with workouts you finished earlier. BADAN never follows where you are and never records a new route. Nothing leaves your phone."
+
+  # EPIC-33 (Phase 3D), first widget wave: ring_single (Readiness), one_true_sentence, meds_due,
+  # sleep_last_night — home-screen + Lock Screen/StandBy accessory families. Reads ONLY the
+  # bounded AmbientSnapshotDto from the app-group container (Sources/Platform/Ambient/); this
+  # target has no dependency on the BADAN target's sources and must never gain one — extension
+  # memory limits and key-availability-before-first-unlock are why the snapshot pattern exists at
+  # all (blueprint §24.1). WidgetKit extensions are `app-extension`, not a plain framework/bundle.
+  BadanWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: BadanWidgets
+        excludes: ["*.entitlements"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.binjamshid.badan.widgets
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: "54T3MDUR7H"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_ENTITLEMENTS: BadanWidgets/BadanWidgets.entitlements
+        # Widget extensions ship no app icon of their own — they render inside the host's chrome
+        # (widget gallery, Lock Screen, StandBy) rather than launching as a standalone app.
+        SKIP_INSTALL: NO
+    info:
+      path: BadanWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: BadanWidgets
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
 
   BADANTests:
     type: bundle.unit-test

@@ -176,6 +176,13 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     public var defaultLandingTab: Int?
     /// Remembered-but-not-precious session/navigation state — see `SessionPreferences`.
     public var sessionPreferences: SessionPreferences
+    /// EPIC-33 (Phase 3D). Per-widget opt-in consent key `consent.widget.medsDue`. Medications are
+    /// sensitive-plus, so the meds-due Home Screen / Lock Screen widget needs its own explicit
+    /// grant — separate from `sensitiveModulesEnabled` itself, and defaulting OFF even when that
+    /// one is on. Read by `AmbientSnapshotWriter`, which writes `medsDue` into the shared ambient
+    /// snapshot ONLY when this is `true`; the widget extension never sees a medication name
+    /// otherwise (see `AmbientSnapshotDto.medsDue`'s doc).
+    public var consentWidgetMedsDue: Bool
 
     public init(depthPolicy: DepthPolicy = .casual, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
                 unitOverrides: [String: String] = [:], unitProfile: UnitProfileMode = .display,
@@ -184,7 +191,8 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 sensitiveModulesEnabled: Bool = true, nutritionEnabled: Bool = true,
                 hydrationEnabled: Bool = true,
                 defaultLandingTab: Int? = nil,
-                sessionPreferences: SessionPreferences = SessionPreferences()) {
+                sessionPreferences: SessionPreferences = SessionPreferences(),
+                consentWidgetMedsDue: Bool = false) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -192,6 +200,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.nutritionEnabled = nutritionEnabled
         self.hydrationEnabled = hydrationEnabled
         self.defaultLandingTab = defaultLandingTab; self.sessionPreferences = sessionPreferences
+        self.consentWidgetMedsDue = consentWidgetMedsDue
     }
 
     // Custom decode so a profile JSON persisted before these two fields existed still loads
@@ -221,6 +230,11 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         defaultLandingTab = try c.decodeIfPresent(Int.self, forKey: .defaultLandingTab)
         sessionPreferences = try c.decodeIfPresent(SessionPreferences.self, forKey: .sessionPreferences)
             ?? SessionPreferences()
+        // decodeIfPresent (not decode): a profile persisted before this consent key existed must
+        // still load, defaulting OFF — the same tolerant-decode reasoning as `hydrationEnabled`
+        // above, and load-bearing here specifically because the safe default for a brand-new
+        // sensitive-plus consent key is "not granted," never "on because the field was missing."
+        consentWidgetMedsDue = try c.decodeIfPresent(Bool.self, forKey: .consentWidgetMedsDue) ?? false
     }
 
     public static let defaultModules: [HomeModule] = [
