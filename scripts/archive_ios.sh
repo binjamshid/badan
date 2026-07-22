@@ -45,10 +45,19 @@ sed "s/__TEAM_ID__/$TEAM_ID/" ExportOptions.plist > "$OPTS"
 
 echo "▸ Exporting signed .ipa…"
 rm -rf "$EXPORT_DIR"
+# -allowProvisioningUpdates here too (not just on the archive step above): the export step
+# re-validates the archive's entitlements against profiles actually registered on the portal, and
+# a newly-added capability/target (e.g. Phase 3D's BadanWidgets extension + App Groups) has no
+# portal-side profile yet the first time this runs after such a change. Automatic signing can
+# create/update the needed App ID capabilities and profiles here the same way it already does
+# during archive; without this flag, export fails on exactly that class of change with no code
+# path forward except doing the equivalent by hand in Xcode.
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \
   -exportOptionsPlist "$OPTS" \
-  -exportPath "$EXPORT_DIR"
+  -exportPath "$EXPORT_DIR" \
+  -allowProvisioningUpdates \
+  DEVELOPMENT_TEAM="$TEAM_ID"
 
 echo "✓ Done: $IOS_DIR/$EXPORT_DIR/BADAN.ipa"
 echo "  Next: upload with Transporter.app, or:"
