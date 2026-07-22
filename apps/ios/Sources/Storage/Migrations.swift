@@ -1208,6 +1208,159 @@ enum Schema {
             """,
             "CREATE INDEX idx_source_documents_imported ON source_documents(imported_at DESC);",
             "CREATE UNIQUE INDEX idx_source_documents_sha256 ON source_documents(sha256) WHERE deleted_at IS NULL;",
+        ]),
+        // Version 6 (plan §9.15 / EPIC-39 CYCLE-01, Phase 3F slice 1): the cycle-intelligence
+        // module's full entity set (`CycleModels.swift`), superseding the placeholder
+        // `cycle_contexts` table sensitive migration 3 introduced and deliberately left as a
+        // to-be-superseded stub. Purely additive (CREATEs only) — `cycle_contexts` itself is left
+        // untouched (forward-only; migrations never rewrite or drop a prior table), so an
+        // upgrading v5 sensitive install reaches v6 without touching an existing row. A future
+        // slice that actually migrates any `cycle_contexts` data into these tables is a separate,
+        // explicit forward migration, not something bundled into this one.
+        //
+        // SENSITIVE, not main (I7) — the single highest-sensitivity data family this app handles,
+        // per `docs/legal/reproductive-threat-model.md` §1: period dates, contraceptive use, and
+        // anomaly flags can be used as evidence in a legal proceeding and are the most likely
+        // real-world abusive-partner harm surface BADAN has. All six tables below MUST live only
+        // here — never in `badan.db` — exactly like `journal_entries`/`lab_results` already do.
+        // `CycleModelsTests.testCycleTablesExistOnlyInTheSensitiveDatabase` is the architecture
+        // test that blocks a future accidental main-DB placement.
+        //
+        // TWO SHAPES, six tables, split exactly like migration 5 (Labs) splits `lab_results` from
+        // `derived_trends` — and for the identical reason:
+        //   * RAW/MEASURED (`cycle_records`, `flow_logs`, `contraceptive_context_logs`) carry the
+        //     FULL `provenanceCols` (I1) + `conventionCols` (D-7): each is a user-asserted fact
+        //     with an origin (`ingestion_path = manual` today; no platform cycle read exists yet).
+        //   * DERIVED (`cycle_predictions`, `cycle_phase_estimates`, `cycle_anomaly_events`) carry
+        //     `conventionCols` ONLY, no provenance — a forecast/estimate/anomaly is COMPUTED from
+        //     already-provenanced rows above, not measured with its own source, mirroring
+        //     `derived_trends`'/`derived_values`' own shape exactly. All three are APPEND-ONLY
+        //     (I2): a recompute INSERTs a fresh row, nothing here is ever UPDATEd to change its
+        //     computed content — the sole exception is `cycle_anomaly_events.state`, which
+        //     transitions via a plain UPDATE through `CycleAnomalyEventRepository.updateState`
+        //     (acknowledge/dismiss is a user lifecycle action, not a re-derivation), the same
+        //     "detection facts frozen, only lifecycle state transitions" shape
+        //     `data_conflicts`/`DataConflictRepository.markResolved` already establish.
+        //
+        // NO SINGLE-DATE PREDICTION COLUMN EXISTS, structurally, not by convention:
+        // `cycle_predictions` has `predicted_next_start_low/center/high` (a range) plus `method`
+        // and `confidence` — there is no column that could hold one bare "predicted date". This is
+        // both this codebase's standing false-precision rule and, per the threat model §5, a
+        // safety property: a falsely-confident single date is a worse harm surface than an honest
+        // range, including for anyone who might see the screen over the user's shoulder.
+        //
+        // `cycle_anomaly_events.message_key` is a KEY into a bilingual message-template lookup a
+        // separate lane owns — this table has NO column that could hold rendered/diagnostic text,
+        // which is what makes "no diagnostic language" a schema-level guarantee here rather than a
+        // discipline every future writer has to remember. `severity` is a surfacing priority only,
+        // never a clinical-importance claim (research doc §10) — repeated here because a schema
+        // is the one place this invariant is cheapest to enforce permanently.
+        //
+        // OUT OF SCOPE, stated plainly so a future reader doesn't assume otherwise: no table here
+        // backs fertile-window/ovulation estimation (gated on founder decision A17), BBT/ovulation-
+        // test/cervical-mucus logging, sexual-activity logging, or sharing of any kind — see
+        // `CycleModels.swift`'s own header for the full out-of-scope list this migration honors.
+        Migration(version: 6, statements: [
+            // `CycleRecord`. `original_id`/`supersedes`/`revision` are the same append-first
+            // revision chain `lab_results`/`strength_sets` already establish: a correction (a
+            // mis-entered start date) APPENDS a new row, never UPDATEs a logged period.
+            """
+            CREATE TABLE cycle_records (
+              id TEXT PRIMARY KEY, start_at INTEGER NOT NULL, end_at INTEGER, ongoing INTEGER NOT NULL,
+              note TEXT, original_id TEXT NOT NULL, supersedes TEXT, revision INTEGER NOT NULL,
+              \(provenanceCols), \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_cycle_records_start ON cycle_records(start_at DESC);",
+            // Backs `CycleRecordRepository.history(originalId:)` — the whole audit chain of one
+            // logical period, mirroring `idx_lab_results_original` exactly.
+            "CREATE INDEX idx_cycle_records_original ON cycle_records(original_id);",
+            // Backs the live-view anti-join subquery ("which rows are superseded by a non-deleted
+            // revision"), mirroring `idx_lab_results_supersedes` exactly. Partial, because only
+            // revisions carry a non-NULL `supersedes`.
+            "CREATE INDEX idx_cycle_records_supersedes ON cycle_records(supersedes) WHERE supersedes IS NOT NULL;",
+            // `FlowLog`. No revision chain (unlike `cycle_records`) — a flow-intensity correction
+            // is expected to be a plain tombstone-and-relog; see the type's own doc for why.
+            """
+            CREATE TABLE flow_logs (
+              id TEXT PRIMARY KEY, cycle_id TEXT NOT NULL, occurred_at INTEGER NOT NULL,
+              original_label TEXT NOT NULL, normalized_intensity REAL NOT NULL, note TEXT,
+              \(provenanceCols), \(conventionCols)
+            );
+            """,
+            // The one real read shape: one period's own flow history, in order.
+            "CREATE INDEX idx_flow_logs_cycle_occurred ON flow_logs(cycle_id, occurred_at);",
+            // `ContraceptiveContextLog`. `end_at IS NULL` is the normal "still active" case, not a
+            // malformed edge case — same posture `context_statuses.end_at` already takes.
+            """
+            CREATE TABLE contraceptive_context_logs (
+              id TEXT PRIMARY KEY, method_type TEXT NOT NULL, start_at INTEGER NOT NULL,
+              end_at INTEGER, adherence_note TEXT, \(provenanceCols), \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_contraceptive_context_start ON contraceptive_context_logs(start_at DESC);",
+            // `CyclePrediction`. Append-only (I2); no unique natural-key index, mirroring migration
+            // 6 (main db)'s FIX to `idx_baseline_lookup` — a plain lookup index only, so a plain
+            // INSERT can never collide and silently delete-then-replace prior forecast history.
+            // `input_cycle_ids` is a JSON array (not a join table), the same reason
+            // `data_conflicts.candidate_record_ids` is JSON: the input set is fixed at generation
+            // time and never independently queried by a third table.
+            """
+            CREATE TABLE cycle_predictions (
+              id TEXT PRIMARY KEY, generated_at INTEGER NOT NULL, predicted_next_start_low INTEGER,
+              predicted_next_start_center INTEGER, predicted_next_start_high INTEGER,
+              confidence REAL NOT NULL, method TEXT NOT NULL, status TEXT NOT NULL,
+              suppression_reason TEXT, algorithm_version TEXT NOT NULL, input_cycle_ids TEXT NOT NULL,
+              \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_cycle_predictions_generated ON cycle_predictions(generated_at DESC);",
+            // `CyclePhaseEstimate`. Append-only (I2), one row per computed window — the input
+            // `BaselineEngine`'s phase-conditioned baselines read as a covariate.
+            """
+            CREATE TABLE cycle_phase_estimates (
+              id TEXT PRIMARY KEY, date_range_start INTEGER NOT NULL, date_range_end INTEGER NOT NULL,
+              phase TEXT NOT NULL, confidence REAL NOT NULL, evidence_basis TEXT NOT NULL,
+              algorithm_version TEXT NOT NULL, computed_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_cycle_phase_estimates_start ON cycle_phase_estimates(date_range_start DESC);",
+            // `CycleAnomalyEvent`. Append-only at creation (I2); `state` is the one column this
+            // migration expects to be UPDATEd in place (acknowledge/dismiss/suppress), mirroring
+            // `data_conflicts.status`'s exact shape. `message_key` is a KEY only — see the
+            // migration-level comment above for why this table has no rendered-text column at all.
+            """
+            CREATE TABLE cycle_anomaly_events (
+              id TEXT PRIMARY KEY, type TEXT NOT NULL, detected_at INTEGER NOT NULL,
+              basis_window_cycle_ids TEXT NOT NULL, severity TEXT NOT NULL, message_key TEXT NOT NULL,
+              state TEXT NOT NULL, algorithm_version TEXT NOT NULL, confidence REAL NOT NULL,
+              \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_cycle_anomaly_events_detected ON cycle_anomaly_events(detected_at DESC);",
+            // `baselines` — CYCLE-06's phase-conditioned bands ONLY (audit fix, I7). Byte-identical
+            // DDL/index to `mainMigrations` version 1's `baselines` table (see that migration for
+            // the canonical shape) — deliberately duplicated here rather than shared, because a
+            // `covariate_context` value here is a real reproductive-phase word ("menstrual"/
+            // "follicular"/"ovulatory"/"luteal"), which is itself cycle-derived, sensitive-plus
+            // information (the same "the identifier itself is the disclosure" reasoning
+            // `CorrelationRepository`'s own header documents for `journal.correlation.*` ids). This
+            // table exists SOLELY so `CyclePhaseCovariateCoordinator` can construct a
+            // sensitive-backed `DerivationRepository`/`BaselineEngine` pair for phase-conditioned
+            // recomputes — the unconditioned `"default"` baseline for every metric, cycle-aware or
+            // not, continues to live only in `badan.db`'s own `baselines` table, untouched by this
+            // one. `Database.purgeSensitiveNamespace()` needs no extension: deleting the whole
+            // `badan_sensitive.db` file covers this table by construction, like every other one here.
+            """
+            CREATE TABLE baselines (
+              id TEXT PRIMARY KEY, metric_id TEXT NOT NULL, covariate_context TEXT NOT NULL,
+              window_days INTEGER NOT NULL, method TEXT NOT NULL, center REAL NOT NULL,
+              spread REAL NOT NULL, band_low REAL NOT NULL, band_high REAL NOT NULL,
+              n_points INTEGER NOT NULL, provisional INTEGER NOT NULL, algorithm_version TEXT NOT NULL,
+              valid_from INTEGER NOT NULL, computed_at INTEGER NOT NULL, unit TEXT NOT NULL
+            );
+            """,
+            "CREATE INDEX idx_baseline_lookup ON baselines(metric_id, covariate_context, valid_from DESC);",
         ])]
     }
 }
