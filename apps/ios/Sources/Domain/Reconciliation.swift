@@ -12,6 +12,15 @@ public struct ReconciliationDecision: Codable, Hashable, Sendable, Identifiable 
     public var keptRecordId: String
     public var suppressedRecordId: String
     public var score: Double?
+    /// Whether this suppression can be undone. A real, general-purpose field the type's contract
+    /// has always allowed — but as of this writing, no writer anywhere in this codebase
+    /// (`ImportBatchRepository`, `IngestionPipeline`'s two construction sites,
+    /// `ConflictDecisionEngine.Outcome.makeDecisions`) ever constructs a decision with
+    /// `reversible: false`; every call site either omits it (default `true`) or passes `true`
+    /// explicitly. That makes the `reversible == false` UI copy (e.g. `DataConflictsScreen`'s
+    /// "This decision is final.") currently unreachable in practice — not a stub to remove, just
+    /// unwritten-to today. A future writer recording a genuinely irreversible decision (e.g. a
+    /// hard dedup that destroyed data rather than merely suppressing it) is what would exercise it.
     public var reversible: Bool
     public var reversedAt: Date?
     public var decidedAt: Date
