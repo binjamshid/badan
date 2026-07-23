@@ -21,18 +21,21 @@ import SwiftUI
 // action attached — leaving it unresolved is itself a legitimate, surfaced state (I3/I5), never a
 // silently-averaged value.
 //
-// Disclosure: as of this slice, nothing in `Sources/` ever calls `ConflictDecisionEngine.decide`/
-// `.makeDecisions`, and nothing writes a `data_conflicts` row — `DataConflictRepository`,
-// `ConflictDecisionEngine`, and `SourcePriorityRuleRepository` are exercised only by tests today.
-// So the "Unresolved" section above will always render its empty state in the running app; wiring
-// reconciliation-v2 into the real ingestion/dedup pipeline is a follow-up slice, not a gap in this
-// UI. The "Resolved" section below is a separate story: it reads the PRE-EXISTING `dedup_decisions`
-// ledger via `ReconciliationRepository.recent()`, which `DedupLite`'s sleep/workout-overlap rules
-// already populate in production today — so that section is not guaranteed empty.
+// Disclosure UPDATE (commit 4266c68, "Phase 3 debt closeout, wave 1"): reconciliation-v2 IS now
+// wired into the real ingestion pipeline — `IngestionPipeline.reconcileMetricConflicts` calls
+// `ConflictDecisionEngine.decide`/`.makeDecisions` for `MetricID.restingHeartRate`/`.hrv`/`.weight`
+// on every ingest run, so the "Unresolved" section above can genuinely be non-empty in the running
+// app now, not only under test. The "Resolved" section below is unaffected by that wiring either
+// way: it reads the PRE-EXISTING `dedup_decisions` ledger via `ReconciliationRepository.recent()`,
+// which `DedupLite`'s sleep/workout-overlap rules already populated in production before this too.
 //
-// `SourcePriorityRule` (the per-metric default priority order `ConflictDecisionEngine` falls back
-// to) is the same parallel lane's type; nothing on this screen edits one — a Source Priority
-// Editor is explicitly future UI the engine's own doc says this slice does not build.
+// `SourcePriorityRule` (the per-metric priority order `ConflictDecisionEngine` falls back to) is
+// the same parallel lane's type; nothing on THIS screen edits one — see `SourcePriorityEditorScreen`
+// (`Features/DeviceHub/SourcePriorityEditorScreen.swift`, reachable from `DeviceHubScreen`'s own
+// sibling card), which is that Source Priority Editor now that reconciliation-v2 being wired makes
+// it a genuinely actionable surface. That screen only ever sets a FORWARD-looking priority rule for
+// a metric — it does not resolve any conflict already open below, which stays a separate, still-open
+// gap (picking a winner for an already-detected unresolved conflict) out of both screens' scope.
 
 // MARK: - Local strings
 

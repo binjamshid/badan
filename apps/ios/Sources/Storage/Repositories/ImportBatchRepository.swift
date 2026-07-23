@@ -51,6 +51,16 @@ struct ImportBatch: Equatable {
     /// `resumable(...)` and any later importer agree on the vocabulary.
     static let appleHealthSourceKind = "apple_health"
 
+    /// EPIC-43 ACC-005. One `source_kind` per file-import format (`FileImporter`/`FileImportFormat`),
+    /// each a distinct token from `appleHealthSourceKind` and from each other — mirroring that
+    /// constant's own naming convention — so `existingBatch(sourceKind:fileName:)`'s per-file-per-
+    /// format dedup can never conflate a `route.gpx` picked for the GPX importer with a same-named
+    /// file picked for a different format. FIT (Garmin's binary format) deliberately has no constant
+    /// here: it is out of scope for this slice, not merely unimplemented — see `FileImportFormat`.
+    static let gpxSourceKind = "gpx_file"
+    static let tcxSourceKind = "tcx_file"
+    static let csvSourceKind = "csv_file"
+
     var isTerminal: Bool { state == Self.stateCompleted }
 
     /// The batch's rows have been tombstoned by `ImportBatchRepository.undo`. Distinct from

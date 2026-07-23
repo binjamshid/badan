@@ -634,6 +634,23 @@ final class IngestionPipeline {
         }
         guard !intervalWindows.isEmpty || !sampleWindows.isEmpty else { return 0 }
 
+        // AUDIT FIX (debt-closeout wave 2): fetched ONCE per ingest run (not per window) so
+        // `classification(forSourceId:isManualEntry:)` below can resolve each candidate's real
+        // classification without a query per candidate. Before this fix, `CandidateReading.classification`
+        // was never set at all here, so it silently defaulted to `""` — which never matches any of
+        // `SourcePriorityRule.ClassificationKey`'s non-empty constants, meaning a saved
+        // `SourcePriorityRule` (and the hardcoded chest-strap default) could NEVER actually resolve a
+        // real conflict, regardless of what a person configured in Source Priority Editor.
+        let sources = try catalog.sources(includeHidden: true)
+        let devicesBySource = Dictionary(grouping: try catalog.devices(), by: \.sourceId)
+        let sourcesById = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
+        func classification(forSourceId sourceId: String, isManualEntry: Bool) -> String {
+            if isManualEntry { return SourcePriorityRule.ClassificationKey.manual }
+            guard let source = sourcesById[sourceId] else { return "" }
+            let classId = SensorQualityMap.shared.classId(for: source, devices: devicesBySource[sourceId] ?? [])
+            return SourcePriorityRule.ClassificationKey.fromSensorClassId(classId) ?? ""
+        }
+
         var newDecisions = 0
         for w in intervalWindows.sorted(by: { ($0.metricId, $0.dayKey) < ($1.metricId, $1.dayKey) }) {
             guard let dayStart = DayAttribution.date(fromDayKey: w.dayKey, tz: w.tz) else { continue }
@@ -642,7 +659,8 @@ final class IngestionPipeline {
                                                             includeSuppressed: false)
             newDecisions += try reconcileConflictWindow(records: records, table: "interval_records",
                                                         metricId: w.metricId, dayStart: dayStart, dayEnd: dayEnd,
-                                                        batchId: batchId, now: now, dataConflicts: dataConflicts)
+                                                        batchId: batchId, now: now, dataConflicts: dataConflicts,
+                                                        classification: classification)
         }
         for w in sampleWindows.sorted(by: { ($0.metricId, $0.dayKey) < ($1.metricId, $1.dayKey) }) {
             guard let dayStart = DayAttribution.date(fromDayKey: w.dayKey, tz: w.tz) else { continue }
@@ -651,7 +669,8 @@ final class IngestionPipeline {
                                                        includeSuppressed: false)
             newDecisions += try reconcileConflictWindow(records: records, table: "raw_samples",
                                                         metricId: w.metricId, dayStart: dayStart, dayEnd: dayEnd,
-                                                        batchId: batchId, now: now, dataConflicts: dataConflicts)
+                                                        batchId: batchId, now: now, dataConflicts: dataConflicts,
+                                                        classification: classification)
         }
         return newDecisions
     }
@@ -662,7 +681,8 @@ final class IngestionPipeline {
     /// copies of it.
     private func reconcileConflictWindow<T: ConflictRecord>(
         records: [T], table: String, metricId: String, dayStart: Date, dayEnd: Date,
-        batchId: String, now: Date, dataConflicts: DataConflictRepository
+        batchId: String, now: Date, dataConflicts: DataConflictRepository,
+        classification: (_ sourceId: String, _ isManualEntry: Bool) -> String
     ) throws -> Int {
         let bySource = Dictionary(grouping: records, by: { $0.provenance.sourceId })
         // A conflict needs 2+ DIFFERENT sources reporting for this exact day — one source writing
@@ -686,10 +706,11 @@ final class IngestionPipeline {
         guard (maxValue - minValue) / max(abs(minValue), abs(maxValue), 1) > Self.materialDifferenceThreshold
         else { return 0 }
 
-        let candidates = perSource.map { record in
-            CandidateReading(id: record.id, sourceId: record.provenance.sourceId,
-                             isManualEntry: record.provenance.ingestionPath == .manual,
-                             measuredAt: record.provenance.measuredAt)
+        let candidates = perSource.map { record -> CandidateReading in
+            let isManual = record.provenance.ingestionPath == .manual
+            return CandidateReading(id: record.id, sourceId: record.provenance.sourceId,
+                                    classification: classification(record.provenance.sourceId, isManual),
+                                    isManualEntry: isManual, measuredAt: record.provenance.measuredAt)
         }
         let scope = ConflictScope.metric(id: metricId)
         let priorityRule = try sourcePriorityRules?.rule(forMetric: metricId)
@@ -923,8 +944,15 @@ final class IngestionPipeline {
         let allDevices = try catalog.devices()
         for d in descriptors {
             let existing = try catalog.source(id: d.id)
+            // AUDIT FIX (debt-closeout wave 2, pre-existing gap): this used to hardcode
+            // `type: .healthkit` regardless of `d.type`, so a file-imported source (GPX/TCX/CSV,
+            // `d.type == .fileImport`) was always misclassified — `SensorQualityMap.classId`'s own
+            // `sourceTypeDefaults` fallback maps `"healthkit"` to `"unknown"` but `"import"` to the
+            // correct `"file_import"`, and a file-import source has no associated Device row for the
+            // keyword matcher to save it. Predates this wave, but only became consequential once file
+            // import shipped as a real feature in this same wave.
             try catalog.upsertSource(Source(
-                id: d.id, type: .healthkit, displayName: d.displayName, platformBundleId: d.bundleId,
+                id: d.id, type: d.type, displayName: d.displayName, platformBundleId: d.bundleId,
                 status: .active, connectedAt: existing?.connectedAt ?? now, lastDeliveryAt: now,
                 updatedAt: now, originDeviceId: deviceId))
 

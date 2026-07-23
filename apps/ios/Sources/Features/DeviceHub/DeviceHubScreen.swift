@@ -221,6 +221,15 @@ enum DeviceHubStrings {
         ar: "لماذا جاءت قيمة من مصدر بدلاً من آخر.")
     static let resolvedCountLabel = LocalizedString(en: "{n} resolved", ar: "{n} تمت تسويتها")
     static let unresolvedCountLabel = LocalizedString(en: "{n} open", ar: "{n} مفتوحة")
+    /// EPIC-43: the Source Priority Editor's own entry point — a sibling card to the conflicts
+    /// summary row just above it, matching that row's own `NavigationLink` card pattern. Own local
+    /// copy here (not a cross-file reference to `SourcePriorityEditorStrings`), mirroring how
+    /// `conflictsTitle`/`conflictsSubtitle` above are already a deliberate separate copy from
+    /// `DataConflictsStrings.title` rather than an import.
+    static let sourcePriorityTitle = LocalizedString(en: "Source priority", ar: "أولوية المصدر")
+    static let sourcePrioritySubtitle = LocalizedString(
+        en: "Choose which source wins when two disagree.",
+        ar: "اختر أي مصدر يُرجَّح عند تعارض اثنين.")
 }
 
 // MARK: - Loaded data
@@ -345,6 +354,7 @@ struct DeviceHubScreen: View {
                     VStack(alignment: .leading, spacing: BadanSpace.space4) {
                         DeviceHubConflictsSummaryRow(unresolvedCount: data.unresolvedConflictCount,
                                                      resolvedCount: data.resolvedConflictCount)
+                        DeviceHubSourcePriorityRow()
 
                         SectionHeader(env.s(DeviceHubStrings.devicesHeader))
                         ForEach(data.cards) { card in
@@ -402,6 +412,48 @@ private struct DeviceHubConflictsSummaryRow: View {
                             env.s(DeviceHubStrings.resolvedCountLabel.filling(["n": env.format.integer(resolvedCount)])),
                             tint: BadanColor.textSecondary)
                     }
+                    Image(systemName: "chevron.forward")
+                        .font(BadanFont.caption.weight(.semibold))
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Source priority entry point (EPIC-43)
+
+/// Sibling `NavigationLink` card to `DeviceHubConflictsSummaryRow` just above — see
+/// `SourcePriorityEditorScreen.swift`'s own header for what this actually lets a person do (set how
+/// a FUTURE conflict for a metric gets resolved, never anything about an already-recorded value).
+/// No live count badge here (unlike the conflicts row): "how many metrics have a rule" is not a
+/// number worth alarming over, and every metric this editor covers always shows a real, non-empty
+/// state regardless of whether a rule has been saved yet.
+private struct DeviceHubSourcePriorityRow: View {
+    @Environment(AppEnvironment.self) private var env
+
+    var body: some View {
+        NavigationLink {
+            SourcePriorityEditorScreen()
+        } label: {
+            BadanCard {
+                HStack(spacing: BadanSpace.space3) {
+                    Image(systemName: "arrow.up.arrow.down.circle")
+                        .imageScale(.large)
+                        .foregroundStyle(BadanColor.primary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                        LText(DeviceHubStrings.sourcePriorityTitle)
+                            .font(BadanFont.body.weight(.semibold))
+                            .foregroundStyle(BadanColor.textPrimary)
+                        LText(DeviceHubStrings.sourcePrioritySubtitle)
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: BadanSpace.space2)
                     Image(systemName: "chevron.forward")
                         .font(BadanFont.caption.weight(.semibold))
                         .foregroundStyle(BadanColor.textSecondary)

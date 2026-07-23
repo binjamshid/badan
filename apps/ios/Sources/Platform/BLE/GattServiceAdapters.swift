@@ -75,6 +75,12 @@ public enum GattCharacteristicUUID {
     public static let weightMeasurement = "2A9D"
     /// Body Composition Measurement, GSS §3.34 (indicate).
     public static let bodyCompositionMeasurement = "2A9C"
+    /// Indoor Bike Data, GSS §3.117 (notify-only). Part of the Fitness Machine Service
+    /// (`GattServiceUUID.fitnessMachine`).
+    public static let indoorBikeData = "2AD2"
+    /// Treadmill Data, GSS §3.203 (notify-only). Part of the Fitness Machine Service
+    /// (`GattServiceUUID.fitnessMachine`).
+    public static let treadmillData = "2ACD"
 }
 
 // MARK: - `GattCentralManaging` — the seam, not an implementation
@@ -238,6 +244,53 @@ public struct BodyCompositionMeasurement: Equatable, Sendable {
     /// measurements this slice (documented gap, not silently ignored — a caller sees this flag and
     /// can choose to discard/flag the reading as incomplete rather than trust a partial one).
     public let isMultiPacketMeasurement: Bool
+}
+
+/// Indoor Bike Data (0x2AD2) decoded per GSS §3.117 (`org.bluetooth.characteristic.indoor_bike_data`),
+/// part of the Fitness Machine Service. Every field in the spec's fixed order IS decoded (so offset
+/// math never drifts for a bike that sets many optional flags at once — see Cycling Power
+/// Measurement's own Accumulated Torque precedent) but only the fields BADAN's workout session
+/// engine actually consumes are exposed as named properties: Average Speed, Average Cadence, Total
+/// Distance, Resistance Level, Average Power, Expended Energy, Metabolic Equivalent, Elapsed Time,
+/// and Remaining Time are all consumed for correct downstream offsets but intentionally not decoded
+/// into named properties — no BADAN consumer yet.
+public struct IndoorBikeDataMeasurement: Equatable, Sendable {
+    /// km/h, resolution 0.01 — present only when Flags bit 0 ("More Data") is CLEAR. NOTE the
+    /// inverted polarity versus every other optional field in this file: bit 0 SET means this
+    /// notification omits Instantaneous Speed (it will arrive in a later packet), not that the
+    /// field is present.
+    public let instantaneousSpeedKmh: Double?
+    /// rpm — present only when Flags bit 2 is set. Raw units are 0.5 rpm (the spec transmits crank
+    /// rpm at 2x scale); this parser divides by 2 so callers never repeat that scaling.
+    public let instantaneousCadenceRpm: Double?
+    /// Watts, signed — present only when Flags bit 6 is set.
+    public let instantaneousPowerWatts: Int?
+    /// bpm — present only when Flags bit 9 is set.
+    public let heartRateBPM: Int?
+}
+
+/// Treadmill Data (0x2ACD) decoded per GSS §3.203 (`org.bluetooth.characteristic.treadmill_data`),
+/// part of the Fitness Machine Service. An analogous but NOT identical flag layout to Indoor Bike
+/// Data's own: Instantaneous Speed here is MANDATORY and unconditional (Flags bit 0, "More Data",
+/// does not gate it the way Indoor Bike Data's own bit 0 gates its Instantaneous Speed field), and
+/// there is no cadence field at all in this characteristic (a treadmill reports pace over FTMS, not
+/// crank/step cadence) — BADAN has no consumer for a cadence value here because the spec provides
+/// none. Every field in the spec's fixed order IS decoded (so offset math never drifts for a
+/// treadmill that sets many optional flags at once); Average Speed, Total Distance, Inclination/
+/// Ramp Angle, Elevation Gain, Instantaneous/Average Pace, Expended Energy, Metabolic Equivalent,
+/// Elapsed/Remaining Time, and Force on Belt are all consumed for correct downstream offsets but
+/// intentionally not decoded into named properties — mirroring Cycling Power Measurement's own
+/// Accumulated Torque precedent.
+public struct TreadmillDataMeasurement: Equatable, Sendable {
+    /// km/h, resolution 0.01. Always present — see this type's own doc for why, unlike every other
+    /// speed-like field in this file, this one is never flag-gated.
+    public let instantaneousSpeedKmh: Double
+    /// Watts, signed — decoded from the "Force on Belt and Power Output" field's second (Power
+    /// Output) sub-field; present only when Flags bit 12 is set. Force on Belt itself (newtons) is
+    /// consumed for offset only, not exposed — no BADAN consumer yet.
+    public let instantaneousPowerWatts: Int?
+    /// bpm — present only when Flags bit 8 is set.
+    public let heartRateBPM: Int?
 }
 
 // MARK: - Parsers
@@ -656,5 +709,256 @@ public enum GattParsers {
                                            fatFreeMassKg: fatFreeMass, impedanceOhms: impedance,
                                            weightKg: weightKg, heightMeters: heightM,
                                            isMultiPacketMeasurement: multiPacket)
+    }
+
+    // MARK: Indoor Bike Data (0x2AD2)
+
+    /// Decodes an Indoor Bike Data notification per GSS §3.117.
+    ///
+    /// Byte layout (all multi-byte fields little-endian; every field below IS consumed in the
+    /// spec's fixed order so a bike that sets many flags at once still decodes correctly — see the
+    /// type's own doc for exactly which fields are exposed vs. consumed-for-offset-only):
+    /// - Bytes 0–1: Flags (uint16) — bit0 More Data (INVERTED: CLEAR means Instantaneous Speed IS
+    ///   present, SET means it is NOT — see the type's own doc), bit1 Average Speed present, bit2
+    ///   Instantaneous Cadence present, bit3 Average Cadence present, bit4 Total Distance present,
+    ///   bit5 Resistance Level present, bit6 Instantaneous Power present, bit7 Average Power
+    ///   present, bit8 Expended Energy present, bit9 Heart Rate present, bit10 Metabolic Equivalent
+    ///   present, bit11 Elapsed Time present, bit12 Remaining Time present.
+    /// - +2 bytes if bit0 CLEAR: Instantaneous Speed, uint16 LE, 0.01 km/h resolution.
+    /// - +2 bytes if bit1: Average Speed, uint16 LE, 0.01 km/h resolution (offset-only — no BADAN
+    ///   consumer yet).
+    /// - +2 bytes if bit2: Instantaneous Cadence, uint16 LE, 0.5 rpm resolution (raw value is crank
+    ///   rpm doubled per spec; this parser divides by 2).
+    /// - +2 bytes if bit3: Average Cadence, uint16 LE, 0.5 rpm resolution (offset-only).
+    /// - +3 bytes if bit4: Total Distance, uint24 LE, 1 m resolution (offset-only).
+    /// - +2 bytes if bit5: Resistance Level, sint16, unitless (offset-only).
+    /// - +2 bytes if bit6: Instantaneous Power, sint16, 1 W resolution.
+    /// - +2 bytes if bit7: Average Power, sint16, 1 W resolution (offset-only).
+    /// - +5 bytes if bit8: Expended Energy — Total Energy (uint16 LE, kcal), Energy Per Hour
+    ///   (uint16 LE, kcal/hr), Energy Per Minute (uint8, kcal/min) (offset-only).
+    /// - +1 byte if bit9: Heart Rate, uint8, bpm.
+    /// - +1 byte if bit10: Metabolic Equivalent, uint8, 0.1 resolution (offset-only).
+    /// - +2 bytes if bit11: Elapsed Time, uint16 LE, 1 s resolution (offset-only).
+    /// - +2 bytes if bit12: Remaining Time, uint16 LE, 1 s resolution (offset-only, last field).
+    public static func parseIndoorBikeDataMeasurement(_ data: Data) -> IndoorBikeDataMeasurement? {
+        let b = [UInt8](data)
+        guard b.count >= 2 else { return nil }
+
+        let flags = UInt16(b[0]) | (UInt16(b[1]) << 8)
+        let moreData = flags & 0x0001 != 0
+        let avgSpeedPresent = flags & 0x0002 != 0
+        let cadencePresent = flags & 0x0004 != 0
+        let avgCadencePresent = flags & 0x0008 != 0
+        let totalDistancePresent = flags & 0x0010 != 0
+        let resistancePresent = flags & 0x0020 != 0
+        let powerPresent = flags & 0x0040 != 0
+        let avgPowerPresent = flags & 0x0080 != 0
+        let expendedEnergyPresent = flags & 0x0100 != 0
+        let heartRatePresent = flags & 0x0200 != 0
+        let metabolicEquivPresent = flags & 0x0400 != 0
+        let elapsedTimePresent = flags & 0x0800 != 0
+        let remainingTimePresent = flags & 0x1000 != 0
+
+        var offset = 2
+
+        var speed: Double? = nil
+        if !moreData {
+            guard b.count >= offset + 2 else { return nil }
+            speed = Double(u16(b, offset)) * 0.01
+            offset += 2
+        }
+
+        if avgSpeedPresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Average Speed — offset-only, not decoded (see type's own doc).
+        }
+
+        var cadence: Double? = nil
+        if cadencePresent {
+            guard b.count >= offset + 2 else { return nil }
+            cadence = Double(u16(b, offset)) * 0.5
+            offset += 2
+        }
+
+        if avgCadencePresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Average Cadence — offset-only.
+        }
+
+        if totalDistancePresent {
+            guard b.count >= offset + 3 else { return nil }
+            offset += 3 // Total Distance (uint24) — offset-only.
+        }
+
+        if resistancePresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Resistance Level — offset-only.
+        }
+
+        var power: Int? = nil
+        if powerPresent {
+            guard b.count >= offset + 2 else { return nil }
+            power = Int(s16(b, offset))
+            offset += 2
+        }
+
+        if avgPowerPresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Average Power — offset-only.
+        }
+
+        if expendedEnergyPresent {
+            guard b.count >= offset + 5 else { return nil }
+            offset += 5 // Expended Energy (Total/PerHour uint16 x2 + PerMinute uint8) — offset-only.
+        }
+
+        var heartRate: Int? = nil
+        if heartRatePresent {
+            guard b.count >= offset + 1 else { return nil }
+            heartRate = Int(b[offset])
+            offset += 1
+        }
+
+        if metabolicEquivPresent {
+            guard b.count >= offset + 1 else { return nil }
+            offset += 1 // Metabolic Equivalent — offset-only.
+        }
+
+        if elapsedTimePresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Elapsed Time — offset-only.
+        }
+
+        if remainingTimePresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Remaining Time — offset-only.
+        }
+
+        return IndoorBikeDataMeasurement(instantaneousSpeedKmh: speed, instantaneousCadenceRpm: cadence,
+                                          instantaneousPowerWatts: power, heartRateBPM: heartRate)
+    }
+
+    // MARK: Treadmill Data (0x2ACD)
+
+    /// Decodes a Treadmill Data notification per GSS §3.203.
+    ///
+    /// Byte layout (all multi-byte fields little-endian; every field below IS consumed in the
+    /// spec's fixed order so a treadmill that sets many flags at once still decodes correctly —
+    /// see the type's own doc for exactly which fields are exposed vs. consumed-for-offset-only):
+    /// - Bytes 0–1: Flags (uint16) — bit0 More Data (does NOT gate Instantaneous Speed for this
+    ///   characteristic — see the type's own doc for why that differs from Indoor Bike Data), bit1
+    ///   Average Speed present, bit2 Total Distance present, bit3 Inclination and Ramp Angle
+    ///   Setting present, bit4 Elevation Gain present, bit5 Instantaneous Pace present, bit6
+    ///   Average Pace present, bit7 Expended Energy present, bit8 Heart Rate present, bit9
+    ///   Metabolic Equivalent present, bit10 Elapsed Time present, bit11 Remaining Time present,
+    ///   bit12 Force on Belt and Power Output present.
+    /// - Bytes 2–3: Instantaneous Speed, uint16 LE, 0.01 km/h resolution. MANDATORY — always
+    ///   present, unconditionally (no flag bit gates it, unlike Indoor Bike Data's own field).
+    /// - +2 bytes if bit1: Average Speed, uint16 LE, 0.01 km/h resolution (offset-only — no BADAN
+    ///   consumer yet).
+    /// - +3 bytes if bit2: Total Distance, uint24 LE, 1 m resolution (offset-only).
+    /// - +4 bytes if bit3: Inclination (sint16, 0.1% resolution) + Ramp Angle Setting (sint16,
+    ///   0.1° resolution) (offset-only).
+    /// - +4 bytes if bit4: Positive Elevation Gain (uint16 LE, 0.1 m) + Negative Elevation Gain
+    ///   (uint16 LE, 0.1 m) (offset-only).
+    /// - +1 byte if bit5: Instantaneous Pace, uint8, 0.1 min/km resolution (offset-only).
+    /// - +1 byte if bit6: Average Pace, uint8, 0.1 min/km resolution (offset-only).
+    /// - +5 bytes if bit7: Expended Energy — Total Energy (uint16 LE, kcal), Energy Per Hour
+    ///   (uint16 LE, kcal/hr), Energy Per Minute (uint8, kcal/min) (offset-only).
+    /// - +1 byte if bit8: Heart Rate, uint8, bpm.
+    /// - +1 byte if bit9: Metabolic Equivalent, uint8, 0.1 resolution (offset-only).
+    /// - +2 bytes if bit10: Elapsed Time, uint16 LE, 1 s resolution (offset-only).
+    /// - +2 bytes if bit11: Remaining Time, uint16 LE, 1 s resolution (offset-only).
+    /// - +4 bytes if bit12: Force on Belt (sint16, 1 N — offset-only, not decoded) + Power Output
+    ///   (sint16, 1 W).
+    public static func parseTreadmillDataMeasurement(_ data: Data) -> TreadmillDataMeasurement? {
+        let b = [UInt8](data)
+        guard b.count >= 4 else { return nil }
+
+        let flags = UInt16(b[0]) | (UInt16(b[1]) << 8)
+        let avgSpeedPresent = flags & 0x0002 != 0
+        let totalDistancePresent = flags & 0x0004 != 0
+        let inclinationPresent = flags & 0x0008 != 0
+        let elevationGainPresent = flags & 0x0010 != 0
+        let instantaneousPacePresent = flags & 0x0020 != 0
+        let averagePacePresent = flags & 0x0040 != 0
+        let expendedEnergyPresent = flags & 0x0080 != 0
+        let heartRatePresent = flags & 0x0100 != 0
+        let metabolicEquivPresent = flags & 0x0200 != 0
+        let elapsedTimePresent = flags & 0x0400 != 0
+        let remainingTimePresent = flags & 0x0800 != 0
+        let forceAndPowerPresent = flags & 0x1000 != 0
+
+        var offset = 2
+        let speed = Double(u16(b, offset)) * 0.01
+        offset += 2
+
+        if avgSpeedPresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Average Speed — offset-only.
+        }
+
+        if totalDistancePresent {
+            guard b.count >= offset + 3 else { return nil }
+            offset += 3 // Total Distance (uint24) — offset-only.
+        }
+
+        if inclinationPresent {
+            guard b.count >= offset + 4 else { return nil }
+            offset += 4 // Inclination + Ramp Angle Setting — offset-only.
+        }
+
+        if elevationGainPresent {
+            guard b.count >= offset + 4 else { return nil }
+            offset += 4 // Positive/Negative Elevation Gain — offset-only.
+        }
+
+        if instantaneousPacePresent {
+            guard b.count >= offset + 1 else { return nil }
+            offset += 1 // Instantaneous Pace — offset-only.
+        }
+
+        if averagePacePresent {
+            guard b.count >= offset + 1 else { return nil }
+            offset += 1 // Average Pace — offset-only.
+        }
+
+        if expendedEnergyPresent {
+            guard b.count >= offset + 5 else { return nil }
+            offset += 5 // Expended Energy — offset-only.
+        }
+
+        var heartRate: Int? = nil
+        if heartRatePresent {
+            guard b.count >= offset + 1 else { return nil }
+            heartRate = Int(b[offset])
+            offset += 1
+        }
+
+        if metabolicEquivPresent {
+            guard b.count >= offset + 1 else { return nil }
+            offset += 1 // Metabolic Equivalent — offset-only.
+        }
+
+        if elapsedTimePresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Elapsed Time — offset-only.
+        }
+
+        if remainingTimePresent {
+            guard b.count >= offset + 2 else { return nil }
+            offset += 2 // Remaining Time — offset-only.
+        }
+
+        var power: Int? = nil
+        if forceAndPowerPresent {
+            guard b.count >= offset + 4 else { return nil }
+            offset += 2 // Force on Belt — offset-only, not decoded (see type's own doc).
+            power = Int(s16(b, offset))
+            offset += 2
+        }
+
+        return TreadmillDataMeasurement(instantaneousSpeedKmh: speed, instantaneousPowerWatts: power,
+                                         heartRateBPM: heartRate)
     }
 }

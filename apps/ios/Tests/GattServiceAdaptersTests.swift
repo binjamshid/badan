@@ -325,6 +325,119 @@ final class GattServiceAdaptersTests: XCTestCase {
     func testBodyComposition_TooShortForMandatoryFields_ReturnsNil() {
         XCTAssertNil(GattParsers.parseBodyCompositionMeasurement(Data([0x00, 0x00, 0x00])))
     }
+
+    // MARK: - Indoor Bike Data (0x2AD2)
+
+    func testIndoorBikeData_FullFlags_EveryOptionalFieldPresent() {
+        // flags = bit0(MoreData=0, i.e. speed IS present) clear, bit1(avg speed) | bit2(cadence) |
+        // bit3(avg cadence) | bit4(total distance) | bit5(resistance) | bit6(power) |
+        // bit7(avg power) | bit8(expended energy) | bit9(heart rate) | bit10(metabolic equiv) |
+        // bit11(elapsed time) | bit12(remaining time) all SET = 0x1FFE (LE: 0xFE, 0x1F).
+        // speed raw 2500 -> 25.00 km/h, avg speed raw 2000 -> 20.00 km/h (skipped), cadence raw
+        // 180 -> 90.0 rpm, avg cadence raw 160 -> 80.0 rpm (skipped), total distance raw 12345 m
+        // (skipped, uint24), resistance raw 50 (skipped, sint16), power=250W, avg power=200W
+        // (skipped), expended energy total=500kcal/perHour=600/perMin=10 (skipped, 5 bytes),
+        // heart rate=145bpm, metabolic equiv raw 85 -> 8.5 (skipped), elapsed=3600s (skipped),
+        // remaining=1200s (skipped).
+        let data = Data([
+            0xFE, 0x1F,             // flags = 0x1FFE
+            0xC4, 0x09,             // instantaneous speed raw = 2500
+            0xD0, 0x07,             // average speed raw = 2000 (skipped)
+            0xB4, 0x00,             // instantaneous cadence raw = 180
+            0xA0, 0x00,             // average cadence raw = 160 (skipped)
+            0x39, 0x30, 0x00,       // total distance raw = 12345 (uint24, skipped)
+            0x32, 0x00,             // resistance level raw = 50 (skipped)
+            0xFA, 0x00,             // instantaneous power = 250
+            0xC8, 0x00,             // average power = 200 (skipped)
+            0xF4, 0x01,             // expended energy: total kcal = 500 (skipped)
+            0x58, 0x02,             // expended energy: per hour kcal = 600 (skipped)
+            0x0A,                   // expended energy: per minute kcal = 10 (skipped)
+            145,                    // heart rate
+            0x55,                   // metabolic equivalent raw = 85 (skipped)
+            0x10, 0x0E,             // elapsed time raw = 3600 (skipped)
+            0xB0, 0x04,             // remaining time raw = 1200 (skipped)
+        ])
+        let bike = try? XCTUnwrap(GattParsers.parseIndoorBikeDataMeasurement(data))
+        XCTAssertEqual(bike?.instantaneousSpeedKmh ?? -1, 25.0, accuracy: 0.0001)
+        XCTAssertEqual(bike?.instantaneousCadenceRpm ?? -1, 90.0, accuracy: 0.0001)
+        XCTAssertEqual(bike?.instantaneousPowerWatts, 250)
+        XCTAssertEqual(bike?.heartRateBPM, 145)
+    }
+
+    func testIndoorBikeData_MinimalPacket_MandatoryFieldsOnly() {
+        // flags=0x0000 (More Data clear -> speed present; nothing else set).
+        // speed raw 1500 -> 15.00 km/h.
+        let data = Data([0x00, 0x00, 0xDC, 0x05])
+        let bike = try? XCTUnwrap(GattParsers.parseIndoorBikeDataMeasurement(data))
+        XCTAssertEqual(bike?.instantaneousSpeedKmh ?? -1, 15.0, accuracy: 0.0001)
+        XCTAssertNil(bike?.instantaneousCadenceRpm)
+        XCTAssertNil(bike?.instantaneousPowerWatts)
+        XCTAssertNil(bike?.heartRateBPM)
+    }
+
+    func testIndoorBikeData_MoreDataFlagSet_SpeedAbsentButValidReading() {
+        // flags = bit0 (More Data) set -> Instantaneous Speed is NOT present in this packet, and no
+        // other bits set. This is a valid (if minimal) reading, not malformed input.
+        let bike = GattParsers.parseIndoorBikeDataMeasurement(Data([0x01, 0x00]))
+        XCTAssertNotNil(bike, "More Data set with no other flags is a valid reading with no fields")
+        XCTAssertNil(bike?.instantaneousSpeedKmh)
+        XCTAssertNil(bike?.instantaneousCadenceRpm)
+        XCTAssertNil(bike?.instantaneousPowerWatts)
+        XCTAssertNil(bike?.heartRateBPM)
+    }
+
+    func testIndoorBikeData_MalformedTruncatedCadence_ReturnsNil() {
+        // flags = bit0(More Data, speed absent) | bit2(cadence present) = 0x0005. Cadence field
+        // needs 2 bytes but 0 follow after the flags.
+        let data = Data([0x05, 0x00])
+        XCTAssertNil(GattParsers.parseIndoorBikeDataMeasurement(data))
+    }
+
+    func testIndoorBikeData_EmptyData_ReturnsNil() {
+        XCTAssertNil(GattParsers.parseIndoorBikeDataMeasurement(Data()))
+        XCTAssertNil(GattParsers.parseIndoorBikeDataMeasurement(Data([0x00])))
+    }
+
+    // MARK: - Treadmill Data (0x2ACD)
+
+    func testTreadmillData_InstantaneousSpeedDecodesWithNoRelevantFlagBitSet() {
+        // flags=0x0000 — Instantaneous Speed is unconditional for Treadmill Data (unlike Indoor
+        // Bike Data's own flag-gated field), so it must decode here with every optional bit clear.
+        // speed raw 800 -> 8.00 km/h.
+        let data = Data([0x00, 0x00, 0x20, 0x03])
+        let treadmill = try? XCTUnwrap(GattParsers.parseTreadmillDataMeasurement(data))
+        XCTAssertEqual(treadmill?.instantaneousSpeedKmh ?? -1, 8.0, accuracy: 0.0001)
+        XCTAssertNil(treadmill?.instantaneousPowerWatts)
+        XCTAssertNil(treadmill?.heartRateBPM)
+    }
+
+    func testTreadmillData_HeartRateAndForceAndPowerPresent() {
+        // flags = bit8(heart rate) | bit12(force on belt & power) = 0x1100 (LE: 0x00, 0x11).
+        // speed raw 1000 -> 10.00 km/h, heart rate=150bpm, force on belt raw=80N (skipped),
+        // power output = -30W (sint16).
+        let data = Data([
+            0x00, 0x11,             // flags = 0x1100
+            0xE8, 0x03,             // instantaneous speed raw = 1000
+            150,                    // heart rate
+            0x50, 0x00,             // force on belt raw = 80 (skipped)
+            0xE2, 0xFF,             // power output = -30 (sint16 0xFFE2 LE)
+        ])
+        let treadmill = try? XCTUnwrap(GattParsers.parseTreadmillDataMeasurement(data))
+        XCTAssertEqual(treadmill?.instantaneousSpeedKmh ?? -1, 10.0, accuracy: 0.0001)
+        XCTAssertEqual(treadmill?.heartRateBPM, 150)
+        XCTAssertEqual(treadmill?.instantaneousPowerWatts, -30)
+    }
+
+    func testTreadmillData_MalformedTruncatedForceAndPower_ReturnsNil() {
+        // flags say Force on Belt and Power Output present (bit12), but only 2 of the required 4
+        // bytes follow.
+        let data = Data([0x00, 0x10, 0x00, 0x00, 0x00, 0x00])
+        XCTAssertNil(GattParsers.parseTreadmillDataMeasurement(data))
+    }
+
+    func testTreadmillData_TooShortForMandatorySpeed_ReturnsNil() {
+        XCTAssertNil(GattParsers.parseTreadmillDataMeasurement(Data([0x00, 0x00, 0x00])))
+    }
 }
 
 // MARK: - `GattCentralManaging` fake double: domain-consumption exercise only
