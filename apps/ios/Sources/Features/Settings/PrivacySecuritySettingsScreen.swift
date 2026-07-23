@@ -11,7 +11,14 @@ struct PrivacySecuritySettingsScreen: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showPurgeConfirm = false
     @State private var showResetConfirm = false
+    @State private var showingDataChoice = false
     @State private var transientNotice: LocalizedString?
+
+    // STUB-01/COMP-06 (post-onboarding data choice): a second, Settings-side entry point to
+    // `DataConnectionChoiceScreen` alongside the tappable `SampleDataBanner` — shown only while
+    // sample data is actually active, so a connected real user never sees an irrelevant row.
+    private static let manageSampleDataTitle = LocalizedString(
+        en: "Manage sample data", ar: "إدارة البيانات التجريبية")
 
     // EPIC-43: Device Hub's entry point.
     private static let manageDevicesTitle = LocalizedString(en: "Manage devices", ar: "إدارة الأجهزة")
@@ -267,23 +274,62 @@ struct PrivacySecuritySettingsScreen: View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(SettingsStrings.dataManagementHeader))
             BadanCard {
-                Button { showResetConfirm = true } label: {
-                    HStack(spacing: BadanSpace.space3) {
-                        Image(systemName: "trash")
-                            .imageScale(.medium)
-                            // Warning-toned, not the same neutral tint as a harmless toggle —
-                            // this is a destructive, confirm-gated action.
-                            .foregroundStyle(BadanColor.outOfBand)
-                            .accessibilityHidden(true)
-                        LText(Loc.deleteAllData)
-                            .font(BadanFont.body)
-                            .foregroundStyle(BadanColor.textPrimary)
-                        Spacer(minLength: BadanSpace.space2)
+                VStack(spacing: 0) {
+                    // STUB-01/COMP-06: only shown while sample data is actually active — a
+                    // connected real user has nothing here to manage. Mirrors the tappable
+                    // `SampleDataBanner` entry point for anyone who dismissed/never saw the
+                    // banner but is looking in Settings for a way to act on it.
+                    if SeedController.isDemoDataActive {
+                        Button { showingDataChoice = true } label: {
+                            HStack(spacing: BadanSpace.space3) {
+                                Image(systemName: "info.circle")
+                                    .imageScale(.medium)
+                                    .foregroundStyle(BadanColor.info)
+                                    .accessibilityHidden(true)
+                                LText(Self.manageSampleDataTitle)
+                                    .font(BadanFont.body)
+                                    .foregroundStyle(BadanColor.textPrimary)
+                                Spacer(minLength: BadanSpace.space2)
+                                Image(systemName: "chevron.forward")
+                                    .imageScale(.small)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                                    .accessibilityHidden(true)
+                            }
+                            .frame(minHeight: BadanSpace.touchMin)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        settingsDivider
                     }
-                    .frame(minHeight: BadanSpace.touchMin)
-                    .contentShape(Rectangle())
+
+                    Button { showResetConfirm = true } label: {
+                        HStack(spacing: BadanSpace.space3) {
+                            Image(systemName: "trash")
+                                .imageScale(.medium)
+                                // Warning-toned, not the same neutral tint as a harmless toggle —
+                                // this is a destructive, confirm-gated action.
+                                .foregroundStyle(BadanColor.outOfBand)
+                                .accessibilityHidden(true)
+                            LText(Loc.deleteAllData)
+                                .font(BadanFont.body)
+                                .foregroundStyle(BadanColor.textPrimary)
+                            Spacer(minLength: BadanSpace.space2)
+                        }
+                        .frame(minHeight: BadanSpace.touchMin)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+            }
+        }
+        .sheet(isPresented: $showingDataChoice) {
+            NavigationStack {
+                DataConnectionChoiceScreen()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(env.s(Loc.close)) { showingDataChoice = false }
+                        }
+                    }
             }
         }
     }

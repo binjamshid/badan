@@ -14,6 +14,12 @@ import SwiftUI
 ///
 /// Presentational only — takes `language` explicitly (matching `StatusChip`/`DepthBadge`) rather
 /// than reading `AppEnvironment` itself, so it stays a plain, reusable design-system component.
+///
+/// STUB-01/COMP-06 (post-onboarding data choice): the trailing chevron is a disclosure hint, not
+/// a dismiss control — the doc above still holds (there is still no way to make the banner go
+/// away without actually connecting or deleting sample data). `RootView`'s `MainTabView` wraps
+/// this whole view in a `Button` that opens `DataConnectionChoiceScreen`; this component stays
+/// unaware of that and never gains behavior of its own.
 struct SampleDataBanner: View {
     var language: AppLanguage
 
@@ -33,6 +39,10 @@ struct SampleDataBanner: View {
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
             Spacer(minLength: 0)
+            Image(systemName: "chevron.forward")
+                .imageScale(.small)
+                .foregroundStyle(BadanColor.textSecondary)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, BadanSpace.space4)
         .padding(.vertical, BadanSpace.space2)

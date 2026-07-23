@@ -589,6 +589,57 @@ final class AppEnvironment {
         bumpDataGeneration()
     }
 
+    /// STUB-01/COMP-06 (post-onboarding data choice): the honest "actually remove sample data"
+    /// action `resetDemoData()` cannot be — `resetDemoData()` intentionally RE-SEEDS a fresh
+    /// demo dataset when HealthKit isn't connected (see its own doc; that is the correct,
+    /// documented behavior for Settings' "Delete all data" button — its own confirmation copy
+    /// says so). This is the counterpart behind `DataConnectionChoiceScreen`'s "Delete sample
+    /// data" action: purge only, never reseed, reusing the exact same primitive onboarding's own
+    /// "Start empty" already relies on (`SeedController.markStartEmpty`) — a device that starts
+    /// empty via onboarding and one that goes empty later via this path land in the identical,
+    /// verified-empty state.
+    ///
+    /// Deliberately does not touch `RouteConsentStore`/`HealthPermissionGate` the way
+    /// `resetDemoData()` does — those are HealthKit-connect state, and nothing here connects or
+    /// disconnects HealthKit.
+    ///
+    /// Guarded on `!isHealthKitConnected`: both this method's call sites (the tappable
+    /// `SampleDataBanner` and `PrivacySecuritySettingsScreen`'s "Manage sample data" row) are
+    /// themselves gated on `SeedController.isDemoDataActive`, which is never true for a connected
+    /// user — but a wipe this destructive should not depend solely on its callers staying that
+    /// way, so it fails closed (a no-op, not a thrown error) rather than trust that alone.
+    ///
+    /// No `isReady` bracket (unlike `resetDemoData()`): flipping `isReady` false tears down and
+    /// rebuilds `RootView`'s whole `MainTabView` (including resetting `selectedTab`), which would
+    /// yank the very sheet this action was invoked from out from under the user mid-purge. The
+    /// purge itself is a handful of local `DELETE`s (see `SeedController.markStartEmpty`), not a
+    /// 90-day HealthKit backfill — `DataConnectionChoiceScreen`'s own `phase` state already gives
+    /// the user a "Deleting…" label for the second or so this takes.
+    func deleteSampleData() async {
+        resetError = nil
+        guard !isHealthKitConnected else { return }
+        let db = database
+        // BUG-18 pattern: chain onto any in-flight pipeline task instead of racing it.
+        let previous = pipelineTask
+        let task = Task.detached(priority: .userInitiated) { () -> Error? in
+            _ = await previous?.value
+            do {
+                try SeedController.markStartEmpty(database: db)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        pipelineTask = task
+        let thrown = await task.value
+        resetError = thrown
+        // BUG-05 pattern: demo medications/symptoms were just purged — any reminder still
+        // scheduled against one of those regimens is stale.
+        await refreshMedicationReminders()
+        // BUG-12/13: the store was just purged — every screen's cached read is now stale.
+        bumpDataGeneration()
+    }
+
     func completeOnboarding() {
         onboardingComplete = true
         UserDefaults.standard.set(true, forKey: Self.onboardingKey)
