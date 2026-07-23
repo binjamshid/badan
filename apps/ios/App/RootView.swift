@@ -27,8 +27,16 @@ struct RootView: View {
                 OnboardingView()
                     .transition(.opacity)
             } else {
-                MainTabView(showSampleDataBanner: isSampleDataActive)
-                    .transition(.opacity)
+                MainTabView(showSampleDataBanner: isSampleDataActive) {
+                    // STUB-01/COMP-06: the moment `DataConnectionChoiceScreen`'s sheet closes —
+                    // having connected or deleted sample data, or just been dismissed with
+                    // neither — is, like `onboardingComplete` flipping, a within-session change
+                    // this bare `UserDefaults` flag wouldn't otherwise trigger a re-check for.
+                    // Without this the banner (and its sheet) would keep showing until the next
+                    // scene-phase change (backgrounding/foregrounding the app).
+                    isSampleDataActive = SeedController.isDemoDataActive
+                }
+                .transition(.opacity)
             }
         }
         .animation(.easeInOut, value: env.isReady)
@@ -86,10 +94,23 @@ struct MainTabView: View {
     /// `MainTabView()` bare keep compiling unchanged.
     var showSampleDataBanner: Bool = false
 
+    /// STUB-01/COMP-06: called once `DataConnectionChoiceScreen`'s sheet has closed, so
+    /// `RootView` can re-read `SeedController.isDemoDataActive` and flip `showSampleDataBanner`
+    /// promptly — see the call site in `RootView.body`. Defaults `nil` for the same reason
+    /// `showSampleDataBanner` defaults `false`: existing bare `MainTabView()` callers/previews
+    /// keep compiling unchanged.
+    var onDataChoiceDismissed: (() -> Void)? = nil
+
     /// EPIC-32: the selected tab. The `TabView` was previously uncontrolled (defaulted to the
     /// first tab); this binding preserves that (starts on Today) and additionally lets a tapped
     /// notification's deep link select the destination tab. Manual tab taps still work unchanged.
     @State private var selectedTab: MainTab = .today
+
+    /// STUB-01/COMP-06 (post-onboarding data choice): whether `DataConnectionChoiceScreen` is
+    /// presented. Tapping the (now-tappable) `SampleDataBanner` is this screen's one entry point
+    /// from the tab shell — see `DataConnectionChoiceScreen`'s doc for why it's needed at all
+    /// (onboarding's own connect/start-empty choice has no way back to it afterward).
+    @State private var showingDataChoice = false
 
     var body: some View {
         // Stable accessibilityIdentifiers on the five tabs anchor future UI tests to the
@@ -135,10 +156,38 @@ struct MainTabView: View {
         // never has to guess the tab bar's height across devices/Dynamic Type sizes.
         .safeAreaInset(edge: .bottom) {
             if showSampleDataBanner {
-                SampleDataBanner(language: env.language)
+                // STUB-01/COMP-06: the banner itself stays purely presentational (see its own
+                // doc — no dismiss control) — tappability and what tapping it opens are both
+                // this call site's concern, not the component's.
+                Button { showingDataChoice = true } label: {
+                    SampleDataBanner(language: env.language)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(Text(env.s(Self.sampleDataBannerHint)))
             }
         }
+        .sheet(isPresented: $showingDataChoice) {
+            NavigationStack {
+                DataConnectionChoiceScreen()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(env.s(Loc.close)) { showingDataChoice = false }
+                        }
+                    }
+            }
+        }
+        // STUB-01/COMP-06: fires on every dismiss path (a successful connect/delete calling
+        // `dismiss()` from inside the sheet, the toolbar Close button above, or a swipe-to-
+        // dismiss gesture) — SwiftUI flips a `.sheet(isPresented:)` binding back to `false` on
+        // all three, so one `onChange` covers all of them.
+        .onChange(of: showingDataChoice) { _, isPresented in
+            if !isPresented { onDataChoiceDismissed?() }
+        }
     }
+
+    private static let sampleDataBannerHint = LocalizedString(
+        en: "Opens options to connect Apple Health or delete the sample data.",
+        ar: "يفتح خيارات لربط صحة آبل أو حذف البيانات التجريبية.")
 }
 
 /// Shown while `AppEnvironment.bootstrap()` seeds/loads. On a slow first run this is the
