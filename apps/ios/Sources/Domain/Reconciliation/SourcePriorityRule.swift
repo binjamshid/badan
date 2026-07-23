@@ -73,3 +73,28 @@ extension SourcePriorityRule {
                             isUserOverride: false, createdAt: now, updatedAt: now, originDeviceId: originDeviceId)
     }
 }
+
+extension SourcePriorityRule.ClassificationKey {
+    /// AUDIT FIX (debt-closeout wave 2): the ONE bridge from a `SensorQualityMap` sensor-class id
+    /// (`packages/contracts/sensor_quality.json`) to this vocabulary — moved here from
+    /// `Features/DeviceHub/SourcePriorityEditorScreen.swift`'s own (UI-only) copy so
+    /// `IngestionPipeline`'s real candidate-building code and the editor screen's display-only
+    /// grounding both derive a classification the SAME way. Before this fix, only the UI copy
+    /// existed, and `IngestionPipeline.reconcileConflictWindow` never called it at all — every real
+    /// `CandidateReading` was built with `classification` defaulted to `""`, which never matches any
+    /// of this vocabulary's non-empty constants, so `ConflictDecisionEngine.decidePriorityOrder`/
+    /// `decideChestStrapPriority` silently returned `nil` for every real conflict regardless of any
+    /// saved `SourcePriorityRule` — a saved priority order had ZERO effect in production. `nil` for
+    /// any sensor class this priority-rule vocabulary doesn't cover (a ring, a scale, a phone, an
+    /// unrecognized source, …) — such a candidate is simply unranked by any priority rule, exactly
+    /// like today's `""` default, but for the RIGHT reason (a source this vocabulary doesn't name)
+    /// rather than by construction.
+    public static func fromSensorClassId(_ sourceClassId: String) -> String? {
+        switch sourceClassId {
+        case "chest_strap": return bleChestStrapHR
+        case "wrist_wearable": return wristOpticalHR
+        case "manual_entry": return manual
+        default: return nil
+        }
+    }
+}

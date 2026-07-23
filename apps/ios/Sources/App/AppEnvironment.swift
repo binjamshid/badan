@@ -1134,6 +1134,19 @@ extension AppEnvironment {
         AppleHealthArchiveImporter(pipeline: ingestion, batches: importBatches, registry: registry,
                                    derivation: derivationCoordinator, clock: clock)
     }
+
+    /// EPIC-43 ACC-005: construct the GPX/TCX/CSV file importer with the composition root's live
+    /// collaborators — the same `ingestion`/`importBatches`/`derivationCoordinator` wiring
+    /// `makeAppleHealthImporter()` uses, so a picked file is deduped, provenanced and undoable
+    /// exactly like an Apple Health archive or a live sync. A fresh instance per run, for the same
+    /// reason `makeAppleHealthImporter()` is a factory rather than a stored property. The route-
+    /// consent provider defaults to the real `RouteConsentStore()` (the same standing toggle
+    /// `makeHealthKitAdapter()` wires), so a GPX/TCX route is only ever written under the one
+    /// consent decision that already governs every other source of workout GPS data.
+    func makeFileImporter() -> FileImporter {
+        FileImporter(pipeline: ingestion, batches: importBatches, clock: clock,
+                    derivation: derivationCoordinator)
+    }
 }
 
 private enum HealthKitConnectLog {

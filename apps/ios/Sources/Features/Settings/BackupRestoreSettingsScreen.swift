@@ -27,6 +27,10 @@ private enum BackupStrings {
             + "بدل استيرادها جزئياً.")
     static let importHeader = LocalizedString(en: "Import", ar: "الاستيراد")
     static let appleHealthImport = LocalizedString(en: "Import from Apple Health", ar: "استيراد من صحة Apple")
+    /// EPIC-43 ACC-005. GPX/TCX/CSV file import — a distinct path from the Apple Health archive
+    /// above: same direct-commit-through-ingestion shape, but for a route/activity/spreadsheet
+    /// file the user picks, rather than a whole-history export.
+    static let fileImport = LocalizedString(en: "Import a GPX, TCX, or CSV file", ar: "استيراد ملف GPX أو TCX أو CSV")
     /// Entry-point copy only — it promises the *path* (same ingestion and matching as live sync) and
     /// the undo, and leaves the precise limits of that matching to the import screen itself, where
     /// `AHImportStrings.honesty` states them in full. Saying more than this here would be a claim
@@ -123,6 +127,12 @@ struct BackupRestoreSettingsScreen: View {
             BadanCard {
                 NavigationLink { AppleHealthImportScreen() } label: {
                     SettingsNavRowLabel(icon: "heart.text.square", title: BackupStrings.appleHealthImport)
+                }
+                .buttonStyle(.plain)
+            }
+            BadanCard {
+                NavigationLink { FileImportScreen() } label: {
+                    SettingsNavRowLabel(icon: "map", title: BackupStrings.fileImport)
                 }
                 .buttonStyle(.plain)
             }

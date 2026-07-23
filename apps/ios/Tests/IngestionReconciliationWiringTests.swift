@@ -133,6 +133,61 @@ final class IngestionReconciliationWiringTests: XCTestCase {
         XCTAssertEqual(try count("dedup_decisions"), decisionCount)
     }
 
+    // MARK: - (4) AUDIT FIX regression: a saved SourcePriorityRule must actually change a real outcome
+
+    /// Proves the REAL production candidate-building path (`IngestionPipeline
+    /// .reconcileConflictWindow`'s `classification` closure) actually derives a non-empty
+    /// classification per candidate via `SensorQualityMap`/`SourcePriorityRule.ClassificationKey
+    /// .fromSensorClassId` — never a test-only hand-supplied field, unlike
+    /// `SourcePriorityEditorScreenTests`'s own integration test, which builds `CandidateReading`
+    /// values through its own `reading(id:classification:at:)` helper and so could never have
+    /// caught this gap. Before this fix, EVERY real `CandidateReading` built here had
+    /// `classification == ""` (the field was never set at all), which never matches any
+    /// `SourcePriorityRule.priorityOrder` entry — so a saved priority order had ZERO effect on any
+    /// real conflict for `restingHeartRate`/`hrv`, no matter what a person configured in Source
+    /// Priority Editor.
+    func testSavingAPriorityRuleActuallyResolvesARealConflictBetweenCorrectlyClassifiedDevices() throws {
+        let pipeline = makeIngestion()
+
+        // Day 1: no SourcePriorityRule saved yet — genuinely unresolved. Both real candidates DO
+        // get correctly classified by this point (the fix), there is just nothing yet to rank them
+        // by — mirrors `testGenuinelyDisagreeingReadingsProduceAnUnresolvedDataConflict` above.
+        let day1 = clock.now().addingTimeInterval(-10 * 86_400)
+        _ = try pipeline.ingest(from: TwoSourceRHRWithRealDevicesStore(day: day1), range: range)
+        XCTAssertEqual(try DataConflictRepository(main: db.main).unresolved().count, 1,
+                       "day 1's disagreement must be unresolved with no rule saved yet")
+
+        // Save a rule ranking the chest strap first for restingHeartRate specifically (mirrors
+        // exactly what Source Priority Editor's own save path persists — a brand-new,
+        // isUserOverride: true row, I2).
+        try SourcePriorityRuleRepository(main: db.main).insert(SourcePriorityRule(
+            id: "test-rhr-rule", metricId: MetricID.restingHeartRate,
+            priorityOrder: [SourcePriorityRule.ClassificationKey.bleChestStrapHR,
+                            SourcePriorityRule.ClassificationKey.wristOpticalHR],
+            isUserOverride: true, createdAt: clock.now(), updatedAt: clock.now(), originDeviceId: deviceId))
+
+        // Day 2: the SAME two devices disagree again, on a genuinely new day/window — the saved
+        // rule must now actually resolve it via the REAL classification-derivation path, suppressing
+        // the wrist-watch reading in favor of the chest strap.
+        let day2 = clock.now().addingTimeInterval(-9 * 86_400)
+        let summary = try pipeline.ingest(from: TwoSourceRHRWithRealDevicesStore(day: day2), range: range)
+
+        XCTAssertGreaterThan(summary.suppressed, 0, "the saved priority rule must actually suppress the losing candidate")
+        let measurements = MeasurementRepository(db.main)
+        let day2Records = try measurements.intervalRecords(metricId: MetricID.restingHeartRate, from: day2,
+                                                           to: day2.addingTimeInterval(7_200), includeSuppressed: true)
+        let strapReading = try XCTUnwrap(day2Records.first { $0.provenance.sourceId == "rhr-strap-src" })
+        let watchReading = try XCTUnwrap(day2Records.first { $0.provenance.sourceId == "rhr-watch-src" })
+        XCTAssertNil(strapReading.provenance.suppressedBy, "the chest strap must win per the saved priority order")
+        XCTAssertEqual(watchReading.provenance.suppressedBy, strapReading.id,
+                      "the wrist watch reading must be suppressed by the chest-strap winner, never deleted (I3)")
+
+        // Day 2 must NOT open a second DataConflict — it auto-resolved, exactly like the existing
+        // weight/most-recent-wins path already does.
+        XCTAssertEqual(try DataConflictRepository(main: db.main).unresolved().count, 1,
+                      "only day 1's original (still-open) conflict should remain; day 2 auto-resolved instead")
+    }
+
     // MARK: - (3) Existing sleep/workout dedup is unchanged
 
     /// `FakeHealthStore`'s RHR/HRV/weight all come from exactly one source (`src_watch`), so this
@@ -235,6 +290,35 @@ final class IngestionReconciliationWiringTests: XCTestCase {
              IntervalDTO(metricId: MetricID.restingHeartRate, value: 91, unit: "bpm", start: day,
                         end: day.addingTimeInterval(3600), tz: "UTC", aggregation: .mean,
                         sourceId: "rhr-conflict-src-b", externalId: "rhr-conflict-b")]
+        }
+        func readSessions(_ range: HealthDateRange) -> [SessionDTO] { [] }
+    }
+
+    /// AUDIT FIX regression fixture: two sources with REAL, `SensorQualityMap`-classifiable device
+    /// names ("Polar H10" -> `chest_strap`, "Apple Watch" -> `wrist_wearable`, per
+    /// `SensorQualityMap.deviceClassKeywords`) reporting materially different resting-heart-rate
+    /// values for whatever `day` is passed in — parametrized by day so one test can exercise it
+    /// twice (once before, once after a `SourcePriorityRule` exists) without the second call
+    /// colliding with the first's already-open, unresolved `DataConflict`.
+    private final class TwoSourceRHRWithRealDevicesStore: HealthStorePort {
+        let day: Date
+        init(day: Date) { self.day = day }
+
+        func availability() -> HealthAvailability { .available }
+        func sourceDescriptors() -> [SourceDescriptor] {
+            [SourceDescriptor(id: "rhr-strap-src", displayName: "Chest strap", type: .healthkit,
+                             deviceId: "device-strap", deviceName: "Polar H10", priority: 10),
+             SourceDescriptor(id: "rhr-watch-src", displayName: "Wrist watch", type: .healthkit,
+                             deviceId: "device-watch", deviceName: "Apple Watch", priority: 10)]
+        }
+        func readSamples(_ range: HealthDateRange) -> [SampleDTO] { [] }
+        func readIntervals(_ range: HealthDateRange) -> [IntervalDTO] {
+            [IntervalDTO(metricId: MetricID.restingHeartRate, value: 52, unit: "bpm", start: day,
+                        end: day.addingTimeInterval(3_600), tz: "UTC", aggregation: .mean,
+                        sourceId: "rhr-strap-src", externalId: "rhr-strap-\(day.timeIntervalSince1970)"),
+             IntervalDTO(metricId: MetricID.restingHeartRate, value: 91, unit: "bpm", start: day,
+                        end: day.addingTimeInterval(3_600), tz: "UTC", aggregation: .mean,
+                        sourceId: "rhr-watch-src", externalId: "rhr-watch-\(day.timeIntervalSince1970)")]
         }
         func readSessions(_ range: HealthDateRange) -> [SessionDTO] { [] }
     }
