@@ -58,13 +58,27 @@ final class WorkoutUITests: XCTestCase {
         return result
     }
 
+    /// AUDIT FIX (mirrors `CycleIntegrationUITests.swift`'s own fix): `strippingPreviewBlocks` alone
+    /// is comment-blind — a doc comment mentioning a type name followed by `(` shadows a real
+    /// construction site, so deleting the ACTUAL call while leaving the comment intact would leave
+    /// `assertReachable` still passing. Strips `//` line comments (naive — everything from the first
+    /// `//` on a line to its end) BEFORE the preview-block strip, so only genuine, compiled
+    /// construction sites can satisfy this check.
+    private static func strippingLineComments(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> Substring in
+            guard let range = line.range(of: "//") else { return line }
+            return line[line.startIndex..<range.lowerBound]
+        }.joined(separator: "\n")
+    }
+
     /// Asserts `typeName(` appears somewhere in `relativePath`'s source outside any `#Preview`
-    /// block — i.e. that a real (non-preview) construction site exists, matching exactly what the
-    /// CI ratchet checks for the whole app, scoped here to this slice's five new screens.
+    /// block or comment — i.e. that a real (non-preview, non-comment) construction site exists,
+    /// matching exactly what the CI ratchet checks for the whole app, scoped here to this slice's
+    /// five new screens.
     private func assertReachable(_ typeName: String, in relativePath: String, file: StaticString = #filePath, line: UInt = #line) {
-        let text = Self.strippingPreviewBlocks(Self.sourceText(relativePath))
+        let text = Self.strippingPreviewBlocks(Self.strippingLineComments(Self.sourceText(relativePath)))
         XCTAssertTrue(text.contains("\(typeName)("),
-                      "\(typeName) has no construction site in \(relativePath) outside a #Preview — " +
+                      "\(typeName) has no REAL (non-comment) construction site in \(relativePath) outside a #Preview — " +
                       "this is exactly the 'built but dark' defect check-reachability.py guards against.",
                       file: file, line: line)
     }
