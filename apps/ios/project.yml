@@ -10,7 +10,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
     DEVELOPMENT_TEAM: ""
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -116,10 +116,17 @@ targets:
         # get their own consent screen (plan §13.1/§17), so naming them here would ask for
         # something the first prompt does not request.
         NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, and workouts on your device to build your personal, private health repository. Nothing leaves your phone."
-        # COMP-10: NSHealthUpdateUsageDescription removed — HealthKitAdapter requests read-only
-        # access (`toShare: []`); a write-usage string with no write path was misleading. The
-        # read-only posture survives the A2 widening: nothing in Phases 0–4 writes to HealthKit,
-        # so do not reintroduce this key to "round out" the pairing.
+        # COMP-10 REVISED: originally removed on the reasoning that a write-usage string with no
+        # write path was misleading (`HealthKitAdapter.requestAuthorization` calls `toShare: []`,
+        # still true — BADAN writes nothing to Health in Phases 0–4). That reasoning held for App
+        # Review, but App Store Connect's upload-time binary validator checks for the mere
+        # PRESENCE of the `com.apple.developer.healthkit` entitlement/linked APIs, not actual
+        # runtime behavior — omitting this key hard-blocks every upload with error 90683
+        # ("Missing purpose string"), confirmed empirically on the first real TestFlight upload
+        # attempt. The honest fix keeping both constraints true: reinstate the key with a string
+        # that states plainly that BADAN does not write anything, rather than describing a write
+        # capability that doesn't exist.
+        NSHealthUpdateUsageDescription: "BADAN does not write, update, or delete anything in Apple Health. This permission exists only because Apple requires it whenever an app can read Health data — BADAN only ever reads."
         #
         # Workout routes only. Present so the route-consent screen (plan §13.1, gated behind its
         # own toggle) has honest copy when it needs CoreLocation — reading back a path the user's

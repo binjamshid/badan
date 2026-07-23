@@ -17,6 +17,11 @@
  * are not in the initial authorization bundle and have their own consent screen (plan §13.1). */
 "NSHealthShareUsageDescription" = "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, and workouts on your device to build your personal, private health repository. Nothing leaves your phone.";
 
+/* COMP-10 REVISED (project.yml carries the full reasoning): required by App Store Connect's
+ * upload-time validator whenever the HealthKit entitlement is present, regardless of actual
+ * write behavior — BADAN calls `requestAuthorization(toShare: [], ...)` and writes nothing. */
+"NSHealthUpdateUsageDescription" = "BADAN does not write, update, or delete anything in Apple Health. This permission exists only because Apple requires it whenever an app can read Health data — BADAN only ever reads.";
+
 /* Workout routes only. Deliberately phrased as reading back an already-recorded path rather than
  * "using your location", because the latter describes live tracking BADAN does not do — and the
  * system sheet is the one place the user cannot see our own explainer screen first. */
