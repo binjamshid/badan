@@ -26,11 +26,24 @@ final class IngestionPipeline {
     /// rule simply does not run — manual duplicates stay visible, which is the safe direction
     /// (nothing is suppressed that shouldn't be).
     private let logging: LoggingRepository?
+    /// EPIC-43 follow-up slice (plan §7A.6/§9.19): the reconciliation-v2 engine's own conflict
+    /// ledger (`data_conflicts`) and per-metric default priority rules. Optional and additive
+    /// for the identical reason `routes`/`logging` are: without `dataConflicts`,
+    /// `reconcileMetricConflicts` below simply does not run — no conflict is detected, nothing is
+    /// suppressed, and every pre-existing caller (`AppEnvironment`'s own construction site before
+    /// this slice, every test file's `makeIngestion()`) keeps compiling and behaving exactly as
+    /// before. `sourcePriorityRules` is independently optional: without it, `ConflictDecisionEngine.decide`
+    /// simply never reaches its `SourcePriorityRule` fallback (rule 5) — the earlier, unconditional
+    /// rules (manual-wins, most-recent-weight, chest-strap) are entirely unaffected.
+    private let dataConflicts: DataConflictRepository?
+    private let sourcePriorityRules: SourcePriorityRuleRepository?
 
     init(measurements: MeasurementRepository, catalog: CatalogRepository,
          reconciliation: ReconciliationRepository, registry: MetricRegistry,
          clock: Clock, deviceId: String,
-         routes: RouteRepository? = nil, logging: LoggingRepository? = nil) {
+         routes: RouteRepository? = nil, logging: LoggingRepository? = nil,
+         dataConflicts: DataConflictRepository? = nil,
+         sourcePriorityRules: SourcePriorityRuleRepository? = nil) {
         self.measurements = measurements
         self.catalog = catalog
         self.reconciliation = reconciliation
@@ -39,6 +52,8 @@ final class IngestionPipeline {
         self.deviceId = deviceId
         self.routes = routes
         self.logging = logging
+        self.dataConflicts = dataConflicts
+        self.sourcePriorityRules = sourcePriorityRules
     }
 
     /// What provenance a single `ingest` call stamps on every row it writes.
@@ -194,6 +209,18 @@ final class IngestionPipeline {
             try measurements.transaction { summary.intervals += try writeIntervals(batch, now: now, origin: origin) }
         }
 
+        let batchId = ULID.newID()
+
+        // (h) EPIC-43 follow-up slice (plan §7A.6/§9.19) — the missing caller `DataConflictsScreen`'s
+        // own doc names: reconciliation-v2 over the metrics/days THIS run's intervals/samples
+        // touched. Entirely additive and orthogonal to (e)/(f)/(g) below — it reads rows this run
+        // already wrote via the SAME `measurements` read paths, and never touches `sessions` or
+        // `workout_entries`, so sleep dedup and workout dedup are byte-for-byte unaffected by its
+        // presence (see `reconcileMetricConflicts`'s own doc for what it does and does not do).
+        summary.suppressed += try measurements.transaction {
+            try reconcileMetricConflicts(intervals, samples, batchId: batchId, now: now)
+        }
+
         // (d) Episodes -> sessions (+ stages). Record which nights this run touched.
         // Invariant this scoping relies on: `range` must be a superset of any night whose
         // dedup state could need re-evaluation. True today (a fixed 90-day re-ingest always
@@ -207,8 +234,6 @@ final class IngestionPipeline {
                 summary.sessions += written
             }
         }
-
-        let batchId = ULID.newID()
 
         // (d2) Workout episodes -> sessions (+ routes). Batched on the same rule; a workout's
         // route rows are written inside the same transaction as the session they belong to, so a
@@ -549,6 +574,159 @@ final class IngestionPipeline {
         return newSuppressions
     }
 
+    // MARK: - Reconciliation-v2 (EPIC-43 follow-up slice, plan §7A.6/§9.19)
+
+    /// Metric ids where two sources disagreeing about the SAME day is worth surfacing at all. A
+    /// short, explicit list — not "every metric" — because a cross-source disagreement is only a
+    /// meaningful question for a metric that names ONE true daily fact (an overnight HRV/resting-
+    /// heart-rate average, a single body weight for the day). Two sources reporting different
+    /// STEP counts for a day, say, is normal (different sensors count differently) and not a
+    /// "which one is right" question this engine should ever answer. Mirrors
+    /// `ConflictDecisionEngine.manualWinsMetrics`'s own "named list, not every metric" shape.
+    ///
+    /// Split by which table backs the metric (`interval_records` vs `raw_samples`) because that's
+    /// what decides which existing `MeasurementRepository` read path resolves its candidates.
+    private static let intervalConflictMetrics: Set<String> = [MetricID.restingHeartRate, MetricID.hrv]
+    private static let sampleConflictMetrics: Set<String> = [MetricID.weight]
+
+    /// A relative difference below this is "the same reading, twice" (per-source rounding/sensor
+    /// noise), not a genuine disagreement — never worth flagging. Chosen generously (5%) so this
+    /// stays a "two sources meaningfully disagree" detector, not a hair-trigger on ordinary
+    /// measurement noise between two otherwise-agreeing devices.
+    private static let materialDifferenceThreshold = 0.05
+
+    /// The missing caller `DataConflictsScreen`'s own doc names: detects genuine cross-source
+    /// disagreements for `intervalConflictMetrics`/`sampleConflictMetrics` on the days THIS run's
+    /// intervals/samples touched, and either auto-resolves a confident one (a `SourcePriorityRule`
+    /// winner, or one of `ConflictDecisionEngine`'s unconditional named defaults such as most-
+    /// recent-weight-wins) — suppressing the loser and journaling a `ReconciliationDecision`
+    /// exactly like `dedup(night:...)` above already does for sleep — or, when `decide` returns
+    /// `nil`, leaves it for the person to resolve by inserting a NEW `DataConflict` row
+    /// (`DataConflictsScreen`'s "Unresolved" list).
+    ///
+    /// Without `dataConflicts` wired (see its own doc on the stored property), this is a no-op:
+    /// nothing is read, nothing is suppressed, nothing is journaled — the same "the rule simply
+    /// does not run" contract `logging`/`routes` already have on this type.
+    ///
+    /// Entirely additive and orthogonal to sleep/workout dedup: it only ever reads
+    /// `interval_records`/`raw_samples` for `MetricID.restingHeartRate`/`.hrv`/`.weight` and only
+    /// ever writes `data_conflicts` or `dedup_decisions` (+ that record's own `suppressed_by`) —
+    /// it never reads or writes `sessions`/`workout_entries`, so `dedup(night:...)` and
+    /// `dedupWorkouts` above run exactly as they did before this method existed.
+    private func reconcileMetricConflicts(_ intervalDTOs: [IntervalDTO], _ sampleDTOs: [SampleDTO],
+                                          batchId: String, now: Date) throws -> Int {
+        guard let dataConflicts else { return 0 }
+
+        // Which (metric, day) windows THIS run actually touched — scoped this way (not "every day
+        // in the range") for the same reason `dedup`'s `affectedNights` is scoped to nights
+        // sessions touched: bounding an ordinary incremental sync to a day or two of work instead
+        // of re-scanning the whole range on every run.
+        struct ConflictWindow: Hashable { let metricId: String; let dayKey: String; let tz: String }
+        var intervalWindows = Set<ConflictWindow>()
+        for dto in intervalDTOs where Self.intervalConflictMetrics.contains(dto.metricId) {
+            intervalWindows.insert(ConflictWindow(metricId: dto.metricId,
+                                                   dayKey: DayAttribution.localDayKey(dto.start, tz: dto.tz), tz: dto.tz))
+        }
+        var sampleWindows = Set<ConflictWindow>()
+        for dto in sampleDTOs where Self.sampleConflictMetrics.contains(dto.metricId) {
+            sampleWindows.insert(ConflictWindow(metricId: dto.metricId,
+                                                 dayKey: DayAttribution.localDayKey(dto.start, tz: dto.tz), tz: dto.tz))
+        }
+        guard !intervalWindows.isEmpty || !sampleWindows.isEmpty else { return 0 }
+
+        var newDecisions = 0
+        for w in intervalWindows.sorted(by: { ($0.metricId, $0.dayKey) < ($1.metricId, $1.dayKey) }) {
+            guard let dayStart = DayAttribution.date(fromDayKey: w.dayKey, tz: w.tz) else { continue }
+            let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: w.tz)
+            let records = try measurements.intervalRecords(metricId: w.metricId, from: dayStart, to: dayEnd,
+                                                            includeSuppressed: false)
+            newDecisions += try reconcileConflictWindow(records: records, table: "interval_records",
+                                                        metricId: w.metricId, dayStart: dayStart, dayEnd: dayEnd,
+                                                        batchId: batchId, now: now, dataConflicts: dataConflicts)
+        }
+        for w in sampleWindows.sorted(by: { ($0.metricId, $0.dayKey) < ($1.metricId, $1.dayKey) }) {
+            guard let dayStart = DayAttribution.date(fromDayKey: w.dayKey, tz: w.tz) else { continue }
+            let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: w.tz)
+            let records = try measurements.rawSamples(metricId: w.metricId, from: dayStart, to: dayEnd,
+                                                       includeSuppressed: false)
+            newDecisions += try reconcileConflictWindow(records: records, table: "raw_samples",
+                                                        metricId: w.metricId, dayStart: dayStart, dayEnd: dayEnd,
+                                                        batchId: batchId, now: now, dataConflicts: dataConflicts)
+        }
+        return newDecisions
+    }
+
+    /// One (metric, day) window's worth of `reconcileMetricConflicts` — generic over
+    /// `IntervalRecord`/`RawSample` (see `ConflictRecord` below) so the interval- and sample-backed
+    /// metrics share exactly one candidate-building/decide/persist path rather than two drifting
+    /// copies of it.
+    private func reconcileConflictWindow<T: ConflictRecord>(
+        records: [T], table: String, metricId: String, dayStart: Date, dayEnd: Date,
+        batchId: String, now: Date, dataConflicts: DataConflictRepository
+    ) throws -> Int {
+        let bySource = Dictionary(grouping: records, by: { $0.provenance.sourceId })
+        // A conflict needs 2+ DIFFERENT sources reporting for this exact day — one source writing
+        // several rows (which shouldn't happen under this metric's upsert identity, but costs
+        // nothing to guard) is not a disagreement between sources.
+        guard bySource.count >= 2 else { return 0 }
+
+        // One candidate per source: its most-recently-measured reading in this window — the same
+        // "most recent, id breaks a tie" idiom `ConflictDecisionEngine.mostRecent` already uses.
+        let perSource: [T] = bySource.values.map { rows in
+            rows.sorted { a, b in
+                a.provenance.measuredAt != b.provenance.measuredAt
+                    ? a.provenance.measuredAt > b.provenance.measuredAt : a.id < b.id
+            }.first! // safe: `Dictionary(grouping:)` never produces an empty value array
+        }
+
+        // Not every multi-source day is a genuine disagreement — two sources CONFIRMING the same
+        // reading (within `materialDifferenceThreshold`) is not a conflict, never flagged as one.
+        let values = perSource.map(\.value)
+        guard let minValue = values.min(), let maxValue = values.max(), minValue != maxValue else { return 0 }
+        guard (maxValue - minValue) / max(abs(minValue), abs(maxValue), 1) > Self.materialDifferenceThreshold
+        else { return 0 }
+
+        let candidates = perSource.map { record in
+            CandidateReading(id: record.id, sourceId: record.provenance.sourceId,
+                             isManualEntry: record.provenance.ingestionPath == .manual,
+                             measuredAt: record.provenance.measuredAt)
+        }
+        let scope = ConflictScope.metric(id: metricId)
+        let priorityRule = try sourcePriorityRules?.rule(forMetric: metricId)
+
+        guard let outcome = ConflictDecisionEngine.decide(scope: scope, candidates: candidates, priorityRule: priorityRule)
+        else {
+            // Genuinely unresolved: surface it for the person to decide (I3/I5) rather than
+            // guessing — unless an identical conflict is already open for this exact candidate
+            // set, which keeps a re-ingest of the same disagreement from re-inserting duplicates.
+            let candidateIds = Set(candidates.map(\.id))
+            let alreadyOpen = try dataConflicts.conflicts(scopeKey: scope.storageKey).contains {
+                $0.status == .unresolved && Set($0.candidateRecordIds) == candidateIds
+            }
+            guard !alreadyOpen else { return 0 }
+            try dataConflicts.insert(DataConflict(
+                id: ULID.newID(clock: clock), scope: scope, windowStart: dayStart, windowEnd: dayEnd,
+                candidateRecordIds: candidates.map(\.id), detectedAt: now, updatedAt: now, originDeviceId: deviceId))
+            return 0 // a new conflict is not itself a suppression
+        }
+
+        // Confident, auto-resolved: suppress the loser(s) and journal it exactly like the
+        // existing dedup paths above (`dedup(night:...)`) already do for sleep.
+        var written = 0
+        for decision in outcome.makeDecisions(batchId: batchId, clock: clock) {
+            // Idempotent, mirroring `dedupWorkouts`'s own check: a re-ingest reaching the identical
+            // winner for this loser must not re-suppress or re-journal it.
+            if try reconciliation.forSuppressed(decision.suppressedRecordId)?.keptRecordId == decision.keptRecordId {
+                continue
+            }
+            try measurements.setSuppressed(table: table, recordId: decision.suppressedRecordId,
+                                           by: decision.keptRecordId, updatedAt: now)
+            try reconciliation.insert(decision)
+            written += 1
+        }
+        return written
+    }
+
     /// Upsert one derived daily sleep interval (unit "s"), keyed idempotently by night so a
     /// re-ingest updates in place.
     ///
@@ -811,6 +989,22 @@ final class IngestionPipeline {
         return summary
     }
 }
+
+// MARK: - Reconciliation-v2 candidate records
+
+/// What `reconcileConflictWindow` needs from a row, regardless of which table it came from —
+/// `IntervalRecord` (RHR/HRV) or `RawSample` (weight). Kept to exactly the three fields the
+/// candidate-building/decide/persist path actually reads, so a third conflict-checked metric
+/// backed by yet another table only needs a one-line conformance, never a second copy of that
+/// path's logic.
+private protocol ConflictRecord {
+    var id: String { get }
+    var value: Double { get }
+    var provenance: Provenance { get }
+}
+
+extension IntervalRecord: ConflictRecord {}
+extension RawSample: ConflictRecord {}
 
 // MARK: - Batching
 

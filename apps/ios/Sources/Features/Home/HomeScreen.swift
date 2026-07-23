@@ -891,50 +891,62 @@ private struct MetricModuleCard: View {
     var secondary: HomeKeyMetric?
 
     var body: some View {
-        NavigationLink { MetricDetailScreen(metricId: metric.metricId) } label: {
-            BadanCard {
-                VStack(alignment: .leading, spacing: BadanSpace.space3) {
-                    HStack(spacing: BadanSpace.space2) {
-                        Image(systemName: metric.familySymbol)
-                            .foregroundStyle(BadanColor.primary)
-                            .accessibilityHidden(true)
-                        Text(metric.label)
-                            .font(BadanFont.caption)
-                            .foregroundStyle(BadanColor.textSecondary)
-                        Spacer(minLength: BadanSpace.space2)
-                        Image(systemName: "chevron.forward")
-                            .imageScale(.small)
-                            .foregroundStyle(BadanColor.textSecondary)
-                            .accessibilityHidden(true)
-                    }
-                    HStack(alignment: .top, spacing: BadanSpace.space4) {
-                        StatBox(
-                            value: metric.heroValue,
-                            label: metric.label,
-                            unit: metric.unit,
-                            chip: metric.position.map { p in
-                                StatusChip(position: p, label: env.s(rangeLabel(p)), language: env.language)
-                            }
-                        )
-                        Spacer(minLength: 0)
-                        if let secondary {
-                            // Demoted below the primary StatBox's hero numeral so the eye lands
-                            // on the headline metric first (UIUX-011): a supplementary number
-                            // reads as supplementary, not co-equal.
-                            VStack(alignment: .trailing, spacing: BadanSpace.space1) {
-                                Text(secondary.heroValue)
-                                    .font(BadanFont.body)
-                                    .foregroundStyle(BadanColor.textPrimary)
-                                Text(secondary.label)
-                                    .font(BadanFont.caption)
-                                    .foregroundStyle(BadanColor.textSecondary)
+        BadanCard {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                // EPIC-39 CYCLE-06: `CyclePhaseCovariateNote` below is its own tappable control
+                // (a one-tap explainer alert) — kept as a SIBLING of this `NavigationLink`, never
+                // nested inside its label, mirroring `BodyPillarCard`'s established pattern of
+                // keeping a card's secondary interactive controls outside its primary link.
+                NavigationLink { MetricDetailScreen(metricId: metric.metricId) } label: {
+                    VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                        HStack(spacing: BadanSpace.space2) {
+                            Image(systemName: metric.familySymbol)
+                                .foregroundStyle(BadanColor.primary)
+                                .accessibilityHidden(true)
+                            Text(metric.label)
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                            Spacer(minLength: BadanSpace.space2)
+                            Image(systemName: "chevron.forward")
+                                .imageScale(.small)
+                                .foregroundStyle(BadanColor.textSecondary)
+                                .accessibilityHidden(true)
+                        }
+                        HStack(alignment: .top, spacing: BadanSpace.space4) {
+                            StatBox(
+                                value: metric.heroValue,
+                                label: metric.label,
+                                unit: metric.unit,
+                                chip: metric.position.map { p in
+                                    StatusChip(position: p, label: env.s(rangeLabel(p)), language: env.language)
+                                }
+                            )
+                            Spacer(minLength: 0)
+                            if let secondary {
+                                // Demoted below the primary StatBox's hero numeral so the eye lands
+                                // on the headline metric first (UIUX-011): a supplementary number
+                                // reads as supplementary, not co-equal.
+                                VStack(alignment: .trailing, spacing: BadanSpace.space1) {
+                                    Text(secondary.heroValue)
+                                        .font(BadanFont.body)
+                                        .foregroundStyle(BadanColor.textPrimary)
+                                    Text(secondary.label)
+                                        .font(BadanFont.caption)
+                                        .foregroundStyle(BadanColor.textSecondary)
+                                }
                             }
                         }
                     }
                 }
+                .buttonStyle(.plain)
+                // Only ever renders when `metric`'s band above was actually phase-conditioned
+                // (never on a plain default reading) — research doc §7's "optional overlay chip,
+                // not forced narrative" rule.
+                if let covariate = metric.phaseCovariate {
+                    CyclePhaseCovariateNote(covariate: covariate)
+                }
             }
         }
-        .buttonStyle(.plain)
     }
 }
 
@@ -945,59 +957,71 @@ private struct MetricGridCell: View {
     let metric: HomeKeyMetric
 
     var body: some View {
-        NavigationLink { MetricDetailScreen(metricId: metric.metricId) } label: {
-            BadanCard(padding: BadanSpace.space3) {
-                VStack(alignment: .leading, spacing: BadanSpace.space2) {
-                    HStack(spacing: BadanSpace.space1) {
-                        Text(metric.label)
-                            .font(BadanFont.caption)
-                            .foregroundStyle(BadanColor.textSecondary)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.9)
-                        Spacer(minLength: BadanSpace.space1)
-                        Image(systemName: "chevron.forward")
-                            .imageScale(.small)
-                            .foregroundStyle(BadanColor.textSecondary)
-                            .accessibilityHidden(true)
-                    }
-                    HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space1) {
-                        Text(metric.heroValue)
-                            .font(BadanFont.numeralM)
-                            .foregroundStyle(BadanColor.textPrimary)
-                        if let unit = metric.unit {
-                            Text(unit)
+        BadanCard(padding: BadanSpace.space3) {
+            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                // EPIC-39 CYCLE-06: `CyclePhaseCovariateNote` below is its own tappable control —
+                // kept as a SIBLING of this `NavigationLink`, never nested inside its label,
+                // mirroring `BodyPillarCard`'s established pattern.
+                NavigationLink { MetricDetailScreen(metricId: metric.metricId) } label: {
+                    VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                        HStack(spacing: BadanSpace.space1) {
+                            Text(metric.label)
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.9)
+                            Spacer(minLength: BadanSpace.space1)
+                            Image(systemName: "chevron.forward")
+                                .imageScale(.small)
+                                .foregroundStyle(BadanColor.textSecondary)
+                                .accessibilityHidden(true)
+                        }
+                        HStack(alignment: .firstTextBaseline, spacing: BadanSpace.space1) {
+                            Text(metric.heroValue)
+                                .font(BadanFont.numeralM)
+                                .foregroundStyle(BadanColor.textPrimary)
+                            if let unit = metric.unit {
+                                Text(unit)
+                                    .font(BadanFont.caption)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                            }
+                        }
+                        if let position = metric.position {
+                            StatusChip(position: position, label: env.s(rangeLabel(position)), language: env.language)
+                        }
+                        if let delta = metric.deltaText {
+                            Text(delta)
                                 .font(BadanFont.caption)
                                 .foregroundStyle(BadanColor.textSecondary)
                         }
+                        if env.depth.showsPowerDetail {
+                            // (UX-04) Power depth only — casual's grid cell has no room for a
+                            // freshness caption without crowding the layout, and the question
+                            // ("how current is this?") is itself a power-user concern.
+                            Text(HomeDateFormatting.relative(metric.capturedAt, env.language, now: env.now()))
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                        }
+                        if metric.spark.count >= 2 {
+                            // (FIX-07) Date-spaced series init (OPT-098) so gaps in the 14-day
+                            // window render as gaps instead of a smoothed, evenly-spaced line.
+                            MetricSparkline(series: metric.spark)
+                                .frame(height: 28)
+                                .accessibilityHidden(true)
+                        }
                     }
-                    if let position = metric.position {
-                        StatusChip(position: position, label: env.s(rangeLabel(position)), language: env.language)
-                    }
-                    if let delta = metric.deltaText {
-                        Text(delta)
-                            .font(BadanFont.caption)
-                            .foregroundStyle(BadanColor.textSecondary)
-                    }
-                    if env.depth.showsPowerDetail {
-                        // (UX-04) Power depth only — casual's grid cell has no room for a
-                        // freshness caption without crowding the layout, and the question
-                        // ("how current is this?") is itself a power-user concern.
-                        Text(HomeDateFormatting.relative(metric.capturedAt, env.language, now: env.now()))
-                            .font(BadanFont.caption)
-                            .foregroundStyle(BadanColor.textSecondary)
-                    }
-                    if metric.spark.count >= 2 {
-                        // (FIX-07) Date-spaced series init (OPT-098) so gaps in the 14-day
-                        // window render as gaps instead of a smoothed, evenly-spaced line.
-                        MetricSparkline(series: metric.spark)
-                            .frame(height: 28)
-                            .accessibilityHidden(true)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
+                // Only ever renders when `metric`'s band above was actually phase-conditioned
+                // (never on a plain default reading) — research doc §7's "optional overlay chip,
+                // not forced narrative" rule.
+                if let covariate = metric.phaseCovariate {
+                    CyclePhaseCovariateNote(covariate: covariate)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.plain)
     }
 }
 
@@ -1203,6 +1227,12 @@ struct HomeKeyMetric: Identifiable {
     /// When this metric's latest value was captured — the interval record's `endAt` (UX-04),
     /// shown as a relative "2h ago" caption at power depth.
     var capturedAt: Date
+    /// EPIC-39 CYCLE-06: set ONLY when `position`/`provisional`/`deltaText` above were resolved
+    /// against a phase-CONDITIONED band rather than the default one — the cue to render
+    /// `CyclePhaseCovariateNote` beside this metric. `nil` for every metric outside
+    /// `CyclePhaseCovariateCoordinator.phaseConditionedMetricIds`, and `nil` whenever the cycle
+    /// module is disabled or fell back to the default band, per `PhaseAwareBaselineReader`.
+    var phaseCovariate: PhaseCovariateReading?
 
     var id: String { metricId }
 }
@@ -1328,6 +1358,17 @@ struct HomeFetchInputs {
     var nutritionEnabled: Bool
     var sensitiveModulesEnabled: Bool
     var now: Date
+    /// EPIC-39 CYCLE-06 integration (closes `CycleModuleServices.refreshAll`'s own named
+    /// integration debt — see `PhaseAwareBaselineReader`). `phaseEstimates`/`sensitiveDerivation`
+    /// are an ad hoc sensitive-backed `CyclePhaseEstimateRepository`/`DerivationRepository` pair,
+    /// constructed ONLY when the cycle module is enabled (mirroring `CycleModuleServices.init`'s
+    /// own construction pattern exactly) — `nil` together otherwise. Defaulted so every existing
+    /// construction site (this file's own `load`, and `ViewModelPerformanceTests`) keeps
+    /// compiling unchanged and keeps reading exactly as it did before this integration: module
+    /// disabled, every metric's baseline read untouched.
+    var cycleModuleEnabled: Bool = false
+    var phaseEstimates: CyclePhaseEstimateRepository? = nil
+    var sensitiveDerivation: DerivationRepository? = nil
 }
 
 /// The result of the off-main fetch, before it's applied to `HomeViewModel.state` on the
@@ -1371,6 +1412,12 @@ final class HomeViewModel {
         let now = env.now()
         let profileSnapshot = env.profile
         let generationSnapshot = env.dataGeneration
+        // EPIC-39 CYCLE-06 integration: ad hoc sensitive-backed repositories, constructed ONLY
+        // when the cycle module is enabled — mirrors `CycleModuleServices.init`'s own
+        // construction pattern exactly (never `env.database.main`, per I7). `nil` together when
+        // disabled, so `PhaseAwareBaselineReader.read` always falls through to the plain default
+        // read for every metric.
+        let cycleModuleEnabled = profileSnapshot.cycleModuleEnabled
         let inputs = HomeFetchInputs(
             measurements: env.measurements, derivation: env.derivation, catalog: env.catalog,
             logging: env.logging, contextAnnotations: env.contextAnnotations,
@@ -1378,7 +1425,12 @@ final class HomeViewModel {
             format: env.format, language: env.language, depth: env.depth,
             nutritionEnabled: profileSnapshot.nutritionEnabled,
             sensitiveModulesEnabled: profileSnapshot.sensitiveModulesEnabled,
-            now: now)
+            now: now,
+            cycleModuleEnabled: cycleModuleEnabled,
+            phaseEstimates: cycleModuleEnabled
+                ? CyclePhaseEstimateRepository(sensitive: env.database.sensitive) : nil,
+            sensitiveDerivation: cycleModuleEnabled
+                ? DerivationRepository(env.database.sensitive) : nil)
 
         let outcome = await Task.detached(priority: .userInitiated) {
             Self.fetch(inputs)
@@ -1413,8 +1465,8 @@ final class HomeViewModel {
         let now = inputs.now
         do {
             let (readiness, dayOffset, readinessDay) = try latestReadiness(inputs, now: now, tz: tz)
-            let readinessProgress = readiness == nil ? readinessProgressDays(inputs) : nil
-            let readinessCalibration = try readinessBottleneckCalibration(inputs)
+            let readinessProgress = readiness == nil ? readinessProgressDays(inputs, now: now) : nil
+            let readinessCalibration = try readinessBottleneckCalibration(inputs, now: now)
             // EPIC-29: the note beside the score, resolved from the sensitive store at render time
             // rather than stored on the row (see `ContextCaveats`). Skipped entirely — not merely
             // hidden — when sensitive records are off, so the read never happens either.
@@ -1487,9 +1539,17 @@ final class HomeViewModel {
     /// baselines) already have banked, so the "still learning" fallback can read as a countdown
     /// rather than an open-ended wait (EASE-139). Best-effort: a fetch failure here just means
     /// no progress hint is shown, never a broken Home load.
-    private nonisolated static func readinessProgressDays(_ inputs: HomeFetchInputs) -> Int? {
+    private nonisolated static func readinessProgressDays(_ inputs: HomeFetchInputs, now: Date) -> Int? {
         let sleepPoints = (try? inputs.derivation.latestBaseline(metricId: MetricID.timeAsleep))?.nPoints ?? 0
-        let rhrPoints = (try? inputs.derivation.latestBaseline(metricId: MetricID.restingHeartRate))?.nPoints ?? 0
+        // EPIC-39 CYCLE-06: resting heart rate is one of the three phase-conditioned metrics —
+        // routed through `PhaseAwareBaselineReader` like every other RHR/HRV baseline read on
+        // this screen (see the type's own header). Module-disabled behavior is bit-for-bit
+        // unchanged: the helper's guard falls straight through to the same plain default read
+        // this line always made.
+        let rhrPoints = (try? PhaseAwareBaselineReader.read(
+            metricId: MetricID.restingHeartRate, cycleModuleEnabled: inputs.cycleModuleEnabled,
+            phaseEstimates: inputs.phaseEstimates, sensitiveDerivation: inputs.sensitiveDerivation,
+            defaultDerivation: inputs.derivation, asOf: now))?.baseline?.nPoints ?? 0
         return min(min(sleepPoints, rhrPoints), BaselineEngine.minPointsForConfident)
     }
 
@@ -1597,9 +1657,21 @@ final class HomeViewModel {
     /// fewest points (RHR, HRV, or sleep duration), i.e. the one still gating a settled readiness. Its
     /// `BaselineCalibration` drives the cold-start note on the hero card. `nil` when none of readiness's
     /// inputs has a baseline yet (there is simply nothing to calibrate against to report progress on).
-    private nonisolated static func readinessBottleneckCalibration(_ inputs: HomeFetchInputs) throws -> BaselineCalibration? {
-        let ids = [MetricID.restingHeartRate, MetricID.hrv, MetricID.timeAsleep]
-        let baselines = ids.compactMap { try? inputs.derivation.latestBaseline(metricId: $0) }.compactMap { $0 }
+    private nonisolated static func readinessBottleneckCalibration(_ inputs: HomeFetchInputs, now: Date) throws -> BaselineCalibration? {
+        // EPIC-39 CYCLE-06: resting heart rate and HRV are two of the three phase-conditioned
+        // metrics — routed through `PhaseAwareBaselineReader`, same as every other RHR/HRV
+        // baseline read on this screen. `timeAsleep` is NOT phase-conditioned and keeps its exact
+        // original call, untouched. Module-disabled behavior for all three ids is bit-for-bit
+        // unchanged (the helper falls straight through to the same plain default read).
+        var baselines: [Baseline] = [MetricID.restingHeartRate, MetricID.hrv].compactMap { id -> Baseline? in
+            (try? PhaseAwareBaselineReader.read(
+                metricId: id, cycleModuleEnabled: inputs.cycleModuleEnabled,
+                phaseEstimates: inputs.phaseEstimates, sensitiveDerivation: inputs.sensitiveDerivation,
+                defaultDerivation: inputs.derivation, asOf: now))?.baseline
+        }
+        if let sleepBaseline = try? inputs.derivation.latestBaseline(metricId: MetricID.timeAsleep) {
+            baselines.append(sleepBaseline)
+        }
         guard let bottleneck = baselines.min(by: { $0.nPoints < $1.nPoints }) else { return nil }
         return BaselineCalibration.from(baseline: bottleneck, spec: BaselineSpec.defaultShared)
     }
@@ -1620,7 +1692,17 @@ final class HomeViewModel {
                   HomeStaleness.isFresh(latest.endAt, now: now, maxAge: HomeStaleness.keyMetricMaxAge)
             else { continue }
             let def = inputs.registry.definitionOrFallback(id)
-            let baseline = try inputs.derivation.latestBaseline(metricId: id)
+            // EPIC-39 CYCLE-06: resting heart rate and HRV are two of the three phase-conditioned
+            // metrics — routed through `PhaseAwareBaselineReader`, the SAME helper every other
+            // RHR/HRV baseline read on this screen now uses. `steps`/`activeEnergy` are outside
+            // `CyclePhaseCovariateCoordinator.phaseConditionedMetricIds`, so the helper's own
+            // guard falls straight through to the exact original call for them — untouched.
+            // Module-disabled behavior is bit-for-bit unchanged for every id.
+            let phaseAwareRead = try PhaseAwareBaselineReader.read(
+                metricId: id, cycleModuleEnabled: inputs.cycleModuleEnabled,
+                phaseEstimates: inputs.phaseEstimates, sensitiveDerivation: inputs.sensitiveDerivation,
+                defaultDerivation: inputs.derivation, asOf: now)
+            let baseline = phaseAwareRead.baseline
             let position = baseline?.position(of: latest.value)
             // Sparkline history is decorative — isolate its failure from the primary
             // latest-value/baseline fetches above (OPT-011).
@@ -1640,7 +1722,8 @@ final class HomeViewModel {
                 spark: spark,
                 familySymbol: def.familyGroup.symbolName,
                 provisional: baseline?.provisional ?? true,
-                capturedAt: latest.endAt
+                capturedAt: latest.endAt,
+                phaseCovariate: phaseAwareRead.covariate
             ))
         }
         return result

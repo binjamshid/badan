@@ -252,9 +252,14 @@ final class AppEnvironment {
         let backgroundRuns = BackgroundRunRepository(main)
         self.backgroundRuns = backgroundRuns
 
+        // `dataConflicts`/`sourcePriorityRules` are built ad hoc over `main` rather than stored on
+        // `AppEnvironment` itself, matching the established convention `DataConflictsScreen`'s own
+        // doc states for this exact pair of repositories (`AppEnvironment` doesn't pre-wire them).
         self.ingestion = IngestionPipeline(measurements: measurements, catalog: catalog,
                                            reconciliation: reconciliation, registry: registry,
-                                           clock: clock, deviceId: deviceId)
+                                           clock: clock, deviceId: deviceId,
+                                           dataConflicts: DataConflictRepository(main: main),
+                                           sourcePriorityRules: SourcePriorityRuleRepository(main: main))
         self.baselines = BaselineEngine(derivation: derivation, measurements: measurements,
                                         registry: registry, clock: clock, deviceId: deviceId)
         // EPIC-29 / plan §18. The I7 seam: `context_statuses` live in the sensitive database and the

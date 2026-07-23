@@ -13,6 +13,13 @@ struct BodyPillar: Identifiable {
     /// Total baseline-eligible metrics tracked in this family, so the card can hint that more
     /// than just the headline metric is available (EASE-179).
     let familyMetricCount: Int
+    /// EPIC-39 CYCLE-06: set ONLY when `baseline` above was resolved against a phase-CONDITIONED
+    /// band rather than the default one — the cue to render `CyclePhaseCovariateNote` on this
+    /// pillar. `nil` for every metric outside
+    /// `CyclePhaseCovariateCoordinator.phaseConditionedMetricIds`, and `nil` whenever the cycle
+    /// module is disabled or the read fell back to the default band — see
+    /// `PhaseAwareBaselineReader`.
+    let phaseCovariate: PhaseCovariateReading?
 
     var id: String { family.rawValue }
 }
@@ -30,6 +37,17 @@ struct BodyFetchInputs {
     var derivation: DerivationRepository
     var measurements: MeasurementRepository
     var now: Date
+    /// EPIC-39 CYCLE-06 integration (closes `CycleModuleServices.refreshAll`'s own named
+    /// integration debt — see `PhaseAwareBaselineReader`). `phaseEstimates`/`sensitiveDerivation`
+    /// are an ad hoc sensitive-backed `CyclePhaseEstimateRepository`/`DerivationRepository` pair,
+    /// constructed ONLY when the cycle module is enabled (mirroring `CycleModuleServices.init`'s
+    /// own construction pattern exactly) — `nil` together otherwise. Defaulted so every existing
+    /// construction site (this file's own `load`, and `ViewModelPerformanceTests`) keeps
+    /// compiling unchanged and keeps reading exactly as it did before this integration: module
+    /// disabled, every metric's baseline read untouched.
+    var cycleModuleEnabled: Bool = false
+    var phaseEstimates: CyclePhaseEstimateRepository? = nil
+    var sensitiveDerivation: DerivationRepository? = nil
 }
 
 @Observable
@@ -85,8 +103,17 @@ final class BodyViewModel {
         let now = env.now()
         let profileSnapshot = env.profile
         let generationSnapshot = env.dataGeneration
+        // EPIC-39 CYCLE-06 integration: ad hoc sensitive-backed repositories, constructed ONLY
+        // when the cycle module is enabled — mirrors `CycleModuleServices.init`'s own
+        // construction pattern exactly (never `env.database.main`, per I7).
+        let cycleModuleEnabled = profileSnapshot.cycleModuleEnabled
         let inputs = BodyFetchInputs(
-            registry: env.registry, derivation: env.derivation, measurements: env.measurements, now: now)
+            registry: env.registry, derivation: env.derivation, measurements: env.measurements, now: now,
+            cycleModuleEnabled: cycleModuleEnabled,
+            phaseEstimates: cycleModuleEnabled
+                ? CyclePhaseEstimateRepository(sensitive: env.database.sensitive) : nil,
+            sensitiveDerivation: cycleModuleEnabled
+                ? DerivationRepository(env.database.sensitive) : nil)
 
         let outcome = await Task.detached(priority: .userInitiated) {
             Self.fetch(inputs)
@@ -140,11 +167,22 @@ final class BodyViewModel {
             guard let latest = series.last?.value else { continue }
             // No trailing `?? nil` — `latestBaseline` already returns an honest `Baseline?`;
             // a thrown error now propagates instead of masquerading as "no baseline yet" (OPT-018).
-            let baseline = try inputs.derivation.latestBaseline(metricId: metricId)
+            // EPIC-39 CYCLE-06: `metricId` here varies per family (it's whichever headline/
+            // eligible candidate actually has data) — `PhaseAwareBaselineReader.read` itself is
+            // the one that checks whether THIS metricId is one of the three phase-conditioned
+            // metrics (hrv, restingHeartRate, sleepEfficiency), so every other metricId's read
+            // falls straight through to the exact original call, untouched. Module-disabled
+            // behavior is bit-for-bit unchanged for every metric.
+            let phaseAwareRead = try PhaseAwareBaselineReader.read(
+                metricId: metricId, cycleModuleEnabled: inputs.cycleModuleEnabled,
+                phaseEstimates: inputs.phaseEstimates, sensitiveDerivation: inputs.sensitiveDerivation,
+                defaultDerivation: inputs.derivation, asOf: inputs.now)
+            let baseline = phaseAwareRead.baseline
             return BodyPillar(
                 family: family, metricId: metricId, latest: latest,
                 series: Array(series.suffix(7)), baseline: baseline,
-                familyMetricCount: max(eligible.count, 1))
+                familyMetricCount: max(eligible.count, 1),
+                phaseCovariate: phaseAwareRead.covariate)
         }
         return nil
     }
@@ -338,6 +376,15 @@ private struct BodyPillarCard: View {
                     }
                 }
                 .buttonStyle(.plain)
+
+                // EPIC-39 CYCLE-06: only ever renders when the band above was actually
+                // phase-conditioned (never on a plain default reading) — research doc §7's
+                // "optional overlay chip, not forced narrative" rule. A separate tap target
+                // (its own one-tap explainer alert), not nested inside the link above — same
+                // reasoning as the "+N more"/"What is this?" row below.
+                if let covariate = pillar.phaseCovariate {
+                    CyclePhaseCovariateNote(covariate: covariate)
+                }
 
                 // A family can carry several tracked metrics behind its one headline value; hint
                 // that more exist instead of leaving them undiscoverable outside "All metrics"
