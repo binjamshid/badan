@@ -53,6 +53,19 @@ final class CycleHistoryUITests: XCTestCase {
                           algorithmVersion: "test@1.0.0", computedAt: now, updatedAt: now, originDeviceId: device)
     }
 
+    /// EPIC-39 CYCLE-12 (A17/ADR-0010/D-24) fixture, mirroring `prediction(...)`/`phaseEstimate(...)`
+    /// above exactly — a fully-parameterized `CycleFertileWindowEstimate` for presentation-layer tests.
+    private func fertileWindowEstimate(
+        windowStart: Date? = nil, windowEnd: Date? = nil, confidence: Double = 0.3,
+        mode: FertileWindowMode = .calendar, evidenceBasis: FertileWindowEvidenceBasis = .calendarOnly,
+        status: FertileWindowStatus = .active, suppressionReason: String? = nil, inputCycleIds: [String] = []
+    ) -> CycleFertileWindowEstimate {
+        CycleFertileWindowEstimate(id: "FW-1", generatedAt: now, windowStart: windowStart, windowEnd: windowEnd,
+                                   confidence: confidence, mode: mode, evidenceBasis: evidenceBasis, status: status,
+                                   suppressionReason: suppressionReason, algorithmVersion: "test@1.0.0",
+                                   inputCycleIds: inputCycleIds, updatedAt: now, originDeviceId: device)
+    }
+
     private func anomalyEvent(
         id: String = "ANOM-1", detectedAt: Date? = nil, state: CycleAnomalyState = .active,
         messageKey: String? = nil
@@ -236,6 +249,99 @@ final class CycleHistoryUITests: XCTestCase {
         let lowConfidenceCalendarOnly = phaseEstimate(confidence: 0.1, evidenceBasis: .calendarOnly)
         XCTAssertEqual(CyclePhasePresentation.caveat(lowConfidenceCalendarOnly)?.en, CycleHistoryStrings.notEnoughPatternYet.en,
                       "a low-confidence calendar-only estimate must still fall back to the plain caveat, never a low-confidence phase name")
+    }
+
+    // MARK: - CycleFertileWindowPresentation (EPIC-39 CYCLE-12, A17/ADR-0010/D-24 — never a bare date)
+
+    func testFertileWindowHasWindowIsTrueOnlyWhenActiveWithBothRangeFieldsPresent() {
+        let full = fertileWindowEstimate(windowStart: now, windowEnd: now, status: .active)
+        XCTAssertTrue(CycleFertileWindowPresentation.hasWindow(full))
+
+        XCTAssertFalse(CycleFertileWindowPresentation.hasWindow(fertileWindowEstimate(status: .active)),
+                       "no range fields at all must never read as having a window")
+
+        let suppressedButSomehowDated = fertileWindowEstimate(windowStart: now, windowEnd: now, status: .suppressed)
+        XCTAssertFalse(CycleFertileWindowPresentation.hasWindow(suppressedButSomehowDated),
+                       "a suppressed estimate must never be treated as having a usable window, defensively, " +
+                       "even if range fields were somehow present")
+    }
+
+    func testFertileWindowHasWindowRequiresBothDatesTogetherNeverJustOne() {
+        // Structural "never a bare date" guarantee, checked at the presentation layer too (the
+        // engine's own guarantee is covered separately in `CycleFertileWindowEngineTests`): even if
+        // only one of the two range fields were somehow populated, this must never read as a window.
+        XCTAssertFalse(CycleFertileWindowPresentation.hasWindow(
+            fertileWindowEstimate(windowStart: now, windowEnd: nil, status: .active)))
+        XCTAssertFalse(CycleFertileWindowPresentation.hasWindow(
+            fertileWindowEstimate(windowStart: nil, windowEnd: now, status: .active)))
+    }
+
+    func testFertileWindowRecentCycleCountIsNilWhenNoWindowOrAnEmptyManifest() {
+        XCTAssertNil(CycleFertileWindowPresentation.recentCycleCount(fertileWindowEstimate(status: .active)),
+                    "no window at all -> no method label")
+        XCTAssertNil(CycleFertileWindowPresentation.recentCycleCount(
+            fertileWindowEstimate(windowStart: now, windowEnd: now, inputCycleIds: [])),
+                    "a window with an empty input manifest -> no method label")
+    }
+
+    func testFertileWindowRecentCycleCountNamesExactlyTheInputManifestCount() {
+        let estimate = fertileWindowEstimate(windowStart: now, windowEnd: now, inputCycleIds: ["A", "B", "C"])
+        XCTAssertEqual(CycleFertileWindowPresentation.recentCycleCount(estimate), 3)
+    }
+
+    func testFertileWindowActiveCaveatIsHonestAboutSignalAssistedModeNotActuallyNarrowingAnything() {
+        let calendarActive = fertileWindowEstimate(windowStart: now, windowEnd: now, mode: .calendar)
+        XCTAssertEqual(CycleFertileWindowPresentation.activeCaveat(calendarActive).en,
+                      CycleHistoryStrings.fertileWindowBroadEstimate.en)
+
+        let signalAssistedActive = fertileWindowEstimate(windowStart: now, windowEnd: now, mode: .signalAssisted)
+        XCTAssertEqual(CycleFertileWindowPresentation.activeCaveat(signalAssistedActive).en,
+                      CycleHistoryStrings.fertileWindowSignalAssistedNotYetAvailable.en,
+                      "a user who picked signal-assisted mode must be told no additional signal narrowed this, " +
+                      "never shown the plain calendar-only caveat as if nothing were different about their choice")
+    }
+
+    func testFertileWindowCaveatIsNilExactlyWhenAWindowWouldShow() {
+        XCTAssertNil(CycleFertileWindowPresentation.caveat(fertileWindowEstimate(windowStart: now, windowEnd: now)))
+
+        XCTAssertEqual(CycleFertileWindowPresentation.caveat(
+            fertileWindowEstimate(evidenceBasis: .suppressedDueToContext, status: .suppressed))?.en,
+                      CycleHistoryStrings.fertileWindowSuppressedByContext.en)
+        XCTAssertEqual(CycleFertileWindowPresentation.caveat(
+            fertileWindowEstimate(evidenceBasis: .suppressedByMode, status: .suppressed))?.en,
+                      CycleHistoryStrings.fertileWindowOff.en,
+                      "off (suppressed by user-declared mode) is a different fact from insufficient " +
+                      "history and must get its own copy, not the 'log more cycles' string")
+        XCTAssertEqual(CycleFertileWindowPresentation.caveat(
+            fertileWindowEstimate(evidenceBasis: .insufficientHistory))?.en,
+                      CycleHistoryStrings.fertileWindowInsufficientHistory.en)
+    }
+
+    func testFertileWindowCaveatNeverRendersARawSuppressionReasonPlaceholder() {
+        let suppressed = fertileWindowEstimate(
+            evidenceBasis: .suppressedDueToContext, status: .suppressed,
+            suppressionReason: CycleFertileWindowEngine.suppressionReasonSuppressiveContraceptiveContext)
+        let caveat = CycleFertileWindowPresentation.caveat(suppressed)
+        XCTAssertNotNil(caveat)
+        XCTAssertFalse(caveat?.en.contains("suppressive_contraceptive_context_active") ?? true)
+        XCTAssertFalse(caveat?.ar.contains("suppressive_contraceptive_context_active") ?? true)
+    }
+
+    // MARK: - CycleFertileWindowAnatomy ("why this estimate?" resolution)
+
+    func testFertileWindowResolvedInputsPreservesInputCycleIdsOrderAndSkipsAMissingId() {
+        let recordA = record(id: "A", start: now)
+        let recordB = record(id: "B", start: now.addingTimeInterval(86_400))
+        let estimate = fertileWindowEstimate(windowStart: now, windowEnd: now, inputCycleIds: ["B", "MISSING", "A"])
+        let resolved = CycleFertileWindowAnatomy.resolvedInputs(estimate, records: [recordA, recordB])
+        XCTAssertEqual(resolved.map(\.id), ["B", "A"],
+                      "must preserve inputCycleIds' own order and silently skip an id with no matching record")
+    }
+
+    func testFertileWindowResolvedInputsIsEmptyWhenTheManifestIsEmpty() {
+        let recordA = record(id: "A", start: now)
+        let estimate = fertileWindowEstimate(inputCycleIds: [])
+        XCTAssertTrue(CycleFertileWindowAnatomy.resolvedInputs(estimate, records: [recordA]).isEmpty)
     }
 
     // MARK: - CycleAnomalyPresentation (full audit trail, messageKey-only copy)

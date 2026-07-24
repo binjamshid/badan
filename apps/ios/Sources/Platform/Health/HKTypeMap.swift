@@ -296,6 +296,25 @@ enum HKTypeMap {
         Entry(identifier: .appleSleepingWristTemperature, metricId: nil,
               hkUnit: .degreeCelsius(), badanUnit: "degC",
               strategy: .authorizationOnly(.awaitingDerivation), caveat: .sleepOnly),
+
+        // --- Glucose (A21/ADR-0010, D-26) ---------------------------------------------------
+        // Platform-written only: this reads whatever a connected sensor/meter/CGM app already
+        // wrote to Apple Health, exactly like any other widened metric — no vendor SDK, no OAuth,
+        // nothing BADAN-specific about how the reading got into HealthKit. `.anchoredSample`
+        // because a blood glucose reading is a genuine single-instant fact, the same shape as
+        // SpO2/weight, not a HealthKit-summarized aggregate. Read directly in mmol/L (the
+        // registry's own canonical for `body.glucose`) via HealthKit's dedicated molarity unit
+        // constructor, so this is an identity conversion end to end — no `.estimate` stamp, no
+        // dependence on `Units.table`'s mg/dL<->mmol/L factor for the write path itself (that
+        // factor only matters for display/export unit switching).
+        Entry(identifier: .bloodGlucose, metricId: MetricID.glucose,
+              hkUnit: HKUnit.moleUnit(with: .milli, molarMass: HKUnitMolarMassBloodGlucose)
+                  .unitDivided(by: .liter()),
+              badanUnit: "mmol/L",
+              // `.requiresAccessory`, matching bodyMass/bodyFatPercentage/leanBodyMass: a glucose
+              // reading only exists for days a connected meter/CGM/sensor actually measured one,
+              // never continuously like heart rate.
+              strategy: .anchoredSample, caveat: .requiresAccessory),
     ]
 
     /// `mL/(kg·min)`, built from components rather than `HKUnit(from:)` so a typo in the unit

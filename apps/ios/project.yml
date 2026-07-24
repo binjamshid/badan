@@ -15,6 +15,19 @@ settings:
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
+# D-23/A16 (ADR-0010 §A16): the ONE deliberate, approved exception to ADR-0005's zero-external-
+# dependency posture, scoped to exactly this one package. Adopted for `badan_sensitive.db` only —
+# `badan.db` is opened with no key and stays byte-for-byte plain SQLite (see `SQLiteConnection`).
+# `sqlcipher/SQLCipher.swift` is the official package published and maintained by Zetetic, LLC
+# (SQLCipher's own authors) — a prebuilt XCFramework binaryTarget (not a from-source build), so
+# there is no autoconf/build-script step for xcodegen to orchestrate. Pinned to an exact version
+# (not `from:`) to match ADR-0005's "deterministic" build posture: package resolution should
+# fetch the exact same artifact every time, not silently pick up a newer compatible release.
+packages:
+  SQLCipher:
+    url: https://github.com/sqlcipher/SQLCipher.swift.git
+    exactVersion: 4.17.0
+
 targets:
   BADAN:
     type: application
@@ -42,12 +55,34 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/BADAN.entitlements
         ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "NoorMono NoorQalam Mizan Hilal"
         ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
+        # D-23/A16: required by SQLCipher.swift's own header (`sqlite3.h` guards
+        # `sqlite3_key`/`sqlite3_key_v2`/`sqlite3_rekey` behind `#ifdef SQLITE_HAS_CODEC`) — the
+        # XCFramework binary already has the codec compiled in, but this flag is what makes those
+        # declarations visible to OUR Swift code when the Clang importer parses that header, per
+        # the package's own README ("To enable SQLCipher encryption in your consuming project,
+        # you must set the SQLITE_HAS_CODEC Build Setting flag"). `SQLiteConnection.swift` is the
+        # only file in this target that calls those functions.
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) SQLITE_HAS_CODEC=1"
     dependencies:
       # EPIC-33 (Phase 3D). Embeds the widget extension into the app bundle so it ships and
       # installs alongside BADAN — without this the extension target builds but nothing ever
       # copies it into BADAN.app/PlugIns, and no widget would ever appear in the widget gallery.
       - target: BadanWidgets
         embed: true
+      # A22/EPIC-42 (Phase 4). Embeds the watchOS app into BADAN.app's `Watch/` subfolder — the
+      # modern (watchOS 9+, single-target) equivalent of the old two-target watch-extension embed.
+      # `embed: true` on a dependency whose own target is `platform: watchOS` + `type: application`
+      # tells xcodegen to emit an "Embed Watch Content" copy-files phase (dstSubfolderSpec 16)
+      # rather than the "Embed App Extensions" phase `BadanWidgets` above gets — verified against
+      # the generated `.pbxproj` after `xcodegen generate`. Without this the watch target builds
+      # standalone but is never actually installable on a paired Watch through BADAN — pairing
+      # requires the watch binary to physically live inside the iOS app bundle.
+      - target: BadanWatch
+        embed: true
+      # D-23/A16 — see the `packages:` block above for why this is the one approved exception to
+      # ADR-0005's zero-dependency posture.
+      - package: SQLCipher
+        product: SQLCipher
     # `App/Info.plist` is GENERATED from this block on every `xcodegen generate` and is
     # gitignored for exactly that reason — editing the plist directly works until the next
     # generate silently reverts it. This block is the only authoritative copy. The same is
@@ -115,7 +150,7 @@ targets:
         # Routes are deliberately absent — they are not in the initial authorization bundle and
         # get their own consent screen (plan §13.1/§17), so naming them here would ask for
         # something the first prompt does not request.
-        NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, and workouts on your device to build your personal, private health repository. Nothing leaves your phone."
+        NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, blood glucose, and workouts on your device to build your personal, private health repository. Nothing leaves your phone."
         # COMP-10 REVISED: originally removed on the reasoning that a write-usage string with no
         # write path was misleading (`HealthKitAdapter.requestAuthorization` calls `toShare: []`,
         # still true — BADAN writes nothing to Health in Phases 0–4). That reasoning held for App
@@ -171,6 +206,76 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
 
+  # A22/EPIC-42 (Phase 4 extension, blueprint §24.4 "watchOS app (ios/BadanWatch/)"). A glanceable
+  # "today" renderer plus a read-only detail screen — the watch app is deliberately "a renderer of
+  # phone-computed truth plus a logger" (blueprint's own framing), not a second place any score is
+  # computed. This slice ships the renderer half only; no on-watch logging yet (that is
+  # WatchConnectivity `transferUserInfo` + `LogEventDto`, a later slice per the blueprint).
+  #
+  # Reads ONLY `Sync/SnapshotReceiver.swift`'s WatchConnectivity `applicationContext` cache — never
+  # HealthKit, never CoreBluetooth, never a live `HKWorkoutSession` (all explicitly out of this
+  # slice's scope; a real on-watch `HKWorkoutSession` is a later, separate slice per A22's own
+  # scoping). This target has no dependency on `apps/ios/Sources/` (a watchOS app target links
+  # against its own module, same constraint `BadanWidgets` documents at the top of this file) and
+  # must never gain one.
+  BadanWatch:
+    type: application
+    platform: watchOS
+    # watchOS 10.0 pairs with the iOS 17.0 floor `options.deploymentTarget.iOS` already sets above
+    # (watchOS 10 shipped alongside iOS 17) — the natural, deliberate choice for
+    # `WKCompanionAppBundleIdentifier` pairing compatibility with this project's existing iOS
+    # floor, not copied verbatim from the iOS number. It is also the minimum needed for the
+    # Observation framework (`@Observable`), which `SnapshotReceiver`/`TodayViewState` use.
+    deploymentTarget: "10.0"
+    sources:
+      - path: BadanWatch
+        excludes: ["*.entitlements"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.binjamshid.badan.watch
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: "54T3MDUR7H"
+        TARGETED_DEVICE_FAMILY: "4"
+        SWIFT_VERSION: "5.0"
+        SKIP_INSTALL: NO
+    info:
+      path: BadanWatch/Info.plist
+      properties:
+        CFBundleDisplayName: BADAN
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # Modern (watchOS 9+) single-target companion-app pairing keys — still the documented
+        # mechanism in current Xcode watch-app templates, unlike the pre-9 dual-target
+        # WatchKit-extension `WKCompanionAppBundleIdentifier`/`NSExtension` pairing this superseded.
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: net.binjamshid.badan
+        # The watch app must open and show its own honestly-labelled state (never synced / stale)
+        # even when BADAN on the phone is not currently running — that IS this slice's honest-
+        # degradation requirement, not an optional nicety, so it cannot require the companion app
+        # to be active to launch at all.
+        WKRunsIndependentlyOfCompanionApp: true
+        # No `CFBundleLocalizations` — matching `BadanWidgets`' own precedent (see that target's
+        # comment above): on-screen bilingual copy is our own hand-rolled `WatchCopy` struct here,
+        # not genuine Xcode localized resources, so this OS-level metadata key would claim more
+        # than is actually true.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+
+  BadanWatchTests:
+    type: bundle.unit-test
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: BadanWatchTests
+    dependencies:
+      - target: BadanWatch
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: net.binjamshid.badan.watch.tests
+        CODE_SIGNING_ALLOWED: NO
+
   BADANTests:
     type: bundle.unit-test
     platform: iOS
@@ -194,4 +299,13 @@ schemes:
     test:
       targets:
         - BADANTests
+      gatherCoverageData: false
+  BadanWatch:
+    build:
+      targets:
+        BadanWatch: all
+        BadanWatchTests: [test]
+    test:
+      targets:
+        - BadanWatchTests
       gatherCoverageData: false

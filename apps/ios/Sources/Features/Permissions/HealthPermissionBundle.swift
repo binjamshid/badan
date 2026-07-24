@@ -31,6 +31,11 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
     case body
     /// Workout episodes. Requested when a workout surface opens.
     case workouts
+    /// Blood glucose (A21/ADR-0010, D-26). Requested from Body, alongside `.body` — not at
+    /// connect: like weight, most people have none of it, and it is `sensitivePlus` besides, so
+    /// it earns its own explainer rather than riding along inside `.coreVitals`'s generic
+    /// boundary copy, which says nothing about treatment decisions.
+    case glucose
     /// GPS traces. Location data, gated on its own — see `RouteConsentScreen`. Deliberately in
     /// this enum so it is impossible to enumerate "what BADAN asks for" and miss it, but it is
     /// the only case whose `requestsPlatformReadTypes` is false: routes are never bundled into a
@@ -62,7 +67,7 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
             types.insert(HKObjectType.workoutType())
         case .routes:
             types.formUnion(HealthKitAdapter.routeReadTypes)
-        case .coreVitals, .activity, .body:
+        case .coreVitals, .activity, .body, .glucose:
             break
         }
         return types
@@ -85,6 +90,8 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
             return .activity
         case .bodyMass, .bodyFatPercentage, .leanBodyMass, .height:
             return .body
+        case .bloodGlucose:
+            return .glucose
         default:
             // A newly added type with no explicit home lands in core vitals rather than silently
             // dropping out of every explainer. Over-explaining one type is recoverable; shipping
@@ -127,6 +134,8 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
             return LocalizedString(en: "Body measurements", ar: "قياسات الجسم")
         case .workouts:
             return LocalizedString(en: "Your workouts", ar: "تمارينك")
+        case .glucose:
+            return LocalizedString(en: "Blood glucose", ar: "سكر الدم")
         case .routes:
             return LocalizedString(en: "Workout routes", ar: "مسارات التمارين")
         }
@@ -155,6 +164,10 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
             return LocalizedString(
                 en: "Workouts your watch or phone already finished recording, with the heart rate that went with them.",
                 ar: "التمارين التي انتهى جهازك أو هاتفك من تسجيلها بالفعل، مع معدل ضربات القلب المرافق لها.")
+        case .glucose:
+            return LocalizedString(
+                en: "If a connected sensor or meter has already written glucose readings to Apple Health, BADAN can show them alongside the rest of your record — for your own awareness, never as medical guidance.",
+                ar: "إن كان جهاز استشعار أو جهاز قياس متصل قد كتب قراءات سكر الدم في تطبيق صحة آبل بالفعل، يمكن لبدن عرضها إلى جانب بقية سجلّك — لوعيك الشخصي فقط، وليس كإرشاد طبي.")
         case .routes:
             return LocalizedString(
                 en: "The path a finished workout took, if your device saved one.",
@@ -197,6 +210,11 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
                 LocalizedString(en: "Duration, energy and distance", ar: "المدة والطاقة والمسافة"),
                 LocalizedString(en: "Average and highest heart rate", ar: "متوسط معدل القلب وأعلاه"),
             ]
+        case .glucose:
+            return [
+                LocalizedString(en: "Blood glucose readings from a connected sensor or meter",
+                                ar: "قراءات سكر الدم من جهاز استشعار أو جهاز قياس متصل"),
+            ]
         case .routes:
             return [
                 LocalizedString(en: "The route your device already saved with a finished workout",
@@ -214,6 +232,13 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
             return LocalizedString(
                 en: "BADAN reads this from your device and never writes anything back to Apple Health. Nothing is sent anywhere unless you export it yourself.",
                 ar: "يقرأ بدن هذا من جهازك ولا يكتب أي شيء في تطبيق صحة آبل. لا يُرسل شيء إلى أي مكان إلا إذا صدّرته بنفسك.")
+        case .glucose:
+            // A21/D-26: "never for treatment decisions" is load-bearing copy on every glucose
+            // surface, not just where the value itself renders — see `GlucoseDisclaimer` for the
+            // identically-worded value-surface disclaimer this line mirrors.
+            return LocalizedString(
+                en: "BADAN reads this from your device and never writes anything back to Apple Health. Shown for personal awareness only — never for treatment decisions. Always follow your own healthcare provider's guidance for managing your glucose.",
+                ar: "يقرأ بدن هذا من جهازك ولا يكتب أي شيء في تطبيق صحة آبل. يُعرض لِلوعي الشخصي فقط — ولا يُستخدم أبدًا لاتخاذ أي قرار علاجي. اتبع دائمًا إرشادات مقدّم الرعاية الصحية الخاص بك لإدارة سكر الدم.")
         case .workouts:
             return LocalizedString(
                 en: "Only finished workouts, read after the fact. BADAN doesn't start, stop or track a workout, and the route is a separate choice you make on its own screen.",
@@ -232,6 +257,7 @@ enum HealthPermissionBundle: String, CaseIterable, Identifiable, Sendable {
         case .sleep: return "moon.stars"
         case .body: return "figure.stand"
         case .workouts: return "figure.run"
+        case .glucose: return "drop.circle"
         case .routes: return "map"
         }
     }

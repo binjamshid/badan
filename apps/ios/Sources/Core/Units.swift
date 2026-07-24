@@ -120,6 +120,12 @@ public enum Units {
         // dimensionless / already-canonical scores
         "score":  Spec(base: "score", factor: 1, offset: 0),
         "index":  Spec(base: "index", factor: 1, offset: 0),
+        // blood glucose (base: mmol/L — the registry's canonical, matching the blueprint's own
+        // unit table and Arabic/RTL-first readership). mg/dL is the US-conventional display
+        // alternative; 18.0182 is the standard clinical mmol/L<->mg/dL conversion factor (a 5.0
+        // mmol/L fasting reading is ~90 mg/dL). A21/D-26.
+        "mmol/L": Spec(base: "mmol/L", factor: 1, offset: 0),
+        "mg/dL":  Spec(base: "mmol/L", factor: 1.0 / 18.0182, offset: 0),
     ]
 
     public enum ConversionError: Error, Equatable {

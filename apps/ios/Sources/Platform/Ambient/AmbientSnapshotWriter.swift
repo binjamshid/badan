@@ -55,9 +55,18 @@ actor AmbientSnapshotWriter {
     /// for free.
     private let reloadWidgets: ([String]) -> Void
 
+    /// A22/EPIC-42 (Phase 4). The SAME "one writer, multiple bounded readers" shape `reloadWidgets`
+    /// already establishes: after a successful write, this closure hands the just-assembled `dto`
+    /// to `WatchSnapshotSync` so it can push it to a paired Watch via `WCSession.
+    /// updateApplicationContext` — a NEW transport, not a new build of the data. Defaults to a
+    /// no-op so every existing call site (and every test that doesn't care about the watch) is
+    /// unaffected; the composition root (`AppEnvironment`) supplies the real one.
+    private let syncToWatch: (AmbientSnapshotDto) -> Void
+
     init(derivation: DerivationRepository, measurements: MeasurementRepository,
          logging: LoggingRepository, insights: InsightRepository, store: AmbientSnapshotStore,
-         clock: Clock, reloadWidgets: @escaping ([String]) -> Void = AmbientSnapshotWriter.reloadRealWidgets) {
+         clock: Clock, reloadWidgets: @escaping ([String]) -> Void = AmbientSnapshotWriter.reloadRealWidgets,
+         syncToWatch: @escaping (AmbientSnapshotDto) -> Void = { _ in }) {
         self.derivation = derivation
         self.measurements = measurements
         self.logging = logging
@@ -65,6 +74,7 @@ actor AmbientSnapshotWriter {
         self.store = store
         self.clock = clock
         self.reloadWidgets = reloadWidgets
+        self.syncToWatch = syncToWatch
     }
 
     // MARK: - Debounced write (the production entry point)
@@ -88,6 +98,7 @@ actor AmbientSnapshotWriter {
             let dto = try buildSnapshot(now: now, tz: tz, language: language,
                                         medsDueConsentGranted: medsDueConsentGranted)
             try store.write(dto)
+            syncToWatch(dto)
         } catch {
             Log.logger.error("ambient snapshot write failed: \(String(describing: error), privacy: .public)")
             return false
@@ -129,6 +140,7 @@ actor AmbientSnapshotWriter {
         let sentence = SentenceSnapshot(en: sentenceText.en, ar: sentenceText.ar)
 
         let sleep = try buildSleepSnapshot(now: now, tz: tz, periodKey: periodKey)
+        let effort = try buildEffortSnapshot(periodKey: periodKey)
 
         let medsDue = medsDueConsentGranted
             ? try buildMedsDueSnapshot(now: now, tz: tz, language: language)
@@ -136,7 +148,25 @@ actor AmbientSnapshotWriter {
 
         return AmbientSnapshotDto(
             generatedAt: now, language: language.rawValue,
-            readiness: readiness, sentence: sentence, sleep: sleep, medsDue: medsDue)
+            readiness: readiness, sentence: sentence, sleep: sleep, medsDue: medsDue, effort: effort)
+    }
+
+    /// Today's Effort (`effort.day`), read the same way `HomeScreen.loadEffort` reads it (same
+    /// metric id, same period key) — but bounded to the zone-based 0–100 score only. `MetricRegistry
+    /// .shared` (not an injected dependency) matches how `AppEnvironment` itself resolves the
+    /// registry — a process-wide singleton the same way `SymptomDictionary`/`InsightTemplateStore`
+    /// are, so this writer does not need a new constructor parameter for it.
+    private func buildEffortSnapshot(periodKey: String) throws -> EffortSnapshot? {
+        guard let effort = try derivation.latestDerived(metricId: MetricID.effortDay, periodKey: periodKey) else {
+            return nil
+        }
+        let scoreUnit = MetricRegistry.shared.definitionOrFallback(MetricID.effortDay).canonicalUnit
+        // The reduced-input activity-load variant carries a different, non-comparable unit (see
+        // `EffortSnapshot`'s own doc comment) — this bounded snapshot only ever carries the
+        // zone-based score, so anything else degrades to `nil` rather than being mislabelled as a
+        // score it isn't.
+        guard effort.unit == scoreUnit else { return nil }
+        return EffortSnapshot(score: effort.value, provisional: effort.provisional)
     }
 
     /// Last night's primary sleep session (duration) plus today's `sleep.performance` score, if

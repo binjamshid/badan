@@ -7,9 +7,13 @@ import Foundation
 // §7 ("Cycle phase as a cross-app covariate"), and `docs/legal/reproductive-threat-model.md` §5's
 // "never a single-date confidence claim" mitigation. This slice implements prediction TIERS 1-4
 // only (cold start / 1-2 cycles / 3-5 cycles / 6+ cycles) — rich-signal mode (BBT/ovulation tests,
-// CYCLE-10) is out of scope, and so is fertile-window/ovulation estimation as a user-facing
-// feature (gated on founder decision A17); the "ovulation day" computed below is an internal
-// input to phase estimation ONLY, never surfaced as a fertile-window claim.
+// CYCLE-10) is still out of scope here. Fertile-window/ovulation estimation as a user-facing
+// feature was gated on founder decision A17; A17 is now approved (ADR-0010/D-24) and CYCLE-12
+// implements it as a SEPARATE SIBLING file, `CycleFertileWindowEngine.swift` — it does not extend
+// this file. The "ovulation day" computed below remains an internal input to phase estimation
+// ONLY, never surfaced as a fertile-window claim from THIS file; `CycleFertileWindowEngine`
+// re-derives its own ovulation-day estimate independently (same public constants, own pure math),
+// per this codebase's file-local-math convention (see `CycleAnomalyEngine`'s header).
 //
 // PURE AND STORAGE-FREE, mirroring `ReferenceRangeEngine.computePersonalBaseline`
 // (`Domain/Labs/ReferenceRangeEngine.swift`): every function here operates only on arrays a caller
@@ -295,7 +299,17 @@ public enum CyclePredictionEngine {
     /// True when `context` is currently active AND its method implies suppressed/altered natural
     /// cycling. Uses `ContraceptiveContextLog.isActive` exactly as the shared contract defines it
     /// (endAt == nil && deletedAt == nil) rather than re-deriving activeness from `asOf`.
-    private static func isSuppressive(_ context: ContraceptiveContextLog?) -> Bool {
+    ///
+    /// INTERNAL, not `private` (CYCLE-12 audit note): `CycleFertileWindowEngine` reuses this EXACT
+    /// function as its own contraceptive-context suppression gate, per that slice's own brief
+    /// ("reuse the exact existing suppression mechanism, do not build a second one") — a fertile-
+    /// window estimate must suppress under precisely the same conditions a phase estimate already
+    /// does, and duplicating `suppressiveMethodTypes` into a second file would risk the two silently
+    /// drifting (e.g. if `.iud` handling ever changes). This is the one exception to this codebase's
+    /// otherwise-standard "pure math re-derived per file" convention (see `CycleAnomalyEngine`'s own
+    /// header for that convention) — a POLICY gate, unlike shared math, has exactly one honest
+    /// definition and must never have two.
+    static func isSuppressive(_ context: ContraceptiveContextLog?) -> Bool {
         guard let context, context.isActive else { return false }
         return suppressiveMethodTypes.contains(context.methodType)
     }

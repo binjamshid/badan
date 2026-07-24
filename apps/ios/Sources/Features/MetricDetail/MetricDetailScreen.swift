@@ -361,6 +361,14 @@ struct MetricDetailScreen: View {
                 casualAnatomyLink
                 explainerCard(data)
             }
+
+            // A21/D-26: "never for treatment decisions" on every surface a glucose value renders.
+            // Unconditional, outside the casual/power branch above, so depth can never be the
+            // reason it's missing — see `GlucoseDisclaimer`'s own doc for why this lives here
+            // rather than as per-branch copy.
+            if GlucoseDisclaimer.applies(to: data.def.metricId) {
+                GlucoseDisclaimerFooter()
+            }
         }
         .onChange(of: periodDays) { _, newValue in
             visibleValuesCount = MetricDetailScreen.valuesPageSize

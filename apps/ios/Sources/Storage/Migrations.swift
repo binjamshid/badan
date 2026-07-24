@@ -1361,6 +1361,136 @@ enum Schema {
             );
             """,
             "CREATE INDEX idx_baseline_lookup ON baselines(metric_id, covariate_context, valid_from DESC);",
+        ]),
+        // Version 7 (EPIC-39 CYCLE-12, A17/ADR-0010/D-24): fertile-window estimation. Purely
+        // additive (one CREATE + one index), same forward-only posture every migration in this file
+        // follows — nothing from migration 6 is touched.
+        //
+        // SENSITIVE (I7), same reasoning as every other table this migration file's version-6 header
+        // already gives at length: a fertile-window estimate is, per
+        // `docs/legal/reproductive-threat-model.md` §1's own asset inventory, in the SAME
+        // highest-sensitivity family as period dates and contraceptive-context — arguably a more
+        // acute disclosure risk, since it bears more directly on conception timing.
+        //
+        // DERIVED shape (`conventionCols` only, no provenance) — a fertile-window estimate is
+        // COMPUTED from already-provenanced `cycle_records` rows, mirroring `cycle_predictions`/
+        // `cycle_phase_estimates` exactly, not measured with its own source. APPEND-ONLY (I2): a
+        // recompute INSERTs a fresh row, nothing here is ever UPDATEd.
+        //
+        // NO SINGLE-DATE COLUMN, structurally: `window_start`/`window_end` are the only date-bearing
+        // columns, both nullable and populated ONLY together (see
+        // `CycleFertileWindowEstimate`'s own header) — there is no column that could hold one bare
+        // estimated date, the same guarantee `cycle_predictions` already established for the
+        // next-period forecast, applied here to the fertile window instead.
+        Migration(version: 7, statements: [
+            """
+            CREATE TABLE cycle_fertile_window_estimates (
+              id TEXT PRIMARY KEY, generated_at INTEGER NOT NULL, window_start INTEGER, window_end INTEGER,
+              confidence REAL NOT NULL, mode TEXT NOT NULL, evidence_basis TEXT NOT NULL,
+              status TEXT NOT NULL, suppression_reason TEXT, algorithm_version TEXT NOT NULL,
+              input_cycle_ids TEXT NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_cycle_fertile_window_estimates_generated ON cycle_fertile_window_estimates(generated_at DESC);",
+        ]),
+        // Version 8 (A18/ADR-0010/D-25, EPIC-40 PREG-01/02/04/05, P0 slice): the pregnancy module's
+        // entity set. Purely additive (CREATEs only) — nothing from any prior migration is touched,
+        // so an upgrading v7 sensitive install reaches v8 without touching an existing row.
+        //
+        // SENSITIVE, not main (I7) — pregnancy data inherits every reason `cycle_records` et al. are
+        // sensitive-plus (migration 6's own header), plus its own sharper edge documented in
+        // `Domain/Pregnancy/PregnancyModels.swift`'s file header: a loss-suppression failure here is
+        // a re-traumatizing harm, not an inconvenience. All four tables below MUST live only here —
+        // never in `badan.db`. `PregnancyModelsTests.testPregnancyTablesExistOnlyInTheSensitiveDatabase`
+        // is the architecture test that blocks a future accidental main-DB placement.
+        //
+        // TWO SHAPES, four tables, the identical RAW/DERIVED split migration 6's own header
+        // documents for the cycle module:
+        //   * RAW/MEASURED (`pregnancy_records`, `due_date_source_entries`, `loss_declaration_records`)
+        //     carry the FULL `provenanceCols` (I1) + `conventionCols` (D-7): each is a user-asserted
+        //     fact with an origin (`ingestion_path = manual` always — no platform pregnancy-state
+        //     read exists; PREG-09/HealthKit `Pregnancy` category is deferred and would be
+        //     write-only even once built).
+        //   * DERIVED (`due_date_estimates`) carries `conventionCols` ONLY, no provenance — a due-date
+        //     estimate is COMPUTED from already-provenanced `due_date_source_entries` rows, mirroring
+        //     `cycle_predictions`'/`cycle_fertile_window_estimates`' own shape exactly.
+        //
+        // APPEND-ONLY (I2) is load-bearing for THIS module specifically, per the founder's own
+        // non-negotiable requirement: "a loss declaration or any other state change is a new row,
+        // never a mutation/deletion of prior history."
+        //   * `pregnancy_records` is an append-first REVISION CHAIN (`original_id`/`supersedes`/
+        //     `revision`), byte-identical in shape to `cycle_records` — a mode transition (including
+        //     a loss declaration) APPENDS a new revision, never UPDATEs `mode` in place. This is what
+        //     makes the whole journey's mode history — TTC, confirmed, loss, whatever came before —
+        //     permanently reconstructable via `history(originalId:)`, exactly like a corrected period.
+        //   * `due_date_source_entries` is append-only per `(pregnancy_record_original_id,
+        //     source_type)` — a correction inserts a fresh row for the same pair rather than
+        //     UPDATEing a prior one; see that type's own doc for why a full revision chain isn't
+        //     needed here (no branching "supersede a specific revision" case exists).
+        //   * `due_date_estimates` is append-only (I2), identical reasoning to `cycle_predictions`.
+        //   * `loss_declaration_records` is append-only AT CREATION — a loss is declared once; the
+        //     ONE column this migration expects to be UPDATEd in place is `data_disposition`
+        //     (research doc §9: "revisitable later, not a one-time forced decision"), mirroring
+        //     `cycle_anomaly_events.state`'s exact "detection fact frozen, one lifecycle field
+        //     transitions" shape. It is also INDEPENDENTLY DELETABLE via its own `deleted_at`
+        //     tombstone, separate from deleting the `pregnancy_records` chain it references.
+        //
+        // NO SINGLE-DATE ESTIMATE COLUMN EXISTS, structurally: `due_date_estimates` has
+        // `range_low/center/high` (a range) plus `resolved_source_type`, `confidence` and
+        // `algorithm_version` — there is no column that could hold one bare "due on X" date, the
+        // identical guarantee `cycle_predictions` already established, applied here to due dates.
+        Migration(version: 8, statements: [
+            // `PregnancyRecord`. `original_id`/`supersedes`/`revision` mirror `cycle_records` exactly
+            // — see this migration's own header.
+            """
+            CREATE TABLE pregnancy_records (
+              id TEXT PRIMARY KEY, mode TEXT NOT NULL, multiples_flag INTEGER NOT NULL,
+              fertility_treatment_context INTEGER NOT NULL, original_id TEXT NOT NULL,
+              supersedes TEXT, revision INTEGER NOT NULL,
+              \(provenanceCols), \(conventionCols)
+            );
+            """,
+            // Backs `PregnancyRecordRepository.history(originalId:)` — the whole audit chain of one
+            // logical journey, mirroring `idx_cycle_records_original` exactly.
+            "CREATE INDEX idx_pregnancy_records_original ON pregnancy_records(original_id);",
+            // Backs the live-view anti-join subquery, mirroring `idx_cycle_records_supersedes`
+            // exactly. Partial, because only revisions carry a non-NULL `supersedes`.
+            "CREATE INDEX idx_pregnancy_records_supersedes ON pregnancy_records(supersedes) WHERE supersedes IS NOT NULL;",
+            // `DueDateSourceEntry`. No revision chain (see this migration's own header) — the live
+            // read is "most recently recorded live row per (pregnancy_record_original_id,
+            // source_type) pair", backed by this composite index.
+            """
+            CREATE TABLE due_date_source_entries (
+              id TEXT PRIMARY KEY, pregnancy_record_original_id TEXT NOT NULL, source_type TEXT NOT NULL,
+              entered_date INTEGER NOT NULL,
+              \(provenanceCols), \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_due_date_source_entries_lookup ON due_date_source_entries(pregnancy_record_original_id, source_type, updated_at DESC);",
+            // `DueDateEstimate`. Append-only (I2); no unique natural-key index, mirroring
+            // `idx_cycle_predictions_generated`'s own fix — a plain lookup index only, so a plain
+            // INSERT can never collide and silently delete-then-replace prior estimate history.
+            """
+            CREATE TABLE due_date_estimates (
+              id TEXT PRIMARY KEY, pregnancy_record_original_id TEXT NOT NULL, generated_at INTEGER NOT NULL,
+              range_low INTEGER, range_center INTEGER, range_high INTEGER, resolved_source_type TEXT,
+              confidence REAL NOT NULL, algorithm_version TEXT NOT NULL, input_source_entry_ids TEXT NOT NULL,
+              \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_due_date_estimates_lookup ON due_date_estimates(pregnancy_record_original_id, generated_at DESC);",
+            // `LossDeclarationRecord`. Minimal fields (research doc §9 line 126) — no required
+            // "cause"/explanation column exists, structurally, not just by UI convention. Highest
+            // privacy tier of the four tables in this migration (research doc §12).
+            """
+            CREATE TABLE loss_declaration_records (
+              id TEXT PRIMARY KEY, pregnancy_record_original_id TEXT NOT NULL, declared_at INTEGER NOT NULL,
+              approximate_date INTEGER NOT NULL, gestational_stage TEXT, free_text_note TEXT,
+              data_disposition TEXT NOT NULL, fertility_treatment_context INTEGER NOT NULL,
+              \(provenanceCols), \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_loss_declaration_records_pregnancy ON loss_declaration_records(pregnancy_record_original_id);",
         ])]
     }
 }

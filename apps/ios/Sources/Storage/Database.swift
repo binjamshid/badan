@@ -2,8 +2,11 @@ import Foundation
 
 /// Opens and migrates BADAN's two physical databases. The sensitive-plus namespace
 /// (meds/symptoms/conditions) is a **separate file** so "disable this module" is a literal
-/// file deletion, not a best-effort row purge (D-9). MVP relies on OS file-level encryption;
-/// SQLCipher is a tracked future decision (ADR-0004).
+/// file deletion, not a best-effort row purge (D-9). `sensitive` (`badan_sensitive.db`) is
+/// SQLCipher-encrypted at rest with a device-Keychain-backed key (D-23/A16, ADR-0010 §A16,
+/// superseding ADR-0004's earlier "SQLCipher not yet adopted" posture); `main` (`badan.db`) is
+/// explicitly OUT of that scope and stays on OS file-level encryption only, per D-23 — it is
+/// opened with no key anywhere in this file.
 final class Database {
     let main: SQLiteConnection
     let sensitive: SQLiteConnection
@@ -60,10 +63,26 @@ final class Database {
     /// `hardenDirectory` is set) applies the backup/protection hardening below. Factored out of
     /// `init(directory:)` so `inMemoryFallback()` (EDGE-05) can share the open+migrate logic
     /// without a real on-disk directory to create or protect.
-    private init(mainPath: String, sensitivePath: String, directory: URL, hardenDirectory: Bool) throws {
+    ///
+    /// - Parameter sensitiveKeyStore: where `sensitive`'s SQLCipher key lives (D-23/A16). Defaults
+    ///   to the real Keychain — every existing call site (`Database(directory:)`, used across ~60
+    ///   test files) keeps working unchanged. Tests that want to avoid touching the real Keychain,
+    ///   or need to control/predict the exact key bytes across two `Database` instances pointed at
+    ///   the same directory, inject `InMemorySensitiveDatabaseKeyStore()` instead — mirroring how
+    ///   `DocumentVault(database:keyStore:)` is tested.
+    private init(mainPath: String, sensitivePath: String, directory: URL, hardenDirectory: Bool,
+                 sensitiveKeyStore: SensitiveDatabaseKeyStoring = KeychainSensitiveDatabaseKeyStore()) throws {
         self.directory = directory
+        // `main` is opened first, exactly as before this change, with no key argument at all —
+        // its open flags, PRAGMA sequence, and resulting file bytes are unaffected by D-23/A16.
         main = try SQLiteConnection(path: mainPath)
-        sensitive = try SQLiteConnection(path: sensitivePath)
+        let sensitiveKey = try SensitiveDatabaseEncryption.key(using: sensitiveKeyStore)
+        // Must run BEFORE `sensitive` is ever constructed below: if `sensitivePath` already holds
+        // a pre-SQLCipher plaintext file (an upgrading install), this transparently converts it in
+        // place first. A no-op for a fresh install (no file yet) or an already-migrated file (every
+        // launch after the first) — see `SensitiveDatabaseMigrator`'s own header.
+        try SensitiveDatabaseMigrator.migrateIfNeeded(path: sensitivePath, key: sensitiveKey)
+        sensitive = try SQLiteConnection(path: sensitivePath, key: sensitiveKey)
         // Only takes effect on a database with no tables yet (i.e. first-ever creation, before
         // `migrate` below runs); a harmless no-op on an already-migrated database (PERF-113).
         // Already-shipped installs with existing data need a separate one-time VACUUM-based
@@ -75,11 +94,11 @@ final class Database {
         if hardenDirectory { hardeningStatus = Self.applyHardening(to: directory) }
     }
 
-    convenience init(directory: URL) throws {
+    convenience init(directory: URL, sensitiveKeyStore: SensitiveDatabaseKeyStoring = KeychainSensitiveDatabaseKeyStore()) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try self.init(mainPath: directory.appendingPathComponent(Self.mainFilename).path,
                      sensitivePath: directory.appendingPathComponent(Self.sensitiveFilename).path,
-                     directory: directory, hardenDirectory: true)
+                     directory: directory, hardenDirectory: true, sensitiveKeyStore: sensitiveKeyStore)
     }
 
     /// EDGE-05: last-resort fallback for `AppEnvironment.makeDefault()` when even a scratch temp
