@@ -235,9 +235,13 @@ final class AppEnvironment {
         self.logging = LoggingRepository(main: main, sensitive: sensitive)
         // EPIC-33 (Phase 3D). Reads the same main-DB repositories every other engine here shares;
         // needs no sensitive-DB access beyond `logging` (medications only — never symptoms).
+        // A22/EPIC-42 (Phase 4): `syncToWatch` wires the SAME writer into `WatchSnapshotSync`'s
+        // singleton — one dto build, three bounded transports (app-group file, widget-timeline
+        // reload, watch application-context push), never a second snapshot-writing mechanism.
         self.ambientSnapshotWriter = AmbientSnapshotWriter(
             derivation: derivation, measurements: measurements, logging: logging,
-            insights: insightsRepo, store: AmbientSnapshotStore(), clock: clock)
+            insights: insightsRepo, store: AmbientSnapshotStore(), clock: clock,
+            syncToWatch: { WatchSnapshotSync.shared.sync($0) })
         self.exportJobs = ExportJobRepository(main)
         self.profiles = ProfileRepository(main)
         self.routes = RouteRepository(main)

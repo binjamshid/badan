@@ -37,6 +37,12 @@ private enum LogHubStrings {
         en: "That's a lot of water for one entry — double check it.",
         ar: "هذه كمية كبيرة من الماء لإدخال واحد — تحقّق منها."
     )
+    // A9 / ADR-0010 / D-22 — the AI coach tile (always visible; see the NavigationLink's own
+    // doc comment for why it isn't gated behind the opt-in flag itself).
+    static let aiCoachTile = LocalizedString(en: "AI coach", ar: "المدرب الذكي")
+    // A18 / ADR-0010 / D-25 (EPIC-40) — the pregnancy module tile (always visible; see the
+    // NavigationLink's own doc comment for why it isn't gated behind the opt-in flag itself).
+    static let pregnancyTile = LocalizedString(en: "Pregnancy", ar: "الحمل")
 }
 
 /// Stable, non-localized identity for quick-logged water entries. `NutritionEntry.description`
@@ -406,6 +412,35 @@ struct LogHubScreen: View {
                     env.profile.cycleModuleEnabled ? AnyView(CycleHomeScreen()) : AnyView(CycleConsentScreen())
                 } label: {
                     LogTile(title: env.s(MetricFamily.cycle.displayName), systemImage: MetricFamily.cycle.symbolName)
+                }
+                .buttonStyle(.plain)
+
+                // A9 / ADR-0010 / D-22 — the AI coach's entry point. Always visible (not gated
+                // behind `aiCoachEnabled`, for the identical reason the cycle tile above isn't
+                // gated behind `cycleModuleEnabled`): if the tile itself were hidden until the
+                // feature is on, there would be no way to ever discover and opt in to it. The
+                // destination is what's conditional — `AICoachChatScreen` once opted in,
+                // `AICoachConsentScreen` (default-off, its own consent surface, never folded into
+                // onboarding — A9's own requirement) otherwise.
+                NavigationLink {
+                    env.profile.aiCoachEnabled ? AnyView(AICoachChatScreen()) : AnyView(AICoachConsentScreen())
+                } label: {
+                    LogTile(title: env.s(LogHubStrings.aiCoachTile), systemImage: "sparkles")
+                }
+                .buttonStyle(.plain)
+
+                // A18 / ADR-0010 / D-25 (EPIC-40, pregnancy module P0 slice) — the pregnancy
+                // module's entry point. Always visible (not gated behind `pregnancyModuleMode`,
+                // for the identical reason the cycle/AI-coach tiles above aren't gated behind
+                // their own opt-in flags): if the tile itself were hidden until the module is on,
+                // there would be no way to ever discover and opt in to it. `PregnancyConsentScreen`
+                // is a single dual-role screen (onboarding when off, journey/loss/data home when
+                // on) — see that screen's own header for why this P0 slice ships no separate
+                // "PregnancyHomeScreen".
+                NavigationLink {
+                    PregnancyConsentScreen()
+                } label: {
+                    LogTile(title: env.s(LogHubStrings.pregnancyTile), systemImage: "figure.and.child.holdinghands")
                 }
                 .buttonStyle(.plain)
             }

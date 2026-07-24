@@ -34,13 +34,16 @@ final class AmbientSnapshotTests: XCTestCase {
 
     private var periodKey: String { DayAttribution.dayPeriodKey(clock.now(), tz: tz) }
 
-    private func makeWriter(reloadWidgets: @escaping ([String]) -> Void = { _ in }) -> AmbientSnapshotWriter {
+    private func makeWriter(
+        reloadWidgets: @escaping ([String]) -> Void = { _ in },
+        syncToWatch: @escaping (AmbientSnapshotDto) -> Void = { _ in }
+    ) -> AmbientSnapshotWriter {
         AmbientSnapshotWriter(
             derivation: DerivationRepository(db.main), measurements: MeasurementRepository(db.main),
             logging: LoggingRepository(main: db.main, sensitive: db.sensitive),
             insights: InsightRepository(db.main),
             store: AmbientSnapshotStore(overrideContainerURL: ambientDir),
-            clock: clock, reloadWidgets: reloadWidgets)
+            clock: clock, reloadWidgets: reloadWidgets, syncToWatch: syncToWatch)
     }
 
     // MARK: - Fixture seeding
@@ -85,6 +88,17 @@ final class AmbientSnapshotTests: XCTestCase {
         return localNight
     }
 
+    /// A22/EPIC-42. `unit` defaults to `effort.day`'s real canonical unit (`registry.json`,
+    /// `score_0_100`) — pass a different unit (e.g. `"kcal"`, the reduced-input activity-load unit
+    /// `EffortEngine.persistReducedInput` actually writes) to simulate the reduced-input variant.
+    private func seedEffort(score: Double, provisional: Bool = false, unit: String = "score_0_100") throws {
+        try DerivationRepository(db.main).appendDerived(DerivedValue(
+            id: ULID.newID(), metricId: MetricID.effortDay, value: score, unit: unit,
+            periodKey: periodKey, confidence: 0.9, provisional: provisional,
+            algorithmId: "effort.day", algorithmVersion: "1.0.0",
+            computedAt: clock.now(), updatedAt: clock.now(), originDeviceId: deviceId))
+    }
+
     private func seedMedication(name: String = "Vitamin D", time: String = "09:00") throws {
         try LoggingRepository(main: db.main, sensitive: db.sensitive).upsertRegimen(MedicationRegimen(
             id: ULID.newID(), name: name, schedule: .daily(times: [time]),
@@ -116,6 +130,37 @@ final class AmbientSnapshotTests: XCTestCase {
         XCTAssertEqual(sleep.durationMinutes, 420)
         XCTAssertEqual(try XCTUnwrap(sleep.score), 88, accuracy: 0.001)
         XCTAssertFalse(sleep.provisional)
+    }
+
+    // MARK: - Effort (A22/EPIC-42, added for BadanWatch's glanceable today view)
+
+    func testEffortSnapshotCarriesTheZoneBasedScore() async throws {
+        try seedEffort(score: 63, provisional: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let effort = try XCTUnwrap(dto.effort, "a score_0_100-unit effort.day row must produce an effort snapshot")
+        XCTAssertEqual(effort.score, 63, accuracy: 0.001)
+        XCTAssertFalse(effort.provisional)
+    }
+
+    func testEffortSnapshotIsProvisionalWhenTheUnderlyingRowIs() async throws {
+        try seedEffort(score: 40, provisional: true)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        XCTAssertTrue(try XCTUnwrap(dto.effort).provisional)
+    }
+
+    /// The reduced-input activity-load variant (`EffortEngine.persistReducedInput`, e.g. a `"kcal"`
+    /// unit) is a real movement magnitude, but not the 0–100 score `EffortSnapshot` promises — it
+    /// must degrade to `nil`, never be mislabelled as a score it isn't (`EffortSnapshot`'s own doc).
+    func testEffortSnapshotIsNilForTheReducedInputActivityLoadUnit() async throws {
+        try seedEffort(score: 320, unit: "kcal")
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        XCTAssertNil(dto.effort, "a non-score-unit effort.day row must not be surfaced as a fabricated score")
+    }
+
+    func testEffortSnapshotIsNilWhenNothingComputedYet() async throws {
+        // No effort.day row seeded at all — an honest gap, same as readiness/sleep's own nil cases.
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        XCTAssertNil(dto.effort)
     }
 
     func testSentencePicksTheMostNotableInsightOverACalmOne() async throws {
@@ -325,6 +370,29 @@ final class AmbientSnapshotTests: XCTestCase {
         XCTAssertEqual(reloadedKinds, AmbientSnapshotWriter.widgetKinds, "a debounced call must not reload widgets again")
     }
 
+    /// A22/EPIC-42. Mirrors `testSuccessfulWriteReloadsEveryWidgetKindExactlyOnce` for the new
+    /// `syncToWatch` transport: exactly one call per successful write, carrying the SAME dto that
+    /// landed on disk (never a second, independently-assembled snapshot), and none at all for a
+    /// debounced-away call.
+    func testSuccessfulWriteSyncsToWatchExactlyOnceWithTheWrittenDto() async throws {
+        try seedReadiness(score: 65)
+        try seedEffort(score: 58)
+        var syncedDtos: [AmbientSnapshotDto] = []
+        let writer = makeWriter(syncToWatch: { syncedDtos.append($0) })
+
+        let wrote = await writer.writeIfNeeded(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        XCTAssertTrue(wrote)
+        XCTAssertEqual(syncedDtos.count, 1, "exactly one watch sync per successful write")
+
+        let store = AmbientSnapshotStore(overrideContainerURL: ambientDir)
+        let onDisk = try XCTUnwrap(store.read())
+        XCTAssertEqual(syncedDtos.first, onDisk, "the watch must receive the SAME dto that was written to disk")
+
+        // A debounced-away second call must not trigger a second watch sync.
+        _ = await writer.writeIfNeeded(now: clock.now().addingTimeInterval(1), tz: tz, language: .en, medsDueConsentGranted: false)
+        XCTAssertEqual(syncedDtos.count, 1, "a debounced call must not sync to the watch again")
+    }
+
     private static let pastDebounceWindow = AmbientSnapshotWriter.minWriteInterval + 1
 
     // MARK: - N-1 schema tolerance (AmbientSnapshotStore.read / AmbientSnapshotDto.init(from:))
@@ -382,10 +450,12 @@ final class AmbientSnapshotTests: XCTestCase {
             readiness: RingSnapshot(score: 88, provisional: true),
             sentence: SentenceSnapshot(en: "hello", ar: "أهلاً"),
             sleep: SleepSnapshot(durationMinutes: 411, score: 77, provisional: false),
-            medsDue: MedsDueSnapshot(items: [MedsDueItem(regimenId: "r1", displayName: "Vitamin D", timeLabel: "9:00 AM")]))
+            medsDue: MedsDueSnapshot(items: [MedsDueItem(regimenId: "r1", displayName: "Vitamin D", timeLabel: "9:00 AM")]),
+            effort: EffortSnapshot(score: 54, provisional: true))
 
         try store.write(dto)
         let readBack = try XCTUnwrap(store.read())
         XCTAssertEqual(readBack, dto)
+        XCTAssertEqual(readBack.effort, dto.effort)
     }
 }

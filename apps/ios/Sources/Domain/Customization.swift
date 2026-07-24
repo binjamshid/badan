@@ -36,6 +36,27 @@ public enum UnitProfileMode: String, Codable, Hashable, Sendable {
     case display     // the user's chosen display units
 }
 
+/// A18 / ADR-0010 / D-25 (EPIC-40, pregnancy module P0 slice). The user-declared pregnancy-module
+/// gate — default `.off` (the SAME value both "the user has never chosen anything" and "the user
+/// explicitly turned the module off" resolve to). Mirrors `FertileWindowMode`'s EXACT pattern per
+/// this module's own non-negotiable requirement: an ENUM, not a `Bool`, so the tolerant-decode path
+/// below can fold both "key missing" and "key present but unrecognized" into the same safe default
+/// via `try?`, the identical reasoning `CustomizationProfile.init(from:)` already documents for
+/// `fertileWindowMode`. This is a HARD requirement, not a convenience default: nothing about
+/// pregnancy state may ever be inferred from cycle data, missed periods, symptoms, or anything else
+/// — `PregnancyConsentScreen` is the ONLY place this is ever set, mirroring `CycleConsentScreen`'s
+/// exact "one dedicated consent screen, no other write path" enforcement for `cycleModuleEnabled`.
+public enum PregnancyModuleMode: String, Codable, Hashable, Sendable, CaseIterable {
+    case off, on
+
+    public var displayName: LocalizedString {
+        switch self {
+        case .off: return LocalizedString(en: "Off", ar: "إيقاف")
+        case .on: return LocalizedString(en: "On", ar: "تفعيل")
+        }
+    }
+}
+
 /// An orderable, hideable home surface. This is the DashboardCard/DashboardLayout concept.
 public struct HomeModule: Codable, Hashable, Sendable, Identifiable {
     public var id: String            // "sleep" | "readiness" | "activity" | "meds" | ...
@@ -197,6 +218,33 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     /// prediction/phase-estimate rows. Default `false` (predictions/phase-conditioned baselines run
     /// normally once the module itself is on).
     public var cyclePredictionsPaused: Bool
+    /// A17 / ADR-0010 / D-24 (EPIC-39 CYCLE-12). The user-declared fertile-window estimation mode —
+    /// default `.suppressed` (the SAME value both "the user has never chosen anything" and "the user
+    /// explicitly chose to hide fertile-window estimates" resolve to; see `FertileWindowMode`'s own
+    /// doc for why one case correctly covers both). This is a HARD requirement, not just a
+    /// convenience default: fertile-window estimation must never be inferred passively, must never
+    /// be on by default, and must never be shown just because `cycleModuleEnabled` is on —
+    /// `CycleModuleServices.refreshAll` reads this LIVE and never even calls
+    /// `CycleFertileWindowEngine` while it is `.suppressed`, mirroring `cyclePredictionsPaused`'s own
+    /// "read by the composition layer, never written by an engine" separation immediately above.
+    public var fertileWindowMode: FertileWindowMode
+    /// A9 / ADR-0010 / D-22. Master enable/disable for the AI coach — default `false` (opt-in):
+    /// off until the user explicitly turns it on from `AICoachConsentScreen`, which is also the
+    /// ONLY place a query ever leaves the device (D-22: "No query leaves the device until the
+    /// user explicitly enables the AI coach feature through its own consent screen"). This flag
+    /// alone is not the whole gate — `AICoachClient.isEnabled` additionally requires a Keychain
+    /// device token to exist (issued by `enableModule()` alongside setting this), so a device
+    /// that somehow has this `true` with no token (e.g. a restored backup — the token itself
+    /// never leaves this device, see `KeychainAICoachDeviceTokenStore`) still can't send a
+    /// request; see `AICoachChatScreen`'s own two-gate reasoning, mirroring
+    /// `RouteConsentStore`'s "BADAN's toggle AND the underlying grant" pattern.
+    public var aiCoachEnabled: Bool
+    /// A18 / ADR-0010 / D-25 (EPIC-40, pregnancy module P0 slice). Default `.off` — see
+    /// `PregnancyModuleMode`'s own doc for why this is an enum, not a bool, and why it is a hard
+    /// requirement rather than a convenience default. `PregnancyModuleServices`/
+    /// `PregnancyModeController` only ever READ this; `PregnancyConsentScreen` is the one place it
+    /// is ever written.
+    public var pregnancyModuleMode: PregnancyModuleMode
 
     public init(depthPolicy: DepthPolicy = .casual, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
                 unitOverrides: [String: String] = [:], unitProfile: UnitProfileMode = .display,
@@ -208,7 +256,10 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 sessionPreferences: SessionPreferences = SessionPreferences(),
                 consentWidgetMedsDue: Bool = false,
                 cycleModuleEnabled: Bool = false,
-                cyclePredictionsPaused: Bool = false) {
+                cyclePredictionsPaused: Bool = false,
+                fertileWindowMode: FertileWindowMode = .suppressed,
+                aiCoachEnabled: Bool = false,
+                pregnancyModuleMode: PregnancyModuleMode = .off) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -219,6 +270,9 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.consentWidgetMedsDue = consentWidgetMedsDue
         self.cycleModuleEnabled = cycleModuleEnabled
         self.cyclePredictionsPaused = cyclePredictionsPaused
+        self.fertileWindowMode = fertileWindowMode
+        self.aiCoachEnabled = aiCoachEnabled
+        self.pregnancyModuleMode = pregnancyModuleMode
     }
 
     // Custom decode so a profile JSON persisted before these two fields existed still loads
@@ -259,6 +313,33 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // silently reset every other preference over.
         cycleModuleEnabled = try c.decodeIfPresent(Bool.self, forKey: .cycleModuleEnabled) ?? false
         cyclePredictionsPaused = try c.decodeIfPresent(Bool.self, forKey: .cyclePredictionsPaused) ?? false
+        // `try?` (mirroring `depthPolicy`'s own tolerant-unknown-value decode above in this
+        // initializer, not the plain `decodeIfPresent ?? default` shape the other cycle flags use):
+        // this single call folds BOTH "key missing entirely" (a profile persisted before this
+        // A17/CYCLE-12 field existed) AND "key present but an unrecognized raw value" (a future mode
+        // this build doesn't know) into the same safe default, `.suppressed` — the one value this
+        // field must ALWAYS default to. A decode failure or a missing key silently producing
+        // `.calendar`/`.signalAssisted` would be exactly the "on by default" outcome this feature's
+        // own hard requirement forbids; a whole-profile decode failure (which `ProfileRepository
+        // .load()` treats as "no saved profile" and resets every other preference too) is avoided
+        // the same way every other tolerant field in this initializer avoids it.
+        fertileWindowMode = (try? c.decode(FertileWindowMode.self, forKey: .fertileWindowMode)) ?? .suppressed
+        // decodeIfPresent (not decode): a profile persisted before this flag existed must still
+        // load — a missing key defaults to the safe, opt-in-off state, never a whole-profile
+        // decode failure (which `ProfileRepository.load()` would silently reset every other
+        // preference over), and never `true` — the one value a missing/corrupt key must never
+        // produce for a network-consent flag (A9/D-22).
+        aiCoachEnabled = try c.decodeIfPresent(Bool.self, forKey: .aiCoachEnabled) ?? false
+        // `try?` (mirroring `fertileWindowMode`'s own tolerant-unknown-value decode immediately
+        // above, not the plain `decodeIfPresent ?? default` shape most other flags in this
+        // initializer use): folds BOTH "key missing entirely" (a profile persisted before this
+        // A18/EPIC-40 field existed) AND "key present but an unrecognized raw value" into the same
+        // safe default, `.off` — the one value this field must ALWAYS default to. A decode failure
+        // or a missing key silently producing `.on` would be exactly the "on by default" outcome
+        // this module's own hard requirement forbids; a whole-profile decode failure (which
+        // `ProfileRepository.load()` treats as "no saved profile" and resets every other preference
+        // too) is avoided the same way every other tolerant field in this initializer avoids it.
+        pregnancyModuleMode = (try? c.decode(PregnancyModuleMode.self, forKey: .pregnancyModuleMode)) ?? .off
     }
 
     public static let defaultModules: [HomeModule] = [

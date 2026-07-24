@@ -181,6 +181,8 @@ struct CycleConsentScreen: View {
                 }
             }
 
+            fertileWindowSection
+
             VStack(alignment: .leading, spacing: BadanSpace.space3) {
                 SectionHeader(env.s(CycleConsentStrings.dataSectionHeader))
                 BadanCard {
@@ -206,6 +208,42 @@ struct CycleConsentScreen: View {
                     .buttonStyle(.plain)
                 }
                 Text(env.s(CycleConsentStrings.purgeFootnote))
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: - Fertile-window estimate mode (A17/ADR-0010/D-24, EPIC-39 CYCLE-12)
+    //
+    // USER-DECLARED ONLY (plan §26's reject-permanent table: "Passive pregnancy/fertility inference
+    // ... Lower-risk alternative: User-declared modes only"). This is the ONE place
+    // `fertileWindowMode` is ever written — `CycleFertileWindowEngine`/`CycleModuleServices` only
+    // ever READ it, exactly like `cycleModuleEnabled`'s own enforcement
+    // (`Customization.swift:186-192`'s doc). Defaults to `.suppressed` (see
+    // `CustomizationProfile.fertileWindowMode`'s own doc); nothing above this section, and nothing
+    // that runs before the user taps a row here, ever computes or shows a fertile-window estimate.
+    private var fertileWindowSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(CycleConsentStrings.fertileWindowSectionHeader))
+            SettingsRadioGroup(
+                options: FertileWindowMode.allCases,
+                title: { $0.displayName.resolved(env.language) },
+                subtitle: { CycleConsentStrings.fertileWindowModeSubtitle($0).resolved(env.language) },
+                isOn: { $0 == env.profile.fertileWindowMode }
+            ) { mode in
+                env.update { $0.fertileWindowMode = mode }
+            }
+            // Non-contraceptive framing (research doc §5/§14; plan's own "Non-contraceptive framing
+            // everywhere"): shown regardless of which mode is currently selected, including
+            // `.suppressed` — a user deciding whether to turn this on at all should see this
+            // disclaimer before opting in, not only after.
+            HStack(alignment: .top, spacing: BadanSpace.space2) {
+                Image(systemName: "info.circle")
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .accessibilityHidden(true)
+                Text(env.s(CycleConsentStrings.fertileWindowDisclaimer))
                     .font(BadanFont.caption)
                     .foregroundStyle(BadanColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -293,6 +331,41 @@ private enum CycleConsentStrings {
             + "phase-based comparisons until you turn it back on.",
         ar: "استمر في تسجيل الدورات والتدفق كالمعتاد. سيؤدي هذا إلى إيقاف توقع دورتك القادمة "
             + "والمقارنات المرتبطة بمرحلة الدورة إلى أن تعيد تفعيله.")
+
+    // A17/ADR-0010/D-24 (EPIC-39 CYCLE-12) — fertile-window estimate mode.
+    static let fertileWindowSectionHeader = LocalizedString(
+        en: "Fertile-window estimate", ar: "تقدير نافذة الخصوبة")
+    static let fertileWindowDisclaimer = LocalizedString(
+        en: "This is an informational, cycle-awareness estimate — not contraception and not a "
+            + "fertility treatment. It should never be relied on to prevent or plan a pregnancy.",
+        ar: "هذا تقدير إعلامي لزيادة الوعي بدورتك — وليس وسيلة لمنع الحمل ولا علاجاً للخصوبة. لا "
+            + "ينبغي الاعتماد عليه لمنع الحمل أو التخطيط له.")
+
+    static func fertileWindowModeSubtitle(_ mode: FertileWindowMode) -> LocalizedString {
+        switch mode {
+        case .suppressed:
+            return LocalizedString(
+                en: "Don't estimate or show a fertile window. Your cycle history and predictions keep "
+                    + "working exactly as they do now.",
+                ar: "عدم تقدير أو عرض نافذة خصوبة. يستمر سجل دورتك وتوقعاتك في العمل كما هي تماماً.")
+        case .calendar:
+            return LocalizedString(
+                en: "A broad, calendar-based estimate from your own cycle history, with a clear "
+                    + "confidence description — never a single date.",
+                ar: "تقدير واسع قائم على التقويم، مستمد من سجل دورتك الخاص، مع وصف واضح لمستوى الثقة — "
+                    + "وليس تاريخاً واحداً أبداً.")
+        case .signalAssisted:
+            return LocalizedString(
+                en: "Narrows the calendar-based estimate using supporting signals such as an "
+                    + "ovulation-test result or a temperature shift, once you're able to log them. "
+                    + "Logging those isn't available in this version yet, so this currently shows the "
+                    + "same broad, calendar-based estimate as the option above.",
+                ar: "يعمل على تضييق التقدير القائم على التقويم باستخدام إشارات داعمة مثل نتيجة اختبار "
+                    + "تبويض أو تغيّر في درجة الحرارة، بمجرد أن تتمكّن من تسجيلها. تسجيل هذه الإشارات "
+                    + "غير متاح في هذا الإصدار بعد، لذا يعرض هذا الخيار حالياً التقدير الواسع نفسه "
+                    + "القائم على التقويم مثل الخيار أعلاه.")
+        }
+    }
 
     static let dataSectionHeader = LocalizedString(en: "Your cycle data", ar: "بيانات دورتك")
     static let purgeActionTitle = LocalizedString(en: "Delete all cycle data", ar: "حذف جميع بيانات الدورة")

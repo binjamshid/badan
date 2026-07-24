@@ -191,6 +191,13 @@ private struct CycleHomeData {
     var status: CycleHomeStatus
     var mostRecentLiveRecord: CycleRecord?
     var prediction: CyclePrediction?
+    /// A17/ADR-0010/D-24 (EPIC-39 CYCLE-12) — only ever non-nil when `env.profile.fertileWindowMode
+    /// != .suppressed` AND the estimate itself carries a real, active window (see `load()`'s own
+    /// gate below); this screen deliberately shows nothing for the "not enough history yet" /
+    /// "suppressed by contraceptive context" in-between states — those calmer caveats belong on the
+    /// fuller `CycleHistoryScreen`, not this compact summary, per §7's "optional overlay, not forced
+    /// narrative" rule.
+    var fertileWindowEstimate: CycleFertileWindowEstimate?
     var anomalies: [CycleAnomalyEvent]
 }
 
@@ -281,6 +288,7 @@ struct CycleHomeScreen: View {
                 statusCard(data)
                 quickActionsRow(data)
                 predictionSection(data)
+                fertileWindowSection(data)
                 anomalySection(data)
             }
         }
@@ -293,12 +301,21 @@ struct CycleHomeScreen: View {
         do {
             let liveRecords = try services.cycleRecords.liveRecords()
             let prediction = try services.predictions.latestPrediction()
+            // A17/ADR-0010/D-24 (EPIC-39 CYCLE-12): gated the same way `CycleHistoryScreen.load()`
+            // gates its own read — while the user-declared mode default (`.suppressed`) holds, this
+            // screen never even queries the estimate table, let alone renders a section for it.
+            let fertileWindowEstimate: CycleFertileWindowEstimate? = env.profile.fertileWindowMode == .suppressed
+                ? nil
+                : try services.fertileWindowEstimates.latestEstimate().flatMap {
+                    CycleFertileWindowPresentation.hasWindow($0) ? $0 : nil
+                }
             let anomalyEvents = try services.anomalies.liveEvents()
             let status = CycleStatusResolver.resolve(liveRecords: liveRecords, asOf: env.now(),
                                                       tz: TimeZone.current.identifier)
             let mostRecent = liveRecords.max(by: { $0.startAt < $1.startAt })
             state = .loaded(CycleHomeData(status: status, mostRecentLiveRecord: mostRecent,
-                                          prediction: prediction, anomalies: anomalyEvents))
+                                          prediction: prediction, fertileWindowEstimate: fertileWindowEstimate,
+                                          anomalies: anomalyEvents))
         } catch {
             LoadErrorLog.log(error, screen: "CycleHomeScreen")
             state = .error(env.s(LoadErrorCopy.message))
@@ -420,6 +437,44 @@ struct CycleHomeScreen: View {
                 .font(BadanFont.body)
                 .foregroundStyle(BadanColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: Fertile-window summary (A17/ADR-0010/D-24, EPIC-39 CYCLE-12) — tapping navigates to
+    // CycleHistoryScreen, same as the prediction card above, where the full range/caveat/"why this
+    // estimate?" detail lives. Renders ONLY when `data.fertileWindowEstimate` is non-nil (see that
+    // field's own doc) — never a forced, always-present section, per §7's "optional overlay chips...
+    // not forced narrative" rule.
+    @ViewBuilder
+    private func fertileWindowSection(_ data: CycleHomeData) -> some View {
+        if let estimate = data.fertileWindowEstimate, let start = estimate.windowStart, let end = estimate.windowEnd {
+            VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                SectionHeader(env.s(CycleHistoryStrings.fertileWindowSectionTitle))
+                Button { route = .history } label: {
+                    BadanCard {
+                        HStack(alignment: .top, spacing: BadanSpace.space3) {
+                            VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                                Text(env.s(CycleHistoryStrings.fertileWindowRange.filling(
+                                    ["low": dateText(start), "high": dateText(end)])))
+                                    .font(BadanFont.body.weight(.medium))
+                                    .foregroundStyle(BadanColor.textPrimary)
+                                    .environment(\.layoutDirection, .leftToRight)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(env.s(CycleHistoryStrings.fertileWindowNotContraception))
+                                    .font(BadanFont.caption)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: BadanSpace.space2)
+                            Image(systemName: "chevron.forward")
+                                .font(BadanFont.caption.weight(.semibold))
+                                .foregroundStyle(BadanColor.textSecondary)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 

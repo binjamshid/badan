@@ -1,6 +1,6 @@
 {
-  "version": "0.2.1",
-  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§10 Health metric ontology) v0.2.0 (EPIC-07) adds the ingested workout.* family, wrist-temperature deviation, the Phase-2 derived score ids, and the v1.1 domain ids (hydration/cycle/lab) per plan §28.1 amendment 12, so no second registry pass is needed. Four ids from the EPIC-07 brief were NOT added because an existing row already means the same thing and duplicating it would split one fact across two ids: heart.hrv_sdnn (heart.hrv is the SDNN-fed row — its preciseLabel said rMSSD and was corrected in v0.2.0), respiratory.rr (respiratory.rate), activity.basal_energy (activity.resting_energy), body.vo2max (heart.vo2max). Every canonicalUnit and displayUnit here must exist in Units.table on both platforms — UnitTests.testRegistryCanonicalAndDisplayUnitsAreAllKnown enforces it. Families beyond MetricFamily's cases (workout/readiness/effort/stress/hydration/cycle/lab) intentionally fall back to .other in the UI until those cases are added; the registry is designed to add families without a code change. v0.2.1 (EPIC-29) adds one row: journal.correlation. That row is a NAMESPACE, not a single measured metric — the correlation engine writes journal.correlation.<behaviorId>.<scoreId>, one id per behaviour x score pair the user has logged enough of, and those concrete ids are deliberately not enumerated here (the set is a product of behaviors.json and the three scored ids, so listing it would add ~90 catalogue rows that never carry data and would rot the moment a behaviour is added). The namespace row is what gives the whole family its unit, chart hint, bilingual name and — load-bearing — its sensitiveClass: sensitivePlus, because a finding names the behaviour it is about (caffeine, alcohol) and is therefore as lifestyle-revealing as the journal row it came from (I7). Anything resolving a journal.correlation.* id falls back to this row for that identity.",
+  "version": "0.2.2",
+  "note": "Compiled from BADAN_MASTER_BLUEPRINT.md by scripts/mine-blueprint workflow. Source of truth for the app registry. (§10 Health metric ontology) v0.2.0 (EPIC-07) adds the ingested workout.* family, wrist-temperature deviation, the Phase-2 derived score ids, and the v1.1 domain ids (hydration/cycle/lab) per plan §28.1 amendment 12, so no second registry pass is needed. Four ids from the EPIC-07 brief were NOT added because an existing row already means the same thing and duplicating it would split one fact across two ids: heart.hrv_sdnn (heart.hrv is the SDNN-fed row — its preciseLabel said rMSSD and was corrected in v0.2.0), respiratory.rr (respiratory.rate), activity.basal_energy (activity.resting_energy), body.vo2max (heart.vo2max). Every canonicalUnit and displayUnit here must exist in Units.table on both platforms — UnitTests.testRegistryCanonicalAndDisplayUnitsAreAllKnown enforces it. Families beyond MetricFamily's cases (workout/readiness/effort/stress/hydration/cycle/lab) intentionally fall back to .other in the UI until those cases are added; the registry is designed to add families without a code change. v0.2.1 (EPIC-29) adds one row: journal.correlation. That row is a NAMESPACE, not a single measured metric — the correlation engine writes journal.correlation.<behaviorId>.<scoreId>, one id per behaviour x score pair the user has logged enough of, and those concrete ids are deliberately not enumerated here (the set is a product of behaviors.json and the three scored ids, so listing it would add ~90 catalogue rows that never carry data and would rot the moment a behaviour is added). The namespace row is what gives the whole family its unit, chart hint, bilingual name and — load-bearing — its sensitiveClass: sensitivePlus, because a finding names the behaviour it is about (caffeine, alcohol) and is therefore as lifestyle-revealing as the journal row it came from (I7). Anything resolving a journal.correlation.* id falls back to this row for that identity. v0.2.2 (A21/ADR-0010, D-26) adds body.glucose: platform-written HealthKit `bloodGlucose` only (no vendor CGM SDK, no OAuth — see HKTypeMap's row), widened the same way every other single-instant vital was. family: body (it joins weight/bodyFat/leanMass/waist as a rawSample requiring a connected measuring device — a glucose meter or CGM app that already writes to Apple Health — rather than getting its own pillar/module, which stays deferred with the vendor-integration work per A21). canonicalUnit is mmol/L (not mg/dL) per the blueprint's own unit table (§16, mmol/L primary + mg/dL display) and Arabic/RTL-first readership. sensitiveClass is sensitivePlus per A21/D-26 and the blueprint's own CGM-platforms row calling glucose sensitive-plus outright — this governs export gating (excluded from a default, non-sensitive export, same mechanism as cycle.*/lab.*) but NOT physical storage: unlike cycle/pregnancy/lab (which are manually-entered and never touch IngestionPipeline), glucose is platform-written and flows through the SAME general measurements/IngestionPipeline path into badan.db as every other widened HealthKit metric, per A21's explicit 'buildable now, same as any other widened metric' framing — see the D-26 scope note in docs/DECISIONS.md for the full rationale and why a second sensitive-DB-backed pipeline was deliberately not built for this slice.",
   "metrics": [
     {
       "metricId": "sleep.time_asleep",
@@ -508,6 +508,24 @@
       "baselineEligible": true,
       "sensitiveClass": "normal",
       "explainerEn": "Your waist measurement, tracked over time from your own entries."
+    },
+    {
+      "metricId": "body.glucose",
+      "family": "body",
+      "kind": "rawSample",
+      "canonicalUnit": "mmol/L",
+      "displayUnits": [
+        "mmol/L",
+        "mg/dL"
+      ],
+      "nameEn": "Blood glucose",
+      "nameAr": "سكر الدم",
+      "casualLabel": "Blood sugar",
+      "preciseLabel": "Blood glucose",
+      "chartHint": "line",
+      "baselineEligible": true,
+      "sensitiveClass": "sensitivePlus",
+      "explainerEn": "A blood glucose reading from a connected sensor or meter, already saved in Apple Health. Shown for your own personal awareness only — never for treatment decisions."
     },
     {
       "metricId": "respiratory.rate",

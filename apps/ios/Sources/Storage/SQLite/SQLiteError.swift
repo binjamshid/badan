@@ -8,6 +8,11 @@ enum SQLiteError: Error, CustomStringConvertible {
     case execFailed(sql: String, message: String)
     case decodeFailed(entity: String, reason: String)
     case encodeFailed(entity: String)
+    /// D-23/A16: `sqlite3_key()` itself accepted the key (it always reports success, even for a
+    /// wrong key on an already-encrypted file), but the mandatory follow-up read
+    /// (`SELECT count(*) FROM sqlite_master`) that actually proves the key works failed — either
+    /// the key is wrong for this file, or the file isn't a SQLCipher database at all.
+    case keyFailed(path: String, message: String)
 
     var description: String {
         switch self {
@@ -18,6 +23,7 @@ enum SQLiteError: Error, CustomStringConvertible {
         case .execFailed(let sql, let m): return "SQLite exec failed: \(m)\n\(sql)"
         case .decodeFailed(let e, let r): return "Decode failed for \(e): \(r)"
         case .encodeFailed(let e): return "Encode failed for \(e)"
+        case .keyFailed(let path, let m): return "SQLite key verification failed (\(path)): \(m)"
         }
     }
 }

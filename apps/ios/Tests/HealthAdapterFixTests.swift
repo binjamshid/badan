@@ -368,6 +368,47 @@ final class HealthAdapterFixTests: XCTestCase {
         XCTAssertEqual(try Units.convert(48.6, from: "ml/kg/min", to: "mL/kg/min"), 48.6, accuracy: 1e-9)
     }
 
+    // MARK: - A21/ADR-0010, D-26: blood glucose, widened the same way as any other single-instant vital
+
+    /// The type-map row itself: an ordinary `.anchoredSample`/`.requiresAccessory` entry, no
+    /// different in shape from SpO2/weight — the whole point of "same as any other widened metric".
+    func testBloodGlucoseTypeMapEntry() throws {
+        let entry = try XCTUnwrap(HKTypeMap.entry(for: .bloodGlucose))
+        XCTAssertEqual(entry.metricId, MetricID.glucose)
+        XCTAssertEqual(entry.strategy, .anchoredSample)
+        XCTAssertEqual(entry.caveat, .requiresAccessory,
+                       "a glucose reading only exists for days a connected meter/CGM measured one")
+        XCTAssertEqual(entry.badanUnit, "mmol/L")
+    }
+
+    /// Reading directly in mmol/L (the registry canonical) makes this an identity conversion end to
+    /// end — no `.estimate` stamp, unlike a type that has to cross units on the way in.
+    func testBloodGlucoseUnitRoundTripIsIdentity() throws {
+        let entry = try XCTUnwrap(HKTypeMap.entry(for: .bloodGlucose))
+        let metricId = try XCTUnwrap(entry.metricId)
+        let definition = try XCTUnwrap(MetricRegistry.shared.definition(metricId))
+        XCTAssertEqual(definition.canonicalUnit, "mmol/L")
+        XCTAssertEqual(try Units.convert(5.4, from: entry.badanUnit, to: definition.canonicalUnit), 5.4, accuracy: 1e-9)
+    }
+
+    /// The clinical mg/dL<->mmol/L conversion, exercised the direction a display/export unit
+    /// switch would use it — a ~90 mg/dL fasting reading is ~5.0 mmol/L.
+    func testGlucoseMgPerDlConvertsToMmolPerL() throws {
+        XCTAssertEqual(try Units.convert(90, from: "mg/dL", to: "mmol/L"), 90 / 18.0182, accuracy: 1e-9)
+        XCTAssertEqual(try Units.convert(5.0, from: "mmol/L", to: "mg/dL"), 5.0 * 18.0182, accuracy: 1e-9)
+    }
+
+    /// `body.glucose` is authorization-ONLY-adjacent in one sense (it needs an accessory), but it
+    /// IS an ingesting row — this pins that it is NOT accidentally left `.authorizationOnly`, which
+    /// would silently stop it from ever writing a row (see `HKTypeMap.validate`'s own doc on this
+    /// exact silent-failure shape).
+    func testBloodGlucoseIsNotAuthorizationOnly() throws {
+        let entry = try XCTUnwrap(HKTypeMap.entry(for: .bloodGlucose))
+        if case .authorizationOnly = entry.strategy {
+            XCTFail("body.glucose must actually ingest, not just request permission")
+        }
+    }
+
     // MARK: - EPIC-01 task 9: source priority for the new families
 
     func testSourcePriorityRecognizesASmartScale() {

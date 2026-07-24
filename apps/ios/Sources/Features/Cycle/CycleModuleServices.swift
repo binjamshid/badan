@@ -29,6 +29,9 @@ struct CycleModuleServices {
     let predictions: CyclePredictionRepository
     let phaseEstimates: CyclePhaseEstimateRepository
     let anomalies: CycleAnomalyEventRepository
+    /// A17/ADR-0010/D-24 (EPIC-39 CYCLE-12). See `refreshAll`'s own step 3b for the
+    /// `fertileWindowMode`-gated append.
+    let fertileWindowEstimates: CycleFertileWindowEstimateRepository
     let deviceId: String
 
     private let env: AppEnvironment
@@ -43,6 +46,10 @@ struct CycleModuleServices {
     /// that suite and this one.
     static let phaseEstimateAlgorithmVersion = "cycle.phase_estimate@1.0.0"
     static let anomalyAlgorithmVersion = "cycle.anomaly@1.0.0"
+    /// A17/ADR-0010/D-24 (EPIC-39 CYCLE-12) — its own, distinct identity from every constant above,
+    /// per this same doc comment's own rule ("each engine's own output shape gets its own version
+    /// identity").
+    static let fertileWindowAlgorithmVersion = "cycle.fertile_window@1.0.0"
 
     init(env: AppEnvironment) {
         let sensitive = env.database.sensitive
@@ -52,6 +59,7 @@ struct CycleModuleServices {
         predictions = CyclePredictionRepository(sensitive: sensitive)
         phaseEstimates = CyclePhaseEstimateRepository(sensitive: sensitive)
         anomalies = CycleAnomalyEventRepository(sensitive: sensitive)
+        fertileWindowEstimates = CycleFertileWindowEstimateRepository(sensitive: sensitive)
         deviceId = env.deviceId
         self.env = env
     }
@@ -70,6 +78,17 @@ struct CycleModuleServices {
     ///    default for this slice.
     /// 3. `phaseEstimate = CyclePredictionEngine.estimatePhase(...)`; always appended via
     ///    `phaseEstimates.appendEstimate`.
+    /// 3b. A17/ADR-0010/D-24 (EPIC-39 CYCLE-12) — IFF `env.profile.fertileWindowMode != .suppressed`:
+    ///     `CycleFertileWindowEngine.estimateFertileWindow(...)`, always appended via
+    ///     `fertileWindowEstimates.appendEstimate`. Deliberately NOT unconditional like steps 2/3
+    ///     above: `fertileWindowMode` defaults to `.suppressed`, and this hard, user-declared gate
+    ///     lives HERE, outside the pure engine — while it holds, `CycleFertileWindowEngine` is never
+    ///     even CALLED, let alone persisted, satisfying this feature's own "no estimate computed
+    ///     until the setting is explicitly set" requirement structurally rather than by convention.
+    ///     Contrast this with the engine's OWN internal contraceptive-context suppression gate (an
+    ///     independent, always-applied floor that still runs — and still appends a `.suppressed` row
+    ///     — whenever this outer, mode-based gate is open); see `CycleFertileWindowEngine`'s own doc
+    ///     for the ceiling/floor framing.
     /// 4. IFF `env.profile.cycleModuleEnabled` AND NOT `env.profile.cyclePredictionsPaused`:
     ///    construct a SENSITIVE-backed `BaselineEngine` (derivation over
     ///    `DerivationRepository(env.database.sensitive)`, measurements/registry/clock/deviceId from
@@ -112,6 +131,18 @@ struct CycleModuleServices {
         phaseEstimate.originDeviceId = deviceId
         try phaseEstimates.appendEstimate(phaseEstimate)
 
+        // Step 3b. The user-declared ceiling gate — see this method's own doc comment above. Reads
+        // `env.profile.fertileWindowMode` LIVE, exactly like step 4 below reads
+        // `cycleModuleEnabled`/`cyclePredictionsPaused` live.
+        if env.profile.fertileWindowMode != .suppressed {
+            var fertileWindow = CycleFertileWindowEngine.estimateFertileWindow(
+                history: cycles, contraceptiveContext: activeContraceptiveContext,
+                mode: env.profile.fertileWindowMode, asOf: asOf,
+                algorithmVersion: Self.fertileWindowAlgorithmVersion)
+            fertileWindow.originDeviceId = deviceId
+            try fertileWindowEstimates.appendEstimate(fertileWindow)
+        }
+
         // Step 4.
         if env.profile.cycleModuleEnabled && !env.profile.cyclePredictionsPaused {
             let sensitiveDerivation = DerivationRepository(env.database.sensitive)
@@ -143,10 +174,14 @@ struct CycleModuleServices {
     /// reader can verify nothing was missed, per CYCLE-08's "purge deletes rows AND invalidates
     /// derived values" requirement:
     ///
-    /// 1. `DELETE FROM` each of the 6 cycle tables (`cycle_records`, `flow_logs`,
+    /// 1. `DELETE FROM` each of the 7 cycle tables (`cycle_records`, `flow_logs`,
     ///    `contraceptive_context_logs`, `cycle_predictions`, `cycle_phase_estimates`,
-    ///    `cycle_anomaly_events`) — plain deletes via `env.database.sensitive` directly, since no
-    ///    repository here exposes a "delete everything" method of its own.
+    ///    `cycle_anomaly_events`, `cycle_fertile_window_estimates`) — plain deletes via
+    ///    `env.database.sensitive` directly, since no repository here exposes a "delete everything"
+    ///    method of its own. `cycle_fertile_window_estimates` (A17/ADR-0010/D-24, CYCLE-12) is
+    ///    included here for the identical reason every other derived cycle table is: a purge must
+    ///    invalidate every derived row that depended on the deleted raw data, never leave a stale
+    ///    fertile-window estimate rendering from cycle records that were supposedly deleted.
     /// 2. ALSO deletes phase-conditioned baseline rows from the sensitive `baselines` table (added
     ///    in migration v6 specifically for `CyclePhaseCovariateCoordinator`) WHERE
     ///    `covariate_context IN (<CyclePhase's own rawValues>)` — read directly off
@@ -160,7 +195,8 @@ struct CycleModuleServices {
         let sensitive = env.database.sensitive
         try sensitive.transaction {
             for table in ["cycle_records", "flow_logs", "contraceptive_context_logs",
-                          "cycle_predictions", "cycle_phase_estimates", "cycle_anomaly_events"] {
+                          "cycle_predictions", "cycle_phase_estimates", "cycle_anomaly_events",
+                          "cycle_fertile_window_estimates"] {
                 try sensitive.execute("DELETE FROM \"\(table)\";")
             }
             let phaseContexts = CyclePhase.allCases.map(\.rawValue)

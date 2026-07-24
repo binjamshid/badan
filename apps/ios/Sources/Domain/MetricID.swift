@@ -45,6 +45,14 @@ public enum MetricID {
     /// this reason). The Health Monitor (EPIC-27) renders it deviation-only; Android already carries
     /// the mirror constant `MetricId.wristTempDeviation`.
     public static let wristTempDeviation = "body.wrist_temp_deviation"
+    /// A blood glucose reading from HealthKit's `bloodGlucose` type — platform-written only (A21/
+    /// ADR-0010, D-26): the reading came from a connected sensor/meter/CGM app that already wrote
+    /// it to Apple Health, never a BADAN-owned vendor integration. `sensitiveClass: sensitivePlus`
+    /// in the registry (excluded from a default export), but storage is `badan.db` via the same
+    /// `IngestionPipeline` every other widened HealthKit metric uses — see the registry's own
+    /// v0.2.2 note and `docs/DECISIONS.md`'s D-26 scope note for why. Every surface that renders
+    /// this value must also render `GlucoseDisclaimer.text` ("never for treatment decisions").
+    public static let glucose = "body.glucose"
 
     // Respiratory
     public static let respiratoryRate = "respiratory.rate"

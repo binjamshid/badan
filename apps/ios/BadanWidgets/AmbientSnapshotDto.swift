@@ -38,9 +38,16 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
     /// due right now. `MedsDueWidget` renders these as two distinct states — never conflate
     /// "not consented" with "consented, nothing due".
     let medsDue: MedsDueSnapshot?
+    /// A22/EPIC-42 (Phase 4). Added for `BadanWatch`'s glanceable "today" view (Readiness/Effort/
+    /// Sleep) — kept in lockstep on this copy of the struct per this file's own "byte-for-byte
+    /// duplicate" header, even though no widget in THIS target renders it yet. See the main-app
+    /// copy's doc comment (`Sources/Platform/Ambient/AmbientSnapshotDto.swift`) for the full
+    /// rationale.
+    let effort: EffortSnapshot?
 
     init(schemaVersion: Int = AmbientSnapshotDto.currentSchemaVersion, generatedAt: Date, language: String,
-         readiness: RingSnapshot?, sentence: SentenceSnapshot?, sleep: SleepSnapshot?, medsDue: MedsDueSnapshot?) {
+         readiness: RingSnapshot?, sentence: SentenceSnapshot?, sleep: SleepSnapshot?, medsDue: MedsDueSnapshot?,
+         effort: EffortSnapshot? = nil) {
         self.schemaVersion = schemaVersion
         self.generatedAt = generatedAt
         self.language = language
@@ -48,6 +55,7 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
         self.sentence = sentence
         self.sleep = sleep
         self.medsDue = medsDue
+        self.effort = effort
     }
 
     /// N-1 schema tolerance, mirroring the main-app copy's own `init(from:)` exactly (see its
@@ -65,6 +73,7 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
         sentence = try c.decodeIfPresent(SentenceSnapshot.self, forKey: .sentence)
         sleep = try c.decodeIfPresent(SleepSnapshot.self, forKey: .sleep)
         medsDue = try c.decodeIfPresent(MedsDueSnapshot.self, forKey: .medsDue)
+        effort = try c.decodeIfPresent(EffortSnapshot.self, forKey: .effort)
     }
 }
 
@@ -92,6 +101,13 @@ struct MedsDueSnapshot: Codable, Hashable, Sendable {
     /// Empty = nothing due right now — a real, distinct state (see `medsDue`'s doc above), not the
     /// same as the field being absent.
     let items: [MedsDueItem]
+}
+
+/// A22/EPIC-42. See the main-app copy's doc comment for the full rationale — byte-for-byte twin,
+/// same as every other struct in this file.
+struct EffortSnapshot: Codable, Hashable, Sendable {
+    let score: Double
+    let provisional: Bool
 }
 
 struct MedsDueItem: Codable, Hashable, Sendable {

@@ -37,7 +37,11 @@ struct SnapshotTimelineProvider: TimelineProvider {
                 sleep: SleepSnapshot(durationMinutes: 435, score: 78, provisional: false),
                 medsDue: MedsDueSnapshot(items: [
                     MedsDueItem(regimenId: "placeholder", displayName: "Medication", timeLabel: "8:00 AM")
-                ])
+                ]),
+                // A22/EPIC-42: no widget in this target renders `effort` yet (see
+                // `AmbientSnapshotDto.effort`'s doc), but the placeholder stays a believable full
+                // example of the real shape rather than an incomplete one.
+                effort: EffortSnapshot(score: 58, provisional: false)
             ),
             isPlaceholder: true
         )

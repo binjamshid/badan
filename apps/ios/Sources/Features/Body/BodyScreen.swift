@@ -301,7 +301,11 @@ struct BodyScreen: View {
         // Separate from the load task: staging runs once per appearance, not again on every
         // `dataGeneration` bump — an explainer that re-evaluates whenever a sync lands is one
         // background wake away from reading as a nag.
-        .task { permissions.request([.body]) }
+        //
+        // `.glucose` rides alongside `.body` (A21/D-26) rather than at onboarding, same reasoning
+        // as `.body` itself: most people have none of it, and it's `sensitivePlus` besides, so it
+        // earns its own explainer the first time someone opens Body rather than the blanket ask.
+        .task { permissions.request([.body, .glucose]) }
     }
 }
 
@@ -384,6 +388,19 @@ private struct BodyPillarCard: View {
                 // reasoning as the "+N more"/"What is this?" row below.
                 if let covariate = pillar.phaseCovariate {
                     CyclePhaseCovariateNote(covariate: covariate)
+                }
+
+                // A21/D-26 fix (audit 2026-07-24): the Body front door can pick glucose as a
+                // family's headline pillar (`makePillar`'s "first eligible metric with recent
+                // data" fallback) and render its raw value + an "above/below your range" status
+                // chip via `StatBox`/`StatusChip` above — a bare glucose verdict with no
+                // "never for treatment decisions" boundary in sight. `MetricDetailScreen` already
+                // renders this disclaimer unconditionally for the same reason; this card is the
+                // other real surface a glucose value can appear on, one tap earlier, so it needs
+                // the identical, unconditional gate — never dependent on depth/mode, matching
+                // `GlucoseDisclaimer`'s own "wherever its value is shown" contract.
+                if GlucoseDisclaimer.applies(to: pillar.metricId) {
+                    GlucoseDisclaimerFooter()
                 }
 
                 // A family can carry several tracked metrics behind its one headline value; hint

@@ -31,8 +31,14 @@ import Foundation
 //
 // OUT OF SCOPE for this slice — do not extend this file toward any of these; they are later,
 // separately-gated slices per the plan's own CYCLE-01…14 backlog:
-//   * Fertile-window/ovulation estimation (gated on founder decision A17).
-//   * BBT / ovulation-test / cervical-mucus logging (CYCLE-10+, P1.5+).
+//   * Fertile-window/ovulation estimation was gated on founder decision A17; A17 is now approved
+//     (ADR-0010/D-24) and CYCLE-12 implements it in its own sibling files
+//     (`CycleFertileWindowEngine.swift` for the domain model/engine,
+//     `Storage/Repositories/CycleFertileWindowEstimateRepository.swift` for persistence) rather than
+//     extending this one — this file's own entity set is unchanged by that build.
+//   * BBT / ovulation-test / cervical-mucus logging (CYCLE-10+, P1.5+) — still fully out of scope;
+//     CYCLE-12's `signalAssisted` mode has no real signal input from any of these yet and does not
+//     invent one (see `CycleFertileWindowEngine.swift`'s own header).
 //   * Sexual-activity logging (CYCLE-13, founder/legal-gated, off-by-default even once built).
 //   * Sharing of any kind (CYCLE-14, standing do-not-build).
 //   * Symptom overlay (CYCLE-09, P1.5).

@@ -15,7 +15,7 @@
  * sheet reads as continuous with the Health app the user already knows: تغيّر معدل نبض القلب
  * (HRV), أكسجين الدم (blood oxygen), لياقة القلب والرئتين (cardio fitness / VO2 max). Routes are
  * deliberately absent here too — they have their own consent screen (plan §13.1). */
-"NSHealthShareUsageDescription" = "يقرأ بدن على جهازك بيانات نومك، ونبض قلبك، ونبضك أثناء الراحة، وتغيّر معدل نبض القلب، ومعدل تنفّسك، وأكسجين الدم، ودرجة حرارة معصمك، وخطواتك، والمسافة، والطوابق التي صعدتها، والطاقة المحروقة، ولياقة القلب والرئتين، وقياسات جسمك، وتمارينك، لبناء سجلّك الصحي الشخصي والخاص. ولا يغادر أي شيء هاتفك.";
+"NSHealthShareUsageDescription" = "يقرأ بدن على جهازك بيانات نومك، ونبض قلبك، ونبضك أثناء الراحة، وتغيّر معدل نبض القلب، ومعدل تنفّسك، وأكسجين الدم، ودرجة حرارة معصمك، وخطواتك، والمسافة، والطوابق التي صعدتها، والطاقة المحروقة، ولياقة القلب والرئتين، وقياسات جسمك، وسكر دمك، وتمارينك، لبناء سجلّك الصحي الشخصي والخاص. ولا يغادر أي شيء هاتفك.";
 
 /* COMP-10 REVISED — see en.lproj for the full reasoning. Plainly states BADAN writes nothing;
  * the permission exists only because Apple requires it whenever an app can read Health data. */

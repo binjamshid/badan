@@ -33,11 +33,14 @@ import SwiftUI
 //   * Anti-panic palette: `BadanColor.outOfBand` (muted amber) for an active anomaly, never a raw
 //     red, never the reserved-and-unused critical color token, never a traffic-light/verdict word.
 //   * Neutral "cycle" language throughout — never "period" in user-facing copy.
-//   * Out of scope, not built here: fertile-window/ovulation as a user-facing FEATURE (A17),
-//     BBT/cervical-mucus/ovulation-test logging, sexual-activity logging, sharing, symptom overlay.
-//     Rendering `CyclePhase.ovulatory`'s bare phase NAME below (an already-built CYCLE-06 output,
-//     used as a baseline covariate) is not a fertile-window feature — it makes no conception/
-//     contraception claim, exactly like the domain engine's own header states.
+//   * Fertile-window/ovulation IS built here as a user-facing feature (A17/ADR-0010/D-24, EPIC-39
+//     CYCLE-12 — see `fertileWindowSection` below), gated on the user-declared
+//     `CustomizationProfile.fertileWindowMode` (default `.suppressed`) exactly as that field's own
+//     doc requires. Still out of scope: BBT/cervical-mucus/ovulation-test logging, sexual-activity
+//     logging, sharing, symptom overlay. Rendering `CyclePhase.ovulatory`'s bare phase NAME below
+//     (an already-built CYCLE-06 output, used as a baseline covariate) is a SEPARATE thing from the
+//     fertile-window feature — it makes no conception/contraception claim, exactly like the domain
+//     engine's own header states.
 //
 // This screen is read-only history: it never logs a period, never edits a contraceptive context,
 // and never acknowledges/dismisses an anomaly — those are other lanes' write-surfaces. It also
@@ -104,6 +107,31 @@ enum CycleHistoryStrings {
     static let pausedForContraceptiveContext = LocalizedString(
         en: "Paused because of your current contraceptive context.",
         ar: "متوقف مؤقتاً بسبب سياق وسيلة منع الحمل الحالي لديك.")
+
+    // Fertile-window section (A17/ADR-0010/D-24, EPIC-39 CYCLE-12)
+    static let fertileWindowSectionTitle = LocalizedString(en: "Fertile-window estimate", ar: "تقدير نافذة الخصوبة")
+    static let fertileWindowRange = LocalizedString(en: "Between {low} and {high}", ar: "بين {low} و{high}")
+    static let fertileWindowNotContraception = LocalizedString(
+        en: "Informational only — not contraception, not a fertility treatment.",
+        ar: "لأغراض إعلامية فقط — ليست وسيلة لمنع الحمل ولا علاجاً للخصوبة.")
+    static let fertileWindowBroadEstimate = LocalizedString(
+        en: "This is a broad estimate from your cycle history alone.",
+        ar: "هذا تقدير واسع مستمد من سجل دورتك وحده.")
+    static let fertileWindowSignalAssistedNotYetAvailable = LocalizedString(
+        en: "You've chosen signal-assisted mode, but logging supporting signals isn't available yet, "
+            + "so this shows the same broad, calendar-based estimate.",
+        ar: "اخترت الوضع المدعوم بالإشارات، لكن تسجيل الإشارات الداعمة غير متاح بعد، لذا يُعرض هنا "
+            + "التقدير الواسع نفسه القائم على التقويم.")
+    static let fertileWindowSuppressedByContext = LocalizedString(
+        en: "Not shown because of your current contraceptive context.",
+        ar: "لا يُعرض بسبب سياق وسيلة منع الحمل الحالي لديك.")
+    static let fertileWindowOff = LocalizedString(
+        en: "Not shown because fertile-window estimates are turned off.",
+        ar: "لا يُعرض لأن تقدير نافذة الخصوبة مُوقَف.")
+    static let fertileWindowInsufficientHistory = LocalizedString(
+        en: "Log a few more cycles to begin a fertile-window estimate.",
+        ar: "سجّل بضع دورات إضافية لبدء تقدير نافذة الخصوبة.")
+    static let whyThisFertileWindowEstimate = LocalizedString(en: "Why this estimate?", ar: "لماذا هذا التقدير؟")
 
     // History section
     static let historySectionTitle = LocalizedString(en: "Logged cycles", ar: "الدورات المسجَّلة")
@@ -231,6 +259,73 @@ enum CyclePhasePresentation {
     }
 }
 
+/// The fertile-window section's gate + caveat selection (A17/ADR-0010/D-24, EPIC-39 CYCLE-12) —
+/// mirrors `CyclePhasePresentation`'s exact shape and reasoning, applied to
+/// `CycleFertileWindowEstimate` instead of `CyclePhaseEstimate`. Kept independent of SwiftUI, same
+/// "testable without a view" posture every other presentation enum in this file follows.
+enum CycleFertileWindowPresentation {
+    /// A window is only ever considered present when both fields are populated AND the estimate is
+    /// not suppressed — matches `CycleFertileWindowEngine`'s own guarantee that a suppressed/
+    /// insufficient-history estimate carries nil window fields, checked again here defensively.
+    static func hasWindow(_ estimate: CycleFertileWindowEstimate) -> Bool {
+        estimate.status == .active && estimate.windowStart != nil && estimate.windowEnd != nil
+    }
+
+    /// `n` for "based on {n} recent cycles" — the exact `inputCycleIds` count, never a guessed or
+    /// re-derived one. `nil` suppresses the method label entirely.
+    static func recentCycleCount(_ estimate: CycleFertileWindowEstimate) -> Int? {
+        guard hasWindow(estimate), !estimate.inputCycleIds.isEmpty else { return nil }
+        return estimate.inputCycleIds.count
+    }
+
+    /// One extra sentence shown alongside an ACTIVE window — always the broad-estimate caveat for
+    /// `.calendarOnly` evidence (the only basis this build's engine ever produces for an active
+    /// estimate; see `CycleFertileWindowEngine`'s own header), plus an HONEST additional note when
+    /// the user picked `.signalAssisted` mode specifically: `mode` (what was selected) and
+    /// `evidenceBasis` (what actually computed the number) are allowed to differ, and this is
+    /// exactly the case where they do — the caller must never let a `.signalAssisted` selection read
+    /// as if it narrowed anything it didn't.
+    static func activeCaveat(_ estimate: CycleFertileWindowEstimate) -> LocalizedString {
+        estimate.mode == .signalAssisted
+            ? CycleHistoryStrings.fertileWindowSignalAssistedNotYetAvailable
+            : CycleHistoryStrings.fertileWindowBroadEstimate
+    }
+
+    /// The plain, factual explanation for why NO window is shown right now — `nil` exactly when
+    /// `hasWindow` is `true` (never both a window and a "why nothing" caveat at once). Never reads
+    /// `estimate.suppressionReason` directly (that field is an internal, non-user-facing placeholder,
+    /// same posture `CyclePrediction.suppressionReason` already established) — resolves purely off
+    /// the public `status`/`evidenceBasis` fields instead. `.suppressedByMode` gets its own
+    /// off-appropriate copy rather than the "log a few more cycles" insufficient-history copy — the
+    /// two are different facts (the user turned this off vs. there isn't enough history yet) and
+    /// deserve different sentences, even though `.suppressedByMode` is currently unreachable in
+    /// production (`CycleModuleServices.refreshAll`'s composition-layer gate only ever calls the
+    /// engine with `mode != .suppressed`, so no stored row can carry this basis today) — this stays
+    /// correct rather than a defensive fallback that would mislead the moment a second call site or
+    /// a refactor of that gate ever makes it reachable.
+    static func caveat(_ estimate: CycleFertileWindowEstimate) -> LocalizedString? {
+        if hasWindow(estimate) { return nil }
+        switch estimate.evidenceBasis {
+        case .suppressedDueToContext: return CycleHistoryStrings.fertileWindowSuppressedByContext
+        case .suppressedByMode: return CycleHistoryStrings.fertileWindowOff
+        case .insufficientHistory, .calendarOnly:
+            return CycleHistoryStrings.fertileWindowInsufficientHistory
+        }
+    }
+}
+
+/// The fertile-window "why this estimate?" anatomy resolution — identical logic to
+/// `CyclePredictionAnatomy.resolvedInputs`, re-declared here rather than made generic over both
+/// types, matching this codebase's existing convention of one small, explicit resolver per derived
+/// type (`CyclePredictionAnatomy` itself is not generic either) over a shared abstraction that would
+/// obscure which concrete type's `inputCycleIds` a given call site is actually resolving.
+enum CycleFertileWindowAnatomy {
+    static func resolvedInputs(_ estimate: CycleFertileWindowEstimate, records: [CycleRecord]) -> [CycleRecord] {
+        let byId = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return estimate.inputCycleIds.compactMap { byId[$0] }
+    }
+}
+
 /// The anomaly-history section's row model — every `CycleAnomalyEvent` on file (not just active
 /// ones), most-recently-detected first, each resolved through `CycleAnomalyMessages.text(for:)`
 /// ONLY — this function has no other way to produce anomaly copy, structurally enforcing the
@@ -257,6 +352,7 @@ private struct CycleHistoryData {
     var flowLogsByCycle: [String: [FlowLog]]
     var prediction: CyclePrediction?
     var phaseEstimate: CyclePhaseEstimate?
+    var fertileWindowEstimate: CycleFertileWindowEstimate?
     var anomalies: [CycleAnomalyEvent]
 }
 
@@ -271,6 +367,7 @@ struct CycleHistoryScreen: View {
 
     @State private var state: LoadState<CycleHistoryData> = .loading
     @State private var showAnatomySheet = false
+    @State private var showFertileWindowAnatomySheet = false
 
     private struct LoadKey: Equatable {
         let profile: CustomizationProfile
@@ -283,6 +380,7 @@ struct CycleHistoryScreen: View {
                 VStack(alignment: .leading, spacing: BadanSpace.space5) {
                     predictionSection(data)
                     phaseSection(data)
+                    fertileWindowSection(data)
                     historySection(data)
                     anomalySection(data)
                 }
@@ -298,6 +396,11 @@ struct CycleHistoryScreen: View {
                 CyclePredictionAnatomySheet(prediction: prediction, records: data.records)
             }
         }
+        .sheet(isPresented: $showFertileWindowAnatomySheet) {
+            if case .loaded(let data) = state, let estimate = data.fertileWindowEstimate {
+                CycleFertileWindowAnatomySheet(estimate: estimate, records: data.records)
+            }
+        }
     }
 
     // MARK: Load
@@ -311,9 +414,17 @@ struct CycleHistoryScreen: View {
             }
             let prediction = try services.predictions.latestPrediction()
             let phaseEstimate = try services.phaseEstimates.latestEstimate(asOf: env.now())
+            // A17/ADR-0010/D-24 (EPIC-39 CYCLE-12): only ever non-nil once `fertileWindowMode !=
+            // .suppressed` has caused `CycleModuleServices.refreshAll` to append at least one row —
+            // while the user-declared mode default (`.suppressed`) holds, this is simply `nil`, and
+            // `fertileWindowSection` below renders nothing at all, per that mode's own "shows
+            // nothing" contract.
+            let fertileWindowEstimate = env.profile.fertileWindowMode == .suppressed
+                ? nil : try services.fertileWindowEstimates.latestEstimate()
             let anomalies = try services.anomalies.liveEvents()
             state = .loaded(CycleHistoryData(records: records, flowLogsByCycle: flowByCycle,
                                               prediction: prediction, phaseEstimate: phaseEstimate,
+                                              fertileWindowEstimate: fertileWindowEstimate,
                                               anomalies: anomalies))
         } catch {
             LoadErrorLog.log(error, screen: "CycleHistoryScreen")
@@ -400,6 +511,69 @@ struct CycleHistoryScreen: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: Fertile-window estimate (A17/ADR-0010/D-24, EPIC-39 CYCLE-12)
+    //
+    // Renders ONLY when `data.fertileWindowEstimate` is non-nil, which `load()` above already gates
+    // on `env.profile.fertileWindowMode != .suppressed` — so this section is simply absent from the
+    // screen while the user-declared default (`.suppressed`) holds, per that mode's own "shows
+    // nothing" contract; the "not enough history yet"/"suppressed by contraceptive context" caveats
+    // below only ever appear for a user who has ALREADY opted into `.calendar`/`.signalAssisted`.
+    @ViewBuilder
+    private func fertileWindowSection(_ data: CycleHistoryData) -> some View {
+        if let estimate = data.fertileWindowEstimate {
+            BadanCard {
+                VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                    SectionHeader(env.s(CycleHistoryStrings.fertileWindowSectionTitle)) {
+                        if !estimate.inputCycleIds.isEmpty {
+                            Button(env.s(CycleHistoryStrings.whyThisFertileWindowEstimate)) {
+                                showFertileWindowAnatomySheet = true
+                            }
+                            .font(BadanFont.link)
+                            .frame(minHeight: BadanSpace.touchMin)
+                        }
+                    }
+                    fertileWindowBody(estimate)
+                }
+            }
+        }
+    }
+
+    /// `windowStart`/`windowEnd` are only ever shown TOGETHER, alongside a caveat sentence and the
+    /// non-contraceptive disclaimer — never a lone estimated date, matching every other date surface
+    /// in this file.
+    @ViewBuilder
+    private func fertileWindowBody(_ estimate: CycleFertileWindowEstimate) -> some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space2) {
+            if CycleFertileWindowPresentation.hasWindow(estimate),
+               let start = estimate.windowStart, let end = estimate.windowEnd {
+                Text(env.s(CycleHistoryStrings.fertileWindowRange.filling(
+                    ["low": dateText(start), "high": dateText(end)])))
+                    .font(BadanFont.body.weight(.medium))
+                    .foregroundStyle(BadanColor.textPrimary)
+                    .environment(\.layoutDirection, .leftToRight)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(env.s(CycleFertileWindowPresentation.activeCaveat(estimate)))
+                    .font(BadanFont.bodyCompact)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let n = CycleFertileWindowPresentation.recentCycleCount(estimate) {
+                    Text(env.s(CycleHistoryStrings.methodLabel.filling(["n": env.format.integer(n)])))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
+            } else if let caveat = CycleFertileWindowPresentation.caveat(estimate) {
+                Text(env.s(caveat))
+                    .font(BadanFont.body)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(env.s(CycleHistoryStrings.fertileWindowNotContraception))
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -506,6 +680,80 @@ private struct CyclePredictionAnatomySheet: View {
             }
             .background(BadanColor.background)
             .navigationTitle(env.s(CycleHistoryStrings.whyThisEstimate))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(env.s(Loc.close)) { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func dateText(_ date: Date) -> String {
+        Self.dateFormatter.locale = Locale(identifier: env.language.localeIdentifier)
+        return Self.dateFormatter.string(from: date)
+    }
+}
+
+// MARK: - Fertile-window "why this estimate?" anatomy sheet (A17/ADR-0010/D-24, EPIC-39 CYCLE-12) —
+// identical shape/behavior to `CyclePredictionAnatomySheet` above, applied to
+// `CycleFertileWindowEstimate.inputCycleIds` instead of `CyclePrediction.inputCycleIds`.
+
+private struct CycleFertileWindowAnatomySheet: View {
+    @Environment(AppEnvironment.self) private var env
+    @Environment(\.dismiss) private var dismiss
+    let estimate: CycleFertileWindowEstimate
+    let records: [CycleRecord]
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .none; return f
+    }()
+
+    private var resolved: [CycleRecord] {
+        CycleFertileWindowAnatomy.resolvedInputs(estimate, records: records)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: BadanSpace.space4) {
+                    if resolved.isEmpty {
+                        Text(env.s(CycleHistoryStrings.anatomyEmpty))
+                            .font(BadanFont.body)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(env.s(CycleHistoryStrings.anatomyIntro))
+                            .font(BadanFont.body)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ForEach(resolved) { record in
+                            BadanCard {
+                                HStack(spacing: BadanSpace.space2) {
+                                    Text(dateText(record.startAt))
+                                        .font(BadanFont.bodyCompact.monospacedDigit())
+                                        .foregroundStyle(BadanColor.textPrimary)
+                                        .environment(\.layoutDirection, .leftToRight)
+                                    if let end = record.endAt {
+                                        Text("– \(dateText(end))")
+                                            .font(BadanFont.bodyCompact.monospacedDigit())
+                                            .foregroundStyle(BadanColor.textSecondary)
+                                            .environment(\.layoutDirection, .leftToRight)
+                                    }
+                                    Spacer(minLength: BadanSpace.space2)
+                                    if record.ongoing {
+                                        PillLabel(env.s(CycleHistoryStrings.ongoing), tint: BadanColor.textSecondary, filled: false)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(BadanSpace.space4)
+            }
+            .background(BadanColor.background)
+            .navigationTitle(env.s(CycleHistoryStrings.whyThisFertileWindowEstimate))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

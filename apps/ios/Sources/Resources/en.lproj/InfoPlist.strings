@@ -15,7 +15,7 @@
  * body measurements and workouts. Must match `HealthKitAdapter.readTypes` — overstating the ask
  * is a review problem, understating it is a rejection. Routes are deliberately not named: they
  * are not in the initial authorization bundle and have their own consent screen (plan §13.1). */
-"NSHealthShareUsageDescription" = "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, and workouts on your device to build your personal, private health repository. Nothing leaves your phone.";
+"NSHealthShareUsageDescription" = "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, blood glucose, and workouts on your device to build your personal, private health repository. Nothing leaves your phone.";
 
 /* COMP-10 REVISED (project.yml carries the full reasoning): required by App Store Connect's
  * upload-time validator whenever the HealthKit entitlement is present, regardless of actual

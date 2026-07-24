@@ -226,6 +226,16 @@
       "why": "The same unit spelled with a lowercase L. emittedBy is deliberately EMPTY: both HKTypeMap and HcTypeMap read VO2 max out in the capital-L spelling, and naming either here asserts that adapter emits this exact string — which testFixtureRowsAgreeWithTheUnitsHKTypeMapReads correctly rejected when it was first written that way. The lowercase spelling reaches BADAN from vendor apps writing into HealthKit/Health Connect directly, so it must convert even though no in-tree adapter produces it. Promoted from knownDivergences once Android's Units.kt gained the alias: EPIC-01 added it on iOS only, so for one round Android fell through toCanonical's catch and stored the value UNCONVERTED and stamped ESTIMATE. That happens to be the numerically right answer for an identity unit, which is exactly why the convert leg is asserted too — a fixture built on toCanonical alone would have passed while the unit was entirely absent from the table."
     },
     {
+      "id": "glucose-mmol",
+      "metricId": "body.glucose",
+      "value": "5.4",
+      "unit": "mmol/L",
+      "canonicalUnit": "mmol/L",
+      "canonicalValue": "5.4",
+      "emittedBy": ["HKTypeMap:HKQuantityTypeIdentifierBloodGlucose"],
+      "why": "A21/D-26. HKTypeMap reads blood glucose out via HealthKit's dedicated molarity unit constructor (moleUnit(with: .milli, molarMass: HKUnitMolarMassBloodGlucose) divided by liter), which is already the registry's canonical mmol/L, so this leg does no arithmetic — an identity end to end, same shape as steps-count. Android has no counterpart row yet: Health Connect ingestion for glucose is not part of A21's scope (platform-written HealthKit reads only)."
+    },
+    {
       "id": "breaths-per-minute-alias",
       "metricId": "respiratory.rate",
       "value": "14.2",

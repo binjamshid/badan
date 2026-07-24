@@ -186,6 +186,95 @@ final class CycleModuleServicesTests: XCTestCase {
                              "estimate on file — the gate must pass and write a phase-conditioned band")
     }
 
+    // MARK: - refreshAll: fertile-window estimate gating (EPIC-39 CYCLE-12, A17/ADR-0010/D-24)
+    //
+    // The "user-declared only" hard requirement, verified at the composition-layer level (not just
+    // inside the pure engine, which `CycleFertileWindowEngineTests` already covers): while
+    // `fertileWindowMode` holds its default (`.suppressed`), `CycleFertileWindowEngine` must never
+    // even be CALLED by `refreshAll`, so no row lands in `cycle_fertile_window_estimates` at all —
+    // not merely a suppressed row, no row whatsoever.
+
+    func testRefreshAllNeverAppendsAFertileWindowEstimateWhileModeIsTheDefaultSuppressedValue() throws {
+        XCTAssertEqual(env.profile.fertileWindowMode, .suppressed, "default must be suppressed/off")
+        let services = CycleModuleServices(env: env)
+        let asOf = try insertSevenCycleFixture(services, day0: Date(timeIntervalSince1970: 1_800_000_000))
+
+        try services.refreshAll(asOf: asOf)
+
+        XCTAssertEqual(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 0,
+                       "the engine must never even be called while fertileWindowMode is .suppressed — " +
+                       "no estimate computed until the user explicitly sets a different mode")
+        XCTAssertNil(try services.fertileWindowEstimates.latestEstimate())
+    }
+
+    func testRefreshAllAppendsAFertileWindowEstimateOnceTheUserExplicitlyPicksCalendarMode() throws {
+        env.update { $0.fertileWindowMode = .calendar }
+        let services = CycleModuleServices(env: env)
+        let asOf = try insertSevenCycleFixture(services, day0: Date(timeIntervalSince1970: 1_800_000_000))
+
+        try services.refreshAll(asOf: asOf)
+
+        XCTAssertEqual(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 1)
+        let latest = try XCTUnwrap(try services.fertileWindowEstimates.latestEstimate())
+        XCTAssertEqual(latest.mode, .calendar)
+        XCTAssertEqual(latest.status, .active, "6 completed cycles on file clears the minimum-history gate")
+        XCTAssertEqual(latest.evidenceBasis, .calendarOnly)
+        XCTAssertNotNil(latest.windowStart)
+        XCTAssertNotNil(latest.windowEnd)
+    }
+
+    func testRefreshAllAppendsASuppressedFertileWindowRowWhenContraceptiveContextIsActiveEvenThoughModeIsCalendar() throws {
+        // Hard requirement: contraceptive-context suppression must override the user's declared
+        // mode, not just the .suppressed default — a user who explicitly opted into .calendar must
+        // still see a suppressed estimate while an active suppressive method is on file.
+        env.update { $0.fertileWindowMode = .calendar }
+        let services = CycleModuleServices(env: env)
+        let asOf = try insertSevenCycleFixture(services, day0: Date(timeIntervalSince1970: 1_800_000_000))
+        try services.contraceptiveContext.insert(ContraceptiveContextLog(
+            id: ULID.newID(), methodType: .pill, startAt: asOf,
+            provenance: Provenance(sourceId: device, deviceId: device, ingestionPath: .manual,
+                                  measuredAt: asOf, measuredTimezone: tz, recordedAt: asOf, ingestedAt: asOf),
+            updatedAt: asOf, originDeviceId: device))
+
+        try services.refreshAll(asOf: asOf)
+
+        XCTAssertEqual(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 1,
+                       "a row IS still appended — this is a real suppressed estimate, not a skipped call")
+        let latest = try XCTUnwrap(try services.fertileWindowEstimates.latestEstimate())
+        XCTAssertEqual(latest.status, .suppressed)
+        XCTAssertEqual(latest.evidenceBasis, .suppressedDueToContext)
+        XCTAssertEqual(latest.mode, .calendar, "the user's declared selection is preserved even though suppressed")
+        XCTAssertNil(latest.windowStart)
+        XCTAssertNil(latest.windowEnd)
+    }
+
+    func testRefreshAllAlwaysAppendsAFreshFertileWindowEstimateEvenWhenCalledTwiceInARow() throws {
+        env.update { $0.fertileWindowMode = .calendar }
+        let services = CycleModuleServices(env: env)
+        let asOf = try insertSevenCycleFixture(services, day0: Date(timeIntervalSince1970: 1_800_000_000))
+
+        try services.refreshAll(asOf: asOf)
+        try services.refreshAll(asOf: asOf)
+
+        XCTAssertEqual(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 2,
+                       "a recompute always inserts a fresh row (I2), never updates in place")
+    }
+
+    func testRefreshAllStopsAppendingFertileWindowEstimatesIfTheUserSwitchesBackToSuppressed() throws {
+        env.update { $0.fertileWindowMode = .calendar }
+        let services = CycleModuleServices(env: env)
+        let asOf = try insertSevenCycleFixture(services, day0: Date(timeIntervalSince1970: 1_800_000_000))
+        try services.refreshAll(asOf: asOf)
+        XCTAssertEqual(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 1)
+
+        env.update { $0.fertileWindowMode = .suppressed }
+        try services.refreshAll(asOf: asOf)
+
+        XCTAssertEqual(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 1,
+                       "once switched back to suppressed, no further row is appended — the prior row " +
+                       "stays on file (append-only audit trail) but nothing new is computed")
+    }
+
     // MARK: - purgeCycleData
 
     func testPurgeCycleDataEmptiesAllSixTablesAndPhaseLabeledBaselinesWhileLeavingUnrelatedSensitiveDataUntouched() throws {
@@ -244,5 +333,24 @@ final class CycleModuleServicesTests: XCTestCase {
                        "(CYCLE-08: purge must invalidate derived values, not just raw rows)")
         XCTAssertEqual(try env.journal.allEntries().count, 1,
                        "unrelated sensitive data (the journal) must survive a cycle-only purge untouched")
+    }
+
+    /// EPIC-39 CYCLE-12 (A17/ADR-0010/D-24) addendum to the purge test above: `purgeCycleData()`
+    /// deletes a SEVENTH table now, `cycle_fertile_window_estimates`, added alongside the original
+    /// six — a purge must invalidate this derived table too, the same "purge deletes rows AND
+    /// invalidates derived values" requirement the six-table test above already covers for the rest.
+    func testPurgeCycleDataAlsoEmptiesTheFertileWindowEstimatesTable() throws {
+        env.update { $0.cycleModuleEnabled = true; $0.fertileWindowMode = .calendar }
+        let services = CycleModuleServices(env: env)
+        let asOf = try insertSevenCycleFixture(services, day0: Date(timeIntervalSince1970: 1_800_000_000))
+        try services.refreshAll(asOf: asOf)
+
+        XCTAssertGreaterThan(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 0,
+                             "must be non-empty before purge for this test to be meaningful")
+
+        try services.purgeCycleData()
+
+        XCTAssertEqual(try rowCount(env.database.sensitive, table: "cycle_fertile_window_estimates"), 0,
+                       "cycle_fertile_window_estimates must be fully emptied by purgeCycleData()")
     }
 }

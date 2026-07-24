@@ -1,16 +1,40 @@
 import Foundation
-import SQLite3
+// D-23/A16 (ADR-0010 §A16): `import SQLCipher` rather than `import SQLite3`. SQLCipher.swift
+// (Zetetic's own official package) ships a drop-in-compatible sqlite3 C API — same symbol names
+// (`sqlite3_open_v2`, `sqlite3_exec`, …), same behavior for any connection that never calls
+// `sqlite3_key`. Only ONE sqlite3 C implementation can be linked into the app at a time (both a
+// system `libsqlite3` and SQLCipher's statically-linked archive would each define the same
+// `sqlite3_*` symbols, which the linker cannot resolve twice) — so this import change is what
+// makes `SQLiteConnection` the single seam ADR-0005 named for this swap: EVERY `sqlite3_*` call
+// in the app now runs through SQLCipher's implementation, but `main` (`badan.db`, D-23 scope:
+// unaffected) is opened with `key: nil` below and never calls `sqlite3_key` — its open flags,
+// PRAGMAs, and resulting file format are byte-for-byte identical to before this change. Only
+// `sensitive` (`badan_sensitive.db`, wired in `Database.swift`) is ever constructed with a key.
+import SQLCipher
 
-/// A minimal, dependency-free wrapper over the system SQLite3 C library.
+/// A minimal, dependency-free* wrapper over the SQLite3 C API.
 ///
 /// BADAN deliberately uses raw SQLite rather than an ORM (ADR-0005): the plan's storage
 /// design is expressed as raw DDL with explicit provenance columns and named indexes, and
 /// an offline, zero-dependency build eliminates a whole risk class (package resolution) for
 /// a local-first app. This wrapper is the single seam a future GRDB/SQLCipher swap targets.
+///
+/// *One exception, deliberate and scoped (D-23/A16): the C library backing every call in this
+/// file is now SQLCipher's, not the system's, so that a `key` can be supplied for
+/// `badan_sensitive.db`. See the `import` comment above for why that is unavoidable, and why it
+/// does not change `badan.db`'s own behavior.
 final class SQLiteConnection {
     private var handle: OpaquePointer?
     private let lock = NSRecursiveLock()   // serialize all access to this connection
     let path: String
+    /// The SQLCipher key this connection was constructed with, or `nil` for a plain (unencrypted)
+    /// connection — `main` (`badan.db`) always passes `nil` here; only `sensitive`
+    /// (`badan_sensitive.db`) ever passes a real key. Re-applied on every `openHandle()` call —
+    /// both the initial open AND every `reopen()` after `purgeSensitiveNamespace()` deletes the
+    /// file — so a purge-then-recreate transparently produces a freshly-encrypted empty file with
+    /// the SAME key, with no special-casing needed at the `Database.purgeSensitiveNamespace()`
+    /// call site.
+    private let key: Data?
 
     // SQLite wants a copy of bound text/blob, not our transient Swift buffer.
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -26,8 +50,17 @@ final class SQLiteConnection {
     // instead of issuing a second `BEGIN IMMEDIATE` and failing with a generic SQL error.
     private var transactionDepth = 0
 
-    init(path: String) throws {
+    /// - Parameter key: `nil` (the default) opens a plain, unencrypted connection — the exact
+    ///   behavior this initializer always had before D-23/A16, preserved verbatim for `main`.
+    ///   A non-nil value keys the connection immediately after open, before any other statement
+    ///   runs, via SQLCipher's raw-key form (`SQLCipherKeySpec`) — used only for `sensitive`.
+    ///   Callers are responsible for ensuring a pre-existing plaintext file at `path` has already
+    ///   been converted (`SensitiveDatabaseMigrator`) before ever passing a key here: keying an
+    ///   connection to a file that already contains plaintext pages does NOT retroactively
+    ///   encrypt them, it just makes every existing page unreadable.
+    init(path: String, key: Data? = nil) throws {
         self.path = path
+        self.key = key
         try openHandle()
     }
 
@@ -37,6 +70,9 @@ final class SQLiteConnection {
             let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
             throw SQLiteError.openFailed(path: path, message: message)
         }
+        // Must happen before any other statement — including the PRAGMAs immediately below —
+        // since an unkeyed statement against an encrypted file (or vice versa) fails.
+        if let key { try applyKey(key) }
         // Durable + concurrent-friendly defaults for a local store.
         try execute("PRAGMA journal_mode = WAL;")
         try execute("PRAGMA foreign_keys = ON;")
@@ -45,6 +81,24 @@ final class SQLiteConnection {
         // small, so keeping them in memory instead of spilling to disk is safe unconditionally.
         // cache_size/mmap_size are left at SQLite defaults pending real-device benchmarking.
         try execute("PRAGMA temp_store = MEMORY;")
+    }
+
+    /// Stages `key` on the just-opened handle via SQLCipher's raw-key form, then forces a genuine
+    /// page read to actually PROVE the key is correct. `sqlite3_key()` alone always returns
+    /// `SQLITE_OK` — even for a wrong key, or a key applied to a plaintext file — because it only
+    /// stores the key for later use; SQLCipher does not attempt to decrypt anything until the
+    /// first real page read, which is exactly why that read cannot be deferred to whatever query
+    /// a caller happens to run first (a bare `sqlite3_key` failure would otherwise surface as a
+    /// confusing, unrelated-looking error deep inside some later repository call).
+    private func applyKey(_ key: Data) throws {
+        let keySpec = SQLCipherKeySpec.string(for: key)
+        let keyResult = sqlite3_key(handle, keySpec, Int32(keySpec.utf8CString.count))
+        guard keyResult == SQLITE_OK else {
+            throw SQLiteError.keyFailed(path: path, message: lastMessage())
+        }
+        guard sqlite3_exec(handle, "SELECT count(*) FROM sqlite_master;", nil, nil, nil) == SQLITE_OK else {
+            throw SQLiteError.keyFailed(path: path, message: lastMessage())
+        }
     }
 
     /// Close the underlying handle (so the file can be deleted) without destroying this object,

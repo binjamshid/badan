@@ -349,6 +349,174 @@ of writing), `packages/contracts/INVARIANTS.md` (I1–I8), and `docs/MONETIZATIO
 
 ---
 
+## D-21 — Founder self-designates as retained clinical advisor (ADR-0010, approval A25)
+- **Context:** A25 named a standing clinical-advisor requirement across the safety-language
+  matrix, pregnancy content, vitals-BLE copy, and release-gate sign-offs — a recurring
+  non-engineering critical path across EPIC-40/41/43.
+- **Choice:** The founder (RN, nursing background) is the retained clinical advisor.
+- **Rationale:** Satisfies A25 directly, and its clinical half also unblocks A18/A21's
+  "clinical advisor" precondition.
+- **Migration impact:** None to code. Does not substitute for GCC/Oman legal review (A17/A18).
+- **Supersession:** none.
+- **Approval:** accepted — Founder, per ADR-0010 (2026-07-23).
+
+## D-22 — AI coach: hybrid hosting, OpenRouter GPT-4o, opt-in-only, first network call (ADR-0010, approval A9)
+- **Context:** A9 was pre-approved in principle ("Phase-3 exit," now reached); this pins the
+  concrete parameters.
+- **Choice:** On-device retrieval + hosted stateless inference via OpenRouter (`gpt-4o`),
+  served from an isolated service at `badan.binjamshid.com` on the founder's VPS (own
+  systemd unit, nginx vhost, TLS cert, unprivileged user — not sharing process/config with
+  the founder's other live services on that box). Default off; a dedicated consent screen is
+  the only way to enable it.
+- **Rationale:** Matches the plan's hybrid recommendation; opt-in keeps the local-first
+  promise intact for every user who never enables it.
+- **Migration impact:** BADAN's first-ever network call. Narrowly amends D-2/ADR-0002 —
+  scoped to this one consented pathway, not a general reversal. Needs a privacy-policy
+  section, an App/Play Data Safety label update, and consent copy through the same
+  wellness-safe lint as every sensitive surface.
+- **Supersession:** narrows D-2 (ADR-0002) for this one feature path only; D-2's zero-network
+  posture is otherwise unchanged. Anticipates but does not fully resolve A4 (vendor OAuth
+  backend remains separately gated).
+- **Approval:** accepted — Founder, per ADR-0010 (2026-07-23).
+
+## D-23 — Adopt SQLCipher for `badan_sensitive.db` only (ADR-0010, approval A16)
+- **Context:** A16 had no firm recommendation pinned in the plan ("re-decide at Phase-1
+  gate"); pregnancy/glucose/lab data landing now (D-24, D-26) raises the urgency the plan
+  named.
+- **Choice:** `badan_sensitive.db` moves to SQLCipher (SwiftPM on iOS, `android-database-sqlcipher`
+  on Android), device-Keychain/Keystore-backed key. `badan.db` is unaffected — stays raw
+  SQLite + OS-level file protection.
+- **Rationale:** The sensitive namespace is about to carry meaningfully more sensitive data;
+  upgrading its at-rest encryption ahead of that, rather than retrofitting later, is cheaper.
+- **Migration impact:** Amends ADR-0005's zero-dependency posture for this one dependency,
+  scoped to the sensitive-DB connection wrapper only (that wrapper's whole reason to exist,
+  per D-5). `purgeSensitiveNamespace()` (D-4/D-18) is behaviorally unchanged — still a file
+  delete. Does not touch ADR-0008's export-passphrase flow (D-8).
+- **Supersession:** amends D-4/ADR-0004's "SQLCipher is not yet adopted" clause; D-4's
+  file-boundary structure itself is unchanged.
+- **Approval:** accepted — Founder, per ADR-0010 (2026-07-23).
+
+## D-24 — Fertile-window estimation approved (ADR-0010, approval A17)
+- **Context:** A17 gated CYCLE-12, the one item Phase 3F slice 2 left explicitly out of scope.
+- **Choice:** Three-mode (calendar / signal-assisted / suppressed) fertile-window estimation,
+  non-contraceptive framing, per the plan's recommendation.
+- **Rationale:** Real user value for TTC users; suppressed-mode protects vulnerable cases.
+- **Migration impact:** New CYCLE-12 build work inside the existing cycle module (EPIC-39).
+- **Supersession:** none; lifts the CYCLE-12 exclusion named in Phase 3F.
+- **Approval:** accepted — Founder+clinical (D-21); legal review is the founder's own
+  separate action (see D-25), per ADR-0010 (2026-07-23).
+
+## D-25 — Pregnancy module (EPIC-40) approved to build; legal review is founder-owned (ADR-0010, approval A18)
+- **Context:** A18 required a clinical advisor (now D-21) and GCC/Oman legal review before
+  build start; `docs/legal/reproductive-threat-model.md` scoped the review but explicitly did
+  not authorize A18 itself.
+- **Choice:** Engineering on EPIC-40 starts now. The founder has taken personal
+  responsibility for preparing and submitting the GCC/Oman legal review in parallel — that
+  review's completion is not a build-start gate, but it remains owed before this surface
+  ships/is submitted to the App Store.
+- **Rationale:** Separates what engineering can safely start (the module, behind the
+  existing sensitive-namespace/consent/purge machinery) from what only the founder can do
+  (retaining counsel, submitting the review).
+- **Migration impact:** Highest-stakes domain in the plan; loss-handling and content review
+  discipline from the threat-model doc still apply in full.
+- **Supersession:** none; this is the memo the threat-model doc said A18 still needed.
+- **Approval:** accepted (build) — Founder, per ADR-0010 (2026-07-23). Legal review:
+  **open**, founder-owned, tracked separately — do not treat as closed.
+- **Scope note (added post-audit, 2026-07-24):** the P0 slice that actually shipped covers
+  PREG-01 through PREG-05 (modes, due dates, content shell, loss, storage/consent) only.
+  PREG-06 (entity reuse — weight/symptom/appointment logging tagged into the pregnancy view
+  and general history), though bundled into this same EPIC-40 batch by
+  `BADAN_WHOOP_HAE_EXECUTION_PLAN.md`, was not built in this slice; a general-correctness
+  audit of the P0 build flagged that this absence had no paper trail anywhere (not in code,
+  not here, not in ADR-0010). Recorded here, and in `PregnancyModels.swift`'s own "out of
+  scope" header, so the gap is disclosed rather than silently narrowed. PREG-06 remains a
+  real, un-scheduled item for a future slice.
+
+## D-26 — Glucose: platform-written ingestion approved now; vendor OAuth stays deferred (ADR-0010, approval A21)
+- **Context:** A21 named glucose/CGM as the highest regulatory scrutiny in the corpus, but
+  distinguished platform-written data from direct vendor integrations.
+- **Choice:** HealthKit `bloodGlucose` / Health Connect `BloodGlucoseRecord` ingestion and
+  export are buildable now, same as any other widened metric. Dexcom/Libre/Lingo direct
+  OAuth integrations stay deferred, pending both the legal+clinical review (D-25) and each
+  vendor's own developer-program approval (external lead time, same class as Garmin/A20).
+- **Rationale:** The regulatory risk is concentrated in vendor-integration/treatment-adjacent
+  framing, not in reading a value the OS already holds.
+- **Migration impact:** "Never for treatment decisions" remains load-bearing copy on every
+  glucose surface, per I13/the plan's clinical-boundary language.
+- **Supersession:** none.
+- **Approval:** accepted (platform-written path) — Founder, per ADR-0010 (2026-07-23). Vendor
+  integrations: **open**, blocked on D-25 + vendor developer-program approval.
+- **Scope gap (flagged by independent audit, 2026-07-24) — DB placement was never actually
+  founder-approved:** `body.glucose` (registry `sensitiveClass: sensitivePlus`, per this decision
+  and the blueprint's own CGM-platforms row) is stored in **`badan.db`** (main), via the same
+  shared `measurements`/`IngestionPipeline` every other widened HealthKit metric uses — **not**
+  `badan_sensitive.db`. A prior pass at this note called that "a deliberate reading of this
+  decision's own 'buildable now, same as any other widened metric' line as covering storage
+  architecture" — an audit found that framing does not hold up: **D-23/A16's own text** names
+  glucose by name as one of the datasets whose imminent arrival justified adopting SQLCipher
+  ("Pregnancy, glucose, and lab data are all landing on top of the sensitive namespace this same
+  review unblocks" — ADR-0010, A16), which reads as the founder's actual expectation that glucose
+  would land in the encrypted sensitive namespace, not `badan.db`. Landing it in main instead was
+  an implementation shortcut this decision's own text does not establish, dressed up with a
+  self-granted "Approval" line it never separately received — this entry's sole `Approval:` below
+  covers the original 2026-07-23 ADR-0010 approval, which never mentions storage architecture.
+  Concrete consequences this leaves open, named plainly rather than argued away: `body.glucose`
+  is **not** SQLCipher-encrypted at rest (unlike every other `sensitivePlus` metric, post-D-23),
+  and it is **not** covered by `purgeSensitiveNamespace()` — a user who turns off "Sensitive
+  records" in Settings to erase their sensitive health data keeps their full glucose history on
+  the device, silently.
+  Kept for the record, since it's real engineering context for whoever makes the actual call: (a)
+  export gating already holds identically for `body.glucose` regardless of physical DB, because
+  `ExportRunner.metricAllowed` reads `sensitiveClass` directly (it already excludes `cycle.*`/
+  `lab.*` from a default export the same way) — only the encryption-at-rest and purge-on-disable
+  properties are actually at stake here, not export. (b) Building a second sensitive-DB-backed
+  `MeasurementRepository`/`IngestionPipeline`/`HealthKitAdapter` stack — mirroring how
+  cycle/pregnancy/lab reach `badan_sensitive.db` — is a materially larger change than "widen a
+  metric the same way every other one was widened": those three domains are manually-entered/
+  OCR'd and never touch `IngestionPipeline` at all, so there is no existing precedent for routing
+  a *platform-written* sensitive-plus metric's generic, heterogeneous-batch ingestion path to a
+  second connection, and doing it hastily risks the reconciliation-v2/export/timeline call sites
+  that already read `body.glucose` out of `badan.db`. That is a real cost, but it is a cost to be
+  weighed by the founder, not assumed away by the session that benefits from the cheaper path.
+  **Resolved (Founder, 2026-07-24):** accept the gap for now, revisit later. No glucose-facing
+  module or user toggle exists yet, so nothing today makes purge-on-disable urgent; the migration
+  to a second sensitive-DB-backed path is deferred rather than rushed. `body.glucose` stays in
+  `badan.db` (unencrypted, not covered by `purgeSensitiveNamespace()`) until this is revisited —
+  explicitly a deferral, not a reclassification: the registry's `sensitiveClass: sensitivePlus`
+  tag is unchanged, and export gating already treats it as sensitive regardless of physical DB.
+  Revisit when glucose ships as a real user-facing feature, or opportunistically alongside a
+  future sensitive-DB migration already in flight.
+
+## D-27 — Watch app accelerated to Phase 4 (ADR-0010, approval A22)
+- **Context:** A22 asked whether the watch app stays Phase 5 or accelerates.
+- **Choice:** Accelerate to Phase 4 (EPIC-42 extension), per the plan's recommendation. The
+  founder holds a physical Apple Watch Series 10 for on-device verification — this build
+  environment has no paired Watch, so physical testing is a founder-owned step, the same
+  pattern as the TestFlight upload boundary.
+- **Rationale:** Three consumers (workout fidelity, complications, live surfaces) justify
+  moving it earlier than v1.0's plan assumed.
+- **Migration impact:** New watchOS target; phone-first live workout (Phase 3C slice 2)
+  stays the honest-degradation fallback for users without the watch app.
+- **Supersession:** revises v1.0's Phase-5 watch placement, per the plan's own v1.1
+  amendment.
+- **Approval:** accepted — Founder, per ADR-0010 (2026-07-23).
+
+## D-28 — Ambient copy governance package approved as specced (ADR-0010, approval A24)
+- **Context:** A24 covered One True Sentence tone, band labels, privacy defaults, and
+  hydration/reminder wording as one package; Phase 3D's build flagged this copy pending
+  founder sign-off.
+- **Choice:** "Lightly interpretive within the wellness-safe register," all band
+  thresholds/labels and privacy defaults, approved as one package — the plan's own
+  recommendation, unchanged.
+- **Rationale:** One decision covers the whole ambient + reminder copy surface rather than
+  piecemeal review per widget.
+- **Migration impact:** Unblocks the copy flagged since Phase 3D (EPIC-33/44) and any
+  remaining ambient surfaces built after it.
+- **Supersession:** none.
+- **Approval:** accepted — Founder, per ADR-0010 (2026-07-23).
+
+---
+
 ## Doc map cross-link
 
 `CLAUDE.md` (this repo) has no "doc map" section to append to as of this writing — it currently

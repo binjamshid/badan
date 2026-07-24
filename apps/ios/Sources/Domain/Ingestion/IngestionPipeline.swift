@@ -587,7 +587,23 @@ final class IngestionPipeline {
     /// Split by which table backs the metric (`interval_records` vs `raw_samples`) because that's
     /// what decides which existing `MeasurementRepository` read path resolves its candidates.
     private static let intervalConflictMetrics: Set<String> = [MetricID.restingHeartRate, MetricID.hrv]
-    private static let sampleConflictMetrics: Set<String> = [MetricID.weight]
+    // (A21/D-26) `MetricID.glucose` rides the GENERAL reconciliation-v2 path, deliberately NOT
+    // `ConflictDecisionEngine.manualWinsMetrics` (I4's weight rule): the blueprint DESCRIBES a
+    // glucose-specific source-priority order (store point > vendor API > fingerstick) as the
+    // eventual intent, but no such rule is seeded anywhere today — grepped `SourcePriorityRule.swift`
+    // /`SourcePriorityRuleRepository.swift`/`SourcePriorityEditorScreen.swift` (audit 2026-07-24):
+    // no default `body.glucose` row exists in any of them. A manual fingerstick is its own
+    // lowest-priority CLASSIFICATION (already `SourcePriorityRule.ClassificationKey.manual`, which
+    // every manual entry gets from `classification(forSourceId:isManualEntry:)` below regardless of
+    // metric), not an automatic override — so it only wins a conflict if a saved `SourcePriorityRule`
+    // for `body.glucose` ranks it above whatever device sources disagreed, and only once such a rule
+    // is actually created (today: never seeded, only ever user-authored via the Source Priority
+    // Editor). With no vendor integration built yet (A21 defers that) and no seeded rule either, only
+    // the "two platform-store sources disagree, no saved rule" case is reachable today, which falls
+    // straight to this general path's unresolved-conflict-surfaced-to-the-user fallback (rule 5:
+    // `SourcePriorityRule` if one exists, else left unresolved) — safe and correct, just not yet the
+    // specific store>vendor>fingerstick ordering the blueprint eventually wants.
+    private static let sampleConflictMetrics: Set<String> = [MetricID.weight, MetricID.glucose]
 
     /// A relative difference below this is "the same reading, twice" (per-source rounding/sensor
     /// noise), not a genuine disagreement — never worth flagging. Chosen generously (5%) so this

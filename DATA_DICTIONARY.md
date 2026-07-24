@@ -566,7 +566,7 @@ Embedded on the row itself, never a join (I1/D-3). A record without provenance i
 
 ## 4. Metrics
 
-73 metrics across 16 families, from
+74 metrics across 16 families, from
 `packages/metric-ontology/registry.json`. `metric_id` is the language-stable join key in
 every export; `canonical_unit` is what `canonical_value` is always expressed in,
 regardless of the unit profile applied to the `value` column. Both display names are
@@ -592,6 +592,7 @@ consumer holding an Arabic export needs the Arabic column to map back to a metri
 |---|---|---|---|---|---|---|
 | `body.bmi` | `kg/m^2` | `kg/m^2` | derived | Body mass index | مؤشر كتلة الجسم | normal |
 | `body.fat_pct` | `percent` | `percent` | rawSample | Body fat percentage | نسبة دهون الجسم | normal |
+| `body.glucose` | `mmol/L` | `mmol/L` \| `mg/dL` | rawSample | Blood glucose | سكر الدم | sensitivePlus |
 | `body.lean_mass` | `kg` | `kg` \| `lb` | rawSample | Lean body mass | الكتلة الخالية من الدهون | normal |
 | `body.waist` | `m` | `cm` \| `in` | rawSample | Waist circumference | محيط الخصر | normal |
 | `body.weight` | `kg` | `kg` \| `lb` \| `st` | rawSample | Weight | الوزن | normal |

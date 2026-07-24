@@ -24,6 +24,19 @@ enum NotificationClass: String, CaseIterable, Sendable {
     case exportHealthAlert = "exportHealth"
     case hydration = "hydration"
     case meds = "meds"
+    /// A18/ADR-0010/D-25 (EPIC-40, pregnancy module P0 slice). Registered for the ledger/budget
+    /// vocabulary and — critically — so `NotificationScheduler.cancelDecisionNotifications(.pregnancy)`
+    /// has a real identifier prefix to cancel by, per this module's own non-negotiable loss-
+    /// suppression requirement: the moment a loss is declared, every locally scheduled pregnancy
+    /// notification must be cancelled synchronously, in the same session, independent of the ≤2/day
+    /// budget engine (`PregnancyModuleServices.declareLoss` is the caller). No producer schedules a
+    /// `.pregnancy` notification in THIS P0 slice (PREG-03 ships a content shell, not real
+    /// week-by-week/countdown content, so there is nothing to notify about yet) — this case exists
+    /// so the cancellation plumbing is real and ready the moment a future slice adds one, per the
+    /// SAME "registered for the vocabulary before a producer exists" posture `deviationNotice`/
+    /// `exportHealthAlert` already establish above. Deliberately NOT in `userFacing` for the
+    /// identical reason those two are absent from it.
+    case pregnancy = "pregnancy"
 
     /// Medication reminders are exempt from the ≤2/day non-med budget AND are never evicted to make
     /// room for a score/hydration notice. A med reminder is a safety-relevant thing the user
@@ -76,6 +89,7 @@ enum NotificationClass: String, CaseIterable, Sendable {
         case .exportHealthAlert: return .exportHealth
         case .hydration: return .hydration
         case .meds: return .meds
+        case .pregnancy: return .pregnancy
         }
     }
 }
@@ -93,6 +107,10 @@ enum NotificationDeepLink: String, Sendable, Equatable, CaseIterable {
     case exportHealth
     case hydration
     case meds
+    /// A18/ADR-0010/D-25 (EPIC-40). See `NotificationClass.pregnancy`'s own doc — no producer opens
+    /// this deep link yet in this P0 slice; it exists so `NotificationClass.pregnancy.deepLink`
+    /// resolves to something real.
+    case pregnancy
 
     /// The `userInfo` key the request carries and the response handler reads.
     static let userInfoKey = "badan.deeplink"
@@ -107,7 +125,7 @@ enum NotificationDeepLink: String, Sendable, Equatable, CaseIterable {
         case .readiness, .sleep: return .today
         case .healthMonitor: return .body
         case .exportHealth: return .today   // Export Center is reached from Home (Today).
-        case .hydration, .meds: return .log
+        case .hydration, .meds, .pregnancy: return .log   // the pregnancy tile lives on Log, like cycle's.
         }
     }
 }
@@ -334,6 +352,15 @@ enum NotificationClassCopy {
                 ar: "تذكير لطيف لشرب بعض الماء."))
         case .meds:
             return (MedicationReminderCopy.title, MedicationReminderCopy.body)
+        case .pregnancy:
+            // No producer schedules this class in the P0 slice (see `NotificationClass.pregnancy`'s
+            // own doc) — copy exists so the class is fully wired and this switch stays exhaustive.
+            // Deliberately generic and calm, never assuming a mode (never "your baby" / week-number
+            // language that could be stale or wrong the instant a loss is declared) — the same
+            // register discipline the rest of this enum already follows.
+            return (title, LocalizedString(
+                en: "There's an update in your pregnancy tracking.",
+                ar: "هناك تحديث في متابعة حملك."))
         }
     }
 
@@ -365,6 +392,10 @@ enum NotificationClassCopy {
             return (LocalizedString(en: "Medication reminders", ar: "تذكيرات الأدوية"),
                     LocalizedString(en: "A gentle nudge at your usual times. No names appear on the lock screen.",
                                     ar: "تذكير لطيف في أوقاتك المعتادة. لا تظهر أي أسماء على شاشة القفل."))
+        case .pregnancy:
+            return (LocalizedString(en: "Pregnancy tracking updates", ar: "تحديثات متابعة الحمل"),
+                    LocalizedString(en: "Not available in this version yet.",
+                                    ar: "غير متاحة في هذا الإصدار بعد."))
         }
     }
 

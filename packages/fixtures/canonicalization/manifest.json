@@ -6,7 +6,7 @@
     {
       "id": "canonical-rows-v1",
       "file": "canonical-rows-v1.json",
-      "sha256": "465a38f8190b967e7d33c49e443fa24d200e01087037c1494fda7df1d5711426",
+      "sha256": "021f4b756eabc12a473fec6286a6e5b6b8f8f3d1e4164c15cf46540e04be7ac6",
       "readBy": [
         "apps/android/app/src/test/java/net/albayyan/badan/HealthConnectCanonicalParityTest.kt",
         "apps/ios/Tests/CanonicalizationParityTests.swift"
