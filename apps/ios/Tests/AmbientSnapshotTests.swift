@@ -113,7 +113,7 @@ final class AmbientSnapshotTests: XCTestCase {
         try seedSentenceInsight()
         try seedSleep(asleepMinutes: 420, performanceScore: 88)
 
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
 
         XCTAssertEqual(dto.schemaVersion, AmbientSnapshotDto.currentSchemaVersion)
         XCTAssertEqual(dto.language, "en")
@@ -136,7 +136,7 @@ final class AmbientSnapshotTests: XCTestCase {
 
     func testEffortSnapshotCarriesTheZoneBasedScore() async throws {
         try seedEffort(score: 63, provisional: false)
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         let effort = try XCTUnwrap(dto.effort, "a score_0_100-unit effort.day row must produce an effort snapshot")
         XCTAssertEqual(effort.score, 63, accuracy: 0.001)
         XCTAssertFalse(effort.provisional)
@@ -144,7 +144,7 @@ final class AmbientSnapshotTests: XCTestCase {
 
     func testEffortSnapshotIsProvisionalWhenTheUnderlyingRowIs() async throws {
         try seedEffort(score: 40, provisional: true)
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertTrue(try XCTUnwrap(dto.effort).provisional)
     }
 
@@ -153,13 +153,13 @@ final class AmbientSnapshotTests: XCTestCase {
     /// must degrade to `nil`, never be mislabelled as a score it isn't (`EffortSnapshot`'s own doc).
     func testEffortSnapshotIsNilForTheReducedInputActivityLoadUnit() async throws {
         try seedEffort(score: 320, unit: "kcal")
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertNil(dto.effort, "a non-score-unit effort.day row must not be surfaced as a fabricated score")
     }
 
     func testEffortSnapshotIsNilWhenNothingComputedYet() async throws {
         // No effort.day row seeded at all — an honest gap, same as readiness/sleep's own nil cases.
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertNil(dto.effort)
     }
 
@@ -177,14 +177,14 @@ final class AmbientSnapshotTests: XCTestCase {
                 ar: "انخفض وقت نومك إلى ٦س ١٠د هذا الأسبوع، أقل قليلاً من معتادك ٧س."),
             evidenceRefs: [], generatedAt: clock.now()))
 
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         let sentence = try XCTUnwrap(dto.sentence)
         XCTAssertTrue(sentence.en.contains("slipped"), "the actionable sleep-debt insight must outrank the calm one")
     }
 
     func testSentenceFallsBackToTheCalmGenericSentenceWhenNothingFiredToday() async throws {
         // No insight seeded at all — an honest "nothing notable" day.
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         let sentence = try XCTUnwrap(dto.sentence)
         XCTAssertEqual(sentence.en, OneTrueSentencePicker.fallback.en)
         XCTAssertEqual(sentence.ar, OneTrueSentencePicker.fallback.ar)
@@ -194,13 +194,13 @@ final class AmbientSnapshotTests: XCTestCase {
 
     func testMedsDueIsNilWhenConsentIsOff() async throws {
         try seedMedication()
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertNil(dto.medsDue, "medsDue must be entirely absent (not an empty array) when consent is off")
     }
 
     func testMedsDuePopulatedWhenConsentIsOn() async throws {
         try seedMedication(name: "Vitamin D", time: "09:00")
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: true)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: true, privacy: .default)
         let medsDue = try XCTUnwrap(dto.medsDue)
         XCTAssertEqual(medsDue.items.count, 1)
         XCTAssertEqual(medsDue.items.first?.displayName, "Vitamin D")
@@ -211,7 +211,7 @@ final class AmbientSnapshotTests: XCTestCase {
     /// due is a REAL, DIFFERENT state from consent being off — an empty array, never `nil`.
     func testMedsDueEmptyArrayIsADistinctStateFromConsentOff() async throws {
         // No regimens seeded at all — consent IS granted, but nothing happens to be due.
-        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: true)
+        let dto = try await makeWriter().buildSnapshot(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: true, privacy: .default)
         let medsDue = try XCTUnwrap(dto.medsDue, "consent on must always produce a non-nil medsDue, even when empty")
         XCTAssertTrue(medsDue.items.isEmpty)
     }
@@ -238,7 +238,7 @@ final class AmbientSnapshotTests: XCTestCase {
         let firstNow = clock.now()
 
         // An ordinary write, well before the purge: the medication is really on disk.
-        let firstWrote = await writer.writeIfNeeded(now: firstNow, tz: tz, language: .en, medsDueConsentGranted: true)
+        let firstWrote = await writer.writeIfNeeded(now: firstNow, tz: tz, language: .en, medsDueConsentGranted: true, privacy: .default)
         XCTAssertTrue(firstWrote)
         let beforePurge = try XCTUnwrap(store.read())
         let beforeMedsDue = try XCTUnwrap(beforePurge.medsDue)
@@ -255,10 +255,10 @@ final class AmbientSnapshotTests: XCTestCase {
         // `consentWidgetMedsDue` unchanged (a separate profile flag the purge does not touch).
         let soonAfterPurge = firstNow.addingTimeInterval(1)
         let debouncedAwayAfterPurge = await writer.writeIfNeeded(
-            now: soonAfterPurge, tz: tz, language: .en, medsDueConsentGranted: true)
+            now: soonAfterPurge, tz: tz, language: .en, medsDueConsentGranted: true, privacy: .default)
         XCTAssertFalse(debouncedAwayAfterPurge,
                       "sanity check: an ordinary call this soon after the last write is still debounced")
-        let forcedAfterPurge = await writer.forceWrite(now: soonAfterPurge, tz: tz, language: .en, medsDueConsentGranted: true)
+        let forcedAfterPurge = await writer.forceWrite(now: soonAfterPurge, tz: tz, language: .en, medsDueConsentGranted: true, privacy: .default)
         XCTAssertTrue(forcedAfterPurge, "forceWrite must bypass the debounce so the purge is reflected promptly")
 
         // The real resulting state, read back from disk exactly as a widget would (read that
@@ -285,9 +285,9 @@ final class AmbientSnapshotTests: XCTestCase {
         let firstNow = clock.now()
         let secondNow = firstNow.addingTimeInterval(10) // well inside the 30s window
 
-        let firstWrote = await writer.writeIfNeeded(now: firstNow, tz: tz, language: .en, medsDueConsentGranted: false)
+        let firstWrote = await writer.writeIfNeeded(now: firstNow, tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertTrue(firstWrote, "the first call must write (nothing written yet)")
-        let secondWrote = await writer.writeIfNeeded(now: secondNow, tz: tz, language: .en, medsDueConsentGranted: false)
+        let secondWrote = await writer.writeIfNeeded(now: secondNow, tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertFalse(secondWrote, "a second call inside the 30s window must be debounced away")
 
         // Corroborate the write-counter result (the two booleans above) against the actual file
@@ -296,7 +296,7 @@ final class AmbientSnapshotTests: XCTestCase {
         XCTAssertEqual(onDisk.generatedAt.timeIntervalSince1970, firstNow.timeIntervalSince1970, accuracy: 0.001)
 
         let thirdNow = firstNow.addingTimeInterval(Self.pastDebounceWindow)
-        let thirdWrote = await writer.writeIfNeeded(now: thirdNow, tz: tz, language: .en, medsDueConsentGranted: false)
+        let thirdWrote = await writer.writeIfNeeded(now: thirdNow, tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertTrue(thirdWrote, "a call past the debounce window must write again")
         let onDiskAfter = try XCTUnwrap(store.read())
         XCTAssertEqual(onDiskAfter.generatedAt.timeIntervalSince1970, thirdNow.timeIntervalSince1970, accuracy: 0.001)
@@ -305,13 +305,13 @@ final class AmbientSnapshotTests: XCTestCase {
     func testForceWriteBypassesTheDebounce() async throws {
         try seedReadiness(score: 40)
         let writer = makeWriter()
-        let firstWrote = await writer.writeIfNeeded(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let firstWrote = await writer.writeIfNeeded(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertTrue(firstWrote)
 
         let soonAfter = clock.now().addingTimeInterval(1)
-        let debouncedAway = await writer.writeIfNeeded(now: soonAfter, tz: tz, language: .en, medsDueConsentGranted: false)
+        let debouncedAway = await writer.writeIfNeeded(now: soonAfter, tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertFalse(debouncedAway, "an ordinary call stays debounced")
-        let forced = await writer.forceWrite(now: soonAfter, tz: tz, language: .en, medsDueConsentGranted: false)
+        let forced = await writer.forceWrite(now: soonAfter, tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertTrue(forced, "forceWrite must bypass the debounce")
     }
 
@@ -335,7 +335,7 @@ final class AmbientSnapshotTests: XCTestCase {
         let writeCount = await withTaskGroup(of: Bool.self) { group in
             for _ in 0..<concurrentCallCount {
                 group.addTask {
-                    await writer.writeIfNeeded(now: now, tz: tz, language: .en, medsDueConsentGranted: false)
+                    await writer.writeIfNeeded(now: now, tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
                 }
             }
             var count = 0
@@ -361,12 +361,12 @@ final class AmbientSnapshotTests: XCTestCase {
         var reloadedKinds: [String] = []
         let writer = makeWriter(reloadWidgets: { kinds in reloadedKinds.append(contentsOf: kinds) })
 
-        let wrote = await writer.writeIfNeeded(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let wrote = await writer.writeIfNeeded(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertTrue(wrote)
         XCTAssertEqual(reloadedKinds, AmbientSnapshotWriter.widgetKinds)
 
         // A debounced-away second call must not trigger a second reload.
-        _ = await writer.writeIfNeeded(now: clock.now().addingTimeInterval(1), tz: tz, language: .en, medsDueConsentGranted: false)
+        _ = await writer.writeIfNeeded(now: clock.now().addingTimeInterval(1), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertEqual(reloadedKinds, AmbientSnapshotWriter.widgetKinds, "a debounced call must not reload widgets again")
     }
 
@@ -380,7 +380,7 @@ final class AmbientSnapshotTests: XCTestCase {
         var syncedDtos: [AmbientSnapshotDto] = []
         let writer = makeWriter(syncToWatch: { syncedDtos.append($0) })
 
-        let wrote = await writer.writeIfNeeded(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false)
+        let wrote = await writer.writeIfNeeded(now: clock.now(), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertTrue(wrote)
         XCTAssertEqual(syncedDtos.count, 1, "exactly one watch sync per successful write")
 
@@ -389,7 +389,7 @@ final class AmbientSnapshotTests: XCTestCase {
         XCTAssertEqual(syncedDtos.first, onDisk, "the watch must receive the SAME dto that was written to disk")
 
         // A debounced-away second call must not trigger a second watch sync.
-        _ = await writer.writeIfNeeded(now: clock.now().addingTimeInterval(1), tz: tz, language: .en, medsDueConsentGranted: false)
+        _ = await writer.writeIfNeeded(now: clock.now().addingTimeInterval(1), tz: tz, language: .en, medsDueConsentGranted: false, privacy: .default)
         XCTAssertEqual(syncedDtos.count, 1, "a debounced call must not sync to the watch again")
     }
 

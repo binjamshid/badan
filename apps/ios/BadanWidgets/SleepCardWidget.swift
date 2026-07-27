@@ -29,7 +29,12 @@ struct SleepCardWidgetView: View {
     let entry: SnapshotEntry
 
     private var isArabic: Bool { WidgetLanguage.isArabic(for: entry.snapshot) }
-    private var sleep: SleepSnapshot? { entry.snapshot?.sleep }
+    /// W-11: withheld entirely in `.discreet` — a sleep duration has no shape-only form, so this
+    /// view treats "values not allowed" the same way it treats "no sleep recorded", which is
+    /// already a calm, non-alarming state it renders correctly. `.off` writes no sleep at all.
+    private var sleep: SleepSnapshot? {
+        WidgetPrivacy.allowsValues(entry.snapshot, family: family) ? entry.snapshot?.sleep : nil
+    }
 
     var body: some View {
         content

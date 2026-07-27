@@ -586,7 +586,16 @@ final class IngestionPipeline {
     ///
     /// Split by which table backs the metric (`interval_records` vs `raw_samples`) because that's
     /// what decides which existing `MeasurementRepository` read path resolves its candidates.
-    private static let intervalConflictMetrics: Set<String> = [MetricID.restingHeartRate, MetricID.hrv]
+    ///
+    /// `internal` rather than `private` (2026-07-27) so `ConflictResolutionService` can resolve a
+    /// conflict back to the SAME table this detector wrote it from, instead of re-deriving that
+    /// mapping from the registry's `kind`. Re-deriving looked equivalent and is not:
+    /// `heart.rhr`/`heart.hrv` are `kind: derived` in `registry.json` yet are detected out of
+    /// `interval_records` here, so a registry-driven copy returned "no table" for exactly the two
+    /// metrics that produce most real conflicts — the resolve action would have compiled, shipped,
+    /// and silently done nothing. Same two-copies-drift failure this file's own audit-fix comment
+    /// below already describes for `CandidateReading.classification`.
+    static let intervalConflictMetrics: Set<String> = [MetricID.restingHeartRate, MetricID.hrv]
     // (A21/D-26) `MetricID.glucose` rides the GENERAL reconciliation-v2 path, deliberately NOT
     // `ConflictDecisionEngine.manualWinsMetrics` (I4's weight rule): the blueprint DESCRIBES a
     // glucose-specific source-priority order (store point > vendor API > fingerstick) as the
@@ -603,7 +612,8 @@ final class IngestionPipeline {
     // straight to this general path's unresolved-conflict-surfaced-to-the-user fallback (rule 5:
     // `SourcePriorityRule` if one exists, else left unresolved) — safe and correct, just not yet the
     // specific store>vendor>fingerstick ordering the blueprint eventually wants.
-    private static let sampleConflictMetrics: Set<String> = [MetricID.weight, MetricID.glucose]
+    /// `internal` for the reason `intervalConflictMetrics` above documents.
+    static let sampleConflictMetrics: Set<String> = [MetricID.weight, MetricID.glucose]
 
     /// A relative difference below this is "the same reading, twice" (per-source rounding/sensor
     /// noise), not a genuine disagreement — never worth flagging. Chosen generously (5%) so this

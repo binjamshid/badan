@@ -165,6 +165,60 @@
     "card": 20,
     "sheet": 24
   },
+  "logo": {
+    "note": "Selectable app-icon system, implemented in AppIconOption.swift + Assets.xcassets/*.appiconset. Visual rationale and full mockups (palette, wordmark, RTL screens) for the three underlying identities live in design/badan-three-design-directions.html — this block is the compiled summary, mirroring how palette/typography above were mined from the blueprint.",
+    "default": "noorRadiant",
+    "options": [
+      {
+        "id": "noorRadiant",
+        "titleEn": "Noor",
+        "titleAr": "نور",
+        "subtitleEn": "Light — default",
+        "subtitleAr": "ضياء — الافتراضي",
+        "concept": "نور = light. A dawn arc rising over a solid dot: sunrise over the body (بدن). The dot is the anchor and never turns red; the arc warms toward gold as the day settles into range. Single-stroke, calligraphic curve reads clean at 20px.",
+        "assetCatalog": "AppIcon.appiconset",
+        "palette": { "ground": "#F3EDE3", "mark": "#F3D9A6", "ink": "#2A2622" }
+      },
+      {
+        "id": "noorMono",
+        "titleEn": "Noor Line",
+        "titleAr": "نور · خط",
+        "subtitleEn": "Clean monoline",
+        "subtitleAr": "خط بسيط",
+        "concept": "Monoline stroke variant of the Noor dawn-arc mark — same identity, flatter/more graphic treatment.",
+        "assetCatalog": "NoorMono.appiconset"
+      },
+      {
+        "id": "noorQalam",
+        "titleEn": "Noor Qalam",
+        "titleAr": "نور · قلم",
+        "subtitleEn": "Calligraphic",
+        "subtitleAr": "خط عربي",
+        "concept": "Calligraphic-pen variant of the Noor dawn-arc mark, leaning into the قلم (pen/script) reading.",
+        "assetCatalog": "NoorQalam.appiconset"
+      },
+      {
+        "id": "mizan",
+        "titleEn": "Mizan",
+        "titleAr": "ميزان",
+        "subtitleEn": "Instrument",
+        "subtitleAr": "دقيق",
+        "concept": "ميزان = balance / scale of measure. A calibration axis with a balanced beam and a centered node that doubles as the dot of ب (baa, first letter of بدن) — the body at the fulcrum of its own measurements. Monoline, on-grid, reads at status-bar/complication size.",
+        "assetCatalog": "Mizan.appiconset",
+        "palette": { "ground": "#0C0F14", "panel": "#151B23", "mark": "#35D0C0", "reference": "#6EA8FF", "flag": "#E0A63A" }
+      },
+      {
+        "id": "hilal",
+        "titleEn": "Hilal",
+        "titleAr": "هلال",
+        "subtitleEn": "Crescent",
+        "subtitleAr": "هلال جوهري",
+        "concept": "هلال = crescent, cradled as negative space inside a khatam eight-point star (two overlaid squares) — Islamic geometric heritage rendered in a jewel emerald-teal gradient with a gold spark. Signals region-native premium identity without literal cliché iconography.",
+        "assetCatalog": "Hilal.appiconset",
+        "palette": { "ground": "#16112E", "surface": "#221A45", "markGradient": "#2FC79A→#17A0B8", "accent": "#E6B667" }
+      }
+    ]
+  },
   "principles": [
     "Warm Instrument: pair precise, data-forward information with human warmth; dark-first but fully dual-theme from day one.",
     "Never moralize state: no good/bad red-green — out-of-band uses one calm amber and direction is shown by an arrow plus text label.",

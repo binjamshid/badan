@@ -5,15 +5,64 @@ import Foundation
 /// re-ingest of the same upstream record is a no-op (sync-readiness / dedup discipline).
 final class MeasurementRepository {
     private let db: SQLiteConnection
-    init(_ db: SQLiteConnection) { self.db = db }
+    /// The sensitive connection, when this repository is routing (A21/D-26). `nil` means
+    /// single-connection mode: every row goes to `db`, exactly as before routing existed. Tests
+    /// that construct `MeasurementRepository(conn)` with one connection keep that behavior, and so
+    /// does `Database.inMemoryFallback()`'s degraded path.
+    private let sensitiveDb: SQLiteConnection?
+    private let registry: MetricRegistry
+
+    /// - Parameter sensitive: the `badan_sensitive.db` connection. Supply it and rows for
+    ///   sensitive-plus metrics (`MeasurementRouting`) are read and written there instead of `db`;
+    ///   omit it and this type behaves exactly as it did before D-26's routing seam existed.
+    init(_ db: SQLiteConnection, sensitive: SQLiteConnection? = nil, registry: MetricRegistry = .shared) {
+        self.db = db
+        self.sensitiveDb = sensitive
+        self.registry = registry
+    }
+
+    /// The connection owning `metricId`'s measurement rows. Every metric-scoped statement below
+    /// goes through this — there is no direct `db` use left on a path that takes a metric id.
+    private func connection(for metricId: String) -> SQLiteConnection {
+        guard let sensitiveDb, MeasurementRouting.isSensitive(metricId: metricId, registry: registry) else { return db }
+        return sensitiveDb
+    }
+
+    /// The tables sensitive migration 9 actually mirrors. `sessions`/`session_stages` are NOT among
+    /// them — a session is never a sensitive-plus metric (`SessionKind` covers sleep and workouts,
+    /// all `sensitiveClass: normal`), so those tables exist only in `badan.db`. This set is what
+    /// stops a table-name-driven statement from being aimed at a file where the table does not
+    /// exist, which would throw "no such table" rather than harmlessly matching zero rows.
+    private static let sensitiveMirroredTables: Set<String> = ["raw_samples", "interval_records"]
+
+    /// The connections a statement naming `table` may run against, main first. Used by the few
+    /// statements that address a row by primary key or upstream identity WITHOUT a metric id to
+    /// route on: running them against both files is correct rather than merely convenient, because
+    /// row ids are unique across the pair and the statement matches nothing on whichever file does
+    /// not hold the row.
+    private func connections(forTable table: String) -> [SQLiteConnection] {
+        guard let sensitiveDb, Self.sensitiveMirroredTables.contains(table) else { return [db] }
+        return [db, sensitiveDb]
+    }
 
     /// Run a batch of writes as a single transaction instead of one implicit commit+fsync per
     /// row. Any other main-DB repo called from inside `body` shares this same connection (and
     /// its recursive-lock/nesting), so its writes join the same transaction (PERF-02 (audit
     /// 2026-07-12)).
+    ///
+    /// When routing is on, `body` is bracketed by a transaction on BOTH files (nesting-aware on
+    /// each, so an inner repo's own `transaction` still joins rather than re-begins). A throw from
+    /// `body` therefore rolls back both. What this deliberately does NOT claim is cross-file
+    /// atomicity: two separate SQLite files cannot two-phase-commit, so a process kill in the
+    /// instant between the sensitive COMMIT and the main COMMIT can leave the sensitive rows
+    /// durable and the main rows rolled back. That window is survivable rather than ignored —
+    /// every write in this repository is an idempotent upsert keyed by provenance identity, so the
+    /// next ingest of the same upstream records restores agreement. Stating the limit is the point;
+    /// a comment claiming atomicity here would be false.
     @discardableResult
     func transaction<T>(_ body: () throws -> T) throws -> T {
-        try db.transaction(body)
+        guard let sensitiveDb else { return try db.transaction(body) }
+        return try db.transaction { try sensitiveDb.transaction(body) }
     }
 
     // MARK: - RawSample
@@ -40,7 +89,7 @@ final class MeasurementRepository {
     /// resurrecting it.
     @discardableResult
     func upsertRawSample(_ s: RawSample) throws -> Bool {
-        let wonId = try db.query("""
+        let wonId = try connection(for: s.metricId).query("""
             INSERT INTO raw_samples
               (id, metric_id, value, unit, original_value, original_unit, start_at, end_at, tz_id,
                \(Rows.provColumns), \(Rows.convColumns))
@@ -68,7 +117,7 @@ final class MeasurementRepository {
         if let from { sql += " AND measured_at >= ?"; params.append(.date(from)) }
         if let to { sql += " AND measured_at <= ?"; params.append(.date(to)) }
         sql += " ORDER BY measured_at ASC;"
-        return try db.query(sql, params).map(Self.readRawSample)
+        return try connection(for: metricId).query(sql, params).map(Self.readRawSample)
     }
 
     // MARK: - IntervalRecord
@@ -81,7 +130,7 @@ final class MeasurementRepository {
     /// across (a tombstoned row must be revivable by a re-ingest or a re-import).
     @discardableResult
     func upsertIntervalRecord(_ r: IntervalRecord) throws -> Bool {
-        let wonId = try db.query("""
+        let wonId = try connection(for: r.metricId).query("""
             INSERT INTO interval_records
               (id, metric_id, value, unit, start_at, end_at, tz_id, aggregation, coverage,
                \(Rows.provColumns), \(Rows.convColumns))
@@ -108,20 +157,22 @@ final class MeasurementRepository {
         if let from { sql += " AND start_at >= ?"; params.append(.date(from)) }
         if let to { sql += " AND start_at <= ?"; params.append(.date(to)) }
         sql += " ORDER BY start_at ASC;"
-        return try db.query(sql, params).map(Self.readIntervalRecord)
+        return try connection(for: metricId).query(sql, params).map(Self.readIntervalRecord)
     }
 
     func latestInterval(metricId: String) throws -> IntervalRecord? {
-        try db.query("SELECT * FROM interval_records WHERE metric_id = ? AND deleted_at IS NULL AND suppressed_by IS NULL ORDER BY start_at DESC LIMIT 1;",
-                     [.text(metricId)]).first.map(Self.readIntervalRecord)
+        try connection(for: metricId)
+            .query("SELECT * FROM interval_records WHERE metric_id = ? AND deleted_at IS NULL AND suppressed_by IS NULL ORDER BY start_at DESC LIMIT 1;",
+                   [.text(metricId)]).first.map(Self.readIntervalRecord)
     }
 
     /// Whether ANY row (including soft-deleted/suppressed) exists at this identity — used to
     /// distinguish a genuine correction from backfill noise (BUG-10b: a freshly-computed
     /// zero-valued steps day is only worth writing if a row already exists to correct).
     func intervalRecordExists(metricId: String, externalId: String) throws -> Bool {
-        try db.query("SELECT 1 FROM interval_records WHERE metric_id = ? AND external_id = ? LIMIT 1;",
-                     [.text(metricId), .text(externalId)]).first != nil
+        try connection(for: metricId)
+            .query("SELECT 1 FROM interval_records WHERE metric_id = ? AND external_id = ? LIMIT 1;",
+                   [.text(metricId), .text(externalId)]).first != nil
     }
 
     // MARK: - Session
@@ -244,9 +295,14 @@ final class MeasurementRepository {
 
     // MARK: - Suppression (dedup)
 
+    /// Addressed by primary key with no metric id to route on, so it runs against every file that
+    /// has this table (see `connections(forTable:)`). Row ids are UUIDs, unique across the pair, so
+    /// the statement updates the one row that exists and matches nothing on the other file.
     func setSuppressed(table: String, recordId: String, by winnerId: String?, updatedAt: Date) throws {
-        try db.run("UPDATE \(table) SET suppressed_by = ?, updated_at = ? WHERE id = ?;",
-                   [.string(winnerId), .date(updatedAt), .text(recordId)])
+        for connection in connections(forTable: table) {
+            try connection.run("UPDATE \(table) SET suppressed_by = ?, updated_at = ? WHERE id = ?;",
+                               [.string(winnerId), .date(updatedAt), .text(recordId)])
+        }
     }
 
     /// Soft-delete (INVARIANT I3: never hard-delete, mirrors `setSuppressed` above) the row
@@ -269,7 +325,15 @@ final class MeasurementRepository {
             params.append(.text(sourceId))
         }
         sql += ";"
-        return try db.run(sql, params) > 0
+        // With a `metricId` this could route to one file, but it deliberately does not: a deletion
+        // signal that DOES carry a metric id is not more trustworthy about placement than the row
+        // itself, and running both is already the correct behavior for the `metricId == nil` case
+        // (`HKDeletedObject` exposes only a UUID). One code path for both shapes beats two.
+        var deleted = false
+        for connection in connections(forTable: table) {
+            if try connection.run(sql, params) > 0 { deleted = true }
+        }
+        return deleted
     }
 
     /// The measurement-chain rows tombstoned since `watermark` — for a delta export's `deletions[]`
@@ -283,23 +347,67 @@ final class MeasurementRepository {
     /// the cursor's forward-only window; re-reporting a tombstone on a later run until the cursor
     /// advances past it is idempotent for a downstream store (deleting an already-deleted record is
     /// a no-op). Ordered by `record_id` for a deterministic, cross-platform-stable array.
+    ///
+    /// Spans both files when routing is on. A tombstone for a relocated sensitive-plus row lives in
+    /// `badan_sensitive.db`, and omitting it would make a delta export silently under-report
+    /// deletions for exactly those metrics — the downstream store would keep serving a reading the
+    /// user deleted. The sensitive half queries only the two mirrored tables (migration 9); the
+    /// `sessions` arm is main-only, matching where that table exists. Sorting happens once over the
+    /// merged rows rather than per file, preserving the deterministic `record_id` order the export
+    /// contract depends on.
     func tombstones(since watermark: Date) throws -> [ExportTombstone] {
-        try db.query("""
-            SELECT id, 'raw_sample' AS entity, deleted_at, tz_id FROM raw_samples WHERE deleted_at > ?
-            UNION ALL
-            SELECT id, 'interval_record' AS entity, deleted_at, tz_id FROM interval_records WHERE deleted_at > ?
-            UNION ALL
-            SELECT id, 'session' AS entity, deleted_at, tz_id FROM sessions WHERE deleted_at > ?
-            ORDER BY id ASC;
-            """, [.date(watermark), .date(watermark), .date(watermark)])
-            .map { row in
+        func read(_ connection: SQLiteConnection, includeSessions: Bool) throws -> [ExportTombstone] {
+            var sql = """
+                SELECT id, 'raw_sample' AS entity, deleted_at, tz_id FROM raw_samples WHERE deleted_at > ?
+                UNION ALL
+                SELECT id, 'interval_record' AS entity, deleted_at, tz_id FROM interval_records WHERE deleted_at > ?
+                """
+            var params: [SQLValue] = [.date(watermark), .date(watermark)]
+            if includeSessions {
+                sql += """
+                    \nUNION ALL
+                    SELECT id, 'session' AS entity, deleted_at, tz_id FROM sessions WHERE deleted_at > ?
+                    """
+                params.append(.date(watermark))
+            }
+            return try connection.query(sql + ";", params).map { row in
                 ExportTombstone(recordId: row.requireString("id"), entity: row.requireString("entity"),
                                 deletedAt: row.requireDate("deleted_at"), tzId: row.requireString("tz_id"))
             }
+        }
+        var all = try read(db, includeSessions: true)
+        if let sensitiveDb { all += try read(sensitiveDb, includeSessions: false) }
+        return all.sorted { $0.recordId < $1.recordId }
     }
 
     func session(id: String) throws -> Session? {
         try db.query("SELECT * FROM sessions WHERE id = ?;", [.text(id)]).first.map(Self.readSession)
+    }
+
+    /// One raw sample by primary key, including suppressed rows — a conflict's candidate list names
+    /// record ids and nothing else, so resolving it means reading each candidate back. Suppressed
+    /// rows are included deliberately: the losing side of an already-applied decision still has to
+    /// render when the user reopens "why am I seeing this value?".
+    ///
+    /// Searches both files for the reason `connections(forTable:)` documents — the id arrives with
+    /// no metric attached, and a sensitive-plus candidate lives in the other file.
+    func rawSample(id: String) throws -> RawSample? {
+        for connection in connections(forTable: "raw_samples") {
+            if let row = try connection.query("SELECT * FROM raw_samples WHERE id = ?;", [.text(id)]).first {
+                return Self.readRawSample(row)
+            }
+        }
+        return nil
+    }
+
+    /// The interval-record counterpart of `rawSample(id:)`, same reasoning throughout.
+    func intervalRecord(id: String) throws -> IntervalRecord? {
+        for connection in connections(forTable: "interval_records") {
+            if let row = try connection.query("SELECT * FROM interval_records WHERE id = ?;", [.text(id)]).first {
+                return Self.readIntervalRecord(row)
+            }
+        }
+        return nil
     }
 
     /// The session stored at an upstream identity, including suppressed and soft-deleted rows.

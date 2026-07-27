@@ -28,6 +28,16 @@ struct PrivacySecuritySettingsScreen: View {
     // files are scoped to avoid touching that file while other Phase 3D lanes may be editing
     // Settings screens concurrently.
     private static let widgetsHeader = LocalizedString(en: "Widgets", ar: "الأدوات")
+    // W-11 (EPIC-44). Copy states plainly what each mode does; no mode is labelled "recommended",
+    // because which one is right depends on where the person's phone spends its day.
+    private static let ambientPrivacyTitle = LocalizedString(
+        en: "What widgets can show", ar: "ما يمكن للأدوات إظهاره")
+    private static let ambientPrivacySubtitle = LocalizedString(
+        en: "Applies to Home Screen, Lock Screen, StandBy and your watch.",
+        ar: "ينطبق على الشاشة الرئيسية وشاشة القفل والاستعداد وساعتك.")
+    private static let ambientPrivacyFooter = LocalizedString(
+        en: "Whatever you pick, medication details never appear on a Lock Screen. That one isn't a setting.",
+        ar: "مهما اخترت، لا تظهر تفاصيل الأدوية على شاشة القفل أبدًا. هذا ليس إعدادًا قابلًا للتغيير.")
     private static let widgetMedsDueTitle = LocalizedString(
         en: "Medication reminders on widgets", ar: "تذكيرات الأدوية في الأدوات")
     private static let widgetMedsDueSubtitle = LocalizedString(
@@ -76,10 +86,12 @@ struct PrivacySecuritySettingsScreen: View {
                     let language = env.language
                     let now = env.now()
                     let medsDueConsentGranted = env.profile.consentWidgetMedsDue
+                    let ambientPrivacy = env.profile.ambientPrivacy
                     let writer = env.ambientSnapshotWriter
                     Task.detached(priority: .utility) {
                         _ = await writer.forceWrite(now: now, tz: TimeZone.current.identifier,
-                                                    language: language, medsDueConsentGranted: medsDueConsentGranted)
+                                                    language: language, medsDueConsentGranted: medsDueConsentGranted,
+                                                    privacy: ambientPrivacy)
                     }
                     // BUG-05: every medication regimen just vanished with the sensitive DB —
                     // cancel/reconcile any reminders still scheduled against them.
@@ -174,6 +186,49 @@ struct PrivacySecuritySettingsScreen: View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(Self.widgetsHeader))
             BadanCard {
+                VStack(alignment: .leading, spacing: BadanSpace.space2) {
+                    LText(Self.ambientPrivacyTitle)
+                        .font(BadanFont.body)
+                        .foregroundStyle(BadanColor.textPrimary)
+                    LText(Self.ambientPrivacySubtitle)
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Picker("", selection: Binding(
+                        get: { env.profile.ambientPrivacy.mode },
+                        set: { newValue in
+                            env.update { $0.ambientPrivacy.mode = newValue }
+                            // Same force-write reasoning as the meds toggle below: tightening
+                            // privacy must take effect promptly, not up to 30s later.
+                            let language = env.language
+                            let now = env.now()
+                            let writer = env.ambientSnapshotWriter
+                            let medsConsent = env.profile.consentWidgetMedsDue
+                            let updated = AmbientPrivacyConfig(mode: newValue)
+                            Task.detached(priority: .utility) {
+                                _ = await writer.forceWrite(now: now, tz: TimeZone.current.identifier,
+                                                            language: language,
+                                                            medsDueConsentGranted: medsConsent,
+                                                            privacy: updated)
+                            }
+                        }
+                    )) {
+                        ForEach(AmbientPrivacyMode.allCases, id: \.self) { mode in
+                            Text(env.s(AmbientPrivacyModeCopy.name(mode))).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    LText(AmbientPrivacyModeCopy.explanation(env.profile.ambientPrivacy.mode))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    LText(Self.ambientPrivacyFooter)
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            BadanCard {
                 SettingsToggleRow(
                     title: Self.widgetMedsDueTitle,
                     subtitle: Self.widgetMedsDueSubtitle,
@@ -187,9 +242,11 @@ struct PrivacySecuritySettingsScreen: View {
                             let language = env.language
                             let now = env.now()
                             let writer = env.ambientSnapshotWriter
+                            let ambientPrivacy = env.profile.ambientPrivacy
                             Task.detached(priority: .utility) {
                                 _ = await writer.forceWrite(now: now, tz: TimeZone.current.identifier,
-                                                            language: language, medsDueConsentGranted: newValue)
+                                                            language: language, medsDueConsentGranted: newValue,
+                                                            privacy: ambientPrivacy)
                             }
                         }
                     )

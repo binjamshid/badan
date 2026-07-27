@@ -184,6 +184,14 @@ struct HydrationScreen: View {
             }
             .buttonStyle(.plain)
 
+            // HYD-004/HYD-012. Its own row rather than a section inside goal settings: a fasting
+            // window is not a goal, and someone setting one should not have to walk through target
+            // amounts to reach it.
+            NavigationLink { HydrationReminderSettingsView() } label: {
+                settingsRow(icon: "bell", title: env.s(HydrationReminderStrings.openReminders), showsChevron: true)
+            }
+            .buttonStyle(.plain)
+
             Button { hideModule() } label: {
                 settingsRow(icon: "eye.slash", title: env.s(HydrationStrings.hideModule), showsChevron: false)
             }

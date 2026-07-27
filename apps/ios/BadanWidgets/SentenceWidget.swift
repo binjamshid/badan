@@ -37,6 +37,12 @@ struct SentenceWidgetView: View {
     private var isArabic: Bool { WidgetLanguage.isArabic(for: entry.snapshot) }
 
     private var sentenceText: String {
+        // W-11: a sentence IS the value — there is no shape-without-number version of it, so
+        // `.discreet` withholds the whole thing rather than showing a truncated or vague variant
+        // that would read as a bug. `.off` never writes a sentence at all.
+        guard WidgetPrivacy.allowsValues(entry.snapshot, family: family) else {
+            return WidgetPrivacy.hiddenHint.resolved(isArabic: isArabic)
+        }
         guard let sentence = entry.snapshot?.sentence else {
             return SentenceCopy.noData.resolved(isArabic: isArabic)
         }

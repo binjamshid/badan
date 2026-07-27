@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BADAN Design System</title>
+<style>
+  :root {
+    --color-background: #FAFAF8;
+    --color-surface: #FFFFFF;
+    --color-surfaceElevated: #F1F1EE;
+    --color-primary: #157A6E;
+    --color-onPrimary: #FFFFFF;
+    --color-textPrimary: #17191C;
+    --color-textSecondary: #5C636D;
+    --color-border: #E5E5E0;
+    --color-success: #2E9E63;
+    --color-warning: #B97A14;
+    --color-info: #2678C4;
+    --color-error: #C9353B;
+
+    --logo-noor-ground: #F3EDE3;
+    --logo-noor-mark: #F3D9A6;
+    --logo-noor-ink: #2A2622;
+    --logo-mizan-ground: #0C0F14;
+    --logo-mizan-signal: #35D0C0;
+    --logo-hilal-ground: #16112E;
+    --logo-hilal-grad-start: #2FC79A;
+    --logo-hilal-grad-end: #17A0B8;
+    --logo-hilal-gold: #E6B667;
+
+    --rounded-chip: 10px;
+    --rounded-control: 12px;
+    --rounded-card: 20px;
+    --rounded-sheet: 24px;
+
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 40px;
+    --card-padding: 16px; --touch-min: 44px; --touch-gap: 16px;
+
+    --font-heroNumeral-size: 44px; --font-heroNumeral-weight: 600;
+    --font-numeralM-size: 28px; --font-numeralM-weight: 500;
+    --font-sectionTitle-size: 20px; --font-sectionTitle-weight: 700;
+    --font-body-size: 16px; --font-body-weight: 400;
+    --font-bodyCompact-size: 15px; --font-bodyCompact-weight: 400;
+    --font-chip-size: 13px; --font-chip-weight: 500;
+    --font-caption-size: 13px; --font-caption-weight: 400;
+    --font-link-size: 15px; --font-link-weight: 500;
+  }
+
+  :root[data-theme="dark"] {
+    --color-background: #0C0E11;
+    --color-surface: #16191E;
+    --color-surfaceElevated: #1E2228;
+    --color-primary: #5BC5BA;
+    --color-onPrimary: #08201D;
+    --color-textPrimary: #F2F3F5;
+    --color-textSecondary: #9AA1AB;
+    --color-border: #252A31;
+    --color-success: #57C785;
+    --color-warning: #E8A13A;
+    --color-info: #4C9FE8;
+    --color-error: #E5484D;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --color-background: #0C0E11;
+      --color-surface: #16191E;
+      --color-surfaceElevated: #1E2228;
+      --color-primary: #5BC5BA;
+      --color-onPrimary: #08201D;
+      --color-textPrimary: #F2F3F5;
+      --color-textSecondary: #9AA1AB;
+      --color-border: #252A31;
+      --color-success: #57C785;
+      --color-warning: #E8A13A;
+      --color-info: #4C9FE8;
+      --color-error: #E5484D;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--color-background);
+    color: var(--color-textPrimary);
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px 96px; }
+
+  header.top {
+    padding: 48px 24px 32px;
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header.top .titleblock h1 { margin: 0 0 6px; font-size: 2rem; letter-spacing: -0.02em; }
+  header.top .titleblock p { margin: 0; color: var(--color-textSecondary); max-width: 60ch; font-size: 0.95rem; }
+  header.top .titleblock .mirror-note { margin-top: 10px; font-size: 0.8rem; color: var(--color-textSecondary); }
+  header.top .titleblock .mirror-note code { background: var(--color-surfaceElevated); padding: 2px 6px; border-radius: 6px; }
+
+  #theme-toggle {
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-textPrimary);
+    border-radius: var(--rounded-control);
+    padding: 8px 14px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    height: var(--touch-min);
+  }
+  #theme-toggle:hover { border-color: var(--color-primary); }
+
+  section.block { margin: 0 0 56px; }
+  section.block h2 {
+    font-size: 1.4rem;
+    margin: 0 0 6px;
+    letter-spacing: -0.01em;
+  }
+  section.block > .desc { color: var(--color-textSecondary); font-size: 0.92rem; margin: 0 0 22px; max-width: 74ch; }
+
+  /* colors */
+  .swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+  .swatch {
+    border: 1px solid var(--color-border);
+    border-radius: var(--rounded-card);
+    overflow: hidden;
+    background: var(--color-surface);
+  }
+  .swatch .fill { height: 64px; display: flex; align-items: flex-end; padding: 8px; }
+  .swatch .fill span { font-size: 0.72rem; padding: 3px 7px; border-radius: 999px; }
+  .swatch .meta { padding: 10px 12px 12px; }
+  .swatch .meta .name { font-weight: 600; font-size: 0.85rem; }
+  .swatch .meta .hex { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; color: var(--color-textSecondary); }
+  .swatch-group-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-textSecondary); font-weight: 700; margin: 28px 0 12px; }
+  .swatch-group-label:first-child { margin-top: 0; }
+
+  /* typography */
+  .type-row { display: flex; align-items: baseline; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--color-border); flex-wrap: wrap; }
+  .type-row:last-child { border-bottom: none; }
+  .type-row .sample { color: var(--color-textPrimary); font-variant-numeric: tabular-nums; }
+  .type-row .spec { color: var(--color-textSecondary); font-size: 0.78rem; min-width: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* spacing */
+  .space-row { display: flex; align-items: center; gap: 16px; padding: 8px 0; }
+  .space-row .bar { background: var(--color-primary); height: 16px; border-radius: 4px; }
+  .space-row .label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; color: var(--color-textSecondary); min-width: 170px; }
+
+  /* radius */
+  .radius-grid { display: flex; gap: 20px; flex-wrap: wrap; }
+  .radius-item { text-align: center; }
+  .radius-item .box { width: 84px; height: 84px; background: var(--color-surfaceElevated); border: 1px solid var(--color-border); margin-bottom: 8px; }
+  .radius-item .label { font-size: 0.78rem; color: var(--color-textSecondary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* elevation */
+  .elevation-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--rounded-card);
+    box-shadow: 0 6px 8px -2px rgba(0,0,0,0.05);
+    padding: var(--card-padding);
+    max-width: 340px;
+  }
+  .elevation-card h4 { margin: 0 0 6px; font-size: 0.95rem; }
+  .elevation-card p { margin: 0; font-size: 0.82rem; color: var(--color-textSecondary); }
+
+  /* components */
+  .comp-block { margin-bottom: 32px; }
+  .comp-block .comp-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-textSecondary); font-weight: 700; margin-bottom: 10px; }
+  .card-demo {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--rounded-card);
+    box-shadow: 0 6px 8px -2px rgba(0,0,0,0.05);
+    padding: var(--card-padding);
+    max-width: 360px;
+  }
+  .card-demo .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .card-demo .title { font-weight: 700; font-size: var(--font-sectionTitle-size); }
+  .card-demo .hero { font-size: var(--font-heroNumeral-size); font-weight: var(--font-heroNumeral-weight); font-variant-numeric: tabular-nums; }
+  .chip-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .status-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: var(--font-chip-size); font-weight: var(--font-chip-weight);
+    padding: 6px 12px; border-radius: var(--rounded-chip);
+  }
+  .status-chip.inband { background: color-mix(in srgb, var(--color-success) 16%, transparent); color: var(--color-success); }
+  .status-chip.outband { background: color-mix(in srgb, var(--color-warning) 16%, transparent); color: var(--color-warning); }
+  .status-chip.info { background: color-mix(in srgb, var(--color-info) 16%, transparent); color: var(--color-info); }
+  .btn-primary {
+    background: var(--color-primary); color: var(--color-onPrimary);
+    border: none; border-radius: var(--rounded-control);
+    padding: 12px 22px; font-size: var(--font-link-size); font-weight: var(--font-link-weight);
+    height: var(--touch-min); cursor: pointer;
+  }
+  .section-header-demo { display: flex; justify-content: space-between; align-items: baseline; max-width: 360px; }
+  .section-header-demo .title { font-size: var(--font-sectionTitle-size); font-weight: var(--font-sectionTitle-weight); }
+  .section-header-demo .trailing { color: var(--color-primary); font-size: var(--font-link-size); font-weight: var(--font-link-weight); }
+  .tile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); max-width: 360px; }
+  .metric-tile {
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--rounded-card);
+    padding: var(--card-padding); box-shadow: 0 6px 8px -2px rgba(0,0,0,0.05);
+  }
+  .metric-tile .label { font-size: var(--font-caption-size); color: var(--color-textSecondary); margin-bottom: 4px; }
+  .metric-tile .value { font-size: var(--font-numeralM-size); font-weight: var(--font-numeralM-weight); font-variant-numeric: tabular-nums; }
+  .tabbar-demo {
+    display: flex; justify-content: space-around; align-items: center;
+    background: var(--color-surfaceElevated); border-radius: 999px; padding: 10px 6px; max-width: 420px;
+  }
+  .tabbar-demo .tab { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: var(--font-caption-size); color: var(--color-textSecondary); min-width: var(--touch-min); }
+  .tabbar-demo .tab.active { color: var(--color-primary); font-weight: 600; }
+  .tabbar-demo .tab .dot { width: 20px; height: 20px; border-radius: 50%; background: currentColor; opacity: 0.15; }
+  .appicon-option-demo {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--color-surfaceElevated); border-radius: var(--rounded-control);
+    padding: var(--space-3); max-width: 340px; margin-bottom: 8px; font-size: var(--font-bodyCompact-size);
+  }
+  .appicon-option-demo .swatch-dot { width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0; }
+  .appicon-option-demo .meta .t { font-weight: 600; }
+  .appicon-option-demo .meta .s { color: var(--color-textSecondary); font-size: 0.78rem; }
+
+  /* dos donts */
+  .dodont { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 700px) { .dodont { grid-template-columns: 1fr; } }
+  .dodont ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .dodont li { display: flex; gap: 10px; font-size: 0.88rem; align-items: flex-start; }
+  .dodont .do li::before { content: "✓"; color: var(--color-success); font-weight: 700; }
+  .dodont .dont li::before { content: "✗"; color: var(--color-error); font-weight: 700; }
+  .dodont h3 { font-size: 0.95rem; margin: 0 0 12px; }
+
+  /* logo section */
+  .logo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+  .logo-card { border: 1px solid var(--color-border); border-radius: var(--rounded-card); overflow: hidden; background: var(--color-surface); }
+  .logo-card .mark { height: 110px; display: flex; align-items: center; justify-content: center; }
+  .logo-card .meta { padding: 12px 14px 14px; }
+  .logo-card .meta .t { font-weight: 700; font-size: 0.9rem; }
+  .logo-card .meta .ar { color: var(--color-textSecondary); font-size: 0.8rem; }
+  .logo-card .meta .s { color: var(--color-textSecondary); font-size: 0.78rem; margin-top: 4px; }
+  .logo-card.default { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+  .badge-default {
+    display: inline-block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    background: var(--color-primary); color: var(--color-onPrimary); padding: 2px 8px; border-radius: 999px; margin-top: 6px;
+  }
+
+  footer.mirror {
+    max-width: 980px; margin: 0 auto; padding: 32px 24px 64px; color: var(--color-textSecondary); font-size: 0.82rem;
+    border-top: 1px solid var(--color-border); margin-top: 24px;
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="titleblock">
+    <h1>BADAN Design System</h1>
+    <p>A privacy-respecting, local-first personal health app rendered at two altitudes — calm and casual by default, deep and inspectable for power users — bilingual (English/Arabic) with RTL as a first-order concern.</p>
+    <p class="mirror-note">This is the human-readable mirror of <code>docs/design.md</code> — same tokens, rendered live. Source of truth for both: <code>design/design-tokens.json</code>.</p>
+  </div>
+  <button id="theme-toggle" type="button">Toggle theme</button>
+</header>
+
+<div class="wrap">
+
+  <section class="block" id="colors">
+    <h2>Colors</h2>
+    <p class="desc">Every UI token ships a light and dark value from day one. Status colors never moralize a reading: above-range and below-range share one amber, direction carried by arrow + text, never a second hue.</p>
+
+    <div class="swatch-group-label">Surfaces &amp; text</div>
+    <div class="swatch-grid" id="swatches-surface"></div>
+
+    <div class="swatch-group-label">Status (semantic)</div>
+    <div class="swatch-grid" id="swatches-status"></div>
+  </section>
+
+  <section class="block" id="typography">
+    <h2>Typography</h2>
+    <p class="desc">Numerals are tabular/monospaced everywhere a value lives, so numbers never jitter as they update. Every token maps to a Dynamic Type text style, so the ramp scales with the user's preferred size.</p>
+    <div id="type-rows"></div>
+  </section>
+
+  <section class="block" id="spacing">
+    <h2>Spacing</h2>
+    <p class="desc">A strict 4pt scale, plus two named exceptions: <code>cardPadding</code> and the 44px <code>touchMin</code> minimum tappable target.</p>
+    <div id="space-rows"></div>
+  </section>
+
+  <section class="block" id="radius">
+    <h2>Radius</h2>
+    <p class="desc">Soft and generous throughout — no sharp corners anywhere in the system. Radius scales up with a surface's size and prominence.</p>
+    <div class="radius-grid" id="radius-grid"></div>
+  </section>
+
+  <section class="block" id="elevation">
+    <h2>Elevation &amp; Depth</h2>
+    <p class="desc">One elevation cue for the whole app: a soft 5%-opacity shadow plus a 1px border hairline. Tinted status shapes intentionally skip the border — their translucent fill already reads as bounded.</p>
+    <div class="elevation-card">
+      <h4>BadanCard</h4>
+      <p>Soft shadow (black @ 5%, 8pt blur, 6pt y-offset) + 1px border hairline, applied via <code>badanElevation()</code>.</p>
+    </div>
+  </section>
+
+  <section class="block" id="components">
+    <h2>Components</h2>
+    <p class="desc">Casual and power altitude reuse the same components at different density — never two designs.</p>
+
+    <div class="comp-block">
+      <div class="comp-label">Card + Readiness hero</div>
+      <div class="card-demo">
+        <div class="row"><span class="title">Readiness</span><span style="color:var(--color-textSecondary);font-size:0.8rem;">›</span></div>
+        <div class="hero">62<span style="font-size:1rem;font-weight:400;color:var(--color-textSecondary);"> / 100</span></div>
+        <p style="color:var(--color-textSecondary);font-size:0.85rem;margin:8px 0 0;">You're in a balanced place today.</p>
+      </div>
+    </div>
+
+    <div class="comp-block">
+      <div class="comp-label">Status chips — inBand / outOfBand / info</div>
+      <div class="chip-row">
+        <span class="status-chip inband">✓ In your usual range</span>
+        <span class="status-chip outband">↑ Above your usual range</span>
+        <span class="status-chip info">ⓘ Still learning your baseline</span>
+      </div>
+    </div>
+
+    <div class="comp-block">
+      <div class="comp-label">Button — primary</div>
+      <button class="btn-primary" type="button">Save</button>
+    </div>
+
+    <div class="comp-block">
+      <div class="comp-label">Section header</div>
+      <div class="section-header-demo"><span class="title">Key metrics</span><span class="trailing">See all</span></div>
+    </div>
+
+    <div class="comp-block">
+      <div class="comp-label">Metric tile grid (power altitude, 2-column)</div>
+      <div class="tile-grid">
+        <div class="metric-tile"><div class="label">Resting heart rate</div><div class="value">79 <span style="font-size:0.7rem;font-weight:400;">bpm</span></div></div>
+        <div class="metric-tile"><div class="label">Heart-rate variability</div><div class="value">24 <span style="font-size:0.7rem;font-weight:400;">ms</span></div></div>
+      </div>
+    </div>
+
+    <div class="comp-block">
+      <div class="comp-label">Tab bar (5 items — mirrors fully under RTL)</div>
+      <div class="tabbar-demo">
+        <div class="tab active"><span class="dot"></span>Today</div>
+        <div class="tab"><span class="dot"></span>Body</div>
+        <div class="tab"><span class="dot"></span>Log</div>
+        <div class="tab"><span class="dot"></span>Insights</div>
+        <div class="tab"><span class="dot"></span>Settings</div>
+      </div>
+    </div>
+
+    <div class="comp-block">
+      <div class="comp-label">App icon option row (Settings → Personalization)</div>
+      <div class="appicon-option-demo">
+        <div class="swatch-dot" style="background:var(--logo-noor-ground);border:1px solid var(--color-border);"></div>
+        <div class="meta"><div class="t">Noor · نور</div><div class="s">Light — default</div></div>
+      </div>
+      <div class="appicon-option-demo">
+        <div class="swatch-dot" style="background:var(--logo-mizan-ground);"></div>
+        <div class="meta"><div class="t">Mizan · ميزان</div><div class="s">Instrument</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="dos-donts">
+    <h2>Do's and Don'ts</h2>
+    <div class="dodont">
+      <div class="do">
+        <h3>Do</h3>
+        <ul>
+          <li>Pair every status color with an icon and a text label — never rely on hue alone.</li>
+          <li>Use the same card/chip/grid components at both altitudes; change density, not the language.</li>
+          <li>Treat RTL as a full mirror, with numeric/time-axis data staying LTR inside it.</li>
+          <li>Route every color through its light/dark token pair.</li>
+          <li>Keep every tappable target at or above 44px, even in dense grids.</li>
+        </ul>
+      </div>
+      <div class="dont">
+        <h3>Don't</h3>
+        <ul>
+          <li>Introduce a second severity color for out-of-band readings.</li>
+          <li>Ship a screen or string without an Arabic translation and a verified RTL pass.</li>
+          <li>Reach for error/critical red outside its reserved, near-never-used case.</li>
+          <li>Add a sharp (0px) corner anywhere in the system.</li>
+          <li>Let power-mode density shrink type below the scaled ramp or drop a target under 44px.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="logo">
+    <h2>Logo &amp; App Icon System</h2>
+    <p class="desc">5 selectable home-screen icons, switched live from Settings → Personalization. These micro-palettes are icon-only — the shipped app UI always stays on the teal <code>primary</code> token regardless of which icon is active. Full mockups live in <code>design/badan-three-design-directions.html</code>.</p>
+    <div class="logo-grid">
+      <div class="logo-card default">
+        <div class="mark" style="background:var(--logo-noor-ground);">
+          <svg width="56" height="56" viewBox="0 0 64 64" aria-label="Noor mark">
+            <circle cx="32" cy="38" r="11" fill="var(--logo-noor-mark)"/>
+            <path d="M12 40a20 20 0 0 1 40 0" fill="none" stroke="var(--logo-noor-mark)" stroke-width="4.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="meta">
+          <div class="t">Noor</div><div class="ar">نور</div>
+          <div class="s">Dawn arc over a solid dot — sunrise over the body. Never turns red.</div>
+          <span class="badge-default">Default</span>
+        </div>
+      </div>
+      <div class="logo-card">
+        <div class="mark" style="background:var(--color-surfaceElevated);">
+          <svg width="52" height="52" viewBox="0 0 64 64" aria-label="Noor Line mark">
+            <circle cx="32" cy="38" r="10" fill="none" stroke="var(--color-textPrimary)" stroke-width="2.5"/>
+            <path d="M12 40a20 20 0 0 1 40 0" fill="none" stroke="var(--color-textPrimary)" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="meta"><div class="t">Noor Line</div><div class="ar">نور · خط</div><div class="s">Clean monoline variant of the Noor mark.</div></div>
+      </div>
+      <div class="logo-card">
+        <div class="mark" style="background:var(--color-surfaceElevated);">
+          <svg width="52" height="52" viewBox="0 0 64 64" aria-label="Noor Qalam mark">
+            <circle cx="32" cy="38" r="10" fill="none" stroke="var(--color-primary)" stroke-width="3" stroke-linecap="round"/>
+            <path d="M13 41a19 19 0 0 1 38 0" fill="none" stroke="var(--color-primary)" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="meta"><div class="t">Noor Qalam</div><div class="ar">نور · قلم</div><div class="s">Calligraphic pen-stroke variant of the Noor mark.</div></div>
+      </div>
+      <div class="logo-card">
+        <div class="mark" style="background:var(--logo-mizan-ground);">
+          <svg width="52" height="56" viewBox="0 0 60 64" aria-label="Mizan mark">
+            <line x1="30" y1="8" x2="30" y2="56" stroke="var(--logo-mizan-signal)" stroke-width="3.4" stroke-linecap="round"/>
+            <line x1="14" y1="24" x2="46" y2="24" stroke="var(--logo-mizan-signal)" stroke-width="3.4" stroke-linecap="round"/>
+            <circle cx="30" cy="24" r="6.5" fill="var(--logo-mizan-ground)" stroke="var(--logo-mizan-signal)" stroke-width="3.4"/>
+          </svg>
+        </div>
+        <div class="meta"><div class="t">Mizan</div><div class="ar">ميزان</div><div class="s">Balance-scale mark — the node doubles as the dot of ب.</div></div>
+      </div>
+      <div class="logo-card">
+        <div class="mark" style="background:var(--logo-hilal-ground);">
+          <svg width="0" height="0"><defs><linearGradient id="jewel-mirror" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="var(--logo-hilal-grad-start)"/><stop offset="1" stop-color="var(--logo-hilal-grad-end)"/>
+          </linearGradient></defs></svg>
+          <svg width="52" height="52" viewBox="0 0 64 64" aria-label="Hilal mark">
+            <rect x="12" y="12" width="40" height="40" rx="6" fill="url(#jewel-mirror)"/>
+            <rect x="12" y="12" width="40" height="40" rx="6" fill="url(#jewel-mirror)" transform="rotate(45 32 32)" opacity=".55"/>
+            <path d="M32 20a12 12 0 1 0 8 21 10 10 0 1 1-8-21z" fill="var(--logo-hilal-ground)"/>
+            <circle cx="41" cy="26" r="2.6" fill="var(--logo-hilal-gold)"/>
+          </svg>
+        </div>
+        <div class="meta"><div class="t">Hilal</div><div class="ar">هلال</div><div class="s">Crescent as negative space inside a khatam eight-point star.</div></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<footer class="mirror">
+  BADAN Design System — mirrors <code>docs/design.md</code>. Screen-level specs live in <code>design/screens-spec.json</code>; the Swift implementation is <code>apps/ios/Sources/DesignSystem/{Tokens,Theme}.swift</code>.
+</footer>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    var stored = null;
+    try { stored = localStorage.getItem('badan-design-theme'); } catch (e) {}
+    if (stored === 'light' || stored === 'dark') root.setAttribute('data-theme', stored);
+
+    btn.addEventListener('click', function () {
+      var current = root.getAttribute('data-theme');
+      var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var effectiveCurrent = current || (prefersDark ? 'dark' : 'light');
+      var next = effectiveCurrent === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('badan-design-theme', next); } catch (e) {}
+    });
+
+    var surfaceColors = [
+      { name: 'background', hex: '#FAFAF8', hexDark: '#0C0E11', varName: '--color-background' },
+      { name: 'surface', hex: '#FFFFFF', hexDark: '#16191E', varName: '--color-surface' },
+      { name: 'surfaceElevated', hex: '#F1F1EE', hexDark: '#1E2228', varName: '--color-surfaceElevated' },
+      { name: 'primary', hex: '#157A6E', hexDark: '#5BC5BA', varName: '--color-primary', on: '--color-onPrimary' },
+      { name: 'textPrimary', hex: '#17191C', hexDark: '#F2F3F5', varName: '--color-textPrimary' },
+      { name: 'textSecondary', hex: '#5C636D', hexDark: '#9AA1AB', varName: '--color-textSecondary' },
+      { name: 'border', hex: '#E5E5E0', hexDark: '#252A31', varName: '--color-border' }
+    ];
+    var statusColors = [
+      { name: 'success', hex: '#2E9E63', hexDark: '#57C785', varName: '--color-success' },
+      { name: 'warning', hex: '#B97A14', hexDark: '#E8A13A', varName: '--color-warning' },
+      { name: 'info', hex: '#2678C4', hexDark: '#4C9FE8', varName: '--color-info' },
+      { name: 'error', hex: '#C9353B', hexDark: '#E5484D', varName: '--color-error' }
+    ];
+
+    function renderSwatches(list, containerId) {
+      var container = document.getElementById(containerId);
+      list.forEach(function (c) {
+        var el = document.createElement('div');
+        el.className = 'swatch';
+        var textVar = c.on ? 'var(' + c.on + ')' : 'var(--color-textPrimary)';
+        el.innerHTML =
+          '<div class="fill" style="background:var(' + c.varName + ');color:' + textVar + ';">' +
+            '<span style="background:rgba(255,255,255,0.001);">Aa</span>' +
+          '</div>' +
+          '<div class="meta">' +
+            '<div class="name">' + c.name + '</div>' +
+            '<div class="hex">' + c.hex + ' / ' + c.hexDark + '</div>' +
+          '</div>';
+        container.appendChild(el);
+      });
+    }
+    renderSwatches(surfaceColors, 'swatches-surface');
+    renderSwatches(statusColors, 'swatches-status');
+
+    var typeRows = [
+      { token: 'heroNumeral', sample: '72', size: '44px', weight: '600', extra: 'tabular lining' },
+      { token: 'numeralM', sample: '251', size: '28px', weight: '500', extra: 'tabular lining' },
+      { token: 'sectionTitle', sample: 'Key metrics', size: '20px', weight: '700', extra: '' },
+      { token: 'body', sample: "You're in a balanced place today.", size: '16px', weight: '400', extra: '' },
+      { token: 'bodyCompact', sample: 'Usual range 73–90 bpm', size: '15px', weight: '400', extra: '' },
+      { token: 'chip', sample: 'In your usual range', size: '13px', weight: '500', extra: '' },
+      { token: 'caption', sample: '20 hr. ago', size: '13px', weight: '400', extra: '' },
+      { token: 'link', sample: 'See all', size: '15px', weight: '500', extra: '' }
+    ];
+    var typeContainer = document.getElementById('type-rows');
+    typeRows.forEach(function (t) {
+      var row = document.createElement('div');
+      row.className = 'type-row';
+      row.innerHTML =
+        '<div class="sample" style="font-size:' + t.size + ';font-weight:' + t.weight + ';">' + t.sample + '</div>' +
+        '<div class="spec">' + t.token + ' · ' + t.size + ' / ' + t.weight + (t.extra ? ' · ' + t.extra : '') + '</div>';
+      typeContainer.appendChild(row);
+    });
+
+    var spaceRows = [
+      ['space1', 4], ['space2', 8], ['space3', 12], ['space4', 16],
+      ['space5', 20], ['space6', 24], ['space7', 32], ['space8', 40],
+      ['cardPadding', 16], ['touchMin', 44], ['touchGap', 16]
+    ];
+    var spaceContainer = document.getElementById('space-rows');
+    spaceRows.forEach(function (s) {
+      var row = document.createElement('div');
+      row.className = 'space-row';
+      row.innerHTML =
+        '<div class="label">' + s[0] + ' — ' + s[1] + 'px</div>' +
+        '<div class="bar" style="width:' + s[1] + 'px;"></div>';
+      spaceContainer.appendChild(row);
+    });
+
+    var radii = [['chip', 10], ['control', 12], ['card', 20], ['sheet', 24]];
+    var radiusContainer = document.getElementById('radius-grid');
+    radii.forEach(function (r) {
+      var item = document.createElement('div');
+      item.className = 'radius-item';
+      item.innerHTML =
+        '<div class="box" style="border-radius:' + r[1] + 'px;"></div>' +
+        '<div class="label">' + r[0] + ' · ' + r[1] + 'px</div>';
+      radiusContainer.appendChild(item);
+    });
+  })();
+</script>
+
+</body>
+</html>

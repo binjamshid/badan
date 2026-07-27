@@ -279,6 +279,7 @@ private struct HomeHeader: View {
 
 private struct HomeCasualBody: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.horizontalSizeClass) private var sizeClass
     let data: HomeData
 
     var body: some View {
@@ -289,26 +290,37 @@ private struct HomeCasualBody: View {
             if isVisible("readiness") {
                 ReadinessHeroCard(data: data)
             }
-            if isVisible("effort"), let effort = data.effort {
-                EffortCard(effort: effort)
+
+            // On iPad's regular width, the module cards below the hero pair up into a 2-column
+            // tile grid instead of stacking full-width — the iPhone layout otherwise leaves half
+            // the screen empty. `tileColumns` collapses back to a single column on iPhone
+            // (compact width), so this renders identically to the old VStack there.
+            LazyVGrid(columns: tileColumns, alignment: .leading, spacing: BadanSpace.space4) {
+                if isVisible("effort"), let effort = data.effort {
+                    EffortCard(effort: effort)
+                }
+                if isVisible("sleep"), let sleep = data.sleep {
+                    SleepModuleCard(sleep: sleep)
+                }
+                if isVisible("activity"), let steps = data.metric(MetricID.steps) {
+                    MetricModuleCard(metric: steps, secondary: data.metric(MetricID.activeEnergy))
+                }
+                if isVisible("heart"), let rhr = data.metric(MetricID.restingHeartRate) {
+                    MetricModuleCard(metric: rhr, secondary: data.metric(MetricID.hrv))
+                }
+                if isVisible("meds"), env.profile.sensitiveModulesEnabled, data.medsActive > 0 {
+                    MedsModuleCard(data: data)
+                }
             }
 
-            if isVisible("sleep"), let sleep = data.sleep {
-                SleepModuleCard(sleep: sleep)
-            }
-            if isVisible("activity"), let steps = data.metric(MetricID.steps) {
-                MetricModuleCard(metric: steps, secondary: data.metric(MetricID.activeEnergy))
-            }
-            if isVisible("heart"), let rhr = data.metric(MetricID.restingHeartRate) {
-                MetricModuleCard(metric: rhr, secondary: data.metric(MetricID.hrv))
-            }
-            if isVisible("meds"), env.profile.sensitiveModulesEnabled, data.medsActive > 0 {
-                MedsModuleCard(data: data)
-            }
             if let insight = data.topInsight {
                 InsightCard(insight: insight)
             }
         }
+    }
+
+    private var tileColumns: [GridItem] {
+        AdaptiveTiles.columns(for: sizeClass, spacing: BadanSpace.space3)
     }
 
     private func isVisible(_ id: String) -> Bool {
@@ -363,9 +375,10 @@ private struct HomeExportToolCard: View {
 
 private struct HomePowerBody: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.horizontalSizeClass) private var sizeClass
     let data: HomeData
 
-    private let columns = [
+    private let metricColumns = [
         GridItem(.flexible(), spacing: BadanSpace.space3),
         GridItem(.flexible(), spacing: BadanSpace.space3),
     ]
@@ -377,8 +390,21 @@ private struct HomePowerBody: View {
             if isVisible("readiness") {
                 ReadinessHeroCard(data: data)
             }
-            if isVisible("effort"), let effort = data.effort {
-                EffortCard(effort: effort)
+
+            // On iPad's regular width, effort/sleep/meds pair up into a 2-column tile grid
+            // instead of stacking full-width beside the already-2-column key-metrics section
+            // below — `tileColumns` collapses to a single column on iPhone (compact width), so
+            // this renders identically to the old VStack there.
+            LazyVGrid(columns: tileColumns, alignment: .leading, spacing: BadanSpace.space5) {
+                if isVisible("effort"), let effort = data.effort {
+                    EffortCard(effort: effort)
+                }
+                if isVisible("sleep"), let sleep = data.sleep {
+                    SleepModuleCard(sleep: sleep)
+                }
+                if isVisible("meds"), env.profile.sensitiveModulesEnabled, data.medsActive > 0 {
+                    MedsModuleCard(data: data)
+                }
             }
 
             // (FIX-04) Power previously showed the whole grid regardless of module visibility.
@@ -393,7 +419,7 @@ private struct HomePowerBody: View {
                         }
                         .foregroundStyle(BadanColor.primary)
                     }
-                    LazyVGrid(columns: columns, spacing: BadanSpace.space3) {
+                    LazyVGrid(columns: metricColumns, spacing: BadanSpace.space3) {
                         ForEach(visibleMetrics) { metric in
                             MetricGridCell(metric: metric)
                         }
@@ -401,12 +427,6 @@ private struct HomePowerBody: View {
                 }
             }
 
-            if isVisible("sleep"), let sleep = data.sleep {
-                SleepModuleCard(sleep: sleep)
-            }
-            if isVisible("meds"), env.profile.sensitiveModulesEnabled, data.medsActive > 0 {
-                MedsModuleCard(data: data)
-            }
             if let insight = data.topInsight {
                 InsightCard(insight: insight)
             }
@@ -414,6 +434,10 @@ private struct HomePowerBody: View {
                 TimelinePreviewCard(events: data.recentEvents, partial: data.recentEventsPartial)
             }
         }
+    }
+
+    private var tileColumns: [GridItem] {
+        AdaptiveTiles.columns(for: sizeClass, spacing: BadanSpace.space3)
     }
 
     private func isVisible(_ id: String) -> Bool {

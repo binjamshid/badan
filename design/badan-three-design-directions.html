@@ -1,0 +1,615 @@
+<!doctype html><html><head><!-- frame-runtime --><base href="/_f/1783941124-67b1/"><script>window.__FRAME_PREAMBLE={"capabilities":{"downloads":"downloads.BABDwU1K.js","mcp":"mcp.hoz5jxDa.js","permissions":"permissions.ByA9Fd8x.js","self":"self.D3u1zjZe.js","user":"user.Cp1-RnjB.js"},"transforms":"_transforms.DYk1Ltlh.js","comments":"_comments.DiwQajF_.js","translate":"_translate.C5leZL2A.js"}</script><script>(function(){"use strict";const Ee="modulepreload",we=function(e){return"/"+e},Se={},ee=function(t,n,l){let i=Promise.resolve();function s(f){const c=new Event("vite:preloadError",{cancelable:!0});if(c.payload=f,window.dispatchEvent(c),!c.defaultPrevented)throw f}return i.then(f=>{for(const c of f||[])c.status==="rejected"&&s(c.reason);return t().catch(s)})},te=["light","dark","system"];function ne(e){if(e===null||typeof e!="object")return!1;const t=e.__frame_init;return t!==null&&typeof t=="object"}function W(e){return e!==null&&typeof e=="object"&&e.__frame_size_poke===!0}function re(e){if(e===null||typeof e!="object")return!1;const t=e.__frame_theme;if(t===null||typeof t!="object")return!1;const n=t.theme;return typeof n=="string"&&te.includes(n)}function se(e){try{typeof reportError=="function"?reportError(e):setTimeout(()=>{throw e},0)}catch{}}const oe=Object.freeze(Object.assign(Object.create(null),{user:Object.freeze(Object.assign(Object.create(null),{id:null,isOwner:!1,canEdit:!1,name:null,avatarUrl:null,email:null}))}));function Y(e){if(window===top||e.type==="auxclick"&&e.button!==1)return;const t=e.composedPath?e.composedPath():[e.target];let n=null;for(let f=0;f<t.length;f++){const c=t[f];if(c&&c.matches&&c.matches("a[href],area[href]")){n=c;break}}if(!n&&e.target&&e.target.closest&&(n=e.target.closest("a[href],area[href]")),!n)return;const l=n.getAttribute("href");if(!l)return;let i,s;try{i=new URL(l,document.baseURI),s=new URL(document.baseURI).origin}catch{return}(i.protocol==="http:"||i.protocol==="https:")&&i.origin!==s&&(e.preventDefault(),parent.postMessage({__frame_nav:!0,url:i.href},"*"))}const K={};function D(e){if(window===top)return;const t=Date.now();t-(K[e]||0)<500||(K[e]=t,parent.postMessage({__frame_engaged:!0,kind:e},"*"))}const ie=2e3,x=["wheel","touchstart","touchmove","keydown","pointerdown"];let J=0;function ae(e){e.isTrusted&&(J=Date.now())}function ce(){addEventListener("click",Y,!0),addEventListener("auxclick",Y,!0)}function le(){for(let e=0;e<x.length;e++)addEventListener(x[e],ae,{capture:!0,passive:!0});addEventListener("scroll",e=>{e.isTrusted&&Date.now()-J<ie&&D("scroll")},{capture:!0,passive:!0}),addEventListener("pointermove",e=>{e.isTrusted&&D("pointer")},{capture:!0,passive:!0}),addEventListener("click",e=>{e.isTrusted&&D("click")},{capture:!0,passive:!0})}const I="__frame_scroll",ue=150,fe=310,de=160,me=3e4;function pe(){let e=0,t=!1,n=!1,l=!1,i=0;const s=a=>{try{sessionStorage.setItem(I,JSON.stringify({y:a}))}catch{}},f=()=>{if(t){t=!1;return}n=!0,clearTimeout(e),e=setTimeout(()=>s(scrollY),ue)};try{addEventListener("scroll",f,{passive:!0}),addEventListener("pagehide",()=>{clearTimeout(e),s(scrollY)})}catch{}const c=()=>{let a;try{a=sessionStorage.getItem(I)}catch{return null}if(a===null)return null;let _;try{_=JSON.parse(a)}catch{_=null}const m=_?.y;if(!(typeof m=="number"&&Number.isFinite(m)&&m>=0)){try{sessionStorage.removeItem(I)}catch{}return null}return m};let g=!1;const p=a=>{try{const _=scrollY;scrollTo({top:a,left:0,behavior:"instant"}),i=a,l=!0,s(a);const m=scrollY;m!==_&&(t=!0),m!==a&&!g&&(g=!0,addEventListener("load",()=>{try{if(scrollY===m){const y=c();p(y!==null?y:i)}}catch{}},{once:!0}))}catch{}},o=()=>{try{return!!location.hash}catch{return!0}};let u=!1;const d=()=>{try{if(u||innerWidth>fe||innerHeight>de)return;u=!0;const a=Date.now(),_=()=>{try{removeEventListener("resize",_)}catch{}if(Date.now()-a>me||n||o())return;const m=c();p(m!==null?m:i)};addEventListener("resize",_)}catch{}};let h=!1,b=!1;return{restore(){if(h||(h=!0,o()))return;const a=c();a!==null&&(p(a),d())},promoted(){if(b||(b=!0,o()))return;const a=c();a!==null?(p(a),d()):l&&p(i)}}}function he(e,t,n){const l=[...t.values()].filter(i=>i.targets.some(s=>s.startsWith(e+".")));return{wrap(i,s){const f=`${e}.${i}`,c=l.filter(g=>g.targets.includes(f));return c.length===0?(...g)=>{try{return s(...g)}catch(p){return Promise.reject(p)}}:(...g)=>{let p=g;for(const u of c){const d=u.module.parameters;if(d)try{p=d(p)}catch{return Promise.reject({code:"transform_error",id:u.id,scope:e,message:"parameters transform failed"})}}let o;try{o=s(...p)}catch(u){o=Promise.reject(u)}return o.then(u=>{for(let d=c.length-1;d>=0;d--){const h=c[d],b=h.module.returns;if(b)try{u=b(u)}catch{return n({id:h.id,scope:e,leg:"returns"}),u}}return u},u=>{for(let d=c.length-1;d>=0;d--){const h=c[d],b=h.module.throws;if(b)try{u=b(u)}catch{return n({id:h.id,scope:e,leg:"throws"}),Promise.reject(u)}}return Promise.reject(u)})}}}}function ge(e,t,n,l=()=>{}){const i=new Set(e.changes??[]),s=new Map;for(const f of i){const c=t[f];c&&s.set(f,c)}return{contract:e.contract,changes:i,flags:new Set(e.flags??[]),capabilities:e.capabilities??{},capBudgets:e.capBudgets??{},transforms:s,shellOrigin:n.shellOrigin,mount:n.mount,pipe:f=>he(f,s,l)}}(function(){const e=Object.defineProperty,t=globalThis,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCIceCandidate","RTCSessionDescription","RTCRtpSender","RTCRtpReceiver"];let l=0;for(let i=0;i<n.length;i++){const s=n[i];try{e(t,s,{value:void 0,writable:!1,configurable:!1})}catch{try{delete t[s]}catch{}try{e(t,s,{value:void 0,writable:!1,configurable:!0})}catch{}}typeof t[s]=="function"&&l++}if(l&&window!==top)try{parent.postMessage({__frame_rtc_lockdown_failed:l},"*")}catch{}})();const _e=1e4,ye=Object.freeze([...window.__FRAME_PREAMBLE?.origins??["https://claude.ai","https://preview.claude.ai"]]);function G(e){for(const t of ye)if(t.endsWith(":*"))try{const n=new URL(e);if(`${n.protocol}//${n.hostname}:*`===t)return!0}catch{}else if(e===t)return!0;return!1}const R=Object.freeze({...window.__FRAME_PREAMBLE?.capabilities}),U=window.__FRAME_PREAMBLE?.transforms,z=window.__FRAME_PREAMBLE?.comments,$=window.__FRAME_PREAMBLE?.translate,T=/^[\w.-]+\.js$/,be=/^[a-z][a-z0-9_-]{0,63}$/;let V=null,j=null;function q(e,t,n){try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!1,enumerable:!0})}catch{try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!0,enumerable:!0})}catch{}}}let B=!1;function X(e){const t=document.documentElement;e==="light"||e==="dark"?(t.dataset.theme=e,t.style.colorScheme=e,B=!0):B&&(delete t.dataset.theme,t.style.colorScheme="",B=!1)}const A=Object.assign(Object.create(null),{mcp:Object.assign(Object.create(null),{watchTool:{handlerArg:3}})}),M=new Map;function Q(e,t){const n=M.get(e);if(!n)return;const l=Object.assign(Object.create(null),t);Object.assign(n.impl,l),n.impl.__settled=()=>Promise.reject({code:"capability_removed",message:`${e}: method not in this runtime`});const i=n.queue;n.queue=[];for(const s of i){const f=l[s.method];if(f)if(A[e]?.[s.method])try{s.resolve(f(...s.args))}catch{k(s,A[e][s.method].handlerArg,{code:"transform_error",message:`${e}.${s.method} rejected its arguments`})}else f(...s.args).then(s.resolve,s.reject);else{const c={code:"capability_removed",message:`${e}.${s.method} is not in this runtime`},g=A[e]?.[s.method];if(g){k(s,g.handlerArg,c);continue}s.reject(c)}}}function ve(e,t){const n=M.get(e);if(!n)return;n.impl.__settled=()=>Promise.reject(t);const l=n.queue;n.queue=[];for(const i of l){const s=A[e]?.[i.method];if(s){k(i,s.handlerArg,t);continue}i.reject(t)}}function N(e,t){const n=oe[e];if(!n){ve(e,t);return}Q(e,Object.fromEntries(Object.entries(n).map(([l,i])=>[l,()=>Promise.resolve(i)])))}function k(e,t,n){if(e.syncState?.dead)return;const l=e.args[t];typeof l=="function"&&queueMicrotask(()=>{if(!e.syncState?.dead)try{l({type:"error",error:n})}catch(i){se(i)}})}const F=Object.getOwnPropertyDescriptor(window,"claude");if(window!==top&&!(F&&F.writable===!1)){ce(),le();let e=null;try{e=pe()}catch{}const t=F?.value??{};q(window,"claude",t);const n=o=>{const u={impl:Object.create(null),queue:[]};M.set(o,u);const d=u.impl,h=new Proxy(d,{get:(b,a)=>{if(typeof a!="string"||a==="then"||a==="toJSON"||a==="valueOf")return;if(a==="toString")return Object.prototype.toString;const _=A[o]?.[a];return _?(...m)=>{if(typeof m[_.handlerArg]!="function")throw new TypeError(`${o}.${a} requires a handler function`);const y=d[a];if(y)return y(...m);if(d.__settled){const v={dead:!1},P={args:[...m],syncState:v};return d.__settled().catch(C=>k(P,_.handlerArg,C)),()=>{v.dead=!0}}let E=null;const S={dead:!1};return u.queue.push({method:a,args:m,resolve:v=>{E=typeof v=="function"?v:null,S.dead&&E?.()},reject:()=>{},syncState:S}),()=>{S.dead=!0,E?.()}}:(...m)=>{const y=d[a]??d.__settled;return y?y(...m):new Promise((E,S)=>{u.queue.push({method:a,args:m,resolve:E,reject:S})})}},set:()=>!1});q(t,o,h)};for(const o of Object.keys(R)){if(t[o]!==void 0){q(t,o,t[o]);continue}n(o)}let l=null,i=null,s=0;const f=o=>{o.source!==parent||!G(o.origin)||ne(o.data)&&(l=o.data.__frame_init,j=o.origin,removeEventListener("message",f),clearTimeout(s),i?.())};addEventListener("message",f),parent.postMessage({__frame_connect:!0},"*");const c=new Promise(o=>{i=o,s=setTimeout(()=>{removeEventListener("message",f),o()},_e)}),g=document.readyState==="loading"?new Promise(o=>document.addEventListener("DOMContentLoaded",()=>o(),{once:!0})):Promise.resolve();g.then(()=>{try{e?.restore()}catch{}});const p=o=>{if(!(o.source!==parent||!G(o.origin))&&W(o.data)){removeEventListener("message",p);try{e?.promoted()}catch{}}};addEventListener("message",p),c.then(async()=>{if(!l||!j){for(const r of M.keys())N(r,{code:"not_granted",message:"frame initialization did not arrive - capability unavailable"});return}X(l.theme);const o=j;let u=!1,d=!1;addEventListener("message",r=>{if(r.source!==parent||r.origin!==o)return;re(r.data)&&X(r.data.__frame_theme.theme);const w=r.data?.__fc_mode;w&&typeof w=="object"&&!u&&z&&T.test(z)&&(u=!0,h(z).then(H=>H.install?.(o,w.on===!0)).catch(()=>{}));const O=r.data?.__ft_cmd;O&&typeof O=="object"&&!d&&$&&T.test($)&&(d=!0,h($).then(H=>H.install?.(o,O)).catch(()=>{}))});const h=r=>ee(()=>import("/_runtime/"+r),void 0),b=Object.keys(l.capabilities??{});for(const r of b)Object.hasOwn(R,r)||be.test(r)&&t[r]===void 0&&(n(r),N(r,{code:"capability_disabled",message:"capability not in this runtime generation"}));const a=b.filter(r=>Object.hasOwn(R,r)).map(r=>[r,R[r]]).filter(r=>typeof r[1]=="string"&&T.test(r[1])),[_,...m]=await Promise.allSettled([U&&T.test(U)?h(U):Promise.resolve({}),...a.map(([,r])=>h(r))]),y=j;V=ge(l,_.status==="fulfilled"&&_.value?.TRANSFORMS||{},{shellOrigin:y,mount:Q},r=>parent.postMessage({__frame_cap_telemetry:r},y));const E=r=>parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:r}},y),S=V;m.forEach((r,w)=>{const O=a[w][0];if(r.status!=="fulfilled"){E(O);return}try{r.value?.install?.(S)}catch{E(O)}});for(const[r,w]of M)if(!(w.queue.length===0&&Object.keys(w.impl).length>0)){if(b.includes(r)){N(r,{code:"capability_disabled",message:"capability not available in this session"});continue}N(r,{code:"not_granted",message:"capability not available in this session"})}await g,parent.postMessage({__frame_ready:!0},j);let v=-1,P=0;const C=()=>{P=0;const r=Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0);r!==v&&(v=r,parent.postMessage({__frame_size:!0,h:r},y))},L=()=>{P||(P=setTimeout(C,200))},Z=new ResizeObserver(L);Z.observe(document.documentElement),document.body&&Z.observe(document.body),document.addEventListener("load",L,!0),document.fonts?.ready.then(L,()=>{}),addEventListener("beforeprint",()=>{v=-1,C()}),L(),addEventListener("message",r=>{if(!(r.source!==parent||r.origin!==y)&&W(r.data)){try{e?.promoted()}catch{}v=-1,L()}})})}})();</script><!-- /frame-runtime --><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>BADAN — Three Design Directions</title>
+<style>
+  :root{
+    --shell-bg:#ECE7DF; --shell-panel:#F7F4EE; --shell-ink:#20242A; --shell-muted:#6B7178;
+    --shell-line:#D9D2C6; --shell-accent:#1F6F5C;
+    --sp:clamp(16px,4vw,40px);
+    --wrap:1180px;
+    --ar:'SF Arabic','Geeza Pro','Noto Sans Arabic','Segoe UI',Tahoma,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--shell-bg:#0F1216;--shell-panel:#161A20;--shell-ink:#E7EAEE;--shell-muted:#98A0A9;--shell-line:#252B33;--shell-accent:#57C7B3;}
+  }
+  :root[data-theme="light"]{--shell-bg:#ECE7DF;--shell-panel:#F7F4EE;--shell-ink:#20242A;--shell-muted:#6B7178;--shell-line:#D9D2C6;--shell-accent:#1F6F5C;}
+  :root[data-theme="dark"]{--shell-bg:#0F1216;--shell-panel:#161A20;--shell-ink:#E7EAEE;--shell-muted:#98A0A9;--shell-line:#252B33;--shell-accent:#57C7B3;}
+
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--shell-bg);color:var(--shell-ink);
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.5;}
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 var(--sp);}
+  h1,h2,h3{text-wrap:balance;margin:0;}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--shell-accent);outline-offset:3px;border-radius:4px;}
+
+  /* ---------- MASTHEAD ---------- */
+  .mast{padding:clamp(40px,8vw,90px) 0 clamp(28px,5vw,52px);}
+  .mast .eyebrow{font-size:.72rem;letter-spacing:.24em;text-transform:uppercase;color:var(--shell-muted);font-weight:600;}
+  .mast h1{font-size:clamp(2.1rem,6vw,3.9rem);line-height:1.02;letter-spacing:-.02em;margin:.5rem 0 .4rem;font-weight:800;}
+  .mast h1 .ar{font-family:var(--ar);font-weight:700;letter-spacing:0;}
+  .mast p{max-width:60ch;color:var(--shell-muted);font-size:clamp(1rem,2.2vw,1.18rem);}
+  .mast .meta{display:flex;flex-wrap:wrap;gap:8px 10px;margin-top:22px;}
+  .tag{font-size:.74rem;letter-spacing:.04em;border:1px solid var(--shell-line);
+    padding:5px 11px;border-radius:99px;color:var(--shell-ink);background:var(--shell-panel);font-weight:600;}
+  .legend{margin-top:26px;display:grid;gap:10px;grid-template-columns:repeat(3,1fr);}
+  @media(max-width:760px){.legend{grid-template-columns:1fr;}}
+  .legend div{border:1px solid var(--shell-line);border-radius:14px;padding:14px 16px;background:var(--shell-panel);}
+  .legend b{display:block;font-size:.95rem;}
+  .legend b .k{color:var(--shell-muted);font-weight:600;}
+  .legend p{margin:.3rem 0 0;font-size:.85rem;color:var(--shell-muted);}
+
+  /* ---------- BOARD ---------- */
+  .board{border-radius:26px;margin:clamp(24px,5vw,46px) 0;overflow:hidden;
+    border:1px solid rgba(0,0,0,.06);box-shadow:0 30px 80px -50px rgba(0,0,0,.5);
+    background:var(--bg);color:var(--ink);}
+  .board-inner{padding:clamp(22px,4vw,46px);}
+  .board-head{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;justify-content:space-between;}
+  .board-head .id{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;}
+  .board-head .num{font-size:.8rem;font-weight:700;letter-spacing:.1em;opacity:.6;}
+  .board-head h2{font-size:clamp(1.7rem,4vw,2.6rem);letter-spacing:-.01em;line-height:1;}
+  .board-head .arname{font-family:var(--ar);font-size:clamp(1.2rem,3vw,1.7rem);opacity:.72;}
+  .board-head .bet{max-width:38ch;font-size:.92rem;color:var(--muted);}
+  .rowlabel{font-size:.7rem;letter-spacing:.22em;text-transform:uppercase;font-weight:700;opacity:.55;margin:34px 0 14px;}
+
+  /* palette */
+  .swatches{display:flex;flex-wrap:wrap;gap:10px;}
+  .sw{border-radius:12px;min-width:88px;flex:1 1 88px;padding:12px;border:1px solid rgba(128,128,128,.18);}
+  .sw .dot{height:34px;border-radius:8px;margin-bottom:8px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);}
+  .sw span{display:block;font-size:.72rem;line-height:1.35;}
+  .sw .role{font-weight:700;}
+  .sw .hex{font-family:ui-monospace,'SF Mono',Menlo,monospace;opacity:.7;}
+
+  /* type specimen */
+  .type-spec{display:grid;gap:18px;grid-template-columns:1.2fr 1fr;}
+  @media(max-width:720px){.type-spec{grid-template-columns:1fr;}}
+  .type-spec .cell{border:1px solid rgba(128,128,128,.2);border-radius:16px;padding:20px;background:var(--surface);}
+  .type-spec .big{font-size:clamp(1.5rem,4vw,2.3rem);line-height:1.05;margin-bottom:4px;}
+  .type-spec .role{font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;opacity:.55;font-weight:700;margin-bottom:10px;}
+  .type-spec p{margin:.4rem 0 0;font-size:.9rem;color:var(--muted);}
+  .type-spec .ar{font-family:var(--ar);}
+
+  /* logo zone */
+  .logozone{display:grid;grid-template-columns:1.1fr 1fr;gap:18px;}
+  @media(max-width:760px){.logozone{grid-template-columns:1fr;}}
+  .logo-primary{border-radius:18px;padding:34px;display:flex;flex-direction:column;gap:22px;align-items:flex-start;justify-content:center;background:var(--logo-bg);color:var(--logo-ink);position:relative;overflow:hidden;min-height:230px;}
+  .logo-lockup{display:flex;align-items:center;gap:16px;z-index:1;}
+  .wordmark{font-weight:800;letter-spacing:-.01em;line-height:.9;}
+  .wordmark .sub{display:block;font-weight:500;letter-spacing:.34em;font-size:.5em;opacity:.62;margin-top:.5em;text-transform:uppercase;}
+  .logo-alt{display:flex;flex-wrap:wrap;gap:12px;z-index:1;align-items:center;}
+  .logo-chip{background:var(--logo-chip);border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:10px;}
+  .logo-chip .ar{font-family:var(--ar);font-weight:700;}
+  .logo-notes{border:1px solid rgba(128,128,128,.2);border-radius:18px;padding:22px;background:var(--surface);}
+  .logo-notes h4{margin:0 0 8px;font-size:.95rem;}
+  .logo-notes ul{margin:0;padding-left:18px;}
+  .logo-notes li{font-size:.85rem;color:var(--muted);margin:.42rem 0;}
+  .logo-notes li b{color:var(--ink);font-weight:600;}
+  .logo-mini{display:flex;gap:14px;align-items:center;margin-top:16px;flex-wrap:wrap;}
+  .logo-mini .m{display:flex;align-items:center;gap:8px;font-size:.75rem;color:var(--muted);}
+
+  /* phones */
+  .phones{display:flex;flex-wrap:wrap;gap:22px;}
+  .phone-col{flex:1 1 280px;max-width:340px;}
+  .phone-cap{font-size:.78rem;color:var(--muted);margin:0 0 10px;font-weight:600;}
+  .phone-cap .badge{font-family:var(--ar);opacity:.8;}
+  .phone{border-radius:34px;padding:11px;background:var(--phone-shell);position:relative;
+    box-shadow:0 24px 50px -30px rgba(0,0,0,.7), inset 0 0 0 1px rgba(255,255,255,.05);}
+  .screen{border-radius:26px;overflow:hidden;background:var(--scr-bg);color:var(--scr-ink);
+    height:600px;display:flex;flex-direction:column;position:relative;}
+  .notch{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:96px;height:20px;background:var(--phone-shell);border-radius:12px;z-index:5;}
+  .statusbar{display:flex;justify-content:space-between;align-items:center;padding:14px 20px 6px;font-size:.7rem;font-weight:600;opacity:.85;}
+  .scr-body{flex:1;overflow:hidden;padding:8px 18px 16px;}
+  .scr[dir="rtl"] .scr-body,.screen[dir="rtl"]{direction:rtl;}
+
+  /* generic screen atoms (themed via vars) */
+  .s-greet{font-size:1.35rem;font-weight:800;letter-spacing:-.01em;margin:8px 0 2px;}
+  .s-greet.ar{font-family:var(--ar);}
+  .s-sub{font-size:.78rem;color:var(--scr-muted);margin-bottom:16px;}
+  .s-sub.ar{font-family:var(--ar);}
+  .card{background:var(--scr-card);border-radius:var(--scr-radius);padding:14px 16px;margin-bottom:11px;border:1px solid var(--scr-line);}
+  .metric{display:flex;align-items:center;gap:12px;}
+  .metric .ico{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--scr-soft);flex:none;}
+  .metric .mt{flex:1;min-width:0;}
+  .metric .mlabel{font-size:.72rem;color:var(--scr-muted);}
+  .metric .mval{font-size:1.02rem;font-weight:700;}
+  .metric .mval .u{font-size:.72rem;font-weight:500;color:var(--scr-muted);}
+  .chip{font-size:.66rem;font-weight:700;padding:4px 9px;border-radius:99px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
+  .chip.ok{background:var(--scr-okbg);color:var(--scr-okfg);}
+  .chip.warn{background:var(--scr-warnbg);color:var(--scr-warnfg);}
+  .ar .mlabel,.ar .s-note,.ar .insight-h,.ar .insight-b,.ar .why,.ar .chip{font-family:var(--ar);}
+  .s-note{font-size:.72rem;color:var(--scr-muted);text-align:center;margin-top:10px;}
+  .tabbar{display:flex;justify-content:space-around;padding:12px 6px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--scr-line);background:var(--scr-tab);}
+  .tabbar .t{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:.58rem;color:var(--scr-muted);}
+  .tabbar .t.on{color:var(--scr-accent);}
+  .tabbar .t .d{width:20px;height:20px;border-radius:6px;background:currentColor;opacity:.9;
+    -webkit-mask-size:contain;mask-size:contain;}
+
+  /* insight screen bits */
+  .insight-h{font-size:1.12rem;font-weight:800;line-height:1.18;margin-bottom:6px;letter-spacing:-.01em;}
+  .insight-b{font-size:.82rem;color:var(--scr-muted);margin-bottom:12px;}
+  .why{font-size:.68rem;color:var(--scr-muted);border-top:1px dashed var(--scr-line);padding-top:9px;margin-top:9px;}
+  .algo{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:.64rem;opacity:.72;}
+  .sig-row{display:flex;align-items:baseline;gap:8px;margin:6px 0;}
+  .sig-row .k{font-size:.72rem;color:var(--scr-muted);flex:1;}
+  .sig-row .v{font-weight:700;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:.86rem;}
+  .delta.up{color:var(--scr-accent);} .delta.warn{color:var(--scr-warnfg);}
+
+  .footer{padding:40px 0 70px;color:var(--shell-muted);}
+  .footer h3{color:var(--shell-ink);font-size:1.3rem;margin-bottom:10px;}
+  .footer ol{padding-left:20px;max-width:70ch;}
+  .footer li{margin:.5rem 0;}
+  .themebtn{position:fixed;top:14px;right:14px;z-index:50;background:var(--shell-panel);color:var(--shell-ink);
+    border:1px solid var(--shell-line);border-radius:99px;padding:8px 14px;font-size:.78rem;font-weight:600;cursor:pointer;}
+
+  /* ============ SYSTEM 1 · NOOR ============ */
+  .sys-noor{--bg:#F3EDE3;--surface:#FBF8F2;--ink:#2A2622;--muted:#8A8175;
+    --logo-bg:#1F6F5C;--logo-ink:#FBF8F2;--logo-chip:rgba(251,248,242,.14);
+    --phone-shell:#E4DBCB;
+    --scr-bg:#FBF8F2;--scr-ink:#2A2622;--scr-muted:#94897B;--scr-card:#FFFFFF;--scr-line:#EBE3D4;
+    --scr-soft:#E7F0EB;--scr-radius:20px;--scr-accent:#1F6F5C;--scr-tab:#FBF8F2;
+    --scr-okbg:#E1EFE8;--scr-okfg:#1F6F5C;--scr-warnbg:#F6E7D6;--scr-warnfg:#B26A2E;}
+  .sys-noor h2{font-family:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;font-weight:700;}
+  .sys-noor .wordmark{font-family:'Iowan Old Style',Palatino,Georgia,serif;}
+  .sys-noor .type-spec .big.display{font-family:'Iowan Old Style',Palatino,Georgia,serif;}
+  .sys-noor .s-greet{font-family:'Iowan Old Style',Palatino,Georgia,serif;font-weight:700;}
+  .sys-noor .insight-h{font-family:'Iowan Old Style',Palatino,Georgia,serif;font-weight:700;}
+
+  /* ============ SYSTEM 2 · MIZAN ============ */
+  .sys-mizan{--bg:#0C0F14;--surface:#141A22;--ink:#E9EEF3;--muted:#828E9C;
+    --logo-bg:#0A0D12;--logo-ink:#E9EEF3;--logo-chip:rgba(53,208,192,.12);
+    --phone-shell:#1B222C;
+    --scr-bg:#0C0F14;--scr-ink:#E9EEF3;--scr-muted:#7E8996;--scr-card:#151B23;--scr-line:#222B36;
+    --scr-soft:#1B2530;--scr-radius:10px;--scr-accent:#35D0C0;--scr-tab:#0A0D12;
+    --scr-okbg:rgba(53,208,192,.14);--scr-okfg:#4FE0D0;--scr-warnbg:rgba(224,166,58,.15);--scr-warnfg:#E7B84E;}
+  .sys-mizan h2,.sys-mizan .wordmark{font-family:system-ui,'Segoe UI',sans-serif;font-weight:800;letter-spacing:.02em;}
+  .sys-mizan .type-spec .big.data{font-family:ui-monospace,'SF Mono',Menlo,monospace;}
+  .sys-mizan .board{box-shadow:0 30px 80px -46px rgba(53,208,192,.35),0 30px 80px -50px rgba(0,0,0,.7);}
+
+  /* ============ SYSTEM 3 · HILAL ============ */
+  .sys-hilal{--bg:#16112E;--surface:#221A45;--ink:#F2ECFF;--muted:#A79FC8;
+    --logo-bg:#120D26;--logo-ink:#F2ECFF;--logo-chip:rgba(230,182,103,.14);
+    --phone-shell:#251C4C;
+    --scr-bg:#16112E;--scr-ink:#F2ECFF;--scr-muted:#9A90BE;--scr-card:#211A42;--scr-line:#312955;
+    --scr-soft:#2B2255;--scr-radius:18px;--scr-accent:#2FC79A;--scr-tab:#120D26;
+    --scr-okbg:rgba(47,199,154,.16);--scr-okfg:#4CD8AC;--scr-warnbg:rgba(232,151,90,.16);--scr-warnfg:#F0A971;}
+  .sys-hilal h2,.sys-hilal .wordmark{font-family:system-ui,'Segoe UI',sans-serif;font-weight:800;letter-spacing:-.02em;}
+  .sys-hilal .type-spec .big.display{font-weight:800;letter-spacing:-.02em;}
+
+  @media (prefers-reduced-motion:no-preference){
+    .ring-fill{transition:stroke-dashoffset 1.1s cubic-bezier(.2,.7,.2,1);}
+    .board{animation:rise .6s both;}
+    @keyframes rise{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
+  }
+</style>
+
+<button class="themebtn" onclick="var r=document.documentElement;var d=r.getAttribute('data-theme')==='dark';r.setAttribute('data-theme',d?'light':'dark');this.textContent=d?'☾ Dark shell':'☀ Light shell';">☀ Light shell</button>
+
+<header class="mast wrap">
+  <div class="eyebrow">Brand & product design exploration</div>
+  <h1>BADAN <span class="ar">بدن</span> — three directions for a MENA health&nbsp;+&nbsp;AI app</h1>
+  <p>One product, three points of view. Each direction is a complete system — logo, palette, type, and real app screens — built around a different bet on what a body-data app should feel like in the Arab world. Every system is bilingual by construction; one screen per direction is shown in Arabic&nbsp;(RTL).</p>
+  <div class="meta">
+    <span class="tag">بدن · “the body”</span>
+    <span class="tag">Local-first health repository</span>
+    <span class="tag">On-device intelligence</span>
+    <span class="tag">Arabic / RTL first-order</span>
+    <span class="tag">Wellness-safe · no diagnosis</span>
+  </div>
+  <div class="legend">
+    <div><b>01 &nbsp;Noor <span class="k">· نور</span></b><p>The calm bet. Warm, editorial, trustworthy — for the passive user who wants reassurance, not a dashboard.</p></div>
+    <div><b>02 &nbsp;Mizan <span class="k">· ميزان</span></b><p>The instrument bet. Dark, precise, signal-dense — for the quantified-self power user who wants the machine.</p></div>
+    <div><b>03 &nbsp;Hilal <span class="k">· هلال</span></b><p>The identity bet. Jewel-toned, geometric, unmistakably regional — modern Gulf confidence, not a translated Western app.</p></div>
+  </div>
+</header>
+
+<!-- ============================ NOOR ============================ -->
+<section class="board sys-noor"><div class="board-inner">
+  <div class="board-head">
+    <div class="id">
+      <span class="num">DIRECTION 01</span>
+      <h2>Noor</h2><span class="arname">نور</span>
+    </div>
+    <p class="bet"><b>The bet:</b> calm reassurance beats data density. Sand-and-teal warmth, a reading-room serif, and lots of breathing space so a glance is enough.</p>
+  </div>
+
+  <div class="rowlabel">Logo</div>
+  <div class="logozone">
+    <div class="logo-primary">
+      <div class="logo-lockup">
+        <svg width="64" height="64" viewBox="0 0 64 64" aria-label="Noor mark" role="img">
+          <circle cx="32" cy="38" r="11" fill="#F3D9A6"/>
+          <path d="M12 40a20 20 0 0 1 40 0" fill="none" stroke="#F3D9A6" stroke-width="4.5" stroke-linecap="round"/>
+          <path d="M20 30a12.5 12.5 0 0 1 24 0" fill="none" stroke="#FBF8F2" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+        </svg>
+        <span class="wordmark" style="font-size:2.6rem;">badan<span class="sub">personal health · نور</span></span>
+      </div>
+      <div class="logo-alt">
+        <div class="logo-chip"><span class="ar" style="font-size:1.5rem;color:#F3D9A6;">بدن</span></div>
+        <div class="logo-chip">
+          <svg width="26" height="26" viewBox="0 0 64 64"><circle cx="32" cy="38" r="11" fill="#F3D9A6"/><path d="M12 40a20 20 0 0 1 40 0" fill="none" stroke="#F3D9A6" stroke-width="5" stroke-linecap="round"/></svg>
+          <span style="font-size:.72rem;opacity:.8;">app icon</span>
+        </div>
+      </div>
+    </div>
+    <div class="logo-notes">
+      <h4>The idea — “first light on the body”</h4>
+      <ul>
+        <li><b>نور = light.</b> A dawn arc rising over a solid dot: sunrise over the self. Health as a gentle daily beginning, not an alarm.</li>
+        <li><b>The dot is the body</b> — the anchor of the whole app (بدن). It never turns red; the arc warms toward gold as your day settles into range.</li>
+        <li><b>Single-stroke, calligraphic curve</b> reads at 20px as an app icon and engraves cleanly for a splash mark.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="rowlabel">Palette — warm bone, deep teal, one gold</div>
+  <div class="swatches">
+    <div class="sw"><div class="dot" style="background:#F3EDE3"></div><span class="role">Sand ground</span><span class="hex">#F3EDE3</span></div>
+    <div class="sw"><div class="dot" style="background:#FFFFFF"></div><span class="role">Card</span><span class="hex">#FFFFFF</span></div>
+    <div class="sw"><div class="dot" style="background:#1F6F5C"></div><span class="role">Teal · health</span><span class="hex">#1F6F5C</span></div>
+    <div class="sw"><div class="dot" style="background:#C99A4B"></div><span class="role">Gold · accent</span><span class="hex">#C99A4B</span></div>
+    <div class="sw"><div class="dot" style="background:#B26A2E"></div><span class="role">Amber · outside range</span><span class="hex">#B26A2E</span></div>
+    <div class="sw"><div class="dot" style="background:#2A2622"></div><span class="role">Ink</span><span class="hex">#2A2622</span></div>
+  </div>
+
+  <div class="rowlabel">Type — a reading-room serif over a humanist sans</div>
+  <div class="type-spec">
+    <div class="cell"><div class="role">Display · serif</div><div class="big display">Your body, at a glance</div><div class="big display ar" dir="rtl">جسدك، بلمحة واحدة</div><p>Warm serif for headings & the readiness word. Slow, human, trustworthy.</p></div>
+    <div class="cell"><div class="role">Body · humanist sans</div><div class="big" style="font-size:1.05rem;">Sleep landed in your usual range last night — a calm, steady week so far.</div><p class="ar" dir="rtl">نام جسدك ضمن نطاقك المعتاد الليلة الماضية.</p></div>
+  </div>
+
+  <div class="rowlabel">App screens</div>
+  <div class="phones">
+    <!-- NOOR HOME (EN) -->
+    <div class="phone-col">
+      <p class="phone-cap">Today · casual altitude</p>
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="statusbar"><span>9:41</span><span>نور ●</span></div>
+        <div class="scr-body">
+          <div class="s-greet">Good morning, Rania</div>
+          <div class="s-sub">Sunday · your body looks steady today</div>
+          <div class="card" style="text-align:center;padding:20px 16px;">
+            <svg width="132" height="132" viewBox="0 0 132 132" style="margin:2px auto 6px;display:block;">
+              <circle cx="66" cy="66" r="52" fill="none" stroke="#E7F0EB" stroke-width="12"/>
+              <circle class="ring-fill" cx="66" cy="66" r="52" fill="none" stroke="#1F6F5C" stroke-width="12" stroke-linecap="round"
+                stroke-dasharray="326.7" stroke-dashoffset="91" transform="rotate(-90 66 66)"/>
+              <text x="66" y="62" text-anchor="middle" font-size="30" font-weight="700" fill="#2A2622" font-family="Palatino,Georgia,serif">72</text>
+              <text x="66" y="82" text-anchor="middle" font-size="10" fill="#94897B" letter-spacing="1">READINESS</text>
+            </svg>
+            <span class="chip ok">● Steady · in your usual range</span>
+          </div>
+          <div class="card"><div class="metric">
+            <span class="ico">🌙</span>
+            <div class="mt"><div class="mlabel">Sleep</div><div class="mval">7h 12m</div></div>
+            <span class="chip ok">in range</span>
+          </div></div>
+          <div class="card"><div class="metric">
+            <span class="ico">❤</span>
+            <div class="mt"><div class="mlabel">Resting heart rate</div><div class="mval">58 <span class="u">bpm</span></div></div>
+            <span class="chip ok">in range</span>
+          </div></div>
+          <div class="card"><div class="metric">
+            <span class="ico">✦</span>
+            <div class="mt"><div class="mlabel">Heart-rate variability</div><div class="mval">41 <span class="u">ms</span></div></div>
+            <span class="chip warn">◔ a little low</span>
+          </div></div>
+          <p class="s-note">Everything is worked out on your device.</p>
+        </div>
+        <div class="tabbar">
+          <span class="t on"><span class="d"></span>Today</span><span class="t"><span class="d"></span>Body</span>
+          <span class="t"><span class="d"></span>Log</span><span class="t"><span class="d"></span>Insights</span><span class="t"><span class="d"></span>You</span>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- NOOR INSIGHT (AR/RTL) -->
+    <div class="phone-col">
+      <p class="phone-cap">Insight · <span class="badge">تفسير — بالعربية</span></p>
+      <div class="phone"><div class="notch"></div><div class="screen" dir="rtl">
+        <div class="statusbar"><span>نور ●</span><span>٩:٤١</span></div>
+        <div class="scr-body">
+          <div class="s-greet ar">رؤى بدن</div>
+          <div class="s-sub ar">مبنية على أسابيعك الأخيرة</div>
+          <div class="card" style="background:#F3EFE6;border-color:#E7DFCF;">
+            <div class="insight-h ar">نومك أكثر انتظامًا هذا الأسبوع.</div>
+            <div class="insight-b ar">خلال آخر ٥ ليالٍ، اقترب وقت نومك من معدلك المعتاد. استمرارٌ لطيف.</div>
+            <svg width="100%" height="64" viewBox="0 0 260 64" preserveAspectRatio="none" style="margin-top:4px;">
+              <path d="M0,44 L43,40 L86,46 L130,30 L173,26 L216,22 L260,18" fill="none" stroke="#1F6F5C" stroke-width="3" stroke-linecap="round"/>
+              <path d="M0,44 L43,40 L86,46 L130,30 L173,26 L216,22 L260,18 L260,64 L0,64 Z" fill="#1F6F5C" opacity=".08"/>
+              <circle cx="260" cy="18" r="4" fill="#C99A4B"/>
+            </svg>
+            <div class="why ar">كيف حُسبت: مقارنة مدة نومك بوسيط ١٤ يومًا الخاص بك — لا يغادر جهازك شيء.</div>
+          </div>
+          <div class="card"><div class="metric">
+            <span class="ico">🌙</span>
+            <div class="mt"><div class="mlabel ar">النوم · الوسيط</div><div class="mval">٧س ٦د</div></div>
+            <span class="chip ok ar">ضمن نطاقك</span>
+          </div></div>
+          <p class="s-note ar">معلومات للعافية — ليست تشخيصًا طبيًا.</p>
+        </div>
+        <div class="tabbar">
+          <span class="t"><span class="d"></span>اليوم</span><span class="t"><span class="d"></span>الجسد</span>
+          <span class="t"><span class="d"></span>تسجيل</span><span class="t on"><span class="d"></span>رؤى</span><span class="t"><span class="d"></span>أنت</span>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ============================ MIZAN ============================ -->
+<section class="board sys-mizan"><div class="board-inner">
+  <div class="board-head">
+    <div class="id">
+      <span class="num">DIRECTION 02</span>
+      <h2>Mizan</h2><span class="arname">ميزان</span>
+    </div>
+    <p class="bet"><b>The bet:</b> the power user wants an instrument. Near-black, hairline grids, mono numerals, and a single electric-teal signal — your body as a precise readout.</p>
+  </div>
+
+  <div class="rowlabel">Logo</div>
+  <div class="logozone">
+    <div class="logo-primary">
+      <div class="logo-lockup">
+        <svg width="60" height="64" viewBox="0 0 60 64" aria-label="Mizan mark" role="img">
+          <line x1="30" y1="8" x2="30" y2="56" stroke="#35D0C0" stroke-width="3.4" stroke-linecap="round"/>
+          <line x1="14" y1="24" x2="46" y2="24" stroke="#35D0C0" stroke-width="3.4" stroke-linecap="round"/>
+          <circle cx="30" cy="24" r="6.5" fill="#0A0D12" stroke="#35D0C0" stroke-width="3.4"/>
+          <circle cx="14" cy="24" r="3.2" fill="#6EA8FF"/><circle cx="46" cy="24" r="3.2" fill="#6EA8FF"/>
+          <circle cx="30" cy="56" r="3.6" fill="#35D0C0"/>
+        </svg>
+        <span class="wordmark" style="font-size:2.5rem;">BADAN<span class="sub">quantified · ميزان</span></span>
+      </div>
+      <div class="logo-alt">
+        <div class="logo-chip"><span class="ar" style="font-size:1.5rem;color:#35D0C0;">بدن</span></div>
+        <div class="logo-chip">
+          <svg width="24" height="26" viewBox="0 0 60 64"><line x1="30" y1="9" x2="30" y2="55" stroke="#35D0C0" stroke-width="4.4" stroke-linecap="round"/><line x1="15" y1="24" x2="45" y2="24" stroke="#35D0C0" stroke-width="4.4" stroke-linecap="round"/><circle cx="30" cy="24" r="6" fill="#0A0D12" stroke="#35D0C0" stroke-width="4"/></svg>
+          <span style="font-size:.72rem;opacity:.8;">app icon</span>
+        </div>
+      </div>
+    </div>
+    <div class="logo-notes">
+      <h4>The idea — “the scale of balance”</h4>
+      <ul>
+        <li><b>ميزان = balance / scale of measure</b> — the classical Arabic instrument of precise judgment. A calibration axis with a balanced beam and a centered node.</li>
+        <li><b>The node doubles as the dot of ب</b> (baa, the first letter of بدن) — the body sitting at the fulcrum of its own measurements.</li>
+        <li><b>Monoline, on-grid</b> — engineered to sit in a status bar, a watch complication, or a data-table header without losing itself.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="rowlabel">Palette — instrument black, teal signal, blue reference, amber flag</div>
+  <div class="swatches">
+    <div class="sw"><div class="dot" style="background:#0C0F14"></div><span class="role">Instrument black</span><span class="hex">#0C0F14</span></div>
+    <div class="sw"><div class="dot" style="background:#151B23"></div><span class="role">Panel</span><span class="hex">#151B23</span></div>
+    <div class="sw"><div class="dot" style="background:#35D0C0"></div><span class="role">Teal · signal</span><span class="hex">#35D0C0</span></div>
+    <div class="sw"><div class="dot" style="background:#6EA8FF"></div><span class="role">Blue · reference</span><span class="hex">#6EA8FF</span></div>
+    <div class="sw"><div class="dot" style="background:#E0A63A"></div><span class="role">Amber · flag</span><span class="hex">#E0A63A</span></div>
+    <div class="sw"><div class="dot" style="background:#E9EEF3"></div><span class="role">Readout</span><span class="hex">#E9EEF3</span></div>
+  </div>
+
+  <div class="rowlabel">Type — geometric sans UI over monospace data</div>
+  <div class="type-spec">
+    <div class="cell"><div class="role">Data · monospace</div><div class="big data">72.0 · 58bpm · 41ms</div><div class="big data" style="color:#35D0C0;">Δ +6.2% vs 14-day median</div><p>Tabular numerals keep every column aligned. The machine speaks in mono.</p></div>
+    <div class="cell"><div class="role">Interface · sans</div><div class="big" style="font-size:1.05rem;font-weight:700;">Readiness signal, decomposed into its inputs.</div><p class="ar" dir="rtl">إشارة الجاهزية، مُفصّلة إلى مدخلاتها.</p></div>
+  </div>
+
+  <div class="rowlabel">App screens</div>
+  <div class="phones">
+    <!-- MIZAN HOME (EN) -->
+    <div class="phone-col">
+      <p class="phone-cap">Today · power altitude</p>
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="statusbar"><span>9:41</span><span style="color:#35D0C0;">◉ live · on-device</span></div>
+        <div class="scr-body">
+          <div class="s-greet" style="font-weight:800;">READINESS</div>
+          <div class="s-sub">ƒ(x) composite.readiness · v1.0.0</div>
+          <div class="card" style="padding:16px;">
+            <div style="display:flex;align-items:flex-end;gap:10px;">
+              <span style="font-size:2.6rem;font-weight:800;font-family:ui-monospace,Menlo,monospace;line-height:1;">72</span>
+              <span class="delta up" style="font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:.9rem;padding-bottom:5px;">▲ +6.2%</span>
+            </div>
+            <div style="height:8px;border-radius:4px;background:#1B2530;margin:12px 0 4px;overflow:hidden;position:relative;">
+              <div style="position:absolute;inset:0 28% 0 0;background:linear-gradient(90deg,#35D0C0,#6EA8FF);border-radius:4px;"></div>
+              <div style="position:absolute;left:64%;top:-3px;width:2px;height:14px;background:#E0A63A;"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:.6rem;color:#7E8996;font-family:ui-monospace,Menlo,monospace;"><span>0</span><span style="color:#E0A63A;">median 64 ▲</span><span>100</span></div>
+          </div>
+          <div class="card" style="padding:12px 16px;">
+            <div class="sig-row"><span class="k">sleep.duration</span><span class="v">7h12m</span><span class="delta up">+4%</span></div>
+            <div class="sig-row"><span class="k">hrv.rmssd</span><span class="v">41ms</span><span class="delta warn">−11%</span></div>
+            <div class="sig-row"><span class="k">rhr</span><span class="v">58bpm</span><span class="delta up">−2%</span></div>
+            <div class="sig-row"><span class="k">steps.prev</span><span class="v">8,240</span><span class="delta up">+12%</span></div>
+          </div>
+          <div class="card" style="display:flex;gap:8px;align-items:center;">
+            <span class="chip warn">⚑ HRV outside band</span>
+            <span style="font-size:.68rem;color:#7E8996;">1 input flagged · tap to inspect lineage</span>
+          </div>
+        </div>
+        <div class="tabbar">
+          <span class="t on"><span class="d"></span>Today</span><span class="t"><span class="d"></span>Body</span>
+          <span class="t"><span class="d"></span>Log</span><span class="t"><span class="d"></span>Signals</span><span class="t"><span class="d"></span>You</span>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- MIZAN SIGNAL/AI (AR/RTL) -->
+    <div class="phone-col">
+      <p class="phone-cap">Signals · <span class="badge">إشارات — بالعربية</span></p>
+      <div class="phone"><div class="notch"></div><div class="screen" dir="rtl">
+        <div class="statusbar"><span style="color:#35D0C0;">◉ على الجهاز</span><span>٩:٤١</span></div>
+        <div class="scr-body">
+          <div class="s-greet ar" style="font-weight:800;">الإشارات</div>
+          <div class="s-sub ar">قواعد ثابتة · بدون صندوق أسود</div>
+          <div class="card">
+            <div class="insight-h ar" style="font-weight:800;">تغيّر تقلّب نبضك عن نطاقك.</div>
+            <svg width="100%" height="70" viewBox="0 0 260 70" preserveAspectRatio="none" style="margin:8px 0 4px;">
+              <line x1="0" y1="20" x2="260" y2="20" stroke="#222B36" stroke-width="1" stroke-dasharray="3 4"/>
+              <line x1="0" y1="50" x2="260" y2="50" stroke="#222B36" stroke-width="1" stroke-dasharray="3 4"/>
+              <rect x="0" y="20" width="260" height="30" fill="#35D0C0" opacity=".06"/>
+              <path d="M0,34 L37,30 L74,38 L111,32 L148,44 L185,58 L222,55 L260,60" fill="none" stroke="#35D0C0" stroke-width="2.4"/>
+              <circle cx="260" cy="60" r="4" fill="#E0A63A"/>
+            </svg>
+            <div class="sig-row"><span class="k ar">القيمة الحالية</span><span class="v">41ms</span></div>
+            <div class="sig-row"><span class="k ar">وسيط ١٤ يومًا</span><span class="v">46ms</span><span class="delta warn">−11%</span></div>
+            <div class="why algo" dir="ltr" style="text-align:left;">ƒ baseline.hrv · MAD-band · window=14d</div>
+          </div>
+          <p class="s-note ar">للعافية والاطلاع — ليست نصيحة طبية.</p>
+        </div>
+        <div class="tabbar">
+          <span class="t"><span class="d"></span>اليوم</span><span class="t"><span class="d"></span>الجسد</span>
+          <span class="t"><span class="d"></span>تسجيل</span><span class="t on"><span class="d"></span>إشارات</span><span class="t"><span class="d"></span>أنت</span>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ============================ HILAL ============================ -->
+<section class="board sys-hilal"><div class="board-inner">
+  <div class="board-head">
+    <div class="id">
+      <span class="num">DIRECTION 03</span>
+      <h2>Hilal</h2><span class="arname">هلال</span>
+    </div>
+    <p class="bet"><b>The bet:</b> look unmistakably of the region. Indigo night, a jewel emerald-teal gradient, gold, and a modernised girih star — Gulf-tech confidence, not a translated Western wellness app.</p>
+  </div>
+
+  <div class="rowlabel">Logo</div>
+  <div class="logozone">
+    <div class="logo-primary">
+      <svg width="0" height="0" style="position:absolute;"><defs>
+        <linearGradient id="jewel" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2FC79A"/><stop offset="1" stop-color="#17A0B8"/></linearGradient>
+      </defs></svg>
+      <div class="logo-lockup">
+        <svg width="64" height="64" viewBox="0 0 64 64" aria-label="Hilal mark" role="img">
+          <rect x="12" y="12" width="40" height="40" rx="6" fill="url(#jewel)" transform="rotate(0 32 32)"/>
+          <rect x="12" y="12" width="40" height="40" rx="6" fill="url(#jewel)" transform="rotate(45 32 32)" opacity=".55"/>
+          <path d="M32 20a12 12 0 1 0 8 21 10 10 0 1 1-8-21z" fill="#120D26"/>
+          <circle cx="41" cy="26" r="2.6" fill="#E6B667"/>
+        </svg>
+        <span class="wordmark" style="font-size:2.6rem;">BADAN<span class="sub">health intelligence · هلال</span></span>
+      </div>
+      <div class="logo-alt">
+        <div class="logo-chip"><span class="ar" style="font-size:1.5rem;color:#E6B667;">بدن</span></div>
+        <div class="logo-chip">
+          <svg width="26" height="26" viewBox="0 0 64 64"><rect x="14" y="14" width="36" height="36" rx="6" fill="url(#jewel)"/><rect x="14" y="14" width="36" height="36" rx="6" fill="url(#jewel)" transform="rotate(45 32 32)" opacity=".55"/><path d="M32 21a11 11 0 1 0 7 19 9 9 0 1 1-7-19z" fill="#120D26"/></svg>
+          <span style="font-size:.72rem;opacity:.8;">app icon</span>
+        </div>
+      </div>
+    </div>
+    <div class="logo-notes">
+      <h4>The idea — “the crescent in the eight-fold star”</h4>
+      <ul>
+        <li><b>هلال = crescent</b> — the region's oldest symbol of a new cycle, cradled inside a <b>khatam</b> eight-point star (two overlaid squares), the backbone of Islamic geometric art.</li>
+        <li><b>Jewel gradient = vitality</b>; the crescent is negative space, so the mark stays a crisp silhouette on any surface. Gold spark = the moment of a new insight.</li>
+        <li><b>Geometry as heritage, gradient as now</b> — signals “built here, built for today” without a single cliché lamp or camel.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="rowlabel">Palette — indigo night, jewel gradient, desert gold</div>
+  <div class="swatches">
+    <div class="sw"><div class="dot" style="background:#16112E"></div><span class="role">Indigo night</span><span class="hex">#16112E</span></div>
+    <div class="sw"><div class="dot" style="background:#221A45"></div><span class="role">Surface</span><span class="hex">#221A45</span></div>
+    <div class="sw"><div class="dot" style="background:linear-gradient(135deg,#2FC79A,#17A0B8)"></div><span class="role">Jewel · vitality</span><span class="hex">#2FC79A→17A0B8</span></div>
+    <div class="sw"><div class="dot" style="background:#E6B667"></div><span class="role">Gold · accent</span><span class="hex">#E6B667</span></div>
+    <div class="sw"><div class="dot" style="background:#E8975A"></div><span class="role">Amber · outside range</span><span class="hex">#E8975A</span></div>
+    <div class="sw"><div class="dot" style="background:#F2ECFF"></div><span class="role">Light ink</span><span class="hex">#F2ECFF</span></div>
+  </div>
+
+  <div class="rowlabel">Type — bold geometric display, both scripts weighted equally</div>
+  <div class="type-spec">
+    <div class="cell"><div class="role">Display · bold sans</div><div class="big display">Know your body.</div><div class="big display ar" dir="rtl" style="font-weight:800;">اعرف جسدك.</div><p>Heavy, tight, confident. Latin and Arabic set at matching visual weight — neither is a subtitle.</p></div>
+    <div class="cell"><div class="role">Body · sans</div><div class="big" style="font-size:1.05rem;">Your patterns, read on your phone and nowhere else.</div><p class="ar" dir="rtl">أنماطك، تُقرأ على هاتفك وحده.</p></div>
+  </div>
+
+  <div class="rowlabel">App screens</div>
+  <div class="phones">
+    <!-- HILAL HOME (AR/RTL) -->
+    <div class="phone-col">
+      <p class="phone-cap">Today · <span class="badge">اليوم — بالعربية</span></p>
+      <div class="phone"><div class="notch"></div><div class="screen" dir="rtl">
+        <div class="statusbar"><span style="color:#E6B667;">هلال ✦</span><span>٩:٤١</span></div>
+        <div class="scr-body">
+          <div class="s-greet ar" style="font-weight:800;">طاب صباحك</div>
+          <div class="s-sub ar">جسدك يبدو متزنًا اليوم</div>
+          <div class="card" style="text-align:center;padding:18px 16px;background:linear-gradient(160deg,#241C4A,#1B1638);border-color:#332A5A;">
+            <svg width="128" height="128" viewBox="0 0 132 132" style="margin:2px auto 8px;display:block;">
+              <circle cx="66" cy="66" r="52" fill="none" stroke="#2B2255" stroke-width="12"/>
+              <circle class="ring-fill" cx="66" cy="66" r="52" fill="none" stroke="url(#jewel)" stroke-width="12" stroke-linecap="round"
+                stroke-dasharray="326.7" stroke-dashoffset="91" transform="rotate(-90 66 66)"/>
+              <text x="66" y="62" text-anchor="middle" font-size="30" font-weight="800" fill="#F2ECFF">٧٢</text>
+              <text x="66" y="82" text-anchor="middle" font-size="10" fill="#9A90BE" font-family="'SF Arabic',sans-serif">الجاهزية</text>
+            </svg>
+            <span class="chip ok ar">✦ متزن · ضمن نطاقك</span>
+          </div>
+          <div class="card"><div class="metric">
+            <span class="ico">🌙</span>
+            <div class="mt"><div class="mlabel ar">النوم</div><div class="mval">٧س ١٢د</div></div>
+            <span class="chip ok ar">ضمن النطاق</span>
+          </div></div>
+          <div class="card"><div class="metric">
+            <span class="ico">❤</span>
+            <div class="mt"><div class="mlabel ar">نبض الراحة</div><div class="mval">٥٨ <span class="u">ن/د</span></div></div>
+            <span class="chip ok ar">ضمن النطاق</span>
+          </div></div>
+          <div class="card"><div class="metric">
+            <span class="ico">👣</span>
+            <div class="mt"><div class="mlabel ar">الخطوات · أمس</div><div class="mval">٨٬٢٤٠</div></div>
+            <span class="chip warn ar">◔ أقل قليلًا</span>
+          </div></div>
+          <p class="s-note ar">كل شيء يبقى على جهازك.</p>
+        </div>
+        <div class="tabbar">
+          <span class="t on"><span class="d"></span>اليوم</span><span class="t"><span class="d"></span>الجسد</span>
+          <span class="t"><span class="d"></span>تسجيل</span><span class="t"><span class="d"></span>رؤى</span><span class="t"><span class="d"></span>أنت</span>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- HILAL AI INSIGHT (EN) -->
+    <div class="phone-col">
+      <p class="phone-cap">Intelligence · on-device</p>
+      <div class="phone"><div class="notch"></div><div class="screen">
+        <div class="statusbar"><span>9:41</span><span style="color:#E6B667;">✦ private</span></div>
+        <div class="scr-body">
+          <div class="s-greet" style="font-weight:800;">Insights</div>
+          <div class="s-sub">Patterns from your last few weeks</div>
+          <div class="card" style="padding:18px 16px;background:linear-gradient(160deg,#26205A,#1C1740);border:1px solid #3B316B;position:relative;overflow:hidden;">
+            <div style="position:absolute;right:-24px;top:-24px;width:110px;height:110px;border-radius:50%;background:radial-gradient(circle,rgba(47,199,154,.35),transparent 70%);"></div>
+            <span class="chip" style="background:rgba(230,182,103,.16);color:#E6B667;">✦ new this week</span>
+            <div class="insight-h" style="margin-top:10px;font-weight:800;">Your sleep is steadier than last month.</div>
+            <div class="insight-b">Bedtime has drifted closer to your usual time across the last 5 nights.</div>
+            <svg width="100%" height="60" viewBox="0 0 260 60" preserveAspectRatio="none">
+              <defs><linearGradient id="af" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2FC79A" stop-opacity=".4"/><stop offset="1" stop-color="#2FC79A" stop-opacity="0"/></linearGradient></defs>
+              <path d="M0,44 L43,40 L86,46 L130,30 L173,24 L216,20 L260,15 L260,60 L0,60 Z" fill="url(#af)"/>
+              <path d="M0,44 L43,40 L86,46 L130,30 L173,24 L216,20 L260,15" fill="none" stroke="#2FC79A" stroke-width="2.6"/>
+              <circle cx="260" cy="15" r="4" fill="#E6B667"/>
+            </svg>
+            <div class="why">Compared to your own 14-day median — computed on device, nothing uploaded.</div>
+          </div>
+          <div class="card" style="display:flex;gap:10px;align-items:center;">
+            <span style="font-size:1.1rem;">👍</span><span style="font-size:1.1rem;opacity:.5;">👎</span>
+            <span style="font-size:.72rem;color:#9A90BE;">Helpful? Tune what you see.</span>
+          </div>
+          <p class="s-note">For wellness, not medical advice.</p>
+        </div>
+        <div class="tabbar">
+          <span class="t"><span class="d"></span>Today</span><span class="t"><span class="d"></span>Body</span>
+          <span class="t"><span class="d"></span>Log</span><span class="t on"><span class="d"></span>Insights</span><span class="t"><span class="d"></span>You</span>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</div></section>
+
+<footer class="footer wrap">
+  <h3>Choosing between them</h3>
+  <p>All three honour BADAN's non-negotiables: bilingual/RTL by construction, one calm amber instead of red/green alarm, on-device intelligence, and wellness-safe language. They differ in <em>who they flatter first</em>.</p>
+  <ol>
+    <li><b>Noor</b> wins if the priority is the passive, reassurance-seeking majority (blueprint's Rania/Omar) and App Store “calm health” shelf appeal.</li>
+    <li><b>Mizan</b> wins if the wedge is the quantified-self / power user who'll evangelise the app for its depth and transparency.</li>
+    <li><b>Hilal</b> wins if brand distinctiveness in MENA and a premium, regional-tech identity matter most for launch and press.</li>
+  </ol>
+  <p style="margin-top:18px;">Tell me which direction (or which pieces — e.g. “Hilal's logo, Noor's screens”) and I'll take it deeper: full token spec, dark/light pairs, an icon grid, and the actual SwiftUI <code>Tokens.swift</code> to drop into the app.</p>
+</footer>
+
+</body></html>

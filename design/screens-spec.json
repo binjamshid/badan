@@ -40,8 +40,8 @@
       "id": "S-20",
       "name": "Today root (Home / flagship)",
       "purpose": "The daily contract answered in under 10 seconds: how I slept, how ready I am, anything unusual, and one thing worth doing — everything else is curated modules.",
-      "casualLayer": "Triple-ring hero with one-word drivers, One True Sentence narrative, and at most 5 comfortable-density modules; deviation shown as arrows only; provisional badges and gentle >36h 'data paused' banner; manual-mode hero (subjective check-in + phone steps) when no wearable.",
-      "powerLayer": "Up to 12 stat-dense compact modules (6-tile dense health monitor, stress/energy, training-today, biology watchlist), arrow+number deviation badges, sparkline axes on tap, tables default-open; long-press module context menu (pin/hide/reorder/explain); same routes, more altitude via PresentationPolicy.",
+      "casualLayer": "Triple-ring hero with one-word drivers, One True Sentence narrative, and at most 5 comfortable-density modules; deviation shown as arrows only; provisional badges and gentle >36h 'data paused' banner; manual-mode hero (subjective check-in + phone steps) when no wearable. Shipped iPhone build (2026-07): readiness hero card + effort/sleep/activity/heart/meds module cards + top insight, with status shown as pill+arrow. On iPad's regular width class the module cards pair into a 2-column tile grid (`AdaptiveTiles`/`LazyVGrid` in `HomeScreen.swift`) instead of stacking full-width; collapses to the original single-column stack on iPhone's compact width, so iPhone rendering is unchanged.",
+      "powerLayer": "Up to 12 stat-dense compact modules (6-tile dense health monitor, stress/energy, training-today, biology watchlist), arrow+number deviation badges, sparkline axes on tap, tables default-open; long-press module context menu (pin/hide/reorder/explain); same routes, more altitude via PresentationPolicy. Shipped iPhone build (2026-07): same hero + effort/sleep/meds tiles, plus a 'Key metrics' 2-column `MetricGridCell` grid (resting HR, HRV, steps, active energy, …) each with sparkline + signed delta vs personal usual. Also gains the iPad `AdaptiveTiles` 2-column pairing described above — same tile components as casual, not a separate layout.",
       "components": [
         "DatePagerHeader",
         "ContextStrip",
@@ -56,14 +56,22 @@
         "WeeklyProgressChip",
         "ProvisionalBadge",
         "StalenessBanner",
-        "TodayModuleRegistry"
+        "TodayModuleRegistry",
+        "ReadinessHeroCard",
+        "EffortCard",
+        "SleepModuleCard",
+        "MetricModuleCard",
+        "MetricGridCell",
+        "AdaptiveTiles",
+        "InsightCard"
       ],
       "copyEn": [
         "Readiness 62 — short sleep",
         "Why →",
         "Your data's been paused for a while — let's reconnect.",
         "Back to today",
-        "Above your usual range"
+        "Above your usual range",
+        "You're in a balanced place today. 62/100 · Still learning · Day 10 of 14"
       ]
     },
     {
@@ -271,7 +279,7 @@
       "id": "S-100",
       "name": "Settings root",
       "purpose": "The complete configuration tree — one screen deep to everything (account, membership, appearance, modules, calculations, data & privacy, automation, resources) as a modal that X-closes.",
-      "casualLayer": "Status rows summarize current values with chevrons; module toggles show a live-preview mockup and a consequence warning before any destructive hide; local-only accounts see a calm 'device only' state card.",
+      "casualLayer": "Status rows summarize current values with chevrons; module toggles show a live-preview mockup and a consequence warning before any destructive hide; local-only accounts see a calm 'device only' state card. Personalization row ('Appearance, icon, language, detail, units, Home') opens `PersonalizationSettingsScreen`, whose app-icon section lets the user pick among the 5 `AppIconOption`s (see design-tokens.json `logo`) via `UIApplication.setAlternateIconName`.",
       "powerLayer": "Per-metric unit overrides (mmol/L↔mg/dL, kg↔lb, °C↔°F), multi-method HR zones, Calculations panel (HRV RMSSD-from-raw-beats, sampling windows) each linking its algorithm page, depth dial with per-surface overrides, notification self-audit, and settings FTS search.",
       "components": [
         "SettingsSection",
@@ -281,7 +289,8 @@
         "CalculationsSheet",
         "UnitsSheet",
         "HrZonesEditor",
-        "NotificationsMatrixSheet"
+        "NotificationsMatrixSheet",
+        "AppIconPicker"
       ],
       "copyEn": [
         "Device only",

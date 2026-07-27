@@ -250,6 +250,7 @@ final class BodyViewModel {
 /// leads into the universal metric detail; below, the tools that open the whole repository.
 struct BodyScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var vm = BodyViewModel()
     /// (EPIC-01 task 5, plan §13.1: "body metrics from Body") Weight, body fat and lean mass are
     /// asked for here rather than at onboarding's connect step — most people have none of them,
@@ -270,8 +271,15 @@ struct BodyScreen: View {
                 VStack(alignment: .leading, spacing: BadanSpace.space4) {
                     if !data.pillars.isEmpty {
                         SectionHeader(env.s(Self.pillarsHeader))
-                        ForEach(data.pillars) { pillar in
-                            BodyPillarCard(pillar: pillar)
+                        // iPad's regular width pairs pillar cards 2-up instead of stacking them
+                        // full-width down a narrow center column (see `AdaptiveTiles`).
+                        LazyVGrid(
+                            columns: AdaptiveTiles.columns(for: sizeClass, spacing: BadanSpace.space4),
+                            alignment: .leading, spacing: BadanSpace.space4
+                        ) {
+                            ForEach(data.pillars) { pillar in
+                                BodyPillarCard(pillar: pillar)
+                            }
                         }
                     }
 

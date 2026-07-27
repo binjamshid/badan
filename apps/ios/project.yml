@@ -10,7 +10,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "6"
     DEVELOPMENT_TEAM: ""
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -47,7 +47,9 @@ targets:
         # or set it here, e.g. DEVELOPMENT_TEAM: ABCDE12345.
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "54T3MDUR7H"
-        TARGETED_DEVICE_FAMILY: "1"
+        # iPad support: was "1" (iPhone only), which made iPadOS run the app in iPhone-
+        # compatibility mode (a small, non-full-screen window) instead of natively.
+        TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # FEAT-01: HealthKitAdapter now performs real reads (previously linked but unused), so
@@ -108,6 +110,13 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # iPad expects landscape too — portrait-only here would otherwise silently apply to
+        # iPad as well (Xcode falls back to the non-suffixed key when no ~ipad variant exists).
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         # Standard crypto only (HTTPS, SHA-256 checksums) — exempt from export compliance.
         # Avoids the manual encryption question on every TestFlight upload.
         ITSAppUsesNonExemptEncryption: false
@@ -191,7 +200,9 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "54T3MDUR7H"
-        TARGETED_DEVICE_FAMILY: "1"
+        # Matches the host app's device family now that BADAN supports iPad — otherwise the
+        # widget extension can't appear in the iPad widget gallery / Lock Screen / StandBy.
+        TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         CODE_SIGN_ENTITLEMENTS: BadanWidgets/BadanWidgets.entitlements
         # Widget extensions ship no app icon of their own — they render inside the host's chrome
@@ -238,13 +249,38 @@ targets:
         DEVELOPMENT_TEAM: "54T3MDUR7H"
         TARGETED_DEVICE_FAMILY: "4"
         SWIFT_VERSION: "5.0"
-        SKIP_INSTALL: NO
+        # MUST be YES for an EMBEDDED watch app, and this single value is the real cause of the
+        # "xcodebuild archive silently omits ApplicationProperties when a watchOS companion is
+        # embedded" behaviour that build 3 was shipped without the watch app to work around.
+        #
+        # It was never a toolchain bug. With SKIP_INSTALL: NO the watch app is installed as its own
+        # TOP-LEVEL product, so the archive ends up with BOTH
+        # `Products/Applications/BADAN.app/Watch/BadanWatch.app` (correctly embedded by the host's
+        # embed phase) AND a stray sibling `Products/Applications/BadanWatch.app`. Two apps in
+        # Applications/ leaves `IDEDistributionMethodManager` unable to identify the primary
+        # product, so it writes no `ApplicationProperties` into the archive's Info.plist and then
+        # reports that EVERY distribution method "doesn't support distributing archive" — surfacing
+        # as the misleading `exportArchive exportOptionsPlist error for key "method"`, which is why
+        # it looked like a bad method string. Verified by inspecting the archive directly: with this
+        # YES, `Products/Applications/` holds BADAN.app alone, `ApplicationProperties` is present,
+        # and export succeeds with the watch app embedded.
+        SKIP_INSTALL: YES
+        # Reuses the same 1024x1024 source as the iOS app's AppIcon (App/Assets.xcassets) — same
+        # branding, no separate watch-specific design needed. Its absence (error 90391/90713 on
+        # upload: "Missing Icons" / missing CFBundleIconName) is what this wires up.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: BadanWatch/Info.plist
       properties:
         CFBundleDisplayName: BADAN
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # watchOS wants a plain top-level CFBundleIconName (unlike iOS's nested
+        # CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName, which Xcode auto-injects) — with
+        # GENERATE_INFOPLIST_FILE: NO that auto-merge doesn't happen for this key on watchOS, so
+        # it's declared explicitly to match ASSETCATALOG_COMPILER_APPICON_NAME above (App Store
+        # upload errors 90391/90713 without it).
+        CFBundleIconName: AppIcon
         # Modern (watchOS 9+) single-target companion-app pairing keys — still the documented
         # mechanism in current Xcode watch-app templates, unlike the pre-9 dual-target
         # WatchKit-extension `WKCompanionAppBundleIdentifier`/`NSExtension` pairing this superseded.

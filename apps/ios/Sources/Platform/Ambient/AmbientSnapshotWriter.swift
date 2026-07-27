@@ -92,11 +92,12 @@ actor AmbientSnapshotWriter {
     /// visible, self-correcting failure mode; a crashed derivation pipeline is not. Callers that
     /// need the thrown detail (tests, primarily) should call `buildSnapshot` directly instead.
     @discardableResult
-    func writeIfNeeded(now: Date, tz: String, language: AppLanguage, medsDueConsentGranted: Bool) async -> Bool {
+    func writeIfNeeded(now: Date, tz: String, language: AppLanguage, medsDueConsentGranted: Bool,
+                       privacy: AmbientPrivacyConfig) async -> Bool {
         if let last = lastWriteAt, now.timeIntervalSince(last) < Self.minWriteInterval { return false }
         do {
             let dto = try buildSnapshot(now: now, tz: tz, language: language,
-                                        medsDueConsentGranted: medsDueConsentGranted)
+                                        medsDueConsentGranted: medsDueConsentGranted, privacy: privacy)
             try store.write(dto)
             syncToWatch(dto)
         } catch {
@@ -115,13 +116,15 @@ actor AmbientSnapshotWriter {
     /// medication name appearing in the shared snapshot promptly, not linger for up to 30s behind
     /// the ordinary debounce.
     @discardableResult
-    func forceWrite(now: Date, tz: String, language: AppLanguage, medsDueConsentGranted: Bool) async -> Bool {
+    func forceWrite(now: Date, tz: String, language: AppLanguage, medsDueConsentGranted: Bool,
+                    privacy: AmbientPrivacyConfig) async -> Bool {
         lastWriteAt = nil
         // `await` is required here purely because `writeIfNeeded` is declared `async` — this call
         // never actually hops actors (both methods are isolated to this same instance), so it
         // cannot suspend behind another caller's in-flight write the way an external caller's
         // `await` can.
-        return await writeIfNeeded(now: now, tz: tz, language: language, medsDueConsentGranted: medsDueConsentGranted)
+        return await writeIfNeeded(now: now, tz: tz, language: language,
+                                   medsDueConsentGranted: medsDueConsentGranted, privacy: privacy)
     }
 
     // MARK: - Assembly (throwing, for direct testing of the DTO's content)
@@ -129,8 +132,21 @@ actor AmbientSnapshotWriter {
     /// Build today's snapshot from the live repositories. Exposed (not `private`) so tests can
     /// inspect the assembled DTO directly, independent of the debounce/reload/error-swallowing
     /// wrapper above.
-    func buildSnapshot(now: Date, tz: String, language: AppLanguage, medsDueConsentGranted: Bool) throws -> AmbientSnapshotDto {
+    func buildSnapshot(now: Date, tz: String, language: AppLanguage, medsDueConsentGranted: Bool,
+                       privacy: AmbientPrivacyConfig) throws -> AmbientSnapshotDto {
         let periodKey = DayAttribution.dayPeriodKey(now, tz: tz)
+
+        // W-11: in `.off` no personal content is assembled at all. This is the structural half of
+        // the privacy model — the extension cannot render what was never written, so the mode holds
+        // even for a widget that hasn't been taught about privacy yet, and for any surface added
+        // later. The `privacy` flags stamped below govern the remaining, softer distinction
+        // (`.discreet`: shapes without numbers), which needs the content present to draw at all.
+        guard privacy.mode.showsAnyContent else {
+            return AmbientSnapshotDto(
+                generatedAt: now, language: language.rawValue,
+                readiness: nil, sentence: nil, sleep: nil, medsDue: nil, effort: nil,
+                privacy: Self.privacySnapshot(privacy))
+        }
 
         let readiness = try derivation.latestDerived(metricId: MetricID.readinessScore, periodKey: periodKey)
             .map { RingSnapshot(score: $0.value, provisional: $0.provisional) }
@@ -148,7 +164,22 @@ actor AmbientSnapshotWriter {
 
         return AmbientSnapshotDto(
             generatedAt: now, language: language.rawValue,
-            readiness: readiness, sentence: sentence, sleep: sleep, medsDue: medsDue, effort: effort)
+            readiness: readiness, sentence: sentence, sleep: sleep, medsDue: medsDue, effort: effort,
+            privacy: Self.privacySnapshot(privacy))
+    }
+
+    /// Resolves the user's mode into the booleans the extension actually reads (W-11).
+    ///
+    /// `lockScreenValuesAllowed` follows the mode for the families that MAY appear on a Lock
+    /// Screen. It is not the mechanism that protects medications: `AmbientPrivacyConfig
+    /// .neverOnLockScreen` is non-overridable and enforced at the widget, so no combination of
+    /// settings can turn a medication name into Lock Screen content. Two mechanisms, because the
+    /// user-controllable one must never be the only thing standing between a diagnosis and a
+    /// stranger holding the phone.
+    static func privacySnapshot(_ config: AmbientPrivacyConfig) -> AmbientPrivacySnapshot {
+        AmbientPrivacySnapshot(valuesAllowed: config.mode.showsValues,
+                               contentAllowed: config.mode.showsAnyContent,
+                               lockScreenValuesAllowed: config.mode.showsValues)
     }
 
     /// Today's Effort (`effort.day`), read the same way `HomeScreen.loadEffort` reads it (same
