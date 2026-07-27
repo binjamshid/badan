@@ -37,6 +37,10 @@ struct RingSingleWidgetView: View {
 
     private var isArabic: Bool { WidgetLanguage.isArabic(for: entry.snapshot) }
     private var readiness: RingSnapshot? { entry.snapshot?.readiness }
+    /// W-11: in `.discreet` the ring still draws its arc (a shape is not a disclosure) but the
+    /// number is withheld. In `.off` the main app writes no `readiness` at all, so this view
+    /// already falls through to its calm no-data state without needing a branch here.
+    private var showsValue: Bool { WidgetPrivacy.allowsValues(entry.snapshot, family: family) }
 
     var body: some View {
         content
@@ -63,7 +67,11 @@ struct RingSingleWidgetView: View {
             Gauge(value: readiness.score, in: 0...100) {
                 Text(RingCopy.title.resolved(isArabic: isArabic))
             } currentValueLabel: {
-                Text("\(Int(readiness.score.rounded()))")
+                if showsValue {
+                    Text("\(Int(readiness.score.rounded()))")
+                } else {
+                    Image(systemName: "eye.slash")
+                }
             }
             .gaugeStyle(.accessoryCircularCapacity)
         } else {
@@ -90,10 +98,16 @@ struct RingSingleWidgetView: View {
                         .stroke(WidgetColor.primary, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                     VStack(spacing: 2) {
-                        Text("\(Int(readiness.score.rounded()))")
-                            .font(.system(size: 22, weight: .semibold, design: .rounded))
-                            .foregroundStyle(WidgetColor.textPrimary)
-                        if readiness.provisional {
+                        if showsValue {
+                            Text("\(Int(readiness.score.rounded()))")
+                                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                                .foregroundStyle(WidgetColor.textPrimary)
+                        } else {
+                            Image(systemName: "eye.slash")
+                                .font(.system(size: 18))
+                                .foregroundStyle(WidgetColor.textSecondary)
+                        }
+                        if showsValue, readiness.provisional {
                             Text(RingCopy.provisional.resolved(isArabic: isArabic))
                                 .font(.system(size: 9))
                                 .foregroundStyle(WidgetColor.textSecondary)

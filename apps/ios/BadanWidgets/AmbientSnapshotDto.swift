@@ -45,9 +45,14 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
     /// rationale.
     let effort: EffortSnapshot?
 
+    /// W-11 (EPIC-44). What this extension is permitted to render. Stamped by the main app from
+    /// `AmbientPrivacyConfig` — the extension reads flags and obeys, it never reasons about privacy
+    /// policy itself. Byte-for-byte lockstep copy; see this file's header.
+    let privacy: AmbientPrivacySnapshot
+
     init(schemaVersion: Int = AmbientSnapshotDto.currentSchemaVersion, generatedAt: Date, language: String,
          readiness: RingSnapshot?, sentence: SentenceSnapshot?, sleep: SleepSnapshot?, medsDue: MedsDueSnapshot?,
-         effort: EffortSnapshot? = nil) {
+         effort: EffortSnapshot? = nil, privacy: AmbientPrivacySnapshot = .standard) {
         self.schemaVersion = schemaVersion
         self.generatedAt = generatedAt
         self.language = language
@@ -56,6 +61,7 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
         self.sleep = sleep
         self.medsDue = medsDue
         self.effort = effort
+        self.privacy = privacy
     }
 
     /// N-1 schema tolerance, mirroring the main-app copy's own `init(from:)` exactly (see its
@@ -74,6 +80,34 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
         sleep = try c.decodeIfPresent(SleepSnapshot.self, forKey: .sleep)
         medsDue = try c.decodeIfPresent(MedsDueSnapshot.self, forKey: .medsDue)
         effort = try c.decodeIfPresent(EffortSnapshot.self, forKey: .effort)
+        // Absent key = a snapshot written before W-11 existed; `.standard` matches what those
+        // snapshots' content already assumed. The non-negotiable rule (no medication values on a
+        // Lock Screen) does not rely on this decode — `MedsDueWidget` refuses unconditionally.
+        privacy = try c.decodeIfPresent(AmbientPrivacySnapshot.self, forKey: .privacy) ?? .standard
+    }
+}
+
+/// The rendering permissions the main app stamps into each snapshot (W-11). Resolved booleans, not
+/// a mode enum, so this extension never interprets policy — see the main-app copy's own doc.
+struct AmbientPrivacySnapshot: Codable, Hashable, Sendable {
+    let valuesAllowed: Bool
+    let contentAllowed: Bool
+    let lockScreenValuesAllowed: Bool
+
+    static let standard = AmbientPrivacySnapshot(valuesAllowed: true, contentAllowed: true,
+                                                 lockScreenValuesAllowed: true)
+
+    init(valuesAllowed: Bool, contentAllowed: Bool, lockScreenValuesAllowed: Bool) {
+        self.valuesAllowed = valuesAllowed
+        self.contentAllowed = contentAllowed
+        self.lockScreenValuesAllowed = lockScreenValuesAllowed
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        valuesAllowed = try c.decodeIfPresent(Bool.self, forKey: .valuesAllowed) ?? true
+        contentAllowed = try c.decodeIfPresent(Bool.self, forKey: .contentAllowed) ?? true
+        lockScreenValuesAllowed = try c.decodeIfPresent(Bool.self, forKey: .lockScreenValuesAllowed) ?? true
     }
 }
 

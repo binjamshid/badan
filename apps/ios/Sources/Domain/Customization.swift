@@ -245,6 +245,17 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     /// `PregnancyModeController` only ever READ this; `PregnancyConsentScreen` is the one place it
     /// is ever written.
     public var pregnancyModuleMode: PregnancyModuleMode
+    /// HYD-004 / HYD-012 (EPIC-38 phase 2). The user's hydration reminder schedule and fasting
+    /// windows. Before this existed, hydration's reminder was one hardcoded 15:00 fire — a time
+    /// that falls inside the fast on essentially every day of Ramadan, which the hydration research
+    /// lists among its explicit anti-goals ("notifications during an enabled fasting window").
+    /// Whether reminders fire at all is still governed by `notifications.classOptIn["hydration"]`,
+    /// unchanged; this only decides WHEN, and when to stay silent.
+    public var hydrationReminders: HydrationReminderSettings
+    /// W-11 (EPIC-44 wave 1). How much personal content may reach Home Screen widgets, StandBy, the
+    /// Lock Screen, and the watch glance. Defaults to `.standard` — the behaviour every existing
+    /// install already has; this setting adds ways to show LESS, never more.
+    public var ambientPrivacy: AmbientPrivacyConfig
 
     public init(depthPolicy: DepthPolicy = .casual, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
                 unitOverrides: [String: String] = [:], unitProfile: UnitProfileMode = .display,
@@ -259,7 +270,9 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 cyclePredictionsPaused: Bool = false,
                 fertileWindowMode: FertileWindowMode = .suppressed,
                 aiCoachEnabled: Bool = false,
-                pregnancyModuleMode: PregnancyModuleMode = .off) {
+                pregnancyModuleMode: PregnancyModuleMode = .off,
+                hydrationReminders: HydrationReminderSettings = .legacyDefault,
+                ambientPrivacy: AmbientPrivacyConfig = .default) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -273,6 +286,8 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.fertileWindowMode = fertileWindowMode
         self.aiCoachEnabled = aiCoachEnabled
         self.pregnancyModuleMode = pregnancyModuleMode
+        self.hydrationReminders = hydrationReminders
+        self.ambientPrivacy = ambientPrivacy
     }
 
     // Custom decode so a profile JSON persisted before these two fields existed still loads
@@ -340,6 +355,20 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // `ProfileRepository.load()` treats as "no saved profile" and resets every other preference
         // too) is avoided the same way every other tolerant field in this initializer avoids it.
         pregnancyModuleMode = (try? c.decode(PregnancyModuleMode.self, forKey: .pregnancyModuleMode)) ?? .off
+        // `decodeIfPresent ?? .legacyDefault`, and the default here is deliberately NOT the empty
+        // schedule the other opt-in fields use. A profile persisted before this key existed belongs
+        // to someone whose hydration reminder, if they opted the class in at all, WAS the hardcoded
+        // 15:00 fire. Defaulting to an empty schedule would silently turn that reminder off in an
+        // update — a preference the user chose, removed by a migration they never asked for. The
+        // opt-in gate itself is unchanged and still lives in `notifications.classOptIn`, so this
+        // default grants nothing to a user who never turned hydration reminders on.
+        hydrationReminders = try c.decodeIfPresent(HydrationReminderSettings.self, forKey: .hydrationReminders)
+            ?? .legacyDefault
+        // `try?` rather than `decodeIfPresent`, so an unrecognized future mode falls back to
+        // `.standard` instead of failing the whole profile decode. Permissive is the correct
+        // default here for the reason the DTO's own decode gives: this setting changes how already-
+        // visible content renders, it does not gate content that was previously ungated.
+        ambientPrivacy = (try? c.decode(AmbientPrivacyConfig.self, forKey: .ambientPrivacy)) ?? .default
     }
 
     public static let defaultModules: [HomeModule] = [

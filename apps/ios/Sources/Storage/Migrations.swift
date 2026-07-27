@@ -1491,6 +1491,58 @@ enum Schema {
             );
             """,
             "CREATE INDEX idx_loss_declaration_records_pregnancy ON loss_declaration_records(pregnancy_record_original_id);",
+        ]),
+        // Version 9 (A21/D-26 scope-gap closure): the measurement-chain tables, mirrored into the
+        // sensitive namespace so `sensitiveClass: sensitivePlus` metrics ingested through
+        // `IngestionPipeline` land HERE instead of `badan.db`. Today that is exactly one metric —
+        // `body.glucose` — but the rule `MeasurementRouting` applies is the registry's own
+        // `sensitiveClass`, not a glucose special case, so any future sensitive-plus measured
+        // metric inherits this placement without another migration.
+        //
+        // WHY THIS EXISTS AT ALL: D-26 shipped glucose ingestion into `badan.db` because
+        // `IngestionPipeline` had no per-metric routing seam. An independent audit found that was
+        // never a founder decision — D-23/A16's own text names glucose as one of the datasets whose
+        // arrival justified adopting SQLCipher, so main-DB placement contradicted the approval it
+        // claimed to rest on. Two concrete consequences it left open, both closed by this migration
+        // plus `MeasurementRouting`: glucose was not SQLCipher-encrypted at rest (unlike every other
+        // sensitive-plus metric post-D-23), and it was NOT covered by `purgeSensitiveNamespace()` —
+        // a user who turned off "Sensitive records" to erase their sensitive health data silently
+        // kept their entire glucose history on the device.
+        //
+        // The DDL and indexes below are byte-identical to `mainMigrations` version 1's
+        // `raw_samples`/`interval_records` (plus version 2's two `_live` partial indexes), following
+        // the SAME deliberate-duplication precedent this file's sensitive `baselines` table
+        // established for CYCLE-06 — one shared reader (`MeasurementRepository.readRawSample` etc.)
+        // over two structurally identical tables in two physically separate files, rather than one
+        // table whose rows carry a sensitivity flag that some future query forgets to filter on.
+        //
+        // `Database.purgeSensitiveNamespace()` needs no extension: it deletes the whole
+        // `badan_sensitive.db` file, so these two tables are covered by construction — which is
+        // precisely the property glucose lacked before.
+        Migration(version: 9, statements: [
+            """
+            CREATE TABLE raw_samples (
+              id TEXT PRIMARY KEY, metric_id TEXT NOT NULL, value REAL NOT NULL, unit TEXT NOT NULL,
+              original_value REAL NOT NULL, original_unit TEXT NOT NULL,
+              start_at INTEGER NOT NULL, end_at INTEGER, tz_id TEXT NOT NULL,
+              \(provenanceCols), \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_raw_metric_measured ON raw_samples(metric_id, measured_at);",
+            "CREATE UNIQUE INDEX idx_raw_identity ON raw_samples(metric_id, external_id, source_id) WHERE external_id IS NOT NULL;",
+            "CREATE INDEX idx_raw_batch ON raw_samples(batch_id);",
+            "CREATE INDEX idx_raw_metric_measured_live ON raw_samples(metric_id, measured_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
+            """
+            CREATE TABLE interval_records (
+              id TEXT PRIMARY KEY, metric_id TEXT NOT NULL, value REAL NOT NULL, unit TEXT NOT NULL,
+              start_at INTEGER NOT NULL, end_at INTEGER NOT NULL, tz_id TEXT NOT NULL,
+              aggregation TEXT NOT NULL, coverage REAL NOT NULL,
+              \(provenanceCols), \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_interval_metric_span ON interval_records(metric_id, start_at, end_at);",
+            "CREATE UNIQUE INDEX idx_interval_identity ON interval_records(metric_id, external_id, source_id) WHERE external_id IS NOT NULL;",
+            "CREATE INDEX idx_interval_metric_span_live ON interval_records(metric_id, start_at, end_at) WHERE deleted_at IS NULL AND suppressed_by IS NULL;",
         ])]
     }
 }

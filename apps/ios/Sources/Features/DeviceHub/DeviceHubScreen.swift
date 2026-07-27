@@ -340,6 +340,7 @@ final class DeviceHubViewModel {
 /// "Manage devices").
 struct DeviceHubScreen: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var vm = DeviceHubViewModel()
 
     var body: some View {
@@ -352,9 +353,18 @@ struct DeviceHubScreen: View {
                     onRetry: { Task { await vm.load(env) } }
                 ) { data in
                     VStack(alignment: .leading, spacing: BadanSpace.space4) {
-                        DeviceHubConflictsSummaryRow(unresolvedCount: data.unresolvedConflictCount,
-                                                     resolvedCount: data.resolvedConflictCount)
-                        DeviceHubSourcePriorityRow()
+                        // The two summary rows are the same shape — pair them on iPad's regular
+                        // width instead of stacking full-width (see `AdaptiveTiles`). The
+                        // per-source cards below stay full-width: each holds its own nested,
+                        // variable-height device list that doesn't tile evenly.
+                        LazyVGrid(
+                            columns: AdaptiveTiles.columns(for: sizeClass, spacing: BadanSpace.space4),
+                            alignment: .leading, spacing: BadanSpace.space4
+                        ) {
+                            DeviceHubConflictsSummaryRow(unresolvedCount: data.unresolvedConflictCount,
+                                                         resolvedCount: data.resolvedConflictCount)
+                            DeviceHubSourcePriorityRow()
+                        }
 
                         SectionHeader(env.s(DeviceHubStrings.devicesHeader))
                         ForEach(data.cards) { card in

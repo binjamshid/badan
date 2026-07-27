@@ -168,11 +168,12 @@ final class AppEnvironment {
         // writes (and reloads widget timelines) only once.
         let language = profile.language
         let medsDueConsent = profile.consentWidgetMedsDue
+        let ambientPrivacy = profile.ambientPrivacy
         let now = clock.now()
         let writer = ambientSnapshotWriter
         Task.detached(priority: .utility) {
             await writer.writeIfNeeded(now: now, tz: TimeZone.current.identifier, language: language,
-                                       medsDueConsentGranted: medsDueConsent)
+                                       medsDueConsentGranted: medsDueConsent, privacy: ambientPrivacy)
         }
     }
 
@@ -223,7 +224,11 @@ final class AppEnvironment {
 
         let main = database.main
         let sensitive = database.sensitive
-        self.measurements = MeasurementRepository(main)
+        // A21/D-26: `sensitive:` is what routes `sensitiveClass: sensitivePlus` measured metrics
+        // (today exactly `body.glucose`) into `badan_sensitive.db` instead of `badan.db` — see
+        // `MeasurementRouting`. Every read and write in this repository routes on the same rule, so
+        // no other call site changes.
+        self.measurements = MeasurementRepository(main, sensitive: sensitive, registry: MetricRegistry.shared)
         self.derivation = DerivationRepository(main)
         self.insightsRepo = InsightRepository(main)
         self.reconciliation = ReconciliationRepository(main)
@@ -917,7 +922,11 @@ final class AppEnvironment {
 
     /// The default local fire hour for a time-based class. Constants (not magic literals at the
     /// call site) so the schedule is legible and one place changes it.
-    static func defaultNotificationHour(_ cls: NotificationClass) -> Int {
+    /// SUPERSEDED for `.hydration` (HYD-004/HYD-012, 2026-07-27): hydration's time now comes from
+    /// `profile.hydrationReminders` via `nextFireDate(for:after:profile:calendar:)`. The 15:00 case
+    /// below survives only as the value `HydrationReminderSettings.legacyDefault` reproduces for an
+    /// install that predates the setting, so nobody's existing reminder time changes under them.
+    nonisolated static func defaultNotificationHour(_ cls: NotificationClass) -> Int {
         switch cls {
         case .morningReadinessSummary: return 8
         case .eveningWindDown: return 21
@@ -934,7 +943,7 @@ final class AppEnvironment {
         [.morningReadinessSummary, .eveningWindDown, .hydration]
 
     /// The next time `cls` should fire — the next occurrence of its default local hour.
-    static func nextDecisionFireDate(for cls: NotificationClass, after now: Date, calendar: Calendar) -> Date {
+    nonisolated static func nextDecisionFireDate(for cls: NotificationClass, after now: Date, calendar: Calendar) -> Date {
         var components = DateComponents()
         components.hour = defaultNotificationHour(cls)
         components.minute = 0
@@ -960,13 +969,35 @@ final class AppEnvironment {
             return
         }
         for cls in Self.timeBasedClasses {
-            if isNotificationClassEnabled(cls) {
-                let fire = Self.nextDecisionFireDate(for: cls, after: now(), calendar: .current)
-                _ = await evaluateAndScheduleDecision(cls, fireDate: fire)
-            } else {
+            guard isNotificationClassEnabled(cls) else {
                 await NotificationScheduler.shared.cancelDecisionNotifications(cls)
+                continue
             }
+            // HYD-004/HYD-012: hydration's fire time comes from the user's own schedule and is
+            // suppressed entirely inside a fasting window, so it can legitimately have NO next
+            // time — in which case the right action is to cancel, exactly as for an opted-out
+            // class. Every other class keeps its fixed daily hour.
+            guard let fire = Self.nextFireDate(for: cls, after: now(), profile: profile, calendar: .current) else {
+                await NotificationScheduler.shared.cancelDecisionNotifications(cls)
+                continue
+            }
+            _ = await evaluateAndScheduleDecision(cls, fireDate: fire)
         }
+    }
+
+    /// The next fire instant for a time-based class, or `nil` when the class must stay silent.
+    ///
+    /// Only `.hydration` can return `nil`, and only because its schedule is user-authored and
+    /// fasting-aware (`HydrationReminderPolicy`). Kept as one function rather than special-casing at
+    /// the call site so a future class with its own schedule has an obvious place to land.
+    /// `nonisolated` because it is a pure function of its arguments — it reads no `AppEnvironment`
+    /// state, which is what lets a test exercise the real scheduling seam instead of a copy of it.
+    nonisolated static func nextFireDate(for cls: NotificationClass, after now: Date,
+                                         profile: CustomizationProfile, calendar: Calendar) -> Date? {
+        guard cls == .hydration else { return nextDecisionFireDate(for: cls, after: now, calendar: calendar) }
+        return HydrationReminderPolicy.nextFireDate(
+            after: now, settings: profile.hydrationReminders,
+            quietHours: profile.notifications.quietHours, enabled: true, calendar: calendar)
     }
 
     /// Raise an event-driven decision notification (deviation, export-health) now, subject to the

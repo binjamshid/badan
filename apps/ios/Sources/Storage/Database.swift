@@ -91,6 +91,13 @@ final class Database {
         try sensitive.execute("PRAGMA auto_vacuum = INCREMENTAL;")
         try Self.migrate(main, Schema.mainMigrations)
         try Self.migrate(sensitive, Schema.sensitiveMigrations)
+        // A21/D-26: must run AFTER both migrations (it needs sensitive migration 9's mirrored
+        // measurement tables to exist) and BEFORE any repository reads, so nothing can observe an
+        // upgrading install's glucose history split across both files. Lives here rather than in
+        // `AppEnvironment` so every construction path — app launch, both `makeDefault()` fallback
+        // tiers, and the ~60 test files that open a `Database` directly — gets the same treatment.
+        // A no-op returning immediately on a fresh install and on every launch after the first.
+        try SensitiveMeasurementRelocator.run(main: main, sensitive: sensitive)
         if hardenDirectory { hardeningStatus = Self.applyHardening(to: directory) }
     }
 

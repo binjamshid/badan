@@ -5,7 +5,7 @@ import XCTest
 /// through the exact same `IngestionPipeline`/`HealthKitAdapter` seam every other metric uses. See
 /// `HealthAdapterFixTests` for the `HKTypeMap` row itself; this file covers the DB-level behavior:
 /// the row actually lands in `badan.db` via the general pipeline (not a bespoke sensitive-DB
-/// path — see the D-26 scope note in `docs/DECISIONS.md`), the reconciliation-v2 conflict path
+/// path — superseded: see the D-26 closure below and in `docs/DECISIONS.md`), the reconciliation-v2 conflict path
 /// applies to it exactly like weight/RHR/HRV, a manual fingerstick does NOT automatically outrank
 /// a device reading the way it does for weight (I4), and the export gate excludes it from a
 /// default (non-sensitive) export while including it once the person opts in.
@@ -32,7 +32,7 @@ final class GlucoseIngestionTests: XCTestCase {
 
     /// Plain pipeline, no reconciliation-v2 wiring — mirrors `PipelineTests.makeIngestion()`.
     private func makeIngestion() -> IngestionPipeline {
-        IngestionPipeline(measurements: MeasurementRepository(db.main),
+        IngestionPipeline(measurements: MeasurementRepository(db.main, sensitive: db.sensitive),
                           catalog: CatalogRepository(db.main),
                           reconciliation: ReconciliationRepository(db.main),
                           registry: MetricRegistry.shared, clock: clock, deviceId: deviceId)
@@ -41,7 +41,7 @@ final class GlucoseIngestionTests: XCTestCase {
     /// The fully-wired shape `AppEnvironment` actually constructs (`dataConflicts` +
     /// `sourcePriorityRules`), needed for the reconciliation-v2 tests below.
     private func makeIngestionWithConflicts() -> IngestionPipeline {
-        IngestionPipeline(measurements: MeasurementRepository(db.main),
+        IngestionPipeline(measurements: MeasurementRepository(db.main, sensitive: db.sensitive),
                           catalog: CatalogRepository(db.main),
                           reconciliation: ReconciliationRepository(db.main),
                           registry: MetricRegistry.shared, clock: clock, deviceId: deviceId,
@@ -80,10 +80,11 @@ final class GlucoseIngestionTests: XCTestCase {
         let summary = try pipeline.ingest(from: store, range: range)
         XCTAssertEqual(summary.samples, 1)
 
-        // Queried against `db.main` specifically — the D-26 scope note's claim, made concrete: a
-        // sensitivePlus-classed metric still lands in the MAIN database via the general pipeline,
-        // not a second sensitive-backed repository set.
-        let rows = try MeasurementRepository(db.main).rawSamples(metricId: MetricID.glucose)
+        // The routed repository finds it (D-26 closure) — and `testGlucoseLandsInTheSensitiveFile`
+        // below proves WHICH file that is, by going around this repository to raw SQL on each
+        // connection. Asserting placement through the same abstraction that decides placement would
+        // pass no matter which file won.
+        let rows = try MeasurementRepository(db.main, sensitive: db.sensitive).rawSamples(metricId: MetricID.glucose)
         XCTAssertEqual(rows.count, 1)
         let row = try XCTUnwrap(rows.first)
         XCTAssertEqual(row.value, 5.4, accuracy: 1e-9,
@@ -108,7 +109,7 @@ final class GlucoseIngestionTests: XCTestCase {
         _ = try pipeline.ingest(from: store, range: range)
         let second = try pipeline.ingest(from: store, range: range)
         XCTAssertEqual(second.samples, 0, "an unchanged re-ingest must write nothing new")
-        XCTAssertEqual(try MeasurementRepository(db.main).rawSamples(metricId: MetricID.glucose).count, 1)
+        XCTAssertEqual(try MeasurementRepository(db.main, sensitive: db.sensitive).rawSamples(metricId: MetricID.glucose).count, 1)
     }
 
     // MARK: - Dedup / source-priority behavior (reconciliation-v2)
@@ -141,7 +142,7 @@ final class GlucoseIngestionTests: XCTestCase {
                        "two materially disagreeing sources on the same day must be flagged")
         XCTAssertEqual(conflicts.first?.status, .unresolved)
 
-        let rows = try MeasurementRepository(db.main).rawSamples(metricId: MetricID.glucose, includeSuppressed: true)
+        let rows = try MeasurementRepository(db.main, sensitive: db.sensitive).rawSamples(metricId: MetricID.glucose, includeSuppressed: true)
         XCTAssertEqual(rows.count, 2)
         XCTAssertTrue(rows.allSatisfy { $0.provenance.suppressedBy == nil },
                       "an unresolved conflict must not suppress either candidate")
@@ -177,7 +178,7 @@ final class GlucoseIngestionTests: XCTestCase {
 
         _ = try pipeline.ingest(from: store, range: range)
 
-        let measurements = MeasurementRepository(db.main)
+        let measurements = MeasurementRepository(db.main, sensitive: db.sensitive)
         let rows = try measurements.rawSamples(metricId: MetricID.glucose, includeSuppressed: true)
         let winner = try XCTUnwrap(rows.first { $0.provenance.sourceId == "cgm-watch" })
         let loser = try XCTUnwrap(rows.first { $0.provenance.sourceId == "cgm-strap" })
@@ -195,7 +196,7 @@ final class GlucoseIngestionTests: XCTestCase {
     /// (No manual-entry UI ships for glucose in this slice; the manual row is written directly to
     /// exercise the reconciliation mechanism, which is agnostic to how a row was authored.)
     func testManualFingerstickDoesNotAutomaticallyOutrankADeviceReading() throws {
-        let measurements = MeasurementRepository(db.main)
+        let measurements = MeasurementRepository(db.main, sensitive: db.sensitive)
         let now = clock.now()
         let day = now.addingTimeInterval(-3_600)
 
@@ -243,7 +244,7 @@ final class GlucoseIngestionTests: XCTestCase {
                                            type: .healthkit, priority: 0)])
         _ = try pipeline.ingest(from: store, range: range)
 
-        let runner = ExportRunner(measurements: MeasurementRepository(db.main),
+        let runner = ExportRunner(measurements: MeasurementRepository(db.main, sensitive: db.sensitive),
                                   derivation: DerivationRepository(db.main),
                                   logging: LoggingRepository(main: db.main, sensitive: db.sensitive),
                                   exportJobs: ExportJobRepository(db.main), registry: .shared,

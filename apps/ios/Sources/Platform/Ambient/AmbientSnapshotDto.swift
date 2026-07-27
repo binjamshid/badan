@@ -51,9 +51,14 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
     /// magnitude/unit; see `AmbientSnapshotWriter.buildEffortSnapshot`) — never a fabricated score.
     let effort: EffortSnapshot?
 
+    /// W-11 (EPIC-44). What the widgets are permitted to render from this snapshot. Stamped by the
+    /// main app from `AmbientPrivacyConfig` so the extension never has to reason about privacy —
+    /// it reads flags and obeys. See `AmbientPrivacySnapshot`.
+    let privacy: AmbientPrivacySnapshot
+
     init(schemaVersion: Int = AmbientSnapshotDto.currentSchemaVersion, generatedAt: Date, language: String,
          readiness: RingSnapshot?, sentence: SentenceSnapshot?, sleep: SleepSnapshot?, medsDue: MedsDueSnapshot?,
-         effort: EffortSnapshot? = nil) {
+         effort: EffortSnapshot? = nil, privacy: AmbientPrivacySnapshot = .standard) {
         self.schemaVersion = schemaVersion
         self.generatedAt = generatedAt
         self.language = language
@@ -62,6 +67,7 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
         self.sleep = sleep
         self.medsDue = medsDue
         self.effort = effort
+        self.privacy = privacy
     }
 
     /// N-1 schema tolerance (see `AmbientSnapshotTests`): a snapshot
@@ -82,6 +88,45 @@ struct AmbientSnapshotDto: Codable, Hashable, Sendable {
         sleep = try c.decodeIfPresent(SleepSnapshot.self, forKey: .sleep)
         medsDue = try c.decodeIfPresent(MedsDueSnapshot.self, forKey: .medsDue)
         effort = try c.decodeIfPresent(EffortSnapshot.self, forKey: .effort)
+        // Absent key = a snapshot written before W-11 existed. Defaults to `.standard`, which is
+        // what those older snapshots' content already assumed — this key changes how existing
+        // content is rendered, it does not gate content that was previously ungated, so defaulting
+        // permissive here reveals nothing that the same file was not already showing. The one truly
+        // non-negotiable rule (`lockScreenValuesAllowed == false` for medications) does not depend
+        // on this decode at all: `MedsDueWidget` refuses on the Lock Screen unconditionally.
+        privacy = try c.decodeIfPresent(AmbientPrivacySnapshot.self, forKey: .privacy) ?? .standard
+    }
+}
+
+/// The rendering permissions the main app stamps into each snapshot (W-11).
+///
+/// Deliberately booleans rather than the `AmbientPrivacyMode` enum itself: the extension holds a
+/// byte-for-byte duplicate of these structs and cannot import the main app's types, so shipping
+/// resolved answers ("may I show a number?") instead of a mode the extension would have to
+/// interpret keeps the policy in one place. A future mode needs no extension-side change.
+struct AmbientPrivacySnapshot: Codable, Hashable, Sendable {
+    /// May a widget render numeric values and sentences at all (Home Screen / StandBy / watch)?
+    let valuesAllowed: Bool
+    /// May any personal content appear, even unlabelled shapes?
+    let contentAllowed: Bool
+    /// May values render on a LOCK SCREEN widget specifically. Always false for medications
+    /// regardless of this flag — see `AmbientPrivacyConfig.neverOnLockScreen`.
+    let lockScreenValuesAllowed: Bool
+
+    static let standard = AmbientPrivacySnapshot(valuesAllowed: true, contentAllowed: true,
+                                                 lockScreenValuesAllowed: true)
+
+    init(valuesAllowed: Bool, contentAllowed: Bool, lockScreenValuesAllowed: Bool) {
+        self.valuesAllowed = valuesAllowed
+        self.contentAllowed = contentAllowed
+        self.lockScreenValuesAllowed = lockScreenValuesAllowed
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        valuesAllowed = try c.decodeIfPresent(Bool.self, forKey: .valuesAllowed) ?? true
+        contentAllowed = try c.decodeIfPresent(Bool.self, forKey: .contentAllowed) ?? true
+        lockScreenValuesAllowed = try c.decodeIfPresent(Bool.self, forKey: .lockScreenValuesAllowed) ?? true
     }
 }
 

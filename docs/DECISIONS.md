@@ -486,6 +486,30 @@ of writing), `packages/contracts/INVARIANTS.md` (I1–I8), and `docs/MONETIZATIO
   tag is unchanged, and export gating already treats it as sensitive regardless of physical DB.
   Revisit when glucose ships as a real user-facing feature, or opportunistically alongside a
   future sensitive-DB migration already in flight.
+- **CLOSED (2026-07-27, delegated):** `body.glucose` now lives in `badan_sensitive.db`. Done under
+  the founder's explicit standing delegation for this session ("build everything ... I delegate
+  decisions"), and squarely within the deferral's own stated revisit condition above — this was the
+  "opportunistically, alongside other work" case, not a reversal of it.
+  **What shipped:** sensitive migration 9 mirrors `raw_samples`/`interval_records` into the
+  sensitive file (byte-identical DDL, the same deliberate-duplication precedent the sensitive
+  `baselines` table set for CYCLE-06); `MeasurementRouting` holds the placement rule in exactly one
+  place and derives it from the registry's own `sensitiveClass`, so no metric id is hardcoded and a
+  future sensitive-plus measured metric routes correctly with no code change;
+  `MeasurementRepository` gained an optional second connection and routes every read and write
+  through that rule, which is why no call site outside it changed; `SensitiveMeasurementRelocator`
+  moves an existing install's already-ingested glucose out of `badan.db` at startup, idempotently.
+  **Both consequences the gap left open are now closed and tested**: glucose is SQLCipher-encrypted
+  at rest like every other sensitive-plus record, and "erase sensitive records" actually erases it
+  (`SensitiveMeasurementRoutingTests.testPurgingSensitiveRecordsActuallyRemovesGlucose`, which
+  reads the physical files rather than asking the routing layer where it put things).
+  **Cost paid rather than assumed away:** the second-stack concern in (b) above turned out to be
+  avoidable — routing inside the single existing repository, instead of building a parallel
+  `IngestionPipeline`/`HealthKitAdapter`, left the reconciliation-v2, export, and timeline call
+  sites untouched. What is genuinely new and worth knowing: `MeasurementRepository.transaction`
+  now brackets both files, and two separate SQLite files cannot two-phase-commit, so a process kill
+  between the two commits can leave the halves disagreeing. Every write there is an idempotent
+  upsert keyed by provenance identity, so a re-ingest restores agreement; the limit is documented
+  at the method rather than papered over.
 
 ## D-27 — Watch app accelerated to Phase 4 (ADR-0010, approval A22)
 - **Context:** A22 asked whether the watch app stays Phase 5 or accelerates.
