@@ -1,7 +1,10 @@
 import SwiftUI
 
 /// Strings only the anatomy sheet needs — the calm, honest "why is it saying that" vocabulary.
-private enum AnatomyStrings {
+/// Non-private so `MethodChoiceTests` can assert that every method BADAN offers has copy behind
+/// it. `algorithmGlossary` renders nothing for an unknown id — correct for an unpublished
+/// algorithm, wrong for one the user is being asked to choose.
+enum AnatomyStrings {
     static let baseline = LocalizedString(en: "Your baseline", ar: "خط الأساس")
     static let center = LocalizedString(en: "Center (median)", ar: "المركز (الوسيط)")
     // Named locally rather than reusing `Loc.personalRange` so the anatomy sheet can name the
@@ -68,6 +71,29 @@ private enum AnatomyStrings {
         "composite.readiness_score": LocalizedString(
             en: "Combines how your sleep and resting heart rate compare to your own baselines.",
             ar: "يجمع بين مقارنة نومك ومعدل نبضك أثناء الراحة بخط أساسك الشخصي."),
+        // D-35 method variants. Each says what the WEIGHTING does, in the user's terms — never
+        // that it is better, more accurate or recommended, because none of them is validated.
+        "composite.readiness_score_equal": LocalizedString(
+            en: "Weighs every measure it has equally, so no single one can carry the score.",
+            ar: "يوازن بين كل المقاييس المتاحة بالتساوي، فلا يحمل مقياسٌ واحد النتيجة وحده."),
+        "composite.readiness_score_sleep_led": LocalizedString(
+            en: "Weighs how you slept most heavily; your heart measures adjust around it.",
+            ar: "يعطي وزناً أكبر لكيفية نومك؛ وتعدّل مقاييس قلبك حوله."),
+        "composite.readiness_score_autonomic": LocalizedString(
+            en: "Uses only your heart-rate variability and resting heart rate. Sleep is not included.",
+            ar: "يستخدم تغيّر نبضك ومعدل نبضك أثناء الراحة فقط. النوم غير مُدرج."),
+        "sleep.score": LocalizedString(
+            en: "Combines how long you slept against your own need, how regular your timing was, and how unbroken the night stayed.",
+            ar: "يجمع بين مدة نومك مقارنةً بحاجتك، وانتظام توقيتك، ومدى استمرارية الليلة."),
+        "sleep.score_duration_led": LocalizedString(
+            en: "Weighs how much you slept against your own need most heavily.",
+            ar: "يعطي أكبر وزن لمقدار نومك مقارنةً بحاجتك."),
+        "sleep.score_regularity_led": LocalizedString(
+            en: "Weighs how regular your sleep timing was most heavily.",
+            ar: "يعطي أكبر وزن لانتظام توقيت نومك."),
+        "sleep.score_continuity_led": LocalizedString(
+            en: "Weighs how unbroken the night stayed most heavily.",
+            ar: "يعطي أكبر وزن لمدى استمرارية الليلة دون انقطاع."),
     ]
 
     /// Plain-language description of a reconciliation rule id, journaled verbatim on every
@@ -143,6 +169,59 @@ enum AnatomyFormulas {
             altText: LocalizedString(
                 en: "Readiness is a weighted average of how your HRV, resting heart rate, respiratory rate and sleep performance compare to your own baselines. Each input's weight is renormalized over whatever was recorded, so a missing input redistributes its weight rather than being filled in.",
                 ar: "الجاهزية متوسط مرجّح لمدى مقارنة تغيّر نبضك ومعدل نبضك أثناء الراحة ومعدل تنفسك وأداء نومك بخط أساسك الشخصي. يُعاد توزيع وزن كل مدخل على ما تم تسجيله فعلاً، فالمدخل الغائب يُعاد توزيع وزنه بدل تعويضه.")),
+        // D-35: every variant is Class A — the SAME computation with different constants — so each
+        // shares its default's published formula. Listing them explicitly rather than falling back
+        // by prefix keeps `AnatomyFormulas` a closed map, so adding a contract entry without copy
+        // still shows nothing rather than the wrong thing.
+        "composite.readiness_score_equal": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Readiness = Σ (weightᵢ × sub-scoreᵢ), over the inputs present",
+                ar: "الجاهزية = Σ (الوزنᵢ × النتيجة-الفرعيةᵢ)، للمدخلات المتوفرة"),
+            altText: LocalizedString(
+                en: "The same weighted average as the standard method, with every input given equal weight.",
+                ar: "المتوسط المرجّح نفسه كالطريقة القياسية، مع إعطاء كل مدخل وزناً متساوياً.")),
+        "composite.readiness_score_sleep_led": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Readiness = Σ (weightᵢ × sub-scoreᵢ), over the inputs present",
+                ar: "الجاهزية = Σ (الوزنᵢ × النتيجة-الفرعيةᵢ)، للمدخلات المتوفرة"),
+            altText: LocalizedString(
+                en: "The same weighted average as the standard method, with sleep performance carrying most of the weight.",
+                ar: "المتوسط المرجّح نفسه كالطريقة القياسية، مع حمل أداء النوم لمعظم الوزن.")),
+        "composite.readiness_score_autonomic": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Readiness = Σ (weightᵢ × sub-scoreᵢ), over HRV and resting heart rate only",
+                ar: "الجاهزية = Σ (الوزنᵢ × النتيجة-الفرعيةᵢ)، لتغيّر النبض ومعدل النبض أثناء الراحة فقط"),
+            altText: LocalizedString(
+                en: "The same weighted average as the standard method, restricted to the two heart measures. Sleep and respiratory rate are given no weight at all.",
+                ar: "المتوسط المرجّح نفسه كالطريقة القياسية، مقصوراً على مقياسي القلب. لا يُعطى النوم ولا معدل التنفس أي وزن.")),
+        "sleep.score": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Sleep score = (w₁ × duration) + (w₂ × regularity) + (w₃ × continuity)",
+                ar: "درجة النوم = (و₁ × المدة) + (و₂ × الانتظام) + (و₃ × الاستمرارية)"),
+            altText: LocalizedString(
+                en: "A weighted blend of how long you slept against your own need, how regular your timing was, and how unbroken the night stayed. The weights are renormalized over whichever parts exist, and no score is produced at all without the duration part.",
+                ar: "مزيج مرجّح من مدة نومك مقارنةً بحاجتك، وانتظام توقيتك، ومدى استمرارية الليلة. يُعاد توزيع الأوزان على الأجزاء المتوفرة، ولا تُنتج درجة دون جزء المدة.")),
+        "sleep.score_duration_led": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Sleep score = (w₁ × duration) + (w₂ × regularity) + (w₃ × continuity)",
+                ar: "درجة النوم = (و₁ × المدة) + (و₂ × الانتظام) + (و₃ × الاستمرارية)"),
+            altText: LocalizedString(
+                en: "The same blend as the standard method, weighted hard toward how much you slept against your own need.",
+                ar: "المزيج نفسه كالطريقة القياسية، مع ترجيح قوي لمقدار نومك مقارنةً بحاجتك.")),
+        "sleep.score_regularity_led": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Sleep score = (w₁ × duration) + (w₂ × regularity) + (w₃ × continuity)",
+                ar: "درجة النوم = (و₁ × المدة) + (و₂ × الانتظام) + (و₃ × الاستمرارية)"),
+            altText: LocalizedString(
+                en: "The same blend as the standard method, weighted toward how regular your sleep timing was.",
+                ar: "المزيج نفسه كالطريقة القياسية، مع ترجيح لانتظام توقيت نومك.")),
+        "sleep.score_continuity_led": AnatomyFormula(
+            formula: LocalizedString(
+                en: "Sleep score = (w₁ × duration) + (w₂ × regularity) + (w₃ × continuity)",
+                ar: "درجة النوم = (و₁ × المدة) + (و₂ × الانتظام) + (و₃ × الاستمرارية)"),
+            altText: LocalizedString(
+                en: "The same blend as the standard method, weighted toward how unbroken the night stayed.",
+                ar: "المزيج نفسه كالطريقة القياسية، مع ترجيح لمدى استمرارية الليلة دون انقطاع.")),
         "composite.sleep_efficiency": AnatomyFormula(
             formula: LocalizedString(
                 en: "Efficiency = time asleep ÷ time in bed × 100%",

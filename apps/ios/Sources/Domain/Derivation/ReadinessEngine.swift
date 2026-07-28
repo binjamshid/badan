@@ -32,7 +32,11 @@ final class ReadinessEngine {
     private let measurements: MeasurementRepository
     private let clock: Clock
     private let deviceId: String
-    private let spec: ReadinessSpec
+    /// Resolved per compute rather than frozen at construction (D-35), so switching method takes
+    /// effect on the next derivation instead of at the next launch. The default provider returns
+    /// the spec passed in, which is exactly the old behaviour for every existing call site.
+    private let specProvider: @Sendable () -> ReadinessSpec
+    private var spec: ReadinessSpec { specProvider() }
     /// Source-priority resolver, mirroring the closure `DedupLite.reconcile` already takes. When two
     /// devices report the same night's HRV (a phone and a watch), the interval-record table keeps
     /// BOTH — dedup-lite only reconciles *sessions*, not vitals — so the engine resolves the conflict
@@ -51,13 +55,14 @@ final class ReadinessEngine {
 
     init(derivation: DerivationRepository, measurements: MeasurementRepository,
          clock: Clock, deviceId: String, spec: ReadinessSpec = .defaultShared,
+         specProvider: (@Sendable () -> ReadinessSpec)? = nil,
          priorityForSource: @escaping (String) -> Int = { _ in 0 },
          contextAnnotations: @escaping ContextAnnotationResolver = noContextAnnotations) {
         self.derivation = derivation
         self.measurements = measurements
         self.clock = clock
         self.deviceId = deviceId
-        self.spec = spec
+        self.specProvider = specProvider ?? { spec }
         self.priorityForSource = priorityForSource
         self.contextAnnotations = contextAnnotations
     }
@@ -106,6 +111,15 @@ final class ReadinessEngine {
     /// array — never zero, never imputed (plan §18 "no imputation of physiological inputs, ever;
     /// missing-input days render as gaps"). A vital with no personal baseline is treated as absent
     /// too: scoring it would require a population norm, which v1 forbids.
+    /// The day's inputs, for the method preview (D-35).
+    ///
+    /// Read-only by construction: it returns samples and writes nothing, which is what lets
+    /// `MethodPickerScreen` compute every candidate's number from ONE read without being able to
+    /// append a row — `composite(present:params:)` takes no repository either.
+    func inputSamplesForPreview(asOf: Date, tz: String = TimeZone.current.identifier) throws -> [ReadinessInputSample] {
+        try resolveInputs(dayKey: DayAttribution.localDayKey(asOf, tz: tz), asOf: asOf, tz: tz)
+    }
+
     private func resolveInputs(dayKey: String, asOf: Date, tz: String) throws -> [ReadinessInputSample] {
         var samples: [ReadinessInputSample] = []
         // The three vitals: personal z-position against the EPIC-23 baseline.
@@ -456,11 +470,21 @@ struct ReadinessSpec: Sendable, Hashable {
     let params: ReadinessParams
     let isLoaded: Bool
 
-    private static let contractId = "composite.readiness_score"
+    /// The method the engine ran before methods were selectable, and still the fallback whenever a
+    /// stored choice cannot be honoured (D-35 — see `MethodResolver`).
+    static let contractId = "composite.readiness_score"
 
     /// Resolve from a loaded `AlgorithmRegistry`. Returns `.unavailable` if the entry or any required
     /// param is missing — the engine treats that as "compute nothing", never as a cue to invent one.
-    static func load(from registry: AlgorithmRegistry) -> ReadinessSpec {
+    ///
+    /// `contractId` is a parameter (D-35) so an alternative weighting can be loaded through the very
+    /// same path. That is safe precisely because every alternative is a Class-A variant: identical
+    /// computation, identical param NAMES, different constants. An entry that failed to supply a
+    /// param resolves to `.unavailable` by the same `guard let` chain below, so fail-closed
+    /// behaviour is unchanged and a malformed variant can never quietly fall back to the default's
+    /// numbers while claiming to be itself.
+    static func load(from registry: AlgorithmRegistry,
+                     contractId: String = ReadinessSpec.contractId) -> ReadinessSpec {
         guard let def = registry.definition(contractId) else { return .unavailable }
         var weights: [ReadinessInput: Double] = [:]
         for input in ReadinessInput.allCases {
@@ -477,11 +501,14 @@ struct ReadinessSpec: Sendable, Hashable {
     }
 
     /// The app-default spec, resolved once from the bundled contract.
+    ///
+    /// Keeps its exact original meaning: one frozen snapshot of the DEFAULT method. A chosen
+    /// alternative is loaded per-derivation by the coordinator, never by mutating this.
     static let defaultShared = load(from: .shared)
 
     /// The degenerate "the contract did not load" spec. Never produces a score.
     static let unavailable = ReadinessSpec(
-        algorithm: AlgorithmVersion(algorithmId: contractId, semver: "0.0.0", introducedIn: "0.0.0"),
+        algorithm: AlgorithmVersion(algorithmId: ReadinessSpec.contractId, semver: "0.0.0", introducedIn: "0.0.0"),
         params: ReadinessParams(weights: [:], zClampSigmas: 0, minInputsForFullScore: 0,
                                 minInputsToScoreAtAll: .max, algorithmProvisional: true),
         isLoaded: false)

@@ -280,13 +280,22 @@ struct SleepSpec: Sendable, Hashable {
     /// Resolve from a loaded `AlgorithmRegistry`. Returns `.unavailable` (isLoaded=false) if any of
     /// the five entries or any constant they own is missing — the engine treats that as "compute
     /// nothing", never as a cue to invent numbers.
-    static func load(from registry: AlgorithmRegistry) -> SleepSpec {
+    /// The score method the engine ran before methods were selectable, and the fallback when a
+    /// stored choice cannot be honoured (D-35 — see `MethodResolver`).
+    static let scoreContractId = "sleep.score"
+
+    /// `scoreContractId` is a parameter (D-35) so an alternative WEIGHTING of the same composite can
+    /// load through this identical path. Only the score entry varies: need, performance, debt,
+    /// consistency and disturbances are the inputs every variant shares, and a variant that changed
+    /// those would be a different measurement rather than a different weighting of one.
+    static func load(from registry: AlgorithmRegistry,
+                     scoreContractId: String = SleepSpec.scoreContractId) -> SleepSpec {
         guard let needDef = registry.definition("sleep.need"),
               let perfDef = registry.definition("sleep.performance"),
               let debtDef = registry.definition("sleep.debt"),
               let consDef = registry.definition("sleep.consistency"),
               let distDef = registry.definition("sleep.disturbances"),
-              let scoreDef = registry.definition("sleep.score"),
+              let scoreDef = registry.definition(scoreContractId),
               let repay = needDef.params["debtRepaymentFraction"],
               let needHalf = needDef.params["debtDecayHalfLifeDays"],
               let effortFactor = needDef.params["effortFactorSecondsPerPoint"],
@@ -380,7 +389,10 @@ final class SleepIntelligenceEngine {
     private let measurements: MeasurementRepository
     private let clock: Clock
     private let deviceId: String
-    private let spec: SleepSpec
+    /// Resolved per compute rather than frozen at construction (D-35) — see `ReadinessEngine`'s
+    /// `specProvider` for why.
+    private let specProvider: @Sendable () -> SleepSpec
+    private var spec: SleepSpec { specProvider() }
     /// EPIC-29 (plan §18). What the user declared over each night being scored. Resolved PER NIGHT,
     /// not once per run: one recompute emits a fortnight of nights and only some of them may sit
     /// inside a declared interval. A function rather than the sensitive repository — see
@@ -389,12 +401,13 @@ final class SleepIntelligenceEngine {
 
     init(derivation: DerivationRepository, measurements: MeasurementRepository,
          clock: Clock, deviceId: String, spec: SleepSpec = .defaultShared,
+         specProvider: (@Sendable () -> SleepSpec)? = nil,
          contextAnnotations: @escaping ContextAnnotationResolver = noContextAnnotations) {
         self.derivation = derivation
         self.measurements = measurements
         self.clock = clock
         self.deviceId = deviceId
-        self.spec = spec
+        self.specProvider = specProvider ?? { spec }
         self.contextAnnotations = contextAnnotations
     }
 
