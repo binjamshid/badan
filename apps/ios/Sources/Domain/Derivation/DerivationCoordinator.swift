@@ -55,6 +55,9 @@ final class DerivationCoordinator {
     /// coordinator without one; the composition root always passes the real engine, so `nil` here
     /// means "a test that isn't exercising stress", never a shipped configuration.
     private let stress: StressEngine?
+    /// Optional and defaulted nil for the same reason `stress` is: every existing construction site
+    /// and test keeps compiling, and a build without it simply produces no mood estimate.
+    private let mood: MoodEstimateWriter?
     private let config: Config
 
     /// Windows the coordinator scores over. Not algorithm constants (those live in `algorithms.json`
@@ -73,12 +76,14 @@ final class DerivationCoordinator {
     }
 
     init(baselines: BaselineEngine, sleep: SleepIntelligenceEngine, readiness: ReadinessEngine,
-         effort: EffortEngine, stress: StressEngine? = nil, config: Config = .default) {
+         effort: EffortEngine, stress: StressEngine? = nil,
+         mood: MoodEstimateWriter? = nil, config: Config = .default) {
         self.baselines = baselines
         self.sleep = sleep
         self.readiness = readiness
         self.effort = effort
         self.stress = stress
+        self.mood = mood
         self.config = config
     }
 
@@ -125,6 +130,17 @@ final class DerivationCoordinator {
         //    gate refuses writes nothing, which is the common case on phone-and-watch-class data.
         for day in days {
             try stress?.compute(asOf: day, tz: tz)
+        }
+
+        // 6. Mood estimate — LAST, because it reads what steps 3 and 5 wrote (`sleep.score` and, when
+        //    the density gate allowed one, `stress.day_trend`) plus the resting-heart-rate baseline
+        //    from step 1. It reads those rows rather than recomputing them, which is what keeps the
+        //    stress density gate authoritative: a day that gate refused simply has no autonomic term
+        //    here, and there is no path from this engine to the intraday index `StressEngine`
+        //    declines to compute. Writes nothing when fewer than two terms exist, which is the normal
+        //    state of a fresh install.
+        for day in days {
+            _ = try mood?.compute(asOf: day, tz: tz)
         }
     }
 
