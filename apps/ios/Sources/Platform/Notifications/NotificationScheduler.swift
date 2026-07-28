@@ -125,7 +125,13 @@ enum MedicationReminderPlan {
 
     /// iOS keeps at most this many *pending* notification requests per app. Every request past it
     /// is silently dropped by the OS — `center.add` reports no error, so nothing in the app can
-    /// tell. BADAN schedules nothing but medication reminders, so the whole budget is ours.
+    /// tell.
+    ///
+    /// This is the single source of truth for the ceiling: `NotificationBudget.systemPendingLimit`
+    /// forwards to it, because BADAN no longer "schedules nothing but medication reminders" (as
+    /// this comment used to claim) — EPIC-32's decision classes and the automation-pause notice
+    /// share the same 64. `NotificationDecisionEngine.medPendingLimit` is what keeps meds from
+    /// being the ones the OS silently drops.
     static let systemPendingLimit = 64
 
     /// Trim a plan to the requests that will actually fire soonest.

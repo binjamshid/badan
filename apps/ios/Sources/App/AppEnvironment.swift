@@ -57,7 +57,7 @@ final class AppEnvironment {
     /// undoable in one tap. Read by the Settings import surface and `makeAppleHealthImporter()`.
     let importBatches: ImportBatchRepository
     /// EPIC-32 (migration v8). The notification budget ledger — the `notification_deliveries` rows
-    /// the decision engine counts against to hold the ≤2/day non-med invariant across app opens and
+    /// the decision engine counts against to hold the daily non-med invariant across app opens and
     /// process death. Value-free operational metadata, not health data (see the repository doc).
     let notificationDeliveries: NotificationDeliveryRepository
     /// EPIC-31 (migration v8). Periodic-report METADATA (`reports` rows). The rendered PDF is a
@@ -935,12 +935,12 @@ final class AppEnvironment {
         }
     }
 
-    /// The classes reconcile schedules ahead of time (a fixed local hour each day). The remaining
-    /// budgeted classes (deviation, export-health) are event-driven by design — they would be raised
-    /// at the moment they occur via `raiseDecisionNotification` — but no producer calls that seam
-    /// yet, which is why they are absent from `NotificationClass.userFacing` too.
-    private static let timeBasedClasses: [NotificationClass] =
-        [.morningReadinessSummary, .eveningWindDown, .hydration]
+    /// The classes reconcile schedules ahead of time. Sourced from `NotificationClass.timeBased`
+    /// rather than restated: this used to be an independent array literal that merely happened to
+    /// equal `NotificationClass.userFacing`, with no test tying them, so adding a class to one and
+    /// not the other would have produced either a toggle with no scheduler or a scheduler with no
+    /// toggle — and nothing would have failed.
+    private static var timeBasedClasses: [NotificationClass] { NotificationClass.timeBased }
 
     /// The next time `cls` should fire — the next occurrence of its default local hour.
     nonisolated static func nextDecisionFireDate(for cls: NotificationClass, after now: Date, calendar: Calendar) -> Date {
@@ -958,7 +958,7 @@ final class AppEnvironment {
     }
 
     /// Bring the time-based decision notifications in line with the current preferences: schedule
-    /// each enabled class's next occurrence (subject to the ≤2/day budget, quiet hours, opt-in and
+    /// each enabled class's next occurrence (subject to the daily budget, quiet hours, opt-in and
     /// the 64-cap), and cancel any class the user has turned off. Idempotent — safe to call at every
     /// launch. A no-op for a user with every class OFF (the default), and never prompts (uses
     /// `isAuthorized()`); when notifications are not authorized it cancels rather than leaving stale
@@ -968,7 +968,16 @@ final class AppEnvironment {
             await NotificationScheduler.shared.cancelAllDecisionNotifications()
             return
         }
-        for cls in Self.timeBasedClasses {
+        // One slot floats when an event-driven class is enabled, so a class that can only fire at
+        // the moment something happens is not shut out by classes that reserved their rows hours
+        // earlier. See `NotificationDecisionEngine.timeBasedLimit`.
+        let limit = NotificationDecisionEngine.timeBasedLimit(
+            dailyLimit: profile.notifications.dailyNonMedLimit,
+            reserveFloatingSlot: anyEventDrivenClassEnabled)
+        // Sorted by priority, not left in registry order. The budget is spent in the order this
+        // loop evaluates, so before this the ceiling was decided by wherever a class happened to sit
+        // in an array literal — hydration was last, and so was always the one starved.
+        for cls in Self.timeBasedClasses.sorted(by: { $0.priority < $1.priority }) {
             guard isNotificationClassEnabled(cls) else {
                 await NotificationScheduler.shared.cancelDecisionNotifications(cls)
                 continue
@@ -981,8 +990,14 @@ final class AppEnvironment {
                 await NotificationScheduler.shared.cancelDecisionNotifications(cls)
                 continue
             }
-            _ = await evaluateAndScheduleDecision(cls, fireDate: fire)
+            _ = await evaluateAndScheduleDecision(cls, fireDate: fire, dailyLimitOverride: limit)
         }
+    }
+
+    /// Whether any class that can only be raised at the moment it happens is switched on. Drives the
+    /// floating-slot reservation above.
+    private var anyEventDrivenClassEnabled: Bool {
+        NotificationClass.eventDriven.contains { isNotificationClassEnabled($0) }
     }
 
     /// The next fire instant for a time-based class, or `nil` when the class must stay silent.
@@ -1021,14 +1036,19 @@ final class AppEnvironment {
     /// reserves the ledger row that makes the budget survive the next app open BEFORE handing the
     /// request to the OS. Idempotent per class+day via the ledger check.
     ///
-    /// The write order is the whole point. The ≤2/day ceiling is a hard invariant, and the ledger is
+    /// The write order is the whole point. The daily ceiling is a hard invariant, and the ledger is
     /// the only thing that remembers it across process death — so a notification that reached the OS
     /// without its row would let the next evaluation read a lower count and quietly deliver a third.
     /// Reserving first makes the only possible failure a conservative one: a row with no
     /// notification behind it costs the user a nudge, which is visible and self-corrects the next
     /// day, where an unaccounted notification breaks an invariant nobody can observe breaking.
+    ///
+    /// `dailyLimitOverride` is how reconcile hands the time-based classes a ceiling one lower than
+    /// the user's, to hold a slot for the event-driven ones. `nil` — the event-driven path — means
+    /// the user's full limit, which is the point: the floating slot exists FOR that path.
     @discardableResult
-    private func evaluateAndScheduleDecision(_ cls: NotificationClass, fireDate: Date) async
+    private func evaluateAndScheduleDecision(_ cls: NotificationClass, fireDate: Date,
+                                             dailyLimitOverride: Int? = nil) async
         -> NotificationDecisionEngine.Decision {
         let calendar = Calendar.current
         // Already committed for this class+day — don't stack a duplicate on a second evaluation.
@@ -1051,7 +1071,8 @@ final class AppEnvironment {
             quietHours: { _ in quiet },
             nonMedScheduledToday: notificationDeliveries.countBudgeted(inDayOf: fireDate, calendar: calendar),
             pendingMedCount: counts.med,
-            pendingNonMedCount: counts.nonMed)
+            pendingNonMedCount: counts.nonMed,
+            dailyNonMedLimit: dailyLimitOverride ?? profile.notifications.dailyNonMedLimit)
 
         let decision = NotificationDecisionEngine.decide(.init(cls, fireDate: fireDate), in: context)
         guard decision == .scheduled else {
@@ -1243,7 +1264,7 @@ private enum SyncLog {
     static let logger = Logger(subsystem: "net.binjamshid.badan", category: "ForegroundSync")
 }
 
-/// EPIC-32. The budget ledger's writes back the ≤2/day invariant, so a failed write is a fact worth
+/// EPIC-32. The budget ledger's writes back the daily invariant, so a failed write is a fact worth
 /// surfacing rather than a `try?` away. Nothing logged here names a class's CONTENT or any health
 /// value — only the storage code of the notification class and the storage error.
 private enum NotificationLog {

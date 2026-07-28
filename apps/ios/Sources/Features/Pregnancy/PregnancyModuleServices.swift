@@ -141,7 +141,7 @@ struct PregnancyModuleServices {
     // 3. Insert the `LossDeclarationRecord` itself (minimal fields — see that type's own doc).
     // 4. SAME-SESSION, ZERO-DELAY notification suppression: cancel every pending `.pregnancy`-class
     //    local notification via `NotificationScheduler.cancelDecisionNotifications(.pregnancy)` —
-    //    an UNCONDITIONAL identifier-prefix cancel that does NOT consult the EPIC-32 ≤2/day budget
+    //    an UNCONDITIONAL identifier-prefix cancel that does NOT consult the EPIC-32 daily budget
     //    engine at all (that engine decides whether to SCHEDULE a notification; cancellation here
     //    bypasses it entirely, so a loss declaration can never be rate-limited or delayed). This is
     //    awaited before this function returns — "same session" means the caller's own `await`

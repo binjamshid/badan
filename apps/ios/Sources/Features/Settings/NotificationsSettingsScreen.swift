@@ -2,11 +2,13 @@ import SwiftUI
 import UserNotifications
 
 /// Settings -> Notifications. Two sections: the EXISTING medication reminders (the one class BADAN
-/// has always delivered), and EPIC-32's budgeted "Summaries & reminders" — the morning summary,
-/// evening wind-down, gentle change notices, export-health alerts and water reminders. Every class
-/// is individually opt-in and ships OFF (the existing convention); together the non-med classes
-/// send at most `NotificationBudget.dailyNonMedLimit` a day (a hard invariant, not a preference),
-/// and all of them respect the shared quiet-hours window.
+/// has always delivered), and EPIC-32's budgeted "Summaries & reminders" — whichever classes
+/// `NotificationClass.userFacing` currently offers, which is the set that has a real producer, not
+/// the set that is registered. (This doc used to list five classes while the screen rendered three.)
+/// Every class is individually opt-in and ships OFF (the existing convention); together the non-med
+/// classes send at most `profile.notifications.dailyNonMedLimit` a day — a preference the user sets
+/// here, clamped to 1…4, no longer the fixed 2 this comment once called a hard invariant — and all
+/// of them respect the shared quiet-hours window.
 struct NotificationsSettingsScreen: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -101,14 +103,19 @@ struct NotificationsSettingsScreen: View {
                     if anyDecisionClassOn {
                         settingsDivider
                         quietHoursRow
+                        settingsDivider
+                        dailyLimitRow
                         if notificationsDeniedAtSystemLevel { systemOffNote }
-                        // The ≤2/day budget, stated as the kindness it is (never alarmist).
+                        // The daily budget, stated as the kindness it is (never alarmist), and
+                        // quoting the user's own ceiling rather than a constant.
                         HStack(alignment: .top, spacing: BadanSpace.space2) {
                             Image(systemName: "bell.badge")
                                 .imageScale(.small)
                                 .foregroundStyle(BadanColor.textSecondary)
                                 .accessibilityHidden(true)
-                            LText(NotificationClassCopy.dailyBudgetNote(arabicDigits: env.profile.arabicDigits))
+                            LText(NotificationClassCopy.dailyBudgetNote(
+                                count: env.profile.notifications.dailyNonMedLimit,
+                                arabicDigits: env.profile.arabicDigits))
                                 .font(BadanFont.caption)
                                 .foregroundStyle(BadanColor.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -141,6 +148,44 @@ struct NotificationsSettingsScreen: View {
             .padding(.top, BadanSpace.space1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The user's daily ceiling on non-medication notifications. `SettingsRadioRows` rather than
+    /// `SettingsRadioGroup` because this sits INSIDE the section's existing card and the group would
+    /// nest a second one; rather than a `Stepper` because the app has no shared stepper row, and a
+    /// four-option single-select is what the radio rows already do — RTL-correct, VoiceOver-correct,
+    /// and no new component.
+    private var dailyLimitRow: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space1) {
+            Text(SettingsStrings.notifDailyLimit, language: env.language)
+                .font(BadanFont.body)
+                .foregroundStyle(BadanColor.textPrimary)
+            LText(SettingsStrings.notifDailyLimitHint)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 0) {
+                SettingsRadioRows(
+                    options: Array(NotificationPreference.dailyNonMedLimitRange),
+                    // Arabic-Indic digits follow the user's preference here like every other
+                    // numeral in the app — the count is data, not a label.
+                    title: { env.format.integer($0) },
+                    subtitle: nil,
+                    isOn: { $0 == env.profile.notifications.dailyNonMedLimit },
+                    onSelect: setDailyLimit)
+            }
+            .padding(.top, BadanSpace.space1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Persist a new ceiling and re-reconcile, so raising it can schedule a class that was being
+    /// held back and lowering it stops promising one that no longer fits. Clamping is the model's
+    /// job (`NotificationPreference.clampDailyNonMedLimit`), not this view's.
+    private func setDailyLimit(_ value: Int) {
+        guard value != env.profile.notifications.dailyNonMedLimit else { return }
+        env.update { $0.notifications.dailyNonMedLimit = value }
+        Task { await env.reconcileDecisionNotifications() }
     }
 
     private func hourPicker(_ label: LocalizedString, selection: Binding<Int>) -> some View {

@@ -28,7 +28,7 @@ enum NotificationClass: String, CaseIterable, Sendable {
     /// vocabulary and — critically — so `NotificationScheduler.cancelDecisionNotifications(.pregnancy)`
     /// has a real identifier prefix to cancel by, per this module's own non-negotiable loss-
     /// suppression requirement: the moment a loss is declared, every locally scheduled pregnancy
-    /// notification must be cancelled synchronously, in the same session, independent of the ≤2/day
+    /// notification must be cancelled synchronously, in the same session, independent of the daily
     /// budget engine (`PregnancyModuleServices.declareLoss` is the caller). No producer schedules a
     /// `.pregnancy` notification in THIS P0 slice (PREG-03 ships a content shell, not real
     /// week-by-week/countdown content, so there is nothing to notify about yet) — this case exists
@@ -38,14 +38,14 @@ enum NotificationClass: String, CaseIterable, Sendable {
     /// identical reason those two are absent from it.
     case pregnancy = "pregnancy"
 
-    /// Medication reminders are exempt from the ≤2/day non-med budget AND are never evicted to make
+    /// Medication reminders are exempt from the daily non-med budget AND are never evicted to make
     /// room for a score/hydration notice. A med reminder is a safety-relevant thing the user
     /// explicitly set up, not an ambient nudge — the whole point of the budget is to protect the
     /// user from ambient-nudge fatigue, which meds are not.
     var isMedication: Bool { self == .meds }
 
     /// Whether a delivery of this class consumes one unit of the daily non-med budget. Everything
-    /// except meds does; this is the single predicate the ≤2/day invariant is stated against, so a
+    /// except meds does; this is the single predicate the daily invariant is stated against, so a
     /// future class is budgeted by default the moment it is added.
     var countsAgainstDailyBudget: Bool { !isMedication }
 
@@ -79,6 +79,51 @@ enum NotificationClass: String, CaseIterable, Sendable {
     ///
     /// Add a class here in the same change that gives it a producer, never before.
     static let userFacing: [NotificationClass] = [.morningReadinessSummary, .eveningWindDown, .hydration]
+
+    // MARK: Producer categories
+    //
+    // Every class BADAN offers is raised by exactly one KIND of producer, and which kind it is
+    // changes how the budget must treat it. These three lists say which is which, and
+    // `NotificationDecisionEngineTests` pins that they partition `userFacing` — so a class can no
+    // longer be given a toggle without also being given a producer, and a producer can no longer be
+    // added without the budget accounting for it. Before this, `AppEnvironment.timeBasedClasses`
+    // restated the first list as a second, independent literal with nothing tying the two together.
+
+    /// Classes reconcile pre-schedules on a daily cadence, hours before they fire.
+    /// `AppEnvironment.timeBasedClasses` reads this rather than restating it.
+    static let timeBased: [NotificationClass] = [.morningReadinessSummary, .eveningWindDown, .hydration]
+
+    /// Classes raised through `AppEnvironment.raiseDecisionNotification` at the moment the thing
+    /// they describe actually happens, and budgeted like any other non-med notice.
+    static let eventDriven: [NotificationClass] = [.deviationNotice]
+
+    /// Classes whose producer deliberately bypasses this engine and is NOT budgeted. Only
+    /// `exportHealthAlert`: `NotificationScheduler.notifyAutomationPaused` raises it directly,
+    /// because a paused export is a direct consequence of the user's own configuration failing —
+    /// not an ambient nudge — and silently rationing it behind a wellness budget would hide a
+    /// breakage the user needs to know about. It still gets an opt-in so it can be silenced.
+    static let unbudgetedProducers: [NotificationClass] = [.exportHealthAlert]
+
+    /// Which class wins a contested budget slot: LOWER goes first. This exists because the budget
+    /// was previously first-come, and "first" meant nothing more principled than the order of an
+    /// array literal — which is why `hydration`, always last in that literal, was starved first
+    /// whenever the ceiling bound.
+    ///
+    /// The order runs: things that report a breakage, then the two daily anchors, then observations,
+    /// then ambient nudges. `meds` sorts first and is a formality — medication reminders are exempt
+    /// from the budget entirely and are never evicted — but giving it a real value keeps any sort
+    /// over `allCases` total and honest rather than arbitrary.
+    var priority: Int {
+        switch self {
+        case .meds: return 0
+        case .exportHealthAlert: return 1
+        case .morningReadinessSummary: return 2
+        case .eveningWindDown: return 3
+        case .deviationNotice: return 4
+        case .hydration: return 5
+        case .pregnancy: return 6
+        }
+    }
 
     /// The evidence surface a tap opens (plan §12 EPIC-32 task 4: "deep links to evidence screens").
     var deepLink: NotificationDeepLink {
@@ -156,15 +201,22 @@ extension NotificationQuietHours {
 
 // MARK: - Budget constants
 
-/// The hard limits the decision engine enforces. `dailyNonMedLimit` is the anti-fatigue budget
-/// (plan §12 EPIC-32: "Default ≤2/day … budget is a hard invariant, not a preference");
-/// `systemPendingLimit` is iOS's 64-pending ceiling, shared verbatim with the med scheduler so the
-/// two never double-count a slot.
+/// The limits the decision engine enforces. `systemPendingLimit` is iOS's 64-pending ceiling,
+/// shared verbatim with the med scheduler so the two never double-count a slot.
+///
+/// The daily anti-fatigue budget used to live here as a fixed `dailyNonMedLimit = 2`, described in
+/// this file and two others as "a hard invariant, not a preference". It is now a user preference —
+/// `NotificationPreference.dailyNonMedLimit`, clamped to `dailyNonMedLimitRange` (1…4) — and only
+/// its DEFAULT survives here. The reason is stated in full on that property: a fixed 2 stopped being
+/// an anti-fatigue measure and became a two-class ceiling the moment there were more than two
+/// classes to spend it on. What still makes the budget safe is the clamp plus
+/// `NotificationClass.priority`, so the ceiling is never merely first-come.
 enum NotificationBudget {
-    /// At most this many NON-medication notifications may be scheduled/delivered per local day,
-    /// across ALL non-med classes combined. Not a preference — the user can turn classes off, but
-    /// cannot raise this ceiling.
-    static let dailyNonMedLimit = 2
+    /// The DEFAULT daily ceiling on non-medication notifications, forwarded from the preference
+    /// that owns it (single source of truth, the same way `systemPendingLimit` forwards to
+    /// `MedicationReminderPlan`). The effective limit for a real decision is
+    /// `Context.dailyNonMedLimit`, which the adapter fills from the user's profile.
+    static var defaultDailyNonMedLimit: Int { NotificationPreference.defaultDailyNonMedLimit }
 
     /// The OS keeps at most this many pending requests per app and silently drops the rest. Shared
     /// with `MedicationReminderPlan.systemPendingLimit` (the single source of truth) so meds and
@@ -193,7 +245,7 @@ enum NotificationDecisionEngine {
         case suppressedOptedOut
         /// The candidate's fire time falls inside this class's quiet-hours window.
         case suppressedQuietHours
-        /// The ≤2/day non-med budget for the candidate's day is already spent.
+        /// The daily non-med budget for the candidate's day is already spent.
         case suppressedDailyBudget
         /// Scheduling would exceed the 64-pending ceiling shared with med reminders. Meds win.
         case suppressedSystemCap
@@ -205,7 +257,7 @@ enum NotificationDecisionEngine {
         /// so nothing was handed to the OS. Also an ADAPTER verdict, for the same reason as
         /// `suppressedNotAuthorized`: storage is an I/O fact `decide` is never handed.
         ///
-        /// This exists because the ≤2/day ceiling is a HARD invariant (plan §12 EPIC-32) and the
+        /// This exists because the daily ceiling is a HARD invariant (plan §12 EPIC-32) and the
         /// ledger is the only thing that remembers it across process death. A notification that
         /// fired without a ledger row would let the next evaluation read a lower count and push the
         /// day past 2 — so the adapter reserves the slot FIRST and, if it cannot, declines to
@@ -247,7 +299,11 @@ enum NotificationDecisionEngine {
         var pendingMedCount: Int
         /// Pending non-med (decision-engine) requests right now.
         var pendingNonMedCount: Int
-        var dailyNonMedLimit: Int = NotificationBudget.dailyNonMedLimit
+        /// The ceiling this decision is measured against. Defaults to the shipped default, but the
+        /// adapter fills it from `profile.notifications.dailyNonMedLimit` — and passes a value one
+        /// LOWER than that for a time-based class when an event-driven class is also enabled (see
+        /// `timeBasedLimit`).
+        var dailyNonMedLimit: Int = NotificationBudget.defaultDailyNonMedLimit
         var systemPendingLimit: Int = NotificationBudget.systemPendingLimit
     }
 
@@ -262,7 +318,7 @@ enum NotificationDecisionEngine {
             return .suppressedQuietHours
         }
 
-        // The ≤2/day invariant applies only to budgeted (non-med) classes.
+        // The daily invariant applies only to budgeted (non-med) classes.
         if cls.countsAgainstDailyBudget, context.nonMedScheduledToday >= context.dailyNonMedLimit {
             return .suppressedDailyBudget
         }
@@ -280,8 +336,8 @@ enum NotificationDecisionEngine {
     }
 
     /// Decide a batch in one pass, advancing the running counts as candidates are accepted so the
-    /// budget holds even when many candidates arrive at once (the "≤2/day under load" acceptance
-    /// case). Candidates are assumed to target the SAME budget day — the caller builds one batch
+    /// budget holds even when many candidates arrive at once (the "budget holds under load"
+    /// acceptance case). Candidates are assumed to target the SAME budget day — the caller builds one batch
     /// per day/evaluation — so `nonMedScheduledToday` is a single counter.
     static func decideBatch(_ candidates: [Candidate], in context: Context) -> [(Candidate, Decision)] {
         var ctx = context
@@ -297,19 +353,44 @@ enum NotificationDecisionEngine {
         return results
     }
 
+    // MARK: - The floating slot
+
+    /// The ceiling the TIME-BASED classes may consume, given the user's full daily limit.
+    ///
+    /// Pre-scheduled classes reserve their ledger row hours before an event-driven class can
+    /// possibly fire — the morning summary claims tomorrow's slot tonight — so on a plain
+    /// first-come budget an event-driven class never gets a slot at all and its toggle is a dead
+    /// switch. `NotificationClass.userFacing`'s own doc forbids exactly that: "a toggle is a
+    /// promise". So when any event-driven class is enabled, one slot floats: the time-based classes
+    /// may take at most `dailyLimit - 1`, and the last one is held for whatever actually happens
+    /// that day. If nothing happens, one nudge is skipped — the conservative failure, and the same
+    /// trade the ledger-reservation ordering already makes.
+    ///
+    /// Never returns less than 1: reserving a floating slot must not silence the time-based classes
+    /// outright for a user who set the ceiling to 1.
+    static func timeBasedLimit(dailyLimit: Int, reserveFloatingSlot: Bool) -> Int {
+        guard reserveFloatingSlot else { return dailyLimit }
+        return max(1, dailyLimit - 1)
+    }
+
     // MARK: - 64-cap interplay (the med side)
 
     /// The number of pending slots medication reminders may claim, after reserving room for the
     /// non-med notices currently pending. Called by `NotificationScheduler.rescheduleMedicationReminders`
     /// so meds + decision notices together never exceed the ceiling.
     ///
-    /// Because non-med notices are capped at ≤2/day and are one-shots that clear as they fire, this
-    /// reservation is at most a couple of slots — meds keep ≥62 of 64 in the worst case, and the
-    /// full 64 whenever no non-med notice is pending (the default, since every non-med class ships
-    /// OFF). So this is NOT starvation: the med cap keeps the SOONEST reminders and rolls the window
-    /// forward on every reschedule (see `MedicationReminderPlan.capped`), and losing at most two of
-    /// the furthest-out repeating slots to a notice the user explicitly opted into is the correct
-    /// trade — the alternative is the OS silently dropping meds when the total crosses 64.
+    /// Because non-med notices are capped per day by `Context.dailyNonMedLimit` and are one-shots
+    /// that clear as they fire, this reservation is a handful of slots at most — meds keep ≥60 of 64
+    /// even at the widest ceiling the user can set (`NotificationPreference.dailyNonMedLimitRange`'s
+    /// upper bound of 4; it was ≥62 when that ceiling was a fixed 2), and the full 64 whenever no
+    /// non-med notice is pending, which is the default since every non-med class ships OFF. So this
+    /// is NOT starvation: the med cap keeps the SOONEST reminders and rolls the window forward on
+    /// every reschedule (see `MedicationReminderPlan.capped`), and losing a few of the furthest-out
+    /// repeating slots to a notice the user explicitly opted into is the correct trade — the
+    /// alternative is the OS silently dropping meds when the total crosses 64.
+    ///
+    /// That the reservation is bounded at all is exactly why the daily ceiling stayed clamped when
+    /// it became a preference: an unbounded limit here would be an unbounded bite out of meds.
     static func medPendingLimit(nonMedPending: Int,
                                 systemLimit: Int = NotificationBudget.systemPendingLimit) -> Int {
         max(0, systemLimit - nonMedPending)
@@ -399,20 +480,26 @@ enum NotificationClassCopy {
         }
     }
 
-    /// The daily-budget explanation shown in Settings when a class is on but the ≤2/day ceiling
-    /// held a notice back. Wellness-safe: a budget is a kindness, not a failure.
+    /// The daily-budget explanation shown in Settings when a class is on but the ceiling held a
+    /// notice back. Wellness-safe: a budget is a kindness, not a failure.
+    ///
+    /// `count` is the user's own `NotificationPreference.dailyNonMedLimit`, passed in rather than
+    /// read from a constant here — the ceiling is a preference now, and a sentence that quoted a
+    /// fixed 2 while the engine enforced the user's 4 would be a lie in the one place the user goes
+    /// to understand the rule.
     ///
     /// The count goes through `ReportPresentation.countedNoun` rather than being interpolated
-    /// straight into the sentence, because Arabic does not simply pluralise: at the current limit of
-    /// 2 the noun takes the DUAL ("إشعارين", which carries the two by itself and wants no numeral in
-    /// front of it), and a bare "\(n) إشعارات" is wrong at every count below 3. That is the same
-    /// agreement rule the reports surface already applies, so it is reused rather than re-derived —
+    /// straight into the sentence, because Arabic does not simply pluralise: at 1 the noun takes the
+    /// singular accusative, at 2 the DUAL ("إشعارين", which carries the two by itself and wants no
+    /// numeral in front of it), and a bare "\(n) إشعارات" is wrong at every count below 3. The 1…4
+    /// range this is now called with is exactly the range that rule already covers correctly. It is
+    /// the same agreement rule the reports surface applies, so it is reused rather than re-derived —
     /// and `arabicDigits` is threaded through for the same reason every other number in the app is:
     /// the digit shapes follow the user's preference, not this call site.
-    static func dailyBudgetNote(arabicDigits: Bool) -> LocalizedString {
+    static func dailyBudgetNote(count: Int, arabicDigits: Bool) -> LocalizedString {
         func notices(_ language: AppLanguage) -> String {
             ReportPresentation.countedNoun(
-                NotificationBudget.dailyNonMedLimit, language: language, arabicDigits: arabicDigits,
+                count, language: language, arabicDigits: arabicDigits,
                 enSingular: "notification", enPlural: "notifications",
                 arOne: "إشعاراً واحداً", arTwo: "إشعارين", arFew: "إشعارات", arMany: "إشعاراً")
         }

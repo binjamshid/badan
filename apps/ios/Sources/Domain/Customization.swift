@@ -96,15 +96,34 @@ public struct NotificationPreference: Codable, Hashable, Sendable {
     public var medicationReminders: Bool
     public var dataPausedAlerts: Bool
     /// EPIC-32 per-class opt-in for the decision-engine classes, keyed by `NotificationClass`'s
-    /// storage code (`readiness`, `windDown`, `deviation`, `exportHealth`, `hydration`). A missing
-    /// key means OFF — every class is opt-in and ships OFF (the existing convention), so an empty
-    /// map is "nothing enabled". `meds` is deliberately NOT keyed here: it keeps using
-    /// `medicationReminders` above so the existing med-reminder wiring and tests are untouched.
+    /// storage code (`readiness`, `windDown`, `deviation`, `exportHealth`, `hydration`,
+    /// `pregnancy`) — i.e. every case of that enum except `meds`. A missing key means OFF — every
+    /// class is opt-in and ships OFF (the existing convention), so an empty map is "nothing
+    /// enabled". `meds` is deliberately NOT keyed here: it keeps using `medicationReminders` above
+    /// so the existing med-reminder wiring and tests are untouched.
     public var classOptIn: [String: Bool]
     /// EPIC-32 quiet-hours window honoured by every non-med decision class. Modeled as one window
     /// (what a user means by "don't notify me at night"); the engine takes it PER class, so a future
     /// per-class override slots in without a schema change.
     public var quietHours: NotificationQuietHours
+    /// How many NON-medication notifications BADAN may send in a local day, across all non-med
+    /// classes combined. Medication reminders are exempt and are never counted here.
+    ///
+    /// This used to be the fixed constant `NotificationBudget.dailyNonMedLimit = 2`, documented in
+    /// several places as "a hard invariant, not a preference". It is now a preference, clamped to
+    /// `dailyNonMedLimitRange`, because a fixed 2 is not actually anti-fatigue once more than two
+    /// classes exist: with the morning and evening anchors both on, every other class the user
+    /// explicitly opted into was starved permanently and silently. The anti-fatigue guarantee is
+    /// preserved by the CLAMP (the user cannot raise it without limit) and by the engine's
+    /// deterministic priority order, not by the number being immovable.
+    ///
+    /// The `didSet` clamps LATER assignments too, not just construction and decode. Callers reach
+    /// this through `AppEnvironment.update { $0.notifications.dailyNonMedLimit = n }`, which writes
+    /// the property directly and would otherwise bypass every clamp the initialisers apply — so
+    /// without this the range would hold only on the paths that happen to go through an init.
+    public var dailyNonMedLimit: Int {
+        didSet { dailyNonMedLimit = Self.clampDailyNonMedLimit(dailyNonMedLimit) }
+    }
 
     // STUB-12: `morningNarrative`/`weeklyDigest`/`dataPausedAlerts` used to default `true` —
     // pre-consenting every user to notification categories that have no delivery mechanism at
@@ -112,10 +131,30 @@ public struct NotificationPreference: Codable, Hashable, Sendable {
     // All four now default `false`; only an explicit, working toggle should ever flip one on.
     public init(morningNarrative: Bool = false, weeklyDigest: Bool = false,
                 medicationReminders: Bool = false, dataPausedAlerts: Bool = false,
-                classOptIn: [String: Bool] = [:], quietHours: NotificationQuietHours = .defaultNight) {
+                classOptIn: [String: Bool] = [:], quietHours: NotificationQuietHours = .defaultNight,
+                dailyNonMedLimit: Int = NotificationPreference.defaultDailyNonMedLimit) {
         self.morningNarrative = morningNarrative; self.weeklyDigest = weeklyDigest
         self.medicationReminders = medicationReminders; self.dataPausedAlerts = dataPausedAlerts
         self.classOptIn = classOptIn; self.quietHours = quietHours
+        self.dailyNonMedLimit = Self.clampDailyNonMedLimit(dailyNonMedLimit)
+    }
+
+    /// The range the daily ceiling may take. 1 so a user who wants exactly one notice a day can have
+    /// that; 4 so no amount of enthusiasm turns BADAN into a stream. The clamp — not a fixed number —
+    /// is what carries the anti-fatigue promise now.
+    public static let dailyNonMedLimitRange = 1...4
+
+    /// The shipped default. Three, not the historical two: with the morning summary and the evening
+    /// wind-down both enabled, a ceiling of 2 leaves every other class permanently starved, so 2 was
+    /// silently a two-class product.
+    public static let defaultDailyNonMedLimit = 3
+
+    /// Force a limit into `dailyNonMedLimitRange`. Applied on BOTH construction and decode: a
+    /// persisted profile is not a trusted input (an older build, a hand-edited export, a future
+    /// build's wider range read by an older one), and a 0 or a 99 arriving from storage would break
+    /// the ceiling exactly where nobody is looking.
+    public static func clampDailyNonMedLimit(_ value: Int) -> Int {
+        min(max(value, dailyNonMedLimitRange.lowerBound), dailyNonMedLimitRange.upperBound)
     }
 
     // STUB-12: tolerant decode — any of these fields missing from a persisted profile (an older
@@ -132,6 +171,13 @@ public struct NotificationPreference: Codable, Hashable, Sendable {
         dataPausedAlerts = try c.decodeIfPresent(Bool.self, forKey: .dataPausedAlerts) ?? false
         classOptIn = try c.decodeIfPresent([String: Bool].self, forKey: .classOptIn) ?? [:]
         quietHours = try c.decodeIfPresent(NotificationQuietHours.self, forKey: .quietHours) ?? .defaultNight
+        // Clamped here too, not just in the memberwise init — see `clampDailyNonMedLimit`. Note
+        // this decode is hand-written precisely so a field added later (like this one) reads as its
+        // default on an older profile instead of failing the whole `CustomizationProfile`; a new
+        // field added ONLY to the memberwise init above would decode as garbage and the compiler
+        // would not say a word.
+        dailyNonMedLimit = Self.clampDailyNonMedLimit(
+            try c.decodeIfPresent(Int.self, forKey: .dailyNonMedLimit) ?? Self.defaultDailyNonMedLimit)
     }
 }
 

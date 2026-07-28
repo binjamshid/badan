@@ -209,7 +209,7 @@ final class PregnancyModuleServicesTests: XCTestCase {
     ///    see that method's own doc) and its identifier prefix is the real, non-empty prefix a
     ///    future producer's requests would need to carry for this cancellation to ever find them.
     /// 3. `.pregnancy` is deliberately absent from `NotificationClass.userFacing` (see that case's
-    ///    own doc) — this cancellation path must work independent of the ≤2/day budget engine and
+    ///    own doc) — this cancellation path must work independent of the daily budget engine and
     ///    independent of any settings toggle.
     func testDeclareLossCompletesAndTheNotificationSuppressionWiringIsCorrect() async throws {
         XCTAssertFalse(NotificationClass.pregnancy.isMedication,
