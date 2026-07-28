@@ -52,11 +52,21 @@ public final class WorkoutSessionCoordinator {
     /// shutdown. The UI must surface this and let the user explicitly `resumeFromRecoverableDraft()`
     /// or `discardRecoverableDraft()` — never silently resumed (`WorkoutStateMachine`'s own doc).
     public private(set) var recoverableDraft: WorkoutCheckpoint?
+    /// EPIC-42 interval engine. The structured plan the person chose before starting, or nil for an
+    /// open workout (the overwhelmingly common case). Set by `start(activityType:plan:)` and never
+    /// changed mid-session: editing the structure while running would invalidate every segment
+    /// already recorded against it.
+    public private(set) var intervalPlan: IntervalPlan?
+    /// Where the session currently sits inside `intervalPlan`, recomputed from
+    /// `elapsedActiveSeconds` on every tick. `nil` when there is no plan, or when the plan has run
+    /// past its end — which does NOT end the session; see `IntervalEngine.position`.
+    public private(set) var intervalPosition: IntervalPosition?
 
     // MARK: - Dependencies
 
     private let checkpointRepository: WorkoutCheckpointRepository
     private let strengthSetRepository: StrengthSetRepository
+    private let intervalRepository: WorkoutIntervalRepository?
     private let measurementRepository: MeasurementRepository
     private let derivationRepository: DerivationRepository
     private let deviceId: String
@@ -74,11 +84,18 @@ public final class WorkoutSessionCoordinator {
     /// sparse, avg/max HR rather than none at all; never a substitute for a real continuous trace.
     private var hrReadings: [Double] = []
 
+    /// `intervalRepository` is optional so every existing call site and test that constructs a
+    /// coordinator without one keeps working unchanged — with it nil, a structured plan still runs
+    /// and still drives the live screen, its segments simply are not persisted. That degradation is
+    /// the same "no repository, no recording, everything else works" contract `IngestionPipeline`
+    /// already uses for its optional dependencies.
     init(checkpointRepository: WorkoutCheckpointRepository, strengthSetRepository: StrengthSetRepository,
          measurementRepository: MeasurementRepository, derivationRepository: DerivationRepository,
-         healthStore: HealthStorePort?, deviceId: String, clock: Clock) {
+         healthStore: HealthStorePort?, deviceId: String, clock: Clock,
+         intervalRepository: WorkoutIntervalRepository? = nil) {
         self.checkpointRepository = checkpointRepository
         self.strengthSetRepository = strengthSetRepository
+        self.intervalRepository = intervalRepository
         self.measurementRepository = measurementRepository
         self.derivationRepository = derivationRepository
         self.deviceId = deviceId
@@ -134,7 +151,7 @@ public final class WorkoutSessionCoordinator {
 
     // MARK: - Actions
 
-    public func start(activityType: String) throws {
+    public func start(activityType: String, plan: IntervalPlan? = nil) throws {
         if let machine, !machine.state.isTerminal {
             throw WorkoutStateMachineError.illegalTransition(from: machine.state, event: .begin)
         }
@@ -145,6 +162,11 @@ public final class WorkoutSessionCoordinator {
         strengthSets = []
         liveHeartRateBpm = nil
         hrReadings.removeAll()
+        // EPIC-42: fixed for the life of the session (see `intervalPlan`'s own doc). Position is
+        // primed at zero rather than left nil so the live screen has the first segment to draw
+        // during the countdown, before any tick has fired.
+        intervalPlan = plan
+        intervalPosition = plan.flatMap { IntervalEngine.position(in: $0, elapsed: 0) }
 
         // `.begin` ONLY — leaves the machine (and the observable `lifecycleState`) sitting at
         // `.preparing`. FIX 4: this used to also apply `.countdownFinished` immediately, back to
@@ -278,6 +300,16 @@ public final class WorkoutSessionCoordinator {
                                                           originDeviceId: deviceId)
             }
             try measurementRepository.upsertSession(session)
+            // EPIC-42: only the segments that actually FINISHED (see
+            // `IntervalEngine.completedSegments`) — a plan abandoned in round 3 records three
+            // rounds, never the eight it planned. Inside the same transaction as the session row,
+            // so a session can never persist with a partial set of its own segments.
+            if let intervalRepository, let intervalPlan {
+                let segments = IntervalEngine.completedSegments(
+                    in: intervalPlan, elapsed: machine.accumulatedActiveSeconds,
+                    sessionId: sessionId, startedAt: machine.startedAt, originDeviceId: deviceId)
+                for segment in segments { try intervalRepository.insert(segment) }
+            }
         }
         try checkpointRepository.clear(sessionId: sessionId)
 
@@ -359,6 +391,11 @@ public final class WorkoutSessionCoordinator {
         lifecycleState = machine.state
         degradedConditions = machine.degradedConditions
         elapsedActiveSeconds = machine.accumulatedActiveSeconds
+        // EPIC-42: derived from the machine's own clock on every sync, never from a second timer.
+        // `elapsedActiveSeconds` excludes paused time by construction, which is the behaviour an
+        // interval plan needs — pausing mid-round must hold the round, not let it run out while
+        // the person is standing still.
+        intervalPosition = intervalPlan.flatMap { IntervalEngine.position(in: $0, elapsed: machine.accumulatedActiveSeconds) }
     }
 
     private func refreshStrengthSets() {

@@ -256,6 +256,10 @@ enum LabRoute: Hashable, Identifiable {
     case ocrReview(String)
     case manualEntry(prefill: [OCRFieldExtraction], sourceDocumentId: String?)
     case export
+    /// LAB-11. Its own route rather than a sheet on the scan dialog: importing from Apple Health is
+    /// a different ingestion path from scanning a document, with its own consent and its own
+    /// honesty copy, and burying it under "scan or import a report" would misdescribe it.
+    case clinicalImport
 
     var id: String {
         switch self {
@@ -264,6 +268,7 @@ enum LabRoute: Hashable, Identifiable {
         case .ocrReview(let id): return "ocr:\(id)"
         case .manualEntry(_, let docId): return "manualEntry:\(docId ?? "blank")"
         case .export: return "export"
+        case .clinicalImport: return "clinicalImport"
         }
     }
 
@@ -276,6 +281,7 @@ enum LabRoute: Hashable, Identifiable {
         case .manualEntry(let prefill, let sourceDocumentId):
             ManualEntryScreen(services: services, prefill: prefill, sourceDocumentId: sourceDocumentId)
         case .export: LabExportScreen(services: services)
+        case .clinicalImport: ClinicalRecordsImportScreen(store: HealthKitClinicalStore())
         }
     }
 }
@@ -394,6 +400,12 @@ struct LabNotebookHomeScreen: View {
 
             Button { showScanOptions = true } label: {
                 LabActionTile(title: env.s(LabHomeStrings.scanReport), systemImage: "doc.viewfinder")
+            }
+            .buttonStyle(.plain)
+
+            // LAB-11. A third way data enters the notebook, alongside manual entry and scanning.
+            Button { route = .clinicalImport } label: {
+                LabActionTile(title: env.s(ClinicalImportStrings.openImport), systemImage: "heart.text.square")
             }
             .buttonStyle(.plain)
         }
