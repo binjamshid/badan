@@ -105,6 +105,10 @@ struct NotificationsSettingsScreen: View {
                         quietHoursRow
                         settingsDivider
                         dailyLimitRow
+                        settingsDivider
+                        SettingsToggleRow(title: SettingsStrings.notifShowValues,
+                                          subtitle: SettingsStrings.notifShowValuesHint,
+                                          isOn: showValuesBinding)
                         if notificationsDeniedAtSystemLevel { systemOffNote }
                         // The daily budget, stated as the kindness it is (never alarmist), and
                         // quoting the user's own ceiling rather than a constant.
@@ -277,6 +281,16 @@ struct NotificationsSettingsScreen: View {
                     Task { await NotificationScheduler.shared.cancelDecisionNotifications(cls) }
                 }
             }
+        )
+    }
+
+    /// The lock-screen values choice, offered once in onboarding and changeable here. No reconcile:
+    /// this changes what a notification SAYS, not whether or when one is scheduled, and the copy is
+    /// resolved at delivery time from the live preference.
+    private var showValuesBinding: Binding<Bool> {
+        Binding(
+            get: { env.profile.notifications.showValuesInNotifications },
+            set: { newValue in env.update { $0.notifications.showValuesInNotifications = newValue } }
         )
     }
 

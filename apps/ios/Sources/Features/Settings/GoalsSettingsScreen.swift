@@ -123,17 +123,16 @@ final class GoalsViewModel {
         }
     }
 
-    /// The most recent canonical reading for a metric, whichever shape it's stored in.
+    /// The most recent canonical reading for a metric. Delegates to `GoalMetricValue`, which the
+    /// `goalReached` notification producer also uses — one implementation, so the two surfaces
+    /// cannot disagree about whether a goal has been reached.
     ///
-    /// Goals can target any metric in the ontology, and the ontology stores values three ways:
-    /// interval aggregates (steps, energy), instant samples (weight, HR) and engine-derived
-    /// values (readiness, sleep score). Checking all three — rather than assuming one — is what
-    /// lets a goal be set on any metric instead of an arbitrary subset.
+    /// (The doc this replaced listed "sleep score" among the derived values. No such metric is
+    /// produced: the engine emits `sleep.performance` and `sleep.consistency` separately, and the
+    /// `sleep.score` id in `registry.json` has no algorithm entry and no producer.)
     private static func currentValue(for metricId: String, env: AppEnvironment) -> Double? {
-        if let interval = try? env.measurements.latestInterval(metricId: metricId) { return interval.value }
-        if let sample = try? env.measurements.rawSamples(metricId: metricId).last { return sample.value }
-        if let derived = try? env.derivation.latestDerivedSeries(metricId: metricId).last { return derived.value }
-        return nil
+        GoalMetricValue.current(for: metricId, measurements: env.measurements,
+                                derivation: env.derivation)
     }
 
     @discardableResult

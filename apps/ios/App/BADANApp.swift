@@ -90,7 +90,16 @@ struct BADANApp: App {
                 // the next day's — a warm-launched app that is never terminated would notify once
                 // and then go quiet. Idempotent per class+day via the ledger, a no-op for a user
                 // with every class OFF (the default), and it never prompts.
-                Task { await env.reconcileDecisionNotifications() }
+                // Sequenced in one task, not two: reconcile books today's fixed-hour slots, and the
+                // wake evaluation may then MOVE the morning summary's booking to the moment the
+                // user actually woke. Racing them would let the wake evaluation read the ledger
+                // before reconcile had written the row it needs to retarget.
+                Task {
+                    await env.reconcileDecisionNotifications()
+                    // A missed background wake self-heals here: if the phone was locked when the
+                    // watch synced the night, this is the first moment the app can read it.
+                    await env.evaluateEventDrivenNotifications()
+                }
             case .background:
                 let database = env.database
                 // EPIC-04: arm the next best-effort wake. Not a schedule and not a promise —

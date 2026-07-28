@@ -37,6 +37,16 @@ enum NotificationClass: String, CaseIterable, Sendable {
     /// `exportHealthAlert` already establish above. Deliberately NOT in `userFacing` for the
     /// identical reason those two are absent from it.
     case pregnancy = "pregnancy"
+    /// A goal the user set has been reached. Additive: `notification_deliveries.notification_class`
+    /// is bare `TEXT NOT NULL` with no CHECK constraint (migration v8), so a new code needs no
+    /// migration.
+    ///
+    /// There is deliberately no `goalAtRisk` sibling. `GoalEvaluation`'s own doc states the rule
+    /// this module is held to — "There is no scoring, no streak and no judgement here by design:
+    /// BADAN describes, it doesn't grade" — and telling someone they are behind while there is still
+    /// time is a nudge, not a description. Reaching a goal is a fact that happened; being behind one
+    /// is a verdict on the day so far.
+    case goalReached = "goalReached"
 
     /// Medication reminders are exempt from the daily non-med budget AND are never evicted to make
     /// room for a score/hydration notice. A med reminder is a safety-relevant thing the user
@@ -78,7 +88,10 @@ enum NotificationClass: String, CaseIterable, Sendable {
     ///   `exportHealthAlert`'s deep link (see `NotificationScheduler.notifyAutomationPaused`).
     ///
     /// Add a class here in the same change that gives it a producer, never before.
-    static let userFacing: [NotificationClass] = [.morningReadinessSummary, .eveningWindDown, .hydration]
+    static let userFacing: [NotificationClass] = [
+        .morningReadinessSummary, .eveningWindDown, .hydration,
+        .deviationNotice, .goalReached, .exportHealthAlert,
+    ]
 
     // MARK: Producer categories
     //
@@ -95,7 +108,7 @@ enum NotificationClass: String, CaseIterable, Sendable {
 
     /// Classes raised through `AppEnvironment.raiseDecisionNotification` at the moment the thing
     /// they describe actually happens, and budgeted like any other non-med notice.
-    static let eventDriven: [NotificationClass] = [.deviationNotice]
+    static let eventDriven: [NotificationClass] = [.deviationNotice, .goalReached]
 
     /// Classes whose producer deliberately bypasses this engine and is NOT budgeted. Only
     /// `exportHealthAlert`: `NotificationScheduler.notifyAutomationPaused` raises it directly,
@@ -120,8 +133,9 @@ enum NotificationClass: String, CaseIterable, Sendable {
         case .morningReadinessSummary: return 2
         case .eveningWindDown: return 3
         case .deviationNotice: return 4
-        case .hydration: return 5
-        case .pregnancy: return 6
+        case .goalReached: return 5
+        case .hydration: return 6
+        case .pregnancy: return 7
         }
     }
 
@@ -135,6 +149,7 @@ enum NotificationClass: String, CaseIterable, Sendable {
         case .hydration: return .hydration
         case .meds: return .meds
         case .pregnancy: return .pregnancy
+        case .goalReached: return .goals
         }
     }
 }
@@ -152,6 +167,8 @@ enum NotificationDeepLink: String, Sendable, Equatable, CaseIterable {
     case exportHealth
     case hydration
     case meds
+    /// Goals live on the Settings surface (`GoalsSettingsScreen`), so this resolves to that tab.
+    case goals
     /// A18/ADR-0010/D-25 (EPIC-40). See `NotificationClass.pregnancy`'s own doc — no producer opens
     /// this deep link yet in this P0 slice; it exists so `NotificationClass.pregnancy.deepLink`
     /// resolves to something real.
@@ -171,6 +188,7 @@ enum NotificationDeepLink: String, Sendable, Equatable, CaseIterable {
         case .healthMonitor: return .body
         case .exportHealth: return .today   // Export Center is reached from Home (Today).
         case .hydration, .meds, .pregnancy: return .log   // the pregnancy tile lives on Log, like cycle's.
+        case .goals: return .settings   // `GoalsSettingsScreen` is reached from Settings.
         }
     }
 }
@@ -404,11 +422,81 @@ enum NotificationDecisionEngine {
 /// discipline `MedicationReminderCopy` follows), and the register is calm and never alarmist
 /// (D-11 wellness language) — a shifted reading is "a little different", never "abnormal". Copy is
 /// hand-written in both languages, not machine-literal.
+/// The readings a notification may name on the lock screen, when — and only when — the user has
+/// turned `NotificationPreference.showValuesInNotifications` on.
+///
+/// Every field arrives ALREADY FORMATTED in both languages. The producer builds them, because it is
+/// the only layer that knows the user's numeral shapes and unit preferences (`ValueFormatter`);
+/// this copy layer never formats a number itself, so there is no second, drifting implementation of
+/// how BADAN renders one.
+///
+/// Naming discipline, which is the whole reason these fields are spelled out rather than lumped
+/// into one "score": there is NO 0–100 sleep score in this app. `SleepIntelligenceEngine` produces
+/// `sleep.performance` (actual ÷ need, a percentage) and `sleep.consistency` (0–100 timing
+/// regularity) as separate outputs, and `registry.json` reserves a `sleep.score` id that has no
+/// algorithm entry and no producer at all. Copy that said "sleep score" would name a metric this
+/// app does not compute.
+struct NotificationValues: Equatable, Sendable {
+    /// Readiness, already rendered (e.g. "Readiness 68" / "الجاهزية ٦٨").
+    var readiness: LocalizedString?
+    /// Sleep performance against need, already rendered — never called a score.
+    var sleepPerformance: LocalizedString?
+    /// A reached goal, already rendered.
+    var goal: LocalizedString?
+
+    var isEmpty: Bool { readiness == nil && sleepPerformance == nil && goal == nil }
+
+    /// The value phrase that prefixes `cls`'s body, or `nil` when this class has nothing to say —
+    /// in which case the caller falls back to the value-free copy rather than emitting a dangling
+    /// separator or an empty sentence.
+    ///
+    /// Only the classes that genuinely have a reading behind them appear here. A class absent from
+    /// this switch stays value-free even for an opted-in user, which is the honest outcome: opting
+    /// in is permission to show a number, not a promise that one exists.
+    ///
+    func lead(for cls: NotificationClass) -> LocalizedString? {
+        switch cls {
+        case .morningReadinessSummary:
+            return Self.join([readiness, sleepPerformance])
+        case .goalReached:
+            return goal
+        default:
+            return nil
+        }
+    }
+
+    /// Join the present phrases with a middot, per language, ending in a full stop.
+    private static func join(_ parts: [LocalizedString?]) -> LocalizedString? {
+        let present = parts.compactMap { $0 }
+        guard !present.isEmpty else { return nil }
+        return LocalizedString(en: present.map(\.en).joined(separator: " · ") + ".",
+                               ar: present.map(\.ar).joined(separator: " · ") + ".")
+    }
+}
+
 enum NotificationClassCopy {
     /// The lock-screen content (title + body) for a delivered notification of `cls`. `meds` is
     /// handled by the existing `MedicationReminderCopy`; asking here returns it so callers have one
     /// entry point.
-    static func content(_ cls: NotificationClass) -> (title: LocalizedString, body: LocalizedString) {
+    /// - Parameter values: the readings the user has explicitly opted to see on the lock screen
+    ///   (`NotificationPreference.showValuesInNotifications`). `nil` — the default, and the only
+    ///   thing every existing caller passes — returns the value-free copy BYTE-FOR-BYTE, because
+    ///   this function delegates straight to `valueFreeContent` in that case rather than
+    ///   re-deriving the strings. That is a structural guarantee, not a promise to keep two copies
+    ///   of the wording in step.
+    static func content(_ cls: NotificationClass,
+                        values: NotificationValues? = nil) -> (title: LocalizedString, body: LocalizedString) {
+        let base = valueFreeContent(cls)
+        guard let values, let lead = values.lead(for: cls) else { return base }
+        // The value line PREFIXES the existing sentence rather than replacing it, so the calm
+        // register is inherited instead of re-invented for the opted-in variant.
+        return (base.title, LocalizedString(en: "\(lead.en) \(base.body.en)",
+                                            ar: "\(lead.ar) \(base.body.ar)"))
+    }
+
+    /// The lock-screen content that names no reading. This is what the app has always sent and what
+    /// every opted-out user keeps receiving.
+    static func valueFreeContent(_ cls: NotificationClass) -> (title: LocalizedString, body: LocalizedString) {
         let title = LocalizedString(en: "BADAN", ar: "بدن")
         switch cls {
         case .morningReadinessSummary:
@@ -442,6 +530,14 @@ enum NotificationClassCopy {
             return (title, LocalizedString(
                 en: "There's an update in your pregnancy tracking.",
                 ar: "هناك تحديث في متابعة حملك."))
+        case .goalReached:
+            // States the fact and stops. No "Well done", no "Congratulations", no streak, no badge,
+            // no emoji — `GoalEvaluation`'s doc is explicit that BADAN describes rather than grades,
+            // and praise for hitting a number is grading with a friendlier face. It also implies the
+            // inverse on every day the goal is missed, which is the part that does the damage.
+            return (title, LocalizedString(
+                en: "You reached a goal you set today.",
+                ar: "بلغت اليوم هدفاً حدّدته."))
         }
     }
 
@@ -477,6 +573,10 @@ enum NotificationClassCopy {
             return (LocalizedString(en: "Pregnancy tracking updates", ar: "تحديثات متابعة الحمل"),
                     LocalizedString(en: "Not available in this version yet.",
                                     ar: "غير متاحة في هذا الإصدار بعد."))
+        case .goalReached:
+            return (LocalizedString(en: "Goal reached", ar: "بلوغ الهدف"),
+                    LocalizedString(en: "A note when you reach a goal you set. Never a score or a streak.",
+                                    ar: "ملاحظة عند بلوغك هدفاً حدّدته. دون أي تقييم أو تتابع."))
         }
     }
 

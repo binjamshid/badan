@@ -276,6 +276,24 @@ final class BackgroundCoordinator {
     /// *completed* week whenever a wake lands after that week ended, plus a bounded backfill for
     /// weeks a run of missed wakes skipped entirely (see `ReportTrigger`).
     private let reports: ReportGenerationService?
+    /// Called after an ingest actually wrote something, so a producer that reacts to fresh data (the
+    /// wake-triggered morning summary) can run without the user opening the app.
+    ///
+    /// Optional and defaulted to nil for exactly the reason `automation` and `reports` are: every
+    /// existing construction site and test keeps compiling and behaving unchanged, and a build
+    /// without it simply falls back to the foreground evaluation.
+    ///
+    /// A closure rather than a reference to `AppEnvironment`: this type is deliberately off the main
+    /// actor — it is driven from HealthKit's and `BGTaskScheduler`'s own queues — and it holds no
+    /// app state by design. The composition root supplies a closure that hops to the main actor
+    /// itself, which keeps that hop in the one place that already knows about actor isolation.
+    ///
+    /// A `var` rather than a `let`, unlike its two sibling collaborators, for one concrete reason:
+    /// the composition root's closure captures `AppEnvironment`, and this coordinator is assigned to
+    /// one of that type's own stored properties — so at the point of construction `self` is not yet
+    /// fully initialised and cannot be captured. It is set on the very next line instead. The
+    /// constructor parameter is kept for tests, which have no such cycle.
+    var onIngestCompleted: (() -> Void)?
 
     private let lock = NSLock()
     private var observers: HealthKitObserverRegistrar?
@@ -291,7 +309,8 @@ final class BackgroundCoordinator {
          checkpoints: BackgroundCheckpointStore = BackgroundCheckpointStore(),
          dispatcher: BackgroundWorkDispatching = AssertedWorkDispatcher(),
          automation: AutomationEngine? = nil,
-         reports: ReportGenerationService? = nil) {
+         reports: ReportGenerationService? = nil,
+         onIngestCompleted: (() -> Void)? = nil) {
         self.runs = runs
         self.clock = clock
         self.ingest = ingest
@@ -300,6 +319,7 @@ final class BackgroundCoordinator {
         self.dispatcher = dispatcher
         self.automation = automation
         self.reports = reports
+        self.onIngestCompleted = onIngestCompleted
     }
 
     // MARK: - App lifecycle wiring
@@ -470,6 +490,17 @@ final class BackgroundCoordinator {
 
         record(kind: .hkObserverWake, startedAt: signal.wokeAt, outcome: outcome, counts: counts,
                completionHandlerCalledInMs: signal.completionHandlerCalledInMs)
+
+        // Only on `.completed`: `.throttled` wrote nothing, and `.storeLocked` did not even read.
+        // Note what this means for a watch-synced night on a LOCKED phone — the lock check above
+        // returns before HealthKit is touched, so there is no ingest and no notification here. The
+        // summary is produced at first unlock by the foreground evaluation instead. That is iOS
+        // data protection, not a gap to work around.
+        //
+        // The counts cannot say whether SLEEP specifically changed — they are undifferentiated
+        // totals, and `insightDays` is a constant — so this is a plain "something landed" signal and
+        // the producer re-reads the sessions table to decide anything.
+        if outcome == .completed { onIngestCompleted?() }
     }
 
     // MARK: - BGAppRefreshTask (light)

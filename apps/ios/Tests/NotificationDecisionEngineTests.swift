@@ -65,21 +65,20 @@ final class NotificationDecisionEngineTests: XCTestCase {
     /// a promise; offering it with no producer behind it is a lie the user cannot detect, because the
     /// failure mode is silence — indistinguishable from "nothing drifted."
     ///
-    /// `deviationNotice` and `exportHealthAlert` are registered for the ledger vocabulary and their
-    /// deep links, but nothing calls `raiseDecisionNotification`, so neither may be offered. The
-    /// automation-pause notice does not count: it is unbudgeted, ungated by any of these toggles, and
-    /// merely borrows `exportHealthAlert`'s deep link.
+    /// `deviationNotice`, `goalReached` and `exportHealthAlert` all gained producers in the same
+    /// change that added them here — `evaluateDeviationNotice`, `evaluateGoalReached`, and the
+    /// now-gated `notifyAutomationPaused` respectively. `pregnancy` is still registered without one
+    /// and so is still absent.
     ///
     /// Mirrors Android's `everyUserFacingClassHasAProducerBehindIt`. When a producer lands, this
     /// assertion moves in the same change that adds the toggle — deliberately, never silently.
     func testEveryUserFacingClassHasAProducerBehindIt() {
         XCTAssertEqual(NotificationClass.userFacing,
-                       [.morningReadinessSummary, .eveningWindDown, .hydration],
+                       [.morningReadinessSummary, .eveningWindDown, .hydration,
+                        .deviationNotice, .goalReached, .exportHealthAlert],
                        "a class may be offered in Settings only once something schedules it")
-        for cls in [NotificationClass.deviationNotice, .exportHealthAlert] {
-            XCTAssertFalse(NotificationClass.userFacing.contains(cls),
-                           "\(cls) has no producer — a toggle would promise a notice that never arrives")
-        }
+        XCTAssertFalse(NotificationClass.userFacing.contains(.pregnancy),
+                       "pregnancy has no producer — a toggle would promise a notice that never arrives")
         XCTAssertFalse(NotificationClass.userFacing.contains(.meds),
                        "meds keep their own section and their own existing preference")
         XCTAssertTrue(NotificationClass.userFacing.allSatisfy(\.countsAgainstDailyBudget),
@@ -444,6 +443,80 @@ final class NotificationDecisionEngineTests: XCTestCase {
                 XCTAssertFalse(s.contains("}"))
             }
         }
+    }
+
+    // MARK: - Lock-screen values (opt-in; default must be byte-identical)
+
+    /// THE privacy regression guard. Every existing user is opted out, and every existing test was
+    /// written against the value-free wording — so `values: nil` must return exactly what the app
+    /// sent before this feature existed, for every class, in both languages.
+    func testValueFreeCopyIsUnchangedForEveryClass() {
+        for cls in NotificationClass.allCases {
+            let withNil = NotificationClassCopy.content(cls)
+            let base = NotificationClassCopy.valueFreeContent(cls)
+            XCTAssertEqual(withNil.title.en, base.title.en)
+            XCTAssertEqual(withNil.title.ar, base.title.ar)
+            XCTAssertEqual(withNil.body.en, base.body.en, "\(cls) opted-out copy must not change")
+            XCTAssertEqual(withNil.body.ar, base.body.ar, "\(cls) opted-out copy must not change")
+        }
+    }
+
+    /// An empty payload is not the same thing as an opted-out user, but it must behave identically:
+    /// opting in is permission to show a number, not a promise that one exists, so a class with
+    /// nothing to say falls back to the value-free sentence rather than emitting a stray separator.
+    func testAnEmptyOrIrrelevantPayloadFallsBackToValueFreeCopy() {
+        let empty = NotificationValues()
+        XCTAssertTrue(empty.isEmpty)
+        for cls in NotificationClass.allCases {
+            XCTAssertEqual(NotificationClassCopy.content(cls, values: empty).body.en,
+                           NotificationClassCopy.valueFreeContent(cls).body.en,
+                           "\(cls) must stay value-free when there is no value to show")
+        }
+        // A payload that IS populated, but for a class that shows nothing, also falls back.
+        let populated = NotificationValues(readiness: LocalizedString(en: "Readiness 68", ar: "الجاهزية ٦٨"))
+        XCTAssertEqual(NotificationClassCopy.content(.hydration, values: populated).body.en,
+                       NotificationClassCopy.valueFreeContent(.hydration).body.en)
+    }
+
+    func testOptedInCopyNamesTheReadingAndKeepsTheCalmSentence() {
+        let values = NotificationValues(
+            readiness: LocalizedString(en: "Readiness 68", ar: "الجاهزية ٦٨"),
+            sleepPerformance: LocalizedString(en: "Sleep 92% of need", ar: "النوم ٩٢٪ من حاجتك"))
+        let body = NotificationClassCopy.content(.morningReadinessSummary, values: values).body
+        XCTAssertTrue(body.en.contains("Readiness 68"))
+        XCTAssertTrue(body.en.contains("Sleep 92% of need"))
+        XCTAssertTrue(body.ar.contains("الجاهزية ٦٨"))
+        // The existing calm sentence is inherited, not replaced — the opted-in variant must not
+        // invent its own register.
+        XCTAssertTrue(body.en.hasSuffix(NotificationClassCopy.valueFreeContent(.morningReadinessSummary).body.en))
+        XCTAssertTrue(body.ar.hasSuffix(NotificationClassCopy.valueFreeContent(.morningReadinessSummary).body.ar))
+    }
+
+    /// There is no 0–100 "sleep score" in this app: the engine produces `sleep.performance`
+    /// (actual ÷ need) and `sleep.consistency` (timing regularity) as separate outputs, and the
+    /// `sleep.score` id reserved in `registry.json` has no algorithm entry and no producer. Copy
+    /// must never name a metric BADAN does not compute.
+    func testCopyNeverClaimsASleepScore() {
+        for cls in NotificationClass.allCases {
+            for s in [NotificationClassCopy.valueFreeContent(cls).body.en,
+                      NotificationClassCopy.settingsRow(cls).hint.en] {
+                XCTAssertFalse(s.lowercased().contains("sleep score"),
+                               "\(cls) names a metric this app does not produce")
+            }
+        }
+    }
+
+    /// The privacy default must survive a profile that predates the setting, and must never decode
+    /// as granted.
+    func testShowValuesDefaultsOffAndDecodesOff() throws {
+        XCTAssertFalse(NotificationPreference().showValuesInNotifications)
+        let legacy = Data(#"{"medicationReminders":true}"#.utf8)
+        XCTAssertFalse(try JSONDecoder().decode(NotificationPreference.self, from: legacy)
+                        .showValuesInNotifications,
+                       "a choice the user has not made must decode as not made, never as consent")
+        let granted = Data(#"{"showValuesInNotifications":true}"#.utf8)
+        XCTAssertTrue(try JSONDecoder().decode(NotificationPreference.self, from: granted)
+                        .showValuesInNotifications)
     }
 
     /// Arabic 2 takes the DUAL, not the plural. The budget note used to read "يرسل «بدن» 2 إشعارات":
