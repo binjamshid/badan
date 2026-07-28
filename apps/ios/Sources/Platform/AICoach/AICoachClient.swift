@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// A single chat turn, mirroring `backend/api/main.py`'s `ChatMessage` contract exactly: `role`
@@ -33,6 +34,12 @@ enum AICoachError: Error, Equatable {
     /// limited, 502 = upstream LLM unavailable, etc.) — the raw status is kept so a caller can
     /// tell a rate limit apart from an outage if it ever needs to.
     case serverError(status: Int)
+    /// App Attest is unavailable on this device, so registration cannot prove the app is
+    /// genuine and the server will not issue a token. The honest cases are the simulator and
+    /// a device where the platform declines to vend `DCAppAttestService`; it is a distinct
+    /// case from `serverError` because it is not a failure the user can retry their way out
+    /// of, and the consent screen should say so rather than offering "try again".
+    case attestationUnavailable
 }
 
 /// Transport seam for `AICoachClient` — a protocol so tests can mock the network layer without a
@@ -70,13 +77,19 @@ struct AICoachClient {
 
     private let transport: AICoachTransporting
     private let tokenStore: AICoachDeviceTokenStoring
+    private let attestor: AICoachAttesting
+    private let attestKeyStore: AICoachAttestKeyStoring
     private let baseURL: URL
 
     init(transport: AICoachTransporting = URLSessionAICoachTransport(),
          tokenStore: AICoachDeviceTokenStoring = KeychainAICoachDeviceTokenStore(),
+         attestor: AICoachAttesting = DeviceCheckAICoachAttestor(),
+         attestKeyStore: AICoachAttestKeyStoring = KeychainAICoachAttestKeyStore(),
          baseURL: URL = URL(string: AICoachClient.baseURLString)!) {
         self.transport = transport
         self.tokenStore = tokenStore
+        self.attestor = attestor
+        self.attestKeyStore = attestKeyStore
         self.baseURL = baseURL
     }
 
@@ -86,17 +99,74 @@ struct AICoachClient {
     /// inert state a corrupted/restored install could land in, never a crash.
     var isEnabled: Bool { tokenStore.token() != nil }
 
-    /// `POST /v1/register`: issue a fresh device token and store it in the Keychain. The ONLY
-    /// caller of this should be `AICoachConsentScreen.enableModule()`, and only right before it
-    /// flips `CustomizationProfile.aiCoachEnabled` — this method itself has no opinion on that
-    /// flag, so a failed registration (thrown error) never leaves the flag on with no token
-    /// behind it (the caller simply doesn't flip it).
+    /// Issue a fresh device token and store it in the Keychain. The ONLY caller of this should
+    /// be `AICoachConsentScreen.enableModule()`, and only right before it flips
+    /// `CustomizationProfile.aiCoachEnabled` — this method itself has no opinion on that flag,
+    /// so a failed registration (thrown error) never leaves the flag on with no token behind it
+    /// (the caller simply doesn't flip it).
+    ///
+    /// Three round trips, because the server will not mint a token to an unproven caller:
+    ///   1. `POST /v1/attest/challenge` — a single-use, short-lived challenge.
+    ///   2. App Attest over that challenge, in the Secure Enclave.
+    ///   3. `POST /v2/register` — token issued only if the attestation verifies.
+    ///
+    /// The extra hops are the point: `/v1/register` (still live, retiring — see
+    /// `backend/api/main.py`) hands a token to anyone who asks, which is what left OpenRouter
+    /// spend bounded only by a rate limiter. Nothing here sends user data of any kind; the key
+    /// id is a random per-install value with no identity attached, so ADR-0002 is unchanged.
     @discardableResult
     func register() async throws -> String {
-        var request = URLRequest(url: baseURL.appendingPathComponent("v1/register"))
+        guard attestor.isSupported else { throw AICoachError.attestationUnavailable }
+
+        let challenge = try await fetchAttestChallenge()
+
+        // Reuse this install's existing key when there is one. A fresh key per opt-in would
+        // turn the server's per-key token budget into no budget at all (see
+        // `AICoachAttestKeyStoring`).
+        let keyId: String
+        if let existing = attestKeyStore.keyId() {
+            keyId = existing
+        } else {
+            do {
+                keyId = try await attestor.generateKey()
+            } catch {
+                throw AICoachError.attestationUnavailable
+            }
+            attestKeyStore.store(keyId)
+        }
+
+        // The server hashes the challenge the same way (`clientDataHash = SHA256(challenge)`)
+        // and expects that hash inside the attestation's nonce. The two must agree exactly.
+        guard let challengeData = Data(base64Encoded: challenge) else {
+            throw AICoachError.decodingError
+        }
+        let attestation: Data
+        do {
+            attestation = try await attestor.attestKey(
+                keyId, clientDataHash: Data(SHA256.hash(data: challengeData))
+            )
+        } catch {
+            throw AICoachError.attestationUnavailable
+        }
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("v2/register"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data("{}".utf8)
+        struct AttestedRegisterBody: Encodable {
+            let key_id: String
+            let challenge: String
+            let attestation: String
+        }
+        // `keyId` from DeviceCheck is already base64 of the raw 32-byte key id, which is the
+        // form the server decodes — passing it through unchanged is deliberate, not a missed
+        // re-encoding.
+        request.httpBody = try JSONEncoder().encode(
+            AttestedRegisterBody(
+                key_id: keyId,
+                challenge: challenge,
+                attestation: attestation.base64EncodedString()
+            )
+        )
 
         let (data, http) = try await performSend(request)
         guard (200...299).contains(http.statusCode) else {
@@ -113,6 +183,24 @@ struct AICoachClient {
             throw AICoachError.decodingError
         }
         return decoded.token
+    }
+
+    /// `POST /v1/attest/challenge` — returns the base64 challenge string verbatim, because it
+    /// has to go back to the server in exactly the form it arrived.
+    private func fetchAttestChallenge() async throws -> String {
+        var request = URLRequest(url: baseURL.appendingPathComponent("v1/attest/challenge"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let (data, http) = try await performSend(request)
+        guard (200...299).contains(http.statusCode) else {
+            throw AICoachError.serverError(status: http.statusCode)
+        }
+        struct ChallengeResponse: Decodable { let challenge: String }
+        guard let decoded = try? JSONDecoder().decode(ChallengeResponse.self, from: data) else {
+            throw AICoachError.decodingError
+        }
+        return decoded.challenge
     }
 
     /// `POST /v1/chat`: send the full turn history (system/context + prior turns + the new query)

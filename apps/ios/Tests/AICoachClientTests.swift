@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import BADAN
 
@@ -8,30 +9,137 @@ import XCTest
 final class AICoachClientTests: XCTestCase {
 
     // MARK: - register()
+    //
+    // Registration is App Attest-gated (2026-07-28): challenge → attest → /v2/register. The
+    // server will not mint a token without a verifying attestation, so these tests always
+    // supply a `MockAICoachAttestor` — the real `DCAppAttestService` reports unsupported on
+    // the simulator, which is exactly why the seam exists.
 
-    func testRegisterStoresTheReturnedTokenAndPostsToTheRegisterEndpoint() async throws {
-        let transport = MockAICoachTransport(responses: [
-            .success(status: 200, json: ["token": "fresh-token-abc"]),
-        ])
+    /// The canned two-response sequence a successful registration consumes.
+    private func registerResponses(token: String = "fresh-token-abc",
+                                   challenge: String = "Y2hhbGxlbmdlLWJ5dGVz") -> [MockAICoachTransport.Response] {
+        [
+            .success(status: 200, json: ["challenge": challenge]),
+            .success(status: 200, json: ["token": token]),
+        ]
+    }
+
+    func testRegisterAttestsAgainstAServerChallengeAndPostsToTheAttestedEndpoint() async throws {
+        let transport = MockAICoachTransport(responses: registerResponses())
         let tokenStore = InMemoryAICoachDeviceTokenStore()
-        let client = AICoachClient(transport: transport, tokenStore: tokenStore,
+        let attestor = MockAICoachAttestor(keyId: "a2V5LWlkLWJ5dGVz")
+        let client = AICoachClient(transport: transport, tokenStore: tokenStore, attestor: attestor,
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
                                    baseURL: URL(string: "https://coach.test")!)
 
         let token = try await client.register()
 
         XCTAssertEqual(token, "fresh-token-abc")
         XCTAssertEqual(tokenStore.token(), "fresh-token-abc")
-        XCTAssertEqual(transport.captured.count, 1)
-        XCTAssertEqual(transport.captured[0].url?.absoluteString, "https://coach.test/v1/register")
-        XCTAssertEqual(transport.captured[0].httpMethod, "POST")
-        XCTAssertNil(transport.captured[0].value(forHTTPHeaderField: "Authorization"),
+        XCTAssertEqual(transport.captured.count, 2)
+        XCTAssertEqual(transport.captured[0].url?.absoluteString, "https://coach.test/v1/attest/challenge")
+        XCTAssertEqual(transport.captured[1].url?.absoluteString, "https://coach.test/v2/register")
+        XCTAssertNil(transport.captured[1].value(forHTTPHeaderField: "Authorization"),
                     "registration itself carries no bearer token — there isn't one yet")
+
+        let body = try XCTUnwrap(transport.captured[1].httpBody)
+        let decoded = try JSONDecoder().decode([String: String].self, from: body)
+        XCTAssertEqual(decoded["key_id"], "a2V5LWlkLWJ5dGVz",
+                       "DeviceCheck's key id is already base64 — it goes through unchanged")
+        XCTAssertEqual(decoded["challenge"], "Y2hhbGxlbmdlLWJ5dGVz",
+                       "the challenge must return in exactly the form the server issued it")
+        XCTAssertEqual(decoded["attestation"], attestor.stubAttestation.base64EncodedString())
+    }
+
+    func testRegisterHashesTheChallengeTheSameWayTheServerDoes() async throws {
+        // The server computes `clientDataHash = SHA256(challenge)` and expects that hash inside
+        // the attestation nonce. If this ever drifts, every attestation is rejected server-side
+        // with no clue why, so pin it here rather than discovering it on a device.
+        let challengeBase64 = "Y2hhbGxlbmdlLWJ5dGVz"
+        let transport = MockAICoachTransport(responses: registerResponses(challenge: challengeBase64))
+        let attestor = MockAICoachAttestor(keyId: "k")
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: attestor, attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        _ = try await client.register()
+
+        let rawChallenge = try XCTUnwrap(Data(base64Encoded: challengeBase64))
+        XCTAssertEqual(attestor.capturedClientDataHash, Data(SHA256.hash(data: rawChallenge)))
+    }
+
+    func testRegisterReusesAnExistingKeyIdRatherThanGeneratingANewOne() async throws {
+        // A fresh key per opt-in would make the server's per-key token budget meaningless.
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let attestor = MockAICoachAttestor(keyId: "newly-generated")
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: attestor,
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore("already-known"),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        _ = try await client.register()
+
+        XCTAssertEqual(attestor.generateKeyCallCount, 0)
+        XCTAssertEqual(attestor.capturedKeyId, "already-known")
+    }
+
+    func testRegisterPersistsAFreshlyGeneratedKeyId() async throws {
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let keyStore = InMemoryAICoachAttestKeyStore()
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "generated-once"),
+                                   attestKeyStore: keyStore,
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        _ = try await client.register()
+
+        XCTAssertEqual(keyStore.keyId(), "generated-once")
+    }
+
+    func testRegisterThrowsAttestationUnavailableAndNeverTouchesTheNetworkOnAnUnsupportedDevice() async throws {
+        // The simulator case. It must fail fast and distinctly — not as a server error the user
+        // is invited to retry, and without burning a challenge.
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "k", isSupported: false),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .attestationUnavailable")
+        } catch AICoachError.attestationUnavailable {
+            // expected
+        }
+        XCTAssertEqual(transport.captured.count, 0)
+    }
+
+    func testRegisterMapsAnAttestationFailureToAttestationUnavailable() async throws {
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let tokenStore = InMemoryAICoachDeviceTokenStore()
+        let client = AICoachClient(transport: transport, tokenStore: tokenStore,
+                                   attestor: MockAICoachAttestor(keyId: "k", attestThrows: true),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .attestationUnavailable")
+        } catch AICoachError.attestationUnavailable {
+            // expected
+        }
+        XCTAssertNil(tokenStore.token())
     }
 
     func testRegisterDoesNotStoreAnythingOnServerError() async throws {
-        let transport = MockAICoachTransport(responses: [.success(status: 500, json: [:])])
+        let transport = MockAICoachTransport(responses: [
+            .success(status: 200, json: ["challenge": "Y2hhbGxlbmdl"]),
+            .success(status: 500, json: [:]),
+        ])
         let tokenStore = InMemoryAICoachDeviceTokenStore()
         let client = AICoachClient(transport: transport, tokenStore: tokenStore,
+                                   attestor: MockAICoachAttestor(keyId: "k"),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
                                    baseURL: URL(string: "https://coach.test")!)
 
         do {
@@ -43,10 +151,37 @@ final class AICoachClientTests: XCTestCase {
         XCTAssertNil(tokenStore.token(), "a failed registration must never leave a token stored")
     }
 
-    func testRegisterThrowsDecodingErrorOnMalformedBody() async throws {
-        let transport = MockAICoachTransport(responses: [.raw(status: 200, data: Data("not json".utf8))])
+    func testRegisterSurfacesARejectedAttestationAsA401() async throws {
+        // What a tampered build, a wrong-environment build, or a spent challenge looks like from
+        // the client's side. It must stay a plain server error, not be mistaken for success.
+        let transport = MockAICoachTransport(responses: [
+            .success(status: 200, json: ["challenge": "Y2hhbGxlbmdl"]),
+            .success(status: 401, json: ["detail": "unauthorized"]),
+        ])
         let tokenStore = InMemoryAICoachDeviceTokenStore()
         let client = AICoachClient(transport: transport, tokenStore: tokenStore,
+                                   attestor: MockAICoachAttestor(keyId: "k"),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .serverError(401)")
+        } catch AICoachError.serverError(let status) {
+            XCTAssertEqual(status, 401)
+        }
+        XCTAssertNil(tokenStore.token())
+    }
+
+    func testRegisterThrowsDecodingErrorOnMalformedBody() async throws {
+        let transport = MockAICoachTransport(responses: [
+            .success(status: 200, json: ["challenge": "Y2hhbGxlbmdl"]),
+            .raw(status: 200, data: Data("not json".utf8)),
+        ])
+        let tokenStore = InMemoryAICoachDeviceTokenStore()
+        let client = AICoachClient(transport: transport, tokenStore: tokenStore,
+                                   attestor: MockAICoachAttestor(keyId: "k"),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
                                    baseURL: URL(string: "https://coach.test")!)
 
         do {
@@ -56,6 +191,23 @@ final class AICoachClientTests: XCTestCase {
             // expected
         }
         XCTAssertNil(tokenStore.token())
+    }
+
+    func testRegisterThrowsDecodingErrorOnAMalformedChallenge() async throws {
+        let transport = MockAICoachTransport(responses: [
+            .success(status: 200, json: ["challenge": "!!! not base64 !!!"]),
+        ])
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "k"),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .decodingError")
+        } catch AICoachError.decodingError {
+            // expected
+        }
     }
 
     // MARK: - sendChat()
@@ -225,6 +377,39 @@ final class AICoachClientTests: XCTestCase {
 }
 
 // MARK: - Test doubles
+
+/// Stands in for `DCAppAttestService`, which only works on physical hardware — without this
+/// every registration test would have to be skipped on the simulator and in CI. Records what
+/// it was asked to attest so tests can assert the client hashed the challenge the way the
+/// server will.
+final class MockAICoachAttestor: AICoachAttesting {
+    let isSupported: Bool
+    let stubAttestation = Data("stub-attestation-blob".utf8)
+
+    private let stubKeyId: String
+    private let attestThrows: Bool
+    private(set) var generateKeyCallCount = 0
+    private(set) var capturedKeyId: String?
+    private(set) var capturedClientDataHash: Data?
+
+    init(keyId: String, isSupported: Bool = true, attestThrows: Bool = false) {
+        self.stubKeyId = keyId
+        self.isSupported = isSupported
+        self.attestThrows = attestThrows
+    }
+
+    func generateKey() async throws -> String {
+        generateKeyCallCount += 1
+        return stubKeyId
+    }
+
+    func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data {
+        capturedKeyId = keyId
+        capturedClientDataHash = clientDataHash
+        if attestThrows { throw AICoachError.attestationUnavailable }
+        return stubAttestation
+    }
+}
 
 /// A canned, ordered response queue — one entry consumed per `send(_:)` call, so a test can pin
 /// exactly what each request in a sequence gets back. Also records every `URLRequest` it was

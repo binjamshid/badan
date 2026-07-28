@@ -61,9 +61,17 @@ final class AICoachConsentGatingTests: XCTestCase {
     }
 
     func testRegisterThenClientIsEnabledEndToEnd() async throws {
-        let transport = MockAICoachTransport(responses: [.success(status: 200, json: ["token": "new-token"])])
+        // Two responses, and an injected attestor: registration is App Attest-gated
+        // (challenge → attest → /v2/register), and the real `DCAppAttestService` reports
+        // unsupported on the simulator, so the default attestor would fail here by design.
+        let transport = MockAICoachTransport(responses: [
+            .success(status: 200, json: ["challenge": "Y2hhbGxlbmdl"]),
+            .success(status: 200, json: ["token": "new-token"]),
+        ])
         let tokenStore = InMemoryAICoachDeviceTokenStore()
         let client = AICoachClient(transport: transport, tokenStore: tokenStore,
+                                   attestor: MockAICoachAttestor(keyId: "k"),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
                                    baseURL: URL(string: "https://coach.test")!)
 
         XCTAssertFalse(client.isEnabled, "no token yet — inert")

@@ -2,3 +2,15 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 httpx==0.27.2
 pydantic==2.9.2
+
+# App Attest verification (appattest.py). Both are needed to check an attestation at
+# all: `cryptography` for the X.509 chain to Apple's root and the ECDSA signatures,
+# `cbor2` for the attestation container. Hand-rolling either against attacker-supplied
+# input would be strictly worse than depending on maintained implementations — which is
+# also why the CBOR decode is not hand-written despite being "only a small map".
+#
+# Pinned to the versions the test suite (backend/api/tests) was run against.
+# `cryptography` >= 42 is a hard floor: appattest.py uses `not_valid_before_utc` /
+# `not_valid_after_utc`, which do not exist on older releases.
+cryptography==49.0.0
+cbor2==6.1.3

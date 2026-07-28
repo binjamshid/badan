@@ -14,6 +14,15 @@ settings:
     DEVELOPMENT_TEAM: ""
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+  # App Attest environment, read by App/BADAN.entitlements as $(APP_ATTEST_ENV). Per
+  # configuration because Apple's development and production attestation services reject each
+  # other's attestation objects — see that file for why a hardcoded value fails silently on the
+  # server rather than at build time.
+  configs:
+    Debug:
+      APP_ATTEST_ENV: development
+    Release:
+      APP_ATTEST_ENV: production
 
 # D-23/A16 (ADR-0010 §A16): the ONE deliberate, approved exception to ADR-0005's zero-external-
 # dependency posture, scoped to exactly this one package. Adopted for `badan_sensitive.db` only —

@@ -103,6 +103,13 @@ struct AICoachConsentScreen: View {
                 isWorking = false
                 env.update { $0.aiCoachEnabled = true }
                 navigateToChat = true
+            } catch AICoachError.attestationUnavailable {
+                // Not a connection failure, and not retryable — telling the user to "check your
+                // connection and try again" here would send them round a loop that cannot
+                // succeed. See `AICoachError.attestationUnavailable`.
+                isWorking = false
+                errorNotice = AICoachConsentStrings.enableUnavailableNotice
+                Announce.failure(env.s(AICoachConsentStrings.enableUnavailableNotice))
             } catch {
                 isWorking = false
                 errorNotice = AICoachConsentStrings.enableFailedNotice
@@ -242,6 +249,15 @@ private enum AICoachConsentStrings {
     static let enableFailedNotice = LocalizedString(
         en: "Couldn't turn on the AI coach. Check your connection and try again.",
         ar: "تعذّر تفعيل المدرب الذكي. تحقّق من اتصالك وحاول مرة أخرى.")
+    /// Distinct from `enableFailedNotice` because the remedy is different: this is not a
+    /// connection problem and retrying will never succeed. It is what a simulator build, or a
+    /// device where the platform declines to vend App Attest, hits. Worded without jargon —
+    /// "verify" rather than "attest" — and without implying the user did anything wrong.
+    static let enableUnavailableNotice = LocalizedString(
+        en: "This device can't verify the app with Apple, so the AI coach can't be turned on "
+            + "here. Everything else in BADAN works as usual.",
+        ar: "لا يستطيع هذا الجهاز التحقّق من التطبيق لدى Apple، لذا لا يمكن تفعيل المدرب الذكي "
+            + "هنا. بقية أجزاء بدن تعمل كالمعتاد.")
 
     static let moduleSectionHeader = LocalizedString(en: "AI coach", ar: "المدرب الذكي")
     static let moduleToggleTitle = LocalizedString(en: "AI coach", ar: "المدرب الذكي")
