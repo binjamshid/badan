@@ -212,13 +212,21 @@ actor AmbientSnapshotWriter {
         let localNight = DayAttribution.localNight(sessionEnd: now, tz: tz)
         guard let session = try measurements.primarySleep(localNight: localNight) else { return nil }
         let asleepSeconds = session.detail.timeAsleepSeconds ?? session.durationSeconds
+        // `SleepSnapshot.score` used to carry `sleep.performance`, because `sleep.score` was
+        // declared in the registry but never produced — a field named "score" quietly serving a
+        // different metric. It is a real composite now, so it carries what it says it does, and
+        // falls back to performance only while the composite is unavailable (which happens for a
+        // night with no consistency or continuity terms AND no baseline — i.e. the same cold start
+        // performance itself is nil for, plus the window where only performance exists).
+        let composite = try derivation.latestDerived(metricId: MetricID.sleepScore, periodKey: periodKey)
         let performance = try derivation.latestDerived(metricId: MetricID.sleepPerformance, periodKey: periodKey)
+        let shown = composite ?? performance
         return SleepSnapshot(
             durationMinutes: Int((asleepSeconds / 60).rounded()),
-            score: performance?.value,
-            // No performance row yet reads as "not yet settled," same honest default a missing
-            // baseline gets elsewhere in this codebase — never a confident `false`.
-            provisional: performance?.provisional ?? true)
+            score: shown?.value,
+            // No row yet reads as "not yet settled," same honest default a missing baseline gets
+            // elsewhere in this codebase — never a confident `false`.
+            provisional: shown?.provisional ?? true)
     }
 
     /// Today's due medication times, from every active regimen's schedule — ONLY called when

@@ -13,6 +13,7 @@ struct BadanWidgetsBundle: WidgetBundle {
         SentenceWidget()
         MedsDueWidget()
         SleepCardWidget()
+        EffortRingWidget()
     }
 }
 
