@@ -624,6 +624,27 @@ of writing), `packages/contracts/INVARIANTS.md` (I1–I8), and `docs/MONETIZATIO
   bulk export beyond 7 days is gated. The narrower the cap stays, the less it costs the principle.
 - **Approval:** accepted — Founder, 2026-07-28.
 
+## D-34 — Watch→phone refresh nudge; the sync channel becomes narrowly bidirectional
+- **Context:** A "Sync now" button was requested on the Watch as well as the iPhone. The watch has
+  no HealthKit ingestion path of its own — it renders a snapshot the phone assembles — so such a
+  button can only mean "phone, please go and look."
+- **Choice:** Add a zero-payload refresh request from watch to phone (`sendMessage` when reachable,
+  `transferUserInfo` when not), handled on the phone by calling the same `AppEnvironment.forceSync`
+  the iPhone button calls.
+- **Rationale:** `WatchSnapshotSync`'s header ruled this out — "no bidirectional message protocol,
+  no live `WCSession.sendMessage`" (blueprint §24.4). The narrower reading of that decision is what
+  survives and is what made the reversal acceptable: snapshot **delivery** is still one-way
+  `updateApplicationContext`, still latest-wins, still with no queue to drain. What is added carries
+  no data in the new direction — the watch says "the user tapped Sync" and nothing else, and the
+  phone deliberately ignores the message contents beyond the flag, so this is a nudge and not a
+  remote-control surface.
+- **Migration impact:** None to storage. The refreshed snapshot still arrives by the ordinary
+  one-way push. `WatchSnapshotSyncKeys` gains a second hand-kept literal, with the same
+  silent-failure property the first one documents.
+- **Supersession:** **narrows** blueprint §24.4's "no bidirectional message protocol" to "no
+  bidirectional *data* protocol".
+- **Approval:** accepted — Founder, 2026-07-28.
+
 ---
 
 ## Doc map cross-link

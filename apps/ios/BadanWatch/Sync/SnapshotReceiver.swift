@@ -67,6 +67,41 @@ final class SnapshotReceiver: NSObject {
         }
     }
 
+    /// Ask the phone to sync now (D-34).
+    ///
+    /// The watch has no HealthKit ingestion path of its own — it renders a snapshot the phone
+    /// assembles — so a Sync button here can only mean "phone, please go and look". This sends that
+    /// nudge and nothing else: no payload, no data leaving the watch, no expectation of a reply. The
+    /// refreshed snapshot arrives later through the ordinary one-way `applicationContext` push, the
+    /// same route every other update takes.
+    ///
+    /// Two transports, chosen by reachability, because "reachable" is the exception on a watch and
+    /// failing silently when the phone is in a pocket would make the button feel broken:
+    /// - reachable → `sendMessage`, which arrives immediately.
+    /// - not reachable → `transferUserInfo`, which the system queues and delivers when the phone
+    ///   next wakes. The user's tap is not lost; it is deferred, which is the honest behaviour for a
+    ///   device that is frequently out of contact.
+    ///
+    /// Returns whether the request was handed to the system at all — false only when there is no
+    /// session (no pairing capability), which surfaces as a disabled control rather than a tap that
+    /// appears to work and does nothing.
+    @discardableResult
+    func requestRefresh() -> Bool {
+        guard let session, session.activationState == .activated else { return false }
+        let body: [String: Any] = [WatchSnapshotSyncKeys.refreshRequestKey: true]
+        if session.isReachable {
+            // errorHandler is required for the delivery failure case; there is nothing to retry
+            // here, since transferUserInfo below is the durable path and a failed live send simply
+            // means the phone stopped being reachable mid-tap.
+            session.sendMessage(body, replyHandler: nil) { _ in
+                session.transferUserInfo(body)
+            }
+        } else {
+            session.transferUserInfo(body)
+        }
+        return true
+    }
+
     /// Exposed (not `private`) so tests can feed raw payload bytes directly, exercising the exact
     /// decode path `didReceiveApplicationContext` uses, without needing a real `WCSession` push.
     func apply(data: Data, receivedAt: Date) {

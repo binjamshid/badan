@@ -45,6 +45,11 @@ enum WatchLanguage {
 /// (see each doc) so the same concept reads identically everywhere a user sees it.
 enum WatchStrings {
     static let todayTitle = WatchCopy(en: "Today", ar: "اليوم")
+    static let syncNow = WatchCopy(en: "Sync now", ar: "مزامنة الآن")
+    /// Confirms the ASK reached the system, not that data has arrived — the watch genuinely cannot
+    /// know when the phone will wake, so promising a time would be a guess dressed as a status.
+    static let syncRequested = WatchCopy(en: "Asked your iPhone to check.",
+                                         ar: "تم طلب التحقق من iPhone.")
     /// Verbatim match with `BadanWidgets`' `RingCopy.title`.
     static let readiness = WatchCopy(en: "Readiness", ar: "الاستعداد")
     /// Verbatim match with `ReportPresentation.metricName`'s `MetricID.effortDay` case and

@@ -33,6 +33,28 @@ final class WatchSnapshotSync: NSObject {
     /// copy is a silent "the watch never receives anything," never a compiler error.
     static let applicationContextKey = "snapshot"
 
+    /// The message body the watch sends to ask the phone for a fresh sync. Same hand-kept-duplicate
+    /// discipline as `applicationContextKey`: `WatchSnapshotSyncKeys` on the watch side carries the
+    /// identical literal, because the two targets cannot be type-checked against each other and a
+    /// typo here is silence, never a compile error.
+    static let refreshRequestKey = "requestRefresh"
+
+    /// Called when the watch asks for a refresh. Set by the composition root.
+    ///
+    /// D-34: this makes the channel bidirectional, which this file's own header previously ruled
+    /// out ("no bidirectional message protocol, no live `WCSession.sendMessage`"). The narrower
+    /// reading of that decision survives intact and is what made the reversal acceptable: snapshot
+    /// DELIVERY is still one-way `updateApplicationContext`, still latest-wins, still with no
+    /// queue to drain. What is added is a zero-payload nudge in the other direction — the watch
+    /// carries no data to the phone and asks for none, it only says "the user tapped Sync". Without
+    /// it a Sync button on the watch cannot exist at all, since the watch holds no HealthKit
+    /// ingestion path of its own.
+    ///
+    /// A `var` closure rather than a constructor parameter for the same reason
+    /// `BackgroundCoordinator.onIngestCompleted` is: this is a singleton created before
+    /// `AppEnvironment` finishes initialising, so the capture has to happen afterwards.
+    var onRefreshRequested: (() -> Void)?
+
     private let session: WCSession?
     private static let logger = Logger(subsystem: "net.binjamshid.badan", category: "WatchSnapshotSync")
     private static let encoder = JSONEncoder()
@@ -95,6 +117,22 @@ extension WatchSnapshotSync: WCSessionDelegate {
     // iOS-only `WCSessionDelegate` requirements (iOS supports multiple paired Watches across a
     // device's lifetime; watchOS's own delegate protocol has neither). No state to reset on either
     // callback — this type holds nothing beyond the session reference itself.
+    /// The watch asked for a refresh (D-34). Both delivery routes land here: `sendMessage` when the
+    /// phone is reachable, `transferUserInfo` when it is not and the request is queued for later.
+    ///
+    /// Deliberately ignores the message CONTENTS beyond checking the flag. The watch is not a
+    /// trusted commander of this app — it is allowed to say "the user tapped Sync" and nothing else,
+    /// and treating the payload as data to act on would turn a nudge into a remote-control surface.
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        guard message[Self.refreshRequestKey] != nil else { return }
+        onRefreshRequested?()
+    }
+
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        guard userInfo[Self.refreshRequestKey] != nil else { return }
+        onRefreshRequested?()
+    }
+
     func sessionDidBecomeInactive(_ session: WCSession) {}
 
     func sessionDidDeactivate(_ session: WCSession) {

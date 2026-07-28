@@ -11,4 +11,9 @@ import Foundation
 /// compiler-checked guarantee across this boundary.
 enum WatchSnapshotSyncKeys {
     static let applicationContextKey = "snapshot"
+
+    /// D-34. Must match `WatchSnapshotSync.refreshRequestKey` on the phone side, with the same
+    /// silent-failure consequence as `applicationContextKey`: a mismatch means the phone quietly
+    /// never hears a Sync tap, and the watch waits for a push that is never triggered.
+    static let refreshRequestKey = "requestRefresh"
 }
