@@ -24,11 +24,26 @@ struct WatchSnapshotStore {
         self.overrideDirectory = overrideDirectory
     }
 
+    /// The app group the watch app and its complication bundle share. A complication runs in its
+    /// OWN process and cannot see the watch app's private Application Support directory, so without
+    /// a shared container the complication would have no data source at all.
+    static let appGroupId = "group.net.binjamshid.badan"
+
     private func fileURL() -> URL? {
-        let directory = overrideDirectory
+        if let overrideDirectory {
+            return overrideDirectory.appendingPathComponent("watch_snapshot_cache.json")
+        }
+        // Prefer the shared container. Falls back to the app's private directory when the group is
+        // unavailable (an older install whose profile predates the entitlement, or a build without
+        // it) so the watch app keeps working on its own — it just means the complication has
+        // nothing to read until the next write lands in the group.
+        let directory = fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId)
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         return directory?.appendingPathComponent("watch_snapshot_cache.json")
     }
+
+    /// Read-only access for the complication bundle, which never writes.
+    static func shared() -> WatchSnapshotStore { WatchSnapshotStore() }
 
     /// Best-effort: a failed write here just means a future cold relaunch falls back to
     /// `WCSession.receivedApplicationContext` (or an honest `.neverSynced` state) instead of this
