@@ -589,6 +589,41 @@ of writing), `packages/contracts/INVARIANTS.md` (I1–I8), and `docs/MONETIZATIO
   that looks obviously useful.
 - **Approval:** accepted — Founder, 2026-07-28.
 
+## D-32 — Sign in with Apple dropped; IAP ships without accounts
+- **Context:** The subscription work was specced as "fix SIWA & IAPs — SIWA required for IAP."
+- **Choice:** No SIWA, no accounts. StoreKit 2 only.
+- **Rationale:** The premise is factually wrong. App Store Review Guideline 4.8 requires Sign in
+  with Apple only when an app offers *other* third-party or social login options; an app with no
+  login at all is out of scope. StoreKit binds purchases to the signed-in Apple ID by itself, and
+  Restore Purchases works with no account. Adding SIWA would therefore have meant adding an account
+  system BADAN does not need, to satisfy a requirement that does not exist — and would have
+  reversed ADR-0002/ADR-0010's explicit posture ("BADAN is deliberately not on the platform-api
+  identity/backup services… it has no accounts to attach them to").
+- **Migration impact:** None. No account model, no backend surface, no ADR reversal.
+- **Supersession:** none — this preserves the existing posture rather than changing it.
+- **Approval:** accepted — Founder, 2026-07-28.
+
+## D-33 — Free export capped at 7 days; "raw data is not paywalled" is narrowed
+- **Context:** The subscription was specced to include "exporting 8/+ days data", which conflicts
+  with two standing commitments: `CLAUDE.md`'s **"Never: Paywall raw data"**, and
+  `docs/MONETIZATION.md` §1, which lists export of *all* data as free forever and warns that gating
+  it "would breach the guardrail outright" and make the subscription "a hostage situation rather
+  than a purchase."
+- **Choice:** Free tier exports the last 7 days. Beyond that requires a subscription.
+- **Rationale:** The founder's call, made after the conflict was raised explicitly and restated.
+  Recorded here rather than absorbed silently, because this narrows a founding principle rather
+  than extending one, and a future reader finding the cap in code deserves to know it was a
+  deliberate reversal and not drift.
+- **Migration impact:** `CLAUDE.md`'s `Never` list and Product guardrails are amended in the same
+  change, so the stated rules and the shipped behaviour do not contradict each other.
+  `docs/MONETIZATION.md` §1 is annotated as superseded on this specific point; the rest of that
+  document (interpretation is what you pay for) still stands.
+- **Supersession:** **narrows** `CLAUDE.md`'s "Raw data is not paywalled" / "Never: Paywall raw
+  data", and overrides `docs/MONETIZATION.md` §1's "export … free forever".
+- **Dissent recorded:** viewing, keeping and deleting raw data remain free and uncapped — only
+  bulk export beyond 7 days is gated. The narrower the cap stays, the less it costs the principle.
+- **Approval:** accepted — Founder, 2026-07-28.
+
 ---
 
 ## Doc map cross-link
