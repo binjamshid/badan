@@ -26,6 +26,12 @@ public enum MetricID {
     /// that substitution should go.
     public static let sleepScore = "sleep.score"
 
+    /// BADAN's 1–5 read of how the body is trending, on the SAME scale as the manually logged
+    /// `subjective.mood`. Deliberately a separate id: the self-report is the record and this is an
+    /// estimate beside it — a derived value must never be written into the metric the user fills in
+    /// themselves.
+    public static let moodEstimate = "subjective.mood_estimate"
+
     // Heart
     public static let heartRate = "heart.hr"
     public static let restingHeartRate = "heart.rhr"

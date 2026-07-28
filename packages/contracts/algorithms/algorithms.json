@@ -558,6 +558,37 @@
         "contextCeilingNote": "The confidence ceiling applied when the window overlaps a declared ContextStatus is NOT duplicated here. It lives once, in ContextAnnotator.activeContextConfidenceCeiling, alongside the caveat sentences it belongs with — two copies of one number is exactly the drift this contract exists to prevent (same rule stress.day_trend follows for madToSigma).",
         "noParametricConstants": "There is deliberately no alpha, no critical value, no assumed-sigma and no normality constant in this block. If one ever appears here, the method changed from the published non-parametric one and needs a semver bump and a doc rewrite, not a params tweak."
       }
+    },
+    {
+      "algorithmId": "subjective.mood_estimate",
+      "semver": "0.1.0",
+      "introducedIn": "1.1.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "subjective.mood_estimate"
+      ],
+      "inputMetricIds": [
+        "sleep.score",
+        "heart.rhr",
+        "heart.hrv"
+      ],
+      "methodologyUrl": "docs/algorithms/mood-estimate.md",
+      "summaryEn": "A daily 1-5 estimate from last night's sleep composite, resting-heart-rate deviation from personal baseline, and - only where daytime HRV sampling is dense enough to permit it - autonomic load. Deliberately multi-input: an estimate resting on HRV alone would be hidden on Apple-Watch-class devices for the same sampling reason stress.day_trend hides, and would be false precision if it were not. Reported on the same scale as the user's own logged mood so the two are directly comparable, and never written over it.",
+      "params": {
+        "sleepWeight": 0.5,
+        "autonomicWeight": 0.3,
+        "restingHeartRateWeight": 0.2,
+        "rhrZeroScoreSigmas": 2.0,
+        "minComponents": 2.0
+      },
+      "paramNotes": {
+        "sleepWeight": "PROVISIONAL. Sleep is the heaviest term because it is the best-sampled input BADAN has and the one with the least contested relationship to next-day subjective state.",
+        "autonomicWeight": "PROVISIONAL. Contributes only when the stress density gate already permits saying anything about daytime HRV at all; otherwise dropped and the weights renormalised.",
+        "restingHeartRateWeight": "PROVISIONAL. Smallest weight: RHR moves for many reasons that have nothing to do with mood (illness, alcohol, altitude, a late meal).",
+        "rhrZeroScoreSigmas": "PROVISIONAL. Deviation above personal baseline, in sigmas, at which the RHR term reaches its floor.",
+        "minComponents": "At least two of the three terms must be present. One term is not a composite, and a 1-5 'mood' resting on resting heart rate alone would be indefensible."
+      },
+      "degradationNotes": "Never produced from fewer than minComponents terms. The autonomic term is gated by the same daytime-HRV density classification stress.day_trend uses, so this cannot become a back door to the real-time stress index that engine exists to refuse. Marked provisional whenever any term is absent."
     }
   ]
 }
