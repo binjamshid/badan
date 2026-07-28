@@ -30,6 +30,9 @@ struct SettingsScreen: View {
                         }
                     }
                 }
+                // Hidden while searching, so it never appears as an unrelated result below a
+                // filtered category list.
+                if searchQuery.isEmpty { SyncNowRow() }
                 // (EU5) A search matching nothing used to render an entirely blank screen —
                 // indistinguishable from the setting not existing, or from the app breaking.
                 if noSearchResults {

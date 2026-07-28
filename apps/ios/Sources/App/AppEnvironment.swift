@@ -203,7 +203,10 @@ final class AppEnvironment {
     /// BUG-02: true from the moment `syncIfStale()` dispatches its detached task until that task
     /// (and anything it was chained behind) finishes, so a second `.active` transition arriving
     /// before the first sync lands is a no-op rather than a second overlapping ingest.
-    private var isSyncInFlight = false
+    /// Whether an ingest→derive pass is running right now. `private(set)` rather than `private`
+    /// since the Sync-now control needs to show progress and disable itself; only this type may
+    /// set it.
+    private(set) var isSyncInFlight = false
 
     init(database: Database, clock: Clock = SystemClock()) {
         // Measures the synchronous DB-open + repository-wiring cost on the pre-first-frame
@@ -814,10 +817,28 @@ final class AppEnvironment {
     /// entry points use, so it can never interleave with a bootstrap/reset/connect backfill.
     /// Failure is logged, never surfaced to the UI (BUG-02 explicitly asks for quiet failure —
     /// the next foreground transition just tries again).
-    func syncIfStale() {
+    func syncIfStale() { runSync(force: false) }
+
+    /// Sync NOW, ignoring the debounce window. The user asked; that outranks the heuristic.
+    ///
+    /// `SyncDebounce.minInterval` is five minutes, which is right for automatic foreground syncs
+    /// (glancing at a notification and coming back should not re-query HealthKit) but is exactly
+    /// what makes the app feel stuck when someone opens it wanting fresh numbers: `syncIfStale`
+    /// returns silently, nothing refreshes, and there is no way to say "no, really, now". This is
+    /// that way. It still takes the same ingest lock and writes the same `background_runs` row, so
+    /// it cannot overlap a background wake and Diagnostics still sees it.
+    ///
+    /// Returns immediately; observe `isSyncInFlight` for progress.
+    func forceSync() { runSync(force: true) }
+
+    private func runSync(force: Bool) {
         guard isHealthKitConnected else { return }
         let now = clock.now()
-        guard !isSyncInFlight, SyncDebounce.shouldSync(lastSync: lastSyncAt, now: now) else { return }
+        // `isSyncInFlight` is honoured even when forcing: a second concurrent run would contend on
+        // the ingest lock and finish no sooner, so double-tapping the button is a no-op rather than
+        // a way to queue redundant work.
+        guard !isSyncInFlight else { return }
+        guard force || SyncDebounce.shouldSync(lastSync: lastSyncAt, now: now) else { return }
 
         isSyncInFlight = true
         lastSyncAt = now
