@@ -219,8 +219,8 @@ enum ClinicalImportStrings {
         en: "No lab results came back. That can mean there are none connected yet, or that BADAN wasn't given access — Apple doesn't tell apps which. You can check under Settings › Health › Data Access.",
         ar: "لم ترد أي نتائج مختبر. قد يعني ذلك عدم وجود نتائج متصلة بعد، أو أن بدن لم يُمنح الإذن — ولا تخبر أبل التطبيقات بأيهما. يمكنك التحقق من الإعدادات › الصحة › الوصول إلى البيانات.")
     static let unavailable = LocalizedString(
-        en: "Importing from Apple Health isn't switched on in this build yet. Everything else in your lab notebook works as usual.",
-        ar: "الاستيراد من صحة أبل غير مُفعّل في هذه النسخة بعد. أما بقية دفتر مختبرك فيعمل كالمعتاد.")
+        en: "Health records aren't available on this device. Apple only offers them in some countries and with participating clinics.",
+        ar: "السجلات الصحية غير متاحة على هذا الجهاز. توفّرها أبل في بعض الدول ومع عيادات مشاركة فقط.")
     static let failed = LocalizedString(en: "That didn't work. Nothing was changed.",
                                         ar: "لم ينجح ذلك. لم يتغير شيء.")
 }
