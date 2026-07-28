@@ -438,6 +438,13 @@ final class AppEnvironment {
         self.background.onIngestCompleted = { [weak self] in
             Task { @MainActor in await self?.evaluateEventDrivenNotifications() }
         }
+        // D-34: a Sync tap on the watch reaches the same forceSync the phone's own button calls, so
+        // the two controls cannot drift in behaviour. Set here rather than injected for the same
+        // initialisation-order reason as the hook above. `WCSessionDelegate` callbacks land on a
+        // background queue, hence the hop.
+        WatchSnapshotSync.shared.onRefreshRequested = { [weak self] in
+            Task { @MainActor in self?.forceSync() }
+        }
 
         applyLaunchOverrides()
     }

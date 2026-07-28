@@ -10,6 +10,9 @@ struct TodayView: View {
     @Environment(\.scenePhase) private var scenePhase
     private let receiver = SnapshotReceiver.shared
     @State private var now = Date()
+    /// Whether a refresh request was handed to the system this session. Reset on foreground so the
+    /// confirmation does not linger from a previous glance.
+    @State private var syncRequested = false
 
     private var isArabic: Bool { WatchLanguage.isArabic(for: receiver.snapshot) }
     private var state: TodayViewState {
@@ -38,6 +41,23 @@ struct TodayView: View {
                         Text(sentence)
                             .font(.footnote)
                             .multilineTextAlignment(isArabic ? .trailing : .leading)
+                    }
+                }
+                Section {
+                    Button {
+                        syncRequested = receiver.requestRefresh()
+                    } label: {
+                        Label(WatchStrings.syncNow.resolved(isArabic: isArabic),
+                              systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    if syncRequested {
+                        // The watch cannot report on the phone's progress — the refreshed snapshot
+                        // arrives later through the ordinary one-way push, and may be queued until
+                        // the phone next wakes. So this confirms the ASK was sent, and says nothing
+                        // about when data will land, because it does not know.
+                        Text(WatchStrings.syncRequested.resolved(isArabic: isArabic))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
