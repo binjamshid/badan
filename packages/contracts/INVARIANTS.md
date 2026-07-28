@@ -14,6 +14,13 @@ the row itself (denormalized, per D-3), not reconstructed after the fact — so 
 number come from" is always answerable directly from the data, never from a separate audit trail
 that could fall out of sync.
 
+A derived value that carries a personal, feedback-learned calibration (D-36) discloses that
+calibration through its own `InputManifest`, as a reserved `calibration:<id>` input alongside the
+real ones — the same synthetic-`recordId` convention `CorrelationEngine` uses for `stat:<name>`.
+This preserves the invariant rather than amending it: the row still answers "where did this number
+come from" from the data alone, and a reader can distinguish a contract-only value from a
+calibrated one without consulting anything else.
+
 ## I2. Derived values append, never overwrite
 
 A recomputation of a baseline, insight, or other derived value never mutates or deletes the prior

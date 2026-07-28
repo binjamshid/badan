@@ -647,6 +647,88 @@ of writing), `packages/contracts/INVARIANTS.md` (I1–I8), and `docs/MONETIZATIO
 
 ---
 
+## D-35 — Users may choose among calculation methods for a derived metric
+- **Context:** Every algorithm entry is `provisional: true` and the constants are BADAN's own seeded
+  defaults, stated as such in `paramNotes`. A single fixed method presents an unvalidated choice as
+  settled. The contract already supports competing producers of one metric —
+  `workout.strength.e1rm_brzycki` shares `workout.strength.e1rm`'s `producesMetricIds`, and its
+  `summaryEn` explains why: "the registry metric is method-agnostic … and algorithmId/algorithmVersion
+  on the stored row is what says which formula produced it".
+- **Choice:** For `readiness.score` and `sleep.score`, offer the current method plus three weighting
+  variants each, shown with their **actual number on the user's own data**. The choice is stored per
+  metric on the customization profile; derivation appends under the chosen `algorithmId`; earlier
+  rows keep theirs.
+- **Rationale:** The variants are honest as *behaviours*, not as citations — three independently
+  validated alternatives do not exist to be cited, and claiming otherwise would be the exact failure
+  `docs/MONETIZATION.md` is written to prevent. What makes the choice fact-based is that the user
+  judges four real numbers computed from their own inputs. None is labelled best or recommended, and
+  every alternative ships `provisional: true`.
+- **Migration impact:** None to storage — a method choice is a preference on the JSON-singleton
+  profile, decoded with `decodeIfPresent ?? [:]`. Six new `algorithms.json` entries in the canonical
+  copy **and** the iOS mirror; a mirror that is not updated makes the spec silently fail to load and
+  the engine compute nothing. History is never rewritten; switching takes effect going forward and
+  the chart marks the boundary.
+- **Supersession:** none. This uses the multiple-producer design the contract already documents.
+  Note `AlgorithmRegistry.producers(of:)` also matches a `"*"` wildcard baseline entry, which is not
+  a selectable method and is filtered out by the resolver and the picker.
+- **Approval:** accepted — Founder, 2026-07-28.
+
+---
+
+## D-36 — Feedback-calibrated derived values, disclosed through the input manifest
+- **Context:** Users can mark a derived value as matching or not matching their experience, and that
+  adjusts future derivation on device. Per-user adjustment breaks "the published constants produced
+  this number" unless it is modelled explicitly — a reader of a row must be able to tell a contract
+  value from a personally calibrated one.
+- **Choice:** A separate append-only `metric_calibrations` record, referenced from the
+  `InputManifest` by a reserved `calibration:<id>` input, following the `stat:<name>` convention
+  `CorrelationEngine` already establishes. Constants are **not** mutated. The calibration's own
+  bounds come from a new contract entry, so a missing entry disables calibration entirely rather
+  than falling back to a silent default.
+- **Rationale:** Mutating constants would make the stored `algorithmId@semver` a lie about what
+  produced the row. A manifest input costs no schema change to `derived_values` — which is
+  deliberately duplicated in the sensitive DB — and the manifest is already the surface that
+  explains a number. A calibrated row stays `provisional: true`: it is the default constants plus an
+  unvalidated personal offset, so it is less contract-backed, not more.
+- **Migration impact:** Main-DB migration **11** adds `derived_feedback` and `metric_calibrations`
+  and drops the never-used `metric_pins`. Note the main migration array was already at version 10
+  (`data_conflicts`); since the migrator runs only `where version > current`, a duplicate 10 would
+  be silently skipped for existing users while passing on a fresh install. Each engine's skip-write
+  check gains the calibration id, so a changed calibration appends even when the computed value is
+  unchanged — the same rule that already forces an append on a version bump.
+- **Supersession:** none. I1 and I2 are preserved by this design; `INVARIANTS.md` gains a clarifying
+  sentence under I1 rather than an amendment.
+- **Approval:** accepted — Founder, 2026-07-28.
+
+---
+
+## D-37 — Opt-in methodology telemetry ships default-off, with no identifier
+- **Context:** On-device calibration produces the first evidence BADAN has about whether its derived
+  numbers match lived experience, and it is useless to the shared methodology while it stays on one
+  device. Sending any of it requires narrowing a founding Never. See ADR-0011.
+- **Choice:** Learning footprints only — metric, method, direction, bucketed count, and whether a
+  calibration was in force. No reading, no magnitude, no date, no identifier, no region. Default off,
+  offered only after the user has used the feedback feature, with a screen showing everything sent.
+- **Rationale:** The boundary is defined field by field and enforced by a closed schema with
+  `additionalProperties: false`, a CI-gated mirror, and a test that fails loudly if a health value
+  reaches the payload. Carrying no identifier is the strongest available match to the guardrail, and
+  its cost — aggregates cannot be deduplicated — is accepted rather than hidden.
+- **Migration impact:** One preference on the profile; no client schema change. `backend/api` gains
+  one route and a separate `footprints.db`. `PrivacyInfo.xcprivacy` and `PrivacyPolicyScreen.swift`
+  must be corrected in the same commit — both currently claim BADAN sends no telemetry, an
+  obligation ADR-0010 §A9 incurred and never discharged. The App Store privacy declaration becomes
+  non-empty.
+- **Supersession:** **narrows** `CLAUDE.md`'s "Never: Send user health data off device" — the Never
+  survives, since no health datum leaves; what leaves is a statement about a method. Also narrows
+  ADR-0010's "no second backend surface" by ruling that the existing service hosts this rather than
+  a new one.
+- **Dissent recorded:** aggregate footprints from a small, self-selected, unidentified population
+  cannot on their own establish that a constant is correct. This telemetry must not be treated as
+  sufficient grounds to clear any metric's `provisional` flag; ADR-0011's "Not decided here" says so.
+- **Approval:** accepted — Founder, 2026-07-28.
+
+---
+
 ## Doc map cross-link
 
 `CLAUDE.md` now carries both a **Repo layout** section naming `docs/adr/` and `docs/DECISIONS.md`,
