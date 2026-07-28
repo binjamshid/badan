@@ -10,7 +10,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "1.1"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "4"
     DEVELOPMENT_TEAM: ""
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -250,6 +250,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.binjamshid.badan.watch
         GENERATE_INFOPLIST_FILE: NO
+        # App group, so the complication extension (a separate process) can read the same cached
+        # snapshot the watch app writes. Without it the complication has no data source at all.
+        CODE_SIGN_ENTITLEMENTS: BadanWatch/BadanWatch.entitlements
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: "54T3MDUR7H"
         TARGETED_DEVICE_FAMILY: "4"
@@ -274,6 +277,11 @@ targets:
         # branding, no separate watch-specific design needed. Its absence (error 90391/90713 on
         # upload: "Missing Icons" / missing CFBundleIconName) is what this wires up.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      # Embeds the complication bundle into BadanWatch.app/PlugIns — without this the extension
+      # builds but nothing copies it in, and no complication appears in the watch face gallery.
+      - target: BadanWatchWidgets
+        embed: true
     info:
       path: BadanWatch/Info.plist
       properties:
@@ -302,6 +310,41 @@ targets:
         # than is actually true.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+
+  # A22/EPIC-42 extension: the watchOS complication bundle. A widget EXTENSION target, not files
+  # added to BadanWatch — watchOS complications are WidgetKit extensions and must live in their own
+  # bundle embedded in the watch app, exactly as BadanWidgets is embedded in the iOS app.
+  BadanWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: BadanWatchWidgets
+        excludes: ["*.entitlements"]
+      # The DTO, freshness rules, cache reader and copy are shared with the watch app rather than
+      # duplicated. This file already documents what hand-kept duplicates cost across the
+      # phone/watch boundary; no reason to repeat that inside the watch platform itself.
+      - path: BadanWatch/Snapshot
+      - path: BadanWatch/Sync/WatchSnapshotStore.swift
+      - path: BadanWatch/WatchCopy.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.binjamshid.badan.watch.widgets
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: BadanWatchWidgets/BadanWatchWidgets.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: "54T3MDUR7H"
+        TARGETED_DEVICE_FAMILY: "4"
+        SWIFT_VERSION: "5.0"
+        SKIP_INSTALL: YES
+    info:
+      path: BadanWatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: BADAN
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
 
   BadanWatchTests:
     type: bundle.unit-test
