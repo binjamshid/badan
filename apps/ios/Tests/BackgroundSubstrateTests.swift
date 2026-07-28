@@ -306,6 +306,41 @@ final class BackgroundSubstrateTests: XCTestCase {
                        "no marker, no work — the step is a no-op when nothing is queued")
     }
 
+    // MARK: - Historical import resume (D-35 item 2b)
+
+    func testProcessingResumesAPendingHistoricalImport() throws {
+        let ingest = FakeIngest()
+        ingest.needsBackfill = false
+        ingest.pendingHistoricalImport = true
+        let coordinator = makeCoordinator(ingest: ingest)
+
+        XCTAssertTrue(coordinator.runProcessing(isExpired: { false }))
+
+        XCTAssertEqual(ingest.historicalImportCallCount, 1,
+                       "an interrupted history fetch must be resumed by a processing run")
+        XCTAssertEqual(try onlyRun().outcome, .completed)
+    }
+
+    func testProcessingSkipsHistoricalImportWhenNoneIsPending() throws {
+        let ingest = FakeIngest()
+        ingest.needsBackfill = false
+        ingest.pendingHistoricalImport = false
+        let coordinator = makeCoordinator(ingest: ingest)
+
+        XCTAssertTrue(coordinator.runProcessing(isExpired: { false }))
+
+        XCTAssertEqual(ingest.historicalImportCallCount, 0)
+    }
+
+    /// Step order is a decision, not an accident: ingesting data the user is missing outranks
+    /// re-scoring data they already have, which outranks resuming a fetch they were watching in the
+    /// foreground anyway, which outranks housekeeping. Asserted on the enum itself so reordering
+    /// the cases — which silently reorders the run — has to be deliberate.
+    func testProcessingStepOrderIsIngestThenScoreThenHistoryThenPrune() {
+        XCTAssertEqual(BackgroundProcessingStep.allCases,
+                       [.backfillResume, .scoreBackfill, .historicalImportResume, .prune])
+    }
+
     // MARK: - Score-backfill request store (EPIC-26)
 
     func testScoreBackfillRequestRoundTripsAndClears() throws {
@@ -705,6 +740,20 @@ private final class FakeIngest: BackgroundIngestPerforming {
         scoreBackfillCallCount += 1
         if let error { throw error }
         pendingScoreBackfill = false
+        return nextCounts
+    }
+
+    // D-35 item 2b. Same shape as the score backfill above: gated on the lock, counted, and
+    // clearing its own pending flag only on success, so a test can assert the step ran, ran in
+    // order, and did not run twice.
+    var pendingHistoricalImport = false
+    var historicalImportCallCount = 0
+
+    func resumeHistoricalImportIfPending(now: Date) throws -> BackgroundWorkCounts? {
+        guard !lockIsHeld, pendingHistoricalImport else { return nil }
+        historicalImportCallCount += 1
+        if let error { throw error }
+        pendingHistoricalImport = false
         return nextCounts
     }
 }

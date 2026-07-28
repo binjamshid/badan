@@ -62,6 +62,31 @@ enum HKSampleMapping {
                          qualityFlags: tzAssumed ? [.tzAssumed] : [])
     }
 
+    /// The external id a workout is stored under. Embeds the HealthKit UUID, which is what makes
+    /// a deleted workout map back to exactly one session row — and what makes the historical and
+    /// anchored paths agree on identity. Both must produce this same string for the same workout.
+    static func workoutExternalId(uuid: String) -> String { "healthkit-workout-\(uuid)" }
+
+    /// A workout → `WorkoutDTO`, without its route.
+    ///
+    /// `route` is a parameter rather than something this reads, because whether a trace may be
+    /// read at all is a consent decision the caller owns: `HealthKitAdapter` reads consent once per
+    /// pass and passes the result, and `HistoricalHealthKitReader` passes `nil` because a bulk
+    /// import is the wrong place to start pulling GPS the user consented to for live sync.
+    static func workoutDTO(_ workout: HKWorkout, totals: WorkoutTotals, route: RouteDTO?,
+                           fallbackTz: String) -> WorkoutDTO {
+        let (sourceId, deviceId) = provenanceIds(for: workout)
+        let (tzId, tzAssumed) = measuredTimeZone(for: workout, fallbackTz: fallbackTz)
+        let uuid = workout.uuid.uuidString
+        return WorkoutDTO(
+            activityType: HKTypeMap.activitySlug(for: workout.workoutActivityType),
+            start: workout.startDate, end: workout.endDate, tz: tzId,
+            sourceId: sourceId, deviceId: deviceId,
+            externalId: workoutExternalId(uuid: uuid), sourceWorkoutUUID: uuid,
+            totals: totals, route: route,
+            qualityFlags: tzAssumed ? [.tzAssumed] : [])
+    }
+
     /// An already-summarized discrete sample → `IntervalDTO`, carried through with its own span.
     static func intervalDTO(_ sample: HKSample, entry: HKTypeMap.Entry, metricId: String,
                             aggregation: Aggregation, fallbackTz: String) -> IntervalDTO? {

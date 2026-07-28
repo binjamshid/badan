@@ -97,6 +97,19 @@ final class IngestionPipeline {
         /// by construction.
         var routes: Int = 0
         var suppressed: Int = 0
+
+        /// New rows written across every family. `routes` is excluded on purpose: it counts rows
+        /// replaced wholesale rather than newly created (see its own doc), so folding it in would
+        /// make an all-zero "nothing was new" summary read as nonzero on every re-ingest that
+        /// carried a route.
+        ///
+        /// Read this as "new rows derived from the DTOs this run was handed", NOT as "every row
+        /// this run wrote". Ingestion also writes the daily sleep rollups
+        /// (`sleep.time_asleep`/`sleep.time_in_bed`) through `upsertDailySleepInterval`, which are
+        /// computed from sessions rather than delivered as DTOs and are deliberately not counted
+        /// here. `0` is still the exact and reliable signal for "nothing new arrived", which is
+        /// what the historical import surface uses to say "Already up to date".
+        var totalWritten: Int { samples + intervals + sessions + workouts }
     }
 
     func ingest(from port: HealthStorePort, range: HealthDateRange,
