@@ -14,6 +14,11 @@
 # The .ipa lands in apps/ios/build/export/BADAN.ipa. Upload it with Transporter.app
 # or `xcrun altool --upload-app` (see docs/TESTFLIGHT.md) — this script does NOT upload.
 set -euo pipefail
+# Every expansion below is BRACED, and that is not style. Several echo lines end in a U+2026
+# ellipsis, and zsh folds those UTF-8 bytes into the identifier -- so bare `$TEAM_ID…` is looked up
+# as the variable `TEAM_ID…`, which is unset, and `set -u` aborts the script AFTER the archive has
+# already succeeded. It only reproduces when the script is invoked through zsh rather than via its
+# bash shebang, which is why it survived several clean runs before anyone hit it.
 
 TEAM_ID="${1:-}"
 if [[ -z "$TEAM_ID" ]]; then
@@ -39,9 +44,9 @@ xcodebuild -project BADAN.xcodeproj -scheme BADAN \
   DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
   clean archive
 
-echo "▸ Writing export options for team $TEAM_ID…"
+echo "▸ Writing export options for team ${TEAM_ID}…"
 mkdir -p build
-sed "s/__TEAM_ID__/$TEAM_ID/" ExportOptions.plist > "$OPTS"
+sed "s/__TEAM_ID__/${TEAM_ID}/" ExportOptions.plist > "$OPTS"
 
 echo "▸ Exporting signed .ipa…"
 rm -rf "$EXPORT_DIR"
