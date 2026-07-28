@@ -240,6 +240,87 @@
       "degradationNotes": "Requires sleep.performance, which is nil until a personal sleep-duration baseline exists - so a new install has no score rather than a fabricated one. Consistency (nil below the consistency minimum) and disturbances (nil without stage data) are each dropped from the weighted mean and the remaining weights renormalised, with the result marked provisional whenever any component is absent."
     },
     {
+      "algorithmId": "sleep.score_continuity_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "sleep.score"
+      ],
+      "inputMetricIds": [
+        "sleep.performance",
+        "sleep.consistency",
+        "sleep.disturbances"
+      ],
+      "methodologyUrl": "docs/algorithms/sleep-score.md",
+      "summaryEn": "0-100 composite of duration against your own need, timing regularity and how unbroken the night stayed — weighted toward continuity. A long night broken repeatedly scores below a shorter undisturbed one. Renormalised over whichever components exist, and never produced at all without a performance term.",
+      "params": {
+        "performanceWeight": 0.35,
+        "consistencyWeight": 0.15,
+        "continuityWeight": 0.5,
+        "disturbanceZeroScoreCount": 8.0,
+        "performanceCapPercent": 100.0
+      },
+      "paramNotes": {
+        "continuityWeight": "The majority term, and the one to be most careful with: disturbance counts are the least reliable input BADAN has — nil entirely without stage data, and sensitive to how a source segments awakenings. Weighting them heaviest is a legitimate preference, not a better measurement.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of sleep.score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "sleep.score_regularity_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "sleep.score"
+      ],
+      "inputMetricIds": [
+        "sleep.performance",
+        "sleep.consistency",
+        "sleep.disturbances"
+      ],
+      "methodologyUrl": "docs/algorithms/sleep-score.md",
+      "summaryEn": "0-100 composite of duration against your own need, timing regularity and how unbroken the night stayed — weighted toward regularity of timing. A consistent schedule scores well even on a shorter night. Renormalised over whichever components exist, and never produced at all without a performance term.",
+      "params": {
+        "performanceWeight": 0.3,
+        "consistencyWeight": 0.55,
+        "continuityWeight": 0.15,
+        "disturbanceZeroScoreCount": 8.0,
+        "performanceCapPercent": 100.0
+      },
+      "paramNotes": {
+        "consistencyWeight": "The majority term. Sleep regularity is at least as predictive of long-run outcomes as duration (UK Biobank, SLEEP 2024) — that citation supports regularity mattering, NOT this particular weight, which is BADAN's own and unvalidated.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of sleep.score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "sleep.score_duration_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "sleep.score"
+      ],
+      "inputMetricIds": [
+        "sleep.performance",
+        "sleep.consistency",
+        "sleep.disturbances"
+      ],
+      "methodologyUrl": "docs/algorithms/sleep-score.md",
+      "summaryEn": "0-100 composite of duration against your own need, timing regularity and how unbroken the night stayed — weighted hard toward duration. Closest to 'did I get enough hours', with regularity and continuity as adjustments. Renormalised over whichever components exist, and never produced at all without a performance term.",
+      "params": {
+        "performanceWeight": 0.75,
+        "consistencyWeight": 0.15,
+        "continuityWeight": 0.1,
+        "disturbanceZeroScoreCount": 8.0,
+        "performanceCapPercent": 100.0
+      },
+      "paramNotes": {
+        "performanceWeight": "Dominant by design. States plainly that this variant is close to a duration measure, for someone who wants the score to answer 'did I sleep enough'.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of sleep.score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
       "algorithmId": "composite.readiness_score",
       "semver": "2.0.0",
       "introducedIn": "0.2.0",
@@ -269,6 +350,97 @@
         "zClampSigmas": "Clamps each input's z before weighting so one wild reading (a bad HRV sample after a late meal) cannot dominate the composite.",
         "minInputsToScoreAtAll": "Below this no score is emitted at all. An honest absence beats a confident number built from one input.",
         "supersedesSemver": "1.0.0 remains valid for every row already computed with it. Per I2 those rows are never rewritten; the version on the row is what explains it."
+      }
+    },
+    {
+      "algorithmId": "composite.readiness_score_autonomic",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "readiness.score"
+      ],
+      "inputMetricIds": [
+        "heart.hrv",
+        "heart.rhr",
+        "respiratory.rate",
+        "sleep.performance"
+      ],
+      "methodologyUrl": "docs/algorithms/readiness.md",
+      "summaryEn": "0-100 from the two cardiac autonomic measures only — HRV and resting heart rate against their own personal baselines. Sleep performance and respiratory rate are excluded entirely, so this number never moves because of how you slept, only because of what your heart did.",
+      "params": {
+        "weightHrv": 0.65,
+        "weightRhr": 0.35,
+        "weightSleepPerformance": 0.0,
+        "weightRespiratoryRate": 0.0,
+        "zClampSigmas": 2.5,
+        "minInputsForFullScore": 2,
+        "minInputsToScoreAtAll": 2
+      },
+      "paramNotes": {
+        "weightSleepPerformance": "Zero: this variant excludes sleep by design. Useful when sleep is tracked poorly or not at all, where a sleep term contributes noise rather than signal.",
+        "minInputsForFullScore": "Lowered to 2 because only two inputs exist here at all; leaving it at 3 would mean this variant could never reach full confidence.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of composite.readiness_score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "composite.readiness_score_sleep_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "readiness.score"
+      ],
+      "inputMetricIds": [
+        "heart.hrv",
+        "heart.rhr",
+        "respiratory.rate",
+        "sleep.performance"
+      ],
+      "methodologyUrl": "docs/algorithms/readiness.md",
+      "summaryEn": "Weighted composite of each input's z-position against its own personal baseline, mapped to 0-100 — with sleep performance carrying the majority of the weight. How you slept dominates; the heart and respiratory measures adjust around it. Reduced-input variants drop a term and redistribute its weight rather than substituting a default.",
+      "params": {
+        "weightHrv": 0.2,
+        "weightRhr": 0.15,
+        "weightSleepPerformance": 0.55,
+        "weightRespiratoryRate": 0.1,
+        "zClampSigmas": 2.5,
+        "minInputsForFullScore": 3,
+        "minInputsToScoreAtAll": 2
+      },
+      "paramNotes": {
+        "weightSleepPerformance": "The majority term. For someone who finds their readiness tracks how they slept more than anything their watch measured overnight, this states that directly rather than leaving them to distrust the number.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of composite.readiness_score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "composite.readiness_score_equal",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "readiness.score"
+      ],
+      "inputMetricIds": [
+        "heart.hrv",
+        "heart.rhr",
+        "respiratory.rate",
+        "sleep.performance"
+      ],
+      "methodologyUrl": "docs/algorithms/readiness.md",
+      "summaryEn": "Weighted composite of each input's z-position against its own personal baseline, mapped to 0-100 — with every present input weighted equally. No single measure is privileged, so a day is only called ready when the inputs broadly agree. Reduced-input variants drop a term and redistribute its weight rather than substituting a default.",
+      "params": {
+        "weightHrv": 0.25,
+        "weightRhr": 0.25,
+        "weightSleepPerformance": 0.25,
+        "weightRespiratoryRate": 0.25,
+        "zClampSigmas": 2.5,
+        "minInputsForFullScore": 3,
+        "minInputsToScoreAtAll": 2
+      },
+      "paramNotes": {
+        "weightHrv": "Equal by construction. The behaviour this offers is that no input can carry the score on its own, which suits someone whose HRV is noisy enough that a 0.5 weight makes the number swing more than their experience does.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of composite.readiness_score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
       }
     },
     {

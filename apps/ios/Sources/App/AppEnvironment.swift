@@ -299,9 +299,20 @@ final class AppEnvironment {
                                         statuses: try journal.statuses(overlapping: from, to: to))
         }
         self.contextAnnotations = contextAnnotations
-        self.sleepIntelligence = SleepIntelligenceEngine(derivation: derivation, measurements: measurements,
-                                                         clock: clock, deviceId: deviceId,
-                                                         contextAnnotations: contextAnnotations)
+        // D-35: both score engines resolve their spec per compute from `MethodChoiceStore`, which
+        // reads `UserDefaults` and is therefore legal off the main actor — derivation runs on
+        // HealthKit's queues and `BGTaskScheduler`'s, neither of which may touch `self.profile`.
+        // Same reasoning as `connected:` on the background bridge below.
+        self.sleepIntelligence = SleepIntelligenceEngine(
+            derivation: derivation, measurements: measurements,
+            clock: clock, deviceId: deviceId,
+            specProvider: {
+                SleepSpec.load(from: .shared,
+                               scoreContractId: MethodChoiceStore.activeAlgorithmId(
+                                   for: MetricID.sleepScore,
+                                   contractDefault: SleepSpec.scoreContractId))
+            },
+            contextAnnotations: contextAnnotations)
         // Readiness resolves a two-source overnight-HRV conflict by source priority (plan §18). The
         // priority is reconstructed from the persisted source/device catalog via the published
         // `SensorQualityMap` classes (worn sensor > phone), so it needs no new stored column and
@@ -309,6 +320,12 @@ final class AppEnvironment {
         // local `catalog` keeps this off `self` during init.
         self.readiness = ReadinessEngine(derivation: derivation, measurements: measurements,
                                          clock: clock, deviceId: deviceId,
+                                         specProvider: {
+                                             ReadinessSpec.load(from: .shared,
+                                                 contractId: MethodChoiceStore.activeAlgorithmId(
+                                                     for: MetricID.readinessScore,
+                                                     contractDefault: ReadinessSpec.contractId))
+                                         },
                                          priorityForSource: { sourceId in
                                              AppEnvironment.readinessSourcePriority(sourceId: sourceId, catalog: catalog)
                                          },
@@ -1597,6 +1614,13 @@ final class AppEnvironment {
         var p = profile
         mutate(&p)
         profile = p
+
+        // D-35. Mirror the method choices where derivation can read them off the main actor. Written
+        // here, at the ONE place the profile changes, for the same reason the HealthKit-connected
+        // flag is: a background derivation must not reach for `@Observable` main-actor state. Kept
+        // unconditional rather than diffed — it is a small dictionary, and a missed write would mean
+        // the engine and the UI disagreed about which method is active.
+        MethodChoiceStore.write(p.methodChoices)
 
         // OPT-200: the sensitive DB is independently purgeable; re-enabling it after a purge
         // never reseeds it unless something explicitly checks for that on this transition.

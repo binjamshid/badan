@@ -31,6 +31,8 @@ private enum MetricDetailStrings {
     static let asOf = LocalizedString(en: "As of", ar: "اعتبارًا من")
     static let computedForDate = LocalizedString(en: "Computed for", ar: "محسوبة لـ")
     static let moreInFamily = LocalizedString(en: "More in this family", ar: "المزيد في هذه الفئة")
+    /// D-35. Shown at both depths above the method row — see `methodChoiceRow`.
+    static let methodLabel = LocalizedString(en: "Calculation method", ar: "طريقة الحساب")
     static let shareMetric = LocalizedString(en: "Share this metric", ar: "مشاركة هذا المقياس")
     /// Deviation-from-center caption at power depth (EASE-157).
     static let vsYourMedian = LocalizedString(en: "vs your median", ar: "مقارنة بمتوسطك")
@@ -362,6 +364,16 @@ struct MetricDetailScreen: View {
                 explainerCard(data)
             }
 
+            // D-35. The active method shows at BOTH altitudes, not just power.
+            //
+            // `methodCard` above is power-only and stays that way — it carries the raw
+            // `algorithmId@semver`, which is a power affordance. But a number whose method the user
+            // CHOSE has to say so wherever that number appears: showing "Readiness 68" in casual
+            // while silently computing it a way the user picked in another screen is exactly the
+            // kind of quiet mismatch this codebase removes elsewhere. Casual gets one plain line
+            // and a route into the picker.
+            methodChoiceRow(data)
+
             // A21/D-26: "never for treatment decisions" on every surface a glucose value renders.
             // Unconditional, outside the casual/power branch above, so depth can never be the
             // reason it's missing — see `GlucoseDisclaimer`'s own doc for why this lives here
@@ -683,6 +695,67 @@ struct MetricDetailScreen: View {
             .badanElevation()
         }
     }
+
+    // MARK: Method choice (D-35)
+
+    /// One line naming the active calculation method, at every depth, with a route to change it.
+    ///
+    /// Renders only for metrics that actually have alternatives, so it does not add a line to the
+    /// ~70 metrics with a single producer. `MethodResolver` is the single resolution point, so this
+    /// and the engine can never disagree about which method is live — including the withdrawn-choice
+    /// case, which is disclosed here rather than silently falling back.
+    @ViewBuilder
+    private func methodChoiceRow(_ data: MetricDetailData) -> some View {
+        if let contractDefault = Self.methodDefaults[data.def.metricId],
+           MethodResolver.selectableMethods(for: data.def.metricId, registry: .shared).count > 1 {
+            let resolution = MethodResolver.resolve(
+                metricId: data.def.metricId, contractDefault: contractDefault,
+                profile: env.profile, registry: .shared)
+            NavigationLink {
+                MethodPickerScreen(metricId: data.def.metricId, contractDefault: contractDefault)
+            } label: {
+                BadanCard {
+                    HStack(spacing: BadanSpace.space2) {
+                        VStack(alignment: .leading, spacing: BadanSpace.space1) {
+                            Text(MetricDetailStrings.methodLabel, language: env.language)
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                            if let name = AnatomyStrings.algorithmGlossary[resolution.algorithmId] {
+                                LText(name)
+                                    .font(BadanFont.caption)
+                                    .foregroundStyle(BadanColor.textPrimary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            if resolution.withdrawnChoice != nil {
+                                LText(MethodPickerCopy.withdrawnNote)
+                                    .font(BadanFont.caption)
+                                    .foregroundStyle(BadanColor.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Spacer(minLength: BadanSpace.space2)
+                        Image(systemName: "chevron.forward")
+                            .imageScale(.small)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minHeight: BadanSpace.touchMin)
+                    .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Which contract entry is the DEFAULT for each metric that offers a choice.
+    ///
+    /// Explicit rather than "the first producer": contract order is not a ranking, and promoting
+    /// whichever entry happens to sort first would change everyone's numbers the moment a variant
+    /// was added to the file.
+    private static let methodDefaults: [String: String] = [
+        MetricID.readinessScore: ReadinessSpec.contractId,
+        MetricID.sleepScore: SleepSpec.scoreContractId,
+    ]
 
     // MARK: Power — sibling metrics
 

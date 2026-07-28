@@ -383,6 +383,13 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     }
     /// D-35. Metrics the user has hidden from browsing surfaces.
     ///
+    /// D-35. The user's chosen calculation method per derived metric — `metricId -> algorithmId`.
+    ///
+    /// Empty means "use the contract default", which is what every existing install has and what
+    /// anyone who never opens the picker keeps. A stored id that no longer exists (the app updated
+    /// and an entry was withdrawn) resolves back to the default AND says so on the surface — see
+    /// `MethodResolver`. It is never silently honoured, never a crash, and never "compute nothing".
+    public var methodChoices: [String: String]
     /// **Presentation only, and this is an invariant with a test behind it
     /// (`testHidingAMetricDoesNotStopItBeingIngestedOrDerived`).** A hidden metric is still
     /// ingested, still derived, still exportable, still searchable by name, and still deletable.
@@ -408,7 +415,8 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 bedtimeReminders: BedtimeReminderSettings = .legacyDefault,
                 ambientPrivacy: AmbientPrivacyConfig = .default,
                 pinnedMetricIds: [String] = [],
-                hiddenMetricIds: [String] = []) {
+                hiddenMetricIds: [String] = [],
+                methodChoices: [String: String] = [:]) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -427,6 +435,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.ambientPrivacy = ambientPrivacy
         self.pinnedMetricIds = Self.clampPins(pinnedMetricIds)
         self.hiddenMetricIds = hiddenMetricIds
+        self.methodChoices = methodChoices
     }
 
     /// The pin ceiling. Eight so Home stays a summary rather than becoming a second Body tab, and
@@ -541,6 +550,9 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // down its "stored row present but failed to decode" path and reset every other preference.
         pinnedMetricIds = Self.clampPins(try c.decodeIfPresent([String].self, forKey: .pinnedMetricIds) ?? [])
         hiddenMetricIds = try c.decodeIfPresent([String].self, forKey: .hiddenMetricIds) ?? []
+        // D-35. Empty means "contract default for everything", which is exactly the behaviour of
+        // every profile written before methods were selectable.
+        methodChoices = try c.decodeIfPresent([String: String].self, forKey: .methodChoices) ?? [:]
     }
 
     /// Every module id Home can render, in default order.
