@@ -21,7 +21,10 @@ Concretely, these stay free **forever**, and should be stated as such in the pay
 
 - Every raw reading, at full resolution, with full provenance and lineage.
 - The metric browser, the anatomy sheets, and the "how this was worked out" methodology.
-- Export — CSV and JSON, all data, sensitive included, with checksums and manifest.
+- Export — CSV and JSON, sensitive included, with checksums and manifest. **SUPERSEDED BY D-33
+  (2026-07-28):** the free tier now exports the last 7 days; beyond that is subscriber-only.
+  Viewing, keeping, logging and deleting records stay free and uncapped. The rest of this
+  document still stands — you pay for interpretation, not for access.
 - Deletion, the sensitive-records gate, and everything the privacy policy promises.
 - Manual logging of everything BADAN can log.
 
