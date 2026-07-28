@@ -77,5 +77,48 @@
 	<array>
 		<string>group.net.binjamshid.badan</string>
 	</array>
+	<!-- App Attest, for the A9 AI coach proxy at badan.binjamshid.com and nothing else.
+	     ADR-0010 deliberately gives that service no accounts, which also leaves it with no
+	     per-user identity to rate-limit or authenticate against — the only thing standing
+	     between an extracted URL and the founder's OpenRouter bill. App Attest closes that
+	     without reintroducing accounts: the device proves the request came from the genuine
+	     BADAN binary, and the proof carries no user identity, so it does not widen ADR-0002's
+	     posture. It sends nothing about the user and no health data.
+
+	     The entitlement is permission only. It attests nothing until the client generates a
+	     DCAppAttestService key and backend/api verifies the attestation; adding the key here
+	     does not make the proxy any harder to abuse on its own.
+
+	     $(APP_ATTEST_ENV) is set per configuration in project.yml because the development and
+	     production attestation services reject each other's attestation objects — a hardcoded
+	     value breaks one half of the matrix as a server-side verification failure, never a
+	     build error. -->
+	<key>com.apple.developer.devicecheck.appattest-environment</key>
+	<string>$(APP_ATTEST_ENV)</string>
+	<!-- Medication reminders. A "take it now" alert silenced by Sleep Focus is the one class of
+	     notification BADAN sends that is worthless late, and Sleep Focus is active during
+	     exactly the hours evening/overnight doses fall in. This entitlement permits
+	     interruptionLevel = .timeSensitive; it changes nothing until the scheduling code sets
+	     the level, and it must stay scoped to meds-due — ring scores and narrative nudges are
+	     .active, and using .timeSensitive for them is what makes users revoke the whole
+	     category in Settings.
+
+	     Note the product guardrail still applies to the copy: time-sensitive delivery is a
+	     scheduling property, not a licence for urgent, diagnostic or prescriptive wording. -->
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
+	<!-- Container-wide default file protection. CompleteUntilFirstUserAuthentication, NOT
+	     Complete, and the distinction is load-bearing twice over:
+	       • HealthKit background delivery wakes BADAN via HKObserverQuery while the device is
+	         locked (see the entitlement above). Under NSFileProtectionComplete the anchored
+	         re-query cannot open badan.db, and a handler that cannot complete within seconds
+	         is exactly the failure ADR-0009 warns is permanent after 3 occurrences.
+	       • BadanWidgets reads the shared group container on locked-device timeline reloads
+	         and would render empty with no error.
+	     This sets the default for files written without an explicit protection attribute; it
+	     does not weaken badan_sensitive.db, whose SQLCipher key remains the real gate on the
+	     lab notebook and clinical records. -->
+	<key>com.apple.developer.default-data-protection</key>
+	<string>NSFileProtectionCompleteUntilFirstUserAuthentication</string>
 </dict>
 </plist>

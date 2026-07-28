@@ -33,8 +33,26 @@ out across many individually-under-the-cap tokens). `register_rate_limiter`/
 one. A captured/exfiltrated token also no longer lives forever: `POST /v1/revoke` lets a
 caller invalidate its own token server-side, and `AICoachClient.disable()` (iOS) calls it
 as a best-effort fire-and-forget alongside deleting the local Keychain copy.
+
+App Attest (2026-07-28) is the step past rate limiting. Limiters slow an attacker
+minting tokens; they do not distinguish the real app from a script, because there was
+nothing to distinguish it BY — ADR-0002 leaves no account to authenticate. Apple's
+attestation supplies exactly that missing thing and nothing more: proof the caller is a
+genuine, unmodified BADAN install on real hardware, carrying no user identity and no
+health data. `POST /v2/register` issues a token only against a valid attestation over a
+server-issued single-use challenge (`POST /v1/attest/challenge`). See `appattest.py`.
+
+`/v1/register` stays alive and unattested behind `BADAN_LEGACY_REGISTER_ENABLED`
+(default on) ON PURPOSE: BADAN is live on the App Store, and installs already out there
+call `/v1/register` when a user first enables the coach. Making attestation mandatory
+server-side the moment this deploys would break opt-in for every one of them. The
+sequence is: deploy this, ship the client build that calls `/v2/register`, wait for
+adoption, then set `BADAN_LEGACY_REGISTER_ENABLED=0`. Until that flip the old hole is
+still open — the flag is the whole point, so it is not "done" until it is off.
 """
 
+import base64
+import binascii
 import hashlib
 import logging
 import os
@@ -50,6 +68,8 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from appattest import AttestationError, verify_attestation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("badan-api")
@@ -222,6 +242,150 @@ global_register_rate_limiter = SlidingWindowRateLimiter(
 _GLOBAL_RATE_LIMIT_KEY = "*"
 
 
+# --- App Attest --------------------------------------------------------------
+
+# "<team id>.<bundle id>" — must match the app exactly, and is what stops an attestation
+# from any OTHER app signed by this same team from being accepted here.
+ATTEST_APP_ID = os.environ.get("BADAN_ATTEST_APP_ID", "54T3MDUR7H.net.binjamshid.badan")
+
+# Which attestation environments to accept. Mirrors the $(APP_ATTEST_ENV) build setting in
+# apps/ios/project.yml: Debug builds attest against "development", Release against
+# "production". Production deployments should keep this at production only — accepting
+# development attestations in production would let anyone with a development-signed build
+# of the bundle id through.
+ATTEST_ENVIRONMENTS = frozenset(
+    value.strip()
+    for value in os.environ.get("BADAN_ATTEST_ENVIRONMENTS", "production").split(",")
+    if value.strip()
+)
+
+# See the module docstring: leave ON to deploy without breaking already-installed apps,
+# turn OFF once the attesting client build has rolled out. This flag existing is not the
+# same as the hole being closed.
+LEGACY_REGISTER_ENABLED = os.environ.get("BADAN_LEGACY_REGISTER_ENABLED", "1") == "1"
+
+# A challenge is only useful for as long as it takes a device to attest — seconds. Short
+# expiry bounds how long a stolen challenge is worth anything and keeps the in-memory set
+# from growing without limit.
+CHALLENGE_TTL_SECONDS = float(os.environ.get("BADAN_ATTEST_CHALLENGE_TTL_SECONDS", "300"))
+
+# One physical install produces one attestation key. Re-enabling the coach after a disable
+# re-registers with the SAME key, so a small allowance is normal; an unbounded one would
+# let a single genuine device mint tokens forever and undo the point of attesting.
+MAX_TOKENS_PER_KEY = int(os.environ.get("BADAN_MAX_TOKENS_PER_KEY", "10"))
+
+
+class ChallengeStore:
+    """Single-use, expiring challenges, in memory.
+
+    In memory is correct here rather than a shortcut: this is a single-process
+    deployment (`infra/badan-api.service`, one uvicorn worker, no `--workers`), and a
+    challenge is worthless after a few seconds. A restart invalidates outstanding
+    challenges, which surfaces to a caller as one retryable failure at opt-in time.
+
+    Single use is the load-bearing property. Without `consume` deleting the challenge, a
+    captured attestation could be replayed against the same challenge indefinitely.
+    """
+
+    def __init__(self, ttl_seconds: float):
+        self._ttl = ttl_seconds
+        self._issued: dict[str, float] = {}
+        self._lock = Lock()
+
+    def issue(self) -> bytes:
+        challenge = secrets.token_bytes(32)
+        now = time.monotonic()
+        with self._lock:
+            # Opportunistic sweep — no background task needed for a dict this small.
+            expired = [key for key, at in self._issued.items() if now - at > self._ttl]
+            for key in expired:
+                del self._issued[key]
+            self._issued[challenge.hex()] = now
+        return challenge
+
+    def consume(self, challenge: bytes) -> bool:
+        """True exactly once per issued, unexpired challenge."""
+        key = challenge.hex()
+        now = time.monotonic()
+        with self._lock:
+            issued_at = self._issued.pop(key, None)
+        return issued_at is not None and now - issued_at <= self._ttl
+
+
+class AttestedKeyStore:
+    """Records which attestation keys have been seen, and how many tokens each has been
+    granted. Shares the SQLite file the device tokens already live in.
+
+    A row holds a random per-install key id and a public key — no account, no identity,
+    nothing joinable to a person (ADR-0002/D-2 unchanged). The count is what bounds a
+    single compromised-but-genuine device.
+    """
+
+    def __init__(self, db_path: Path):
+        self._db_path = db_path
+        self._lock = Lock()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attested_keys (
+                    key_id TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL,
+                    environment TEXT NOT NULL,
+                    first_seen REAL NOT NULL,
+                    tokens_issued INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.commit()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self._db_path)
+
+    def record_issue(self, key_id: bytes, public_key_der: bytes, environment: str) -> bool:
+        """Register the key (first time) and count one token against it. False when the
+        key has already been granted `MAX_TOKENS_PER_KEY` tokens."""
+        key_hex = key_id.hex()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT tokens_issued FROM attested_keys WHERE key_id = ?;", (key_hex,)
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO attested_keys
+                        (key_id, public_key, environment, first_seen, tokens_issued)
+                    VALUES (?, ?, ?, ?, 1);
+                    """,
+                    (key_hex, public_key_der, environment, time.time()),
+                )
+                conn.commit()
+                return True
+            if row[0] >= MAX_TOKENS_PER_KEY:
+                return False
+            conn.execute(
+                "UPDATE attested_keys SET tokens_issued = tokens_issued + 1 WHERE key_id = ?;",
+                (key_hex,),
+            )
+            conn.commit()
+            return True
+
+
+challenge_store = ChallengeStore(CHALLENGE_TTL_SECONDS)
+attested_key_store = AttestedKeyStore(TOKENS_DB_PATH)
+
+
+def _decode_base64(value: str, *, max_bytes: int) -> bytes:
+    """Strict base64 decode with a size cap, for caller-supplied blobs. Anything
+    malformed or oversized is an unauthorized request, not a 500 — this runs before any
+    verification on input from an unauthenticated endpoint."""
+    if len(value) > max_bytes * 2:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="unauthorized") from exc
+
+
 def _client_ip(request: Request) -> str:
     """Best-effort caller IP for the registration rate limiter above. This process binds to
     127.0.0.1 only (`infra/badan-api.service`'s `ExecStart`) and is reachable exclusively
@@ -249,9 +413,99 @@ async def register(request: Request):
         log.warning("register_rate_limited=true scope=global")
         raise HTTPException(status_code=429, detail="rate limit exceeded")
 
+    if not LEGACY_REGISTER_ENABLED:
+        # Deliberately 410 rather than 404: an old client learns the endpoint is gone, not
+        # that it typed the URL wrong, and the client maps it to "update the app".
+        raise HTTPException(status_code=410, detail="endpoint retired")
+
     token = token_store.issue()
     # Content-free per G8: confirms a token was issued, never logs the token itself.
-    log.info("device_token_issued=true")
+    log.info("device_token_issued=true legacy=true")
+    return {"token": token}
+
+
+@app.post("/v1/attest/challenge")
+async def attest_challenge(request: Request):
+    """Issue a single-use challenge for `POST /v2/register`.
+
+    Rate limited on the same per-IP/global budget as registration itself: a challenge is
+    cheap to make, but handing them out without limit would let an attacker farm them and
+    then spend an attestation budget in one burst.
+    """
+    client_ip = _client_ip(request)
+    if not register_rate_limiter.allow(client_ip):
+        log.warning("register_rate_limited=true scope=ip stage=challenge")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    if not global_register_rate_limiter.allow(_GLOBAL_RATE_LIMIT_KEY):
+        log.warning("register_rate_limited=true scope=global stage=challenge")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    challenge = challenge_store.issue()
+    return {"challenge": base64.b64encode(challenge).decode("ascii")}
+
+
+class AttestedRegisterRequest(BaseModel):
+    # Sizes are bounded so a malformed or hostile body is rejected before any parsing
+    # work: a key id is a SHA-256 (32 bytes), a challenge is 32 bytes, and a real
+    # attestation blob is a few KB. The caps are generous multiples of those, not tight
+    # fits, so a future Apple format change does not silently start failing here.
+    key_id: str = Field(max_length=128)
+    challenge: str = Field(max_length=128)
+    attestation: str = Field(max_length=32_000)
+
+
+@app.post("/v2/register")
+async def register_attested(body: AttestedRegisterRequest, request: Request):
+    """Issue a device token, but only to a caller that can prove it is the real app.
+
+    Everything `/v1/register` does, plus Apple App Attest over a server-issued single-use
+    challenge. The rate limiters are kept, not replaced — attestation bounds WHO can mint
+    tokens, the limiters bound HOW FAST, and a genuine-but-compromised device needs both.
+
+    Failures are a flat 401 with no detail, matching `appattest.verify_attestation`'s own
+    single error message: a caller must not be able to use responses to work out which
+    check it tripped.
+    """
+    client_ip = _client_ip(request)
+    if not register_rate_limiter.allow(client_ip):
+        log.warning("register_rate_limited=true scope=ip")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    if not global_register_rate_limiter.allow(_GLOBAL_RATE_LIMIT_KEY):
+        log.warning("register_rate_limited=true scope=global")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    key_id = _decode_base64(body.key_id, max_bytes=64)
+    challenge = _decode_base64(body.challenge, max_bytes=64)
+    attestation = _decode_base64(body.attestation, max_bytes=24_000)
+
+    # Consume FIRST. If verification runs before the challenge is spent, a failed attempt
+    # leaves the challenge outstanding and hands an attacker unlimited tries against one
+    # challenge — the exact replay the single-use property exists to prevent.
+    if not challenge_store.consume(challenge):
+        log.warning("attest_rejected=true stage=challenge")
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    try:
+        verified = verify_attestation(
+            attestation=attestation,
+            key_id=key_id,
+            challenge=challenge,
+            app_id=ATTEST_APP_ID,
+            allowed_environments=ATTEST_ENVIRONMENTS,
+        )
+    except AttestationError:
+        # G8: the blob itself is caller-supplied content and never reaches the log.
+        log.warning("attest_rejected=true stage=verify")
+        raise HTTPException(status_code=401, detail="unauthorized") from None
+
+    if not attested_key_store.record_issue(
+        verified.key_id, verified.public_key_der, verified.environment
+    ):
+        log.warning("attest_rejected=true stage=key_budget")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    token = token_store.issue()
+    log.info("device_token_issued=true attested=true environment=%s", verified.environment)
     return {"token": token}
 
 
