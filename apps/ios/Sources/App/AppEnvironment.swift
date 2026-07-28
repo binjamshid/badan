@@ -1171,10 +1171,22 @@ final class AppEnvironment {
         guard profile.notifications.showValuesInNotifications else { return nil }
         guard cls == .morningReadinessSummary else { return nil }
         let values = NotificationValues(
-            readiness: nil,
+            readiness: readinessPhrase(),
             sleepPerformance: sleepPerformancePhrase(),
             goal: nil)
         return values.isEmpty ? nil : values
+    }
+
+    /// "Readiness 68" — the `readiness.score` composite, stated as a bare number with no verdict
+    /// attached. Deliberately no band word ("good", "low"): a label is an interpretation, and the
+    /// lock screen is the one surface with no room for the evidence behind it.
+    private func readinessPhrase() -> LocalizedString? {
+        guard let latest = (try? derivation.latestDerivedSeries(metricId: MetricID.readinessScore))?.last
+        else { return nil }
+        let score = Int(latest.value.rounded())
+        return LocalizedString(
+            en: "Readiness \(Numerals.format(Double(score), language: .en, arabicDigits: false))",
+            ar: "الجاهزية \(Numerals.format(Double(score), language: .ar, arabicDigits: profile.arabicDigits))")
     }
 
     /// "Sleep 92% of need" — named for what the engine actually computes. Deliberately NOT called a

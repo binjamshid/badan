@@ -100,6 +100,10 @@ struct NotificationsSettingsScreen: View {
                             settingsDivider
                         }
                     }
+                    if windDownOn {
+                        settingsDivider
+                        bedtimeRow
+                    }
                     if anyDecisionClassOn {
                         settingsDivider
                         quietHoursRow
@@ -134,6 +138,71 @@ struct NotificationsSettingsScreen: View {
     /// stays quiet until the user actually opts into something.
     private var anyDecisionClassOn: Bool {
         decisionClasses.contains { env.profile.notifications.classOptIn[$0.rawValue] ?? false }
+    }
+
+    /// Only shown when the wind-down itself is on — a bedtime control under a switched-off reminder
+    /// would be configuring something that cannot happen.
+    private var windDownOn: Bool {
+        env.profile.notifications.classOptIn[NotificationClass.eveningWindDown.rawValue] ?? false
+    }
+
+    /// The wind-down's timing. Without this the feature is inert: `BedtimeReminderPolicy` derives a
+    /// bedtime by subtracting sleep need from a TARGET WAKE TIME, and with no way to set one it can
+    /// never leave its fixed-hour tier, however much sleep data exists.
+    ///
+    /// The lead stays at `BedtimeReminderSettings`'s 30-minute default rather than getting a second
+    /// picker — it is the part of this a user is least likely to have an opinion about, and the
+    /// model already clamps it.
+    private var bedtimeRow: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space1) {
+            Text(SettingsStrings.notifBedtimeTitle, language: env.language)
+                .font(BadanFont.body)
+                .foregroundStyle(BadanColor.textPrimary)
+            LText(SettingsStrings.notifBedtimeHint)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle(isOn: adaptiveBedtimeBinding) {
+                Text(SettingsStrings.notifBedtimeAdaptive, language: env.language)
+                    .font(BadanFont.bodyCompact)
+                    .foregroundStyle(BadanColor.textPrimary)
+            }
+            .tint(BadanColor.primary)
+            .frame(minHeight: BadanSpace.touchMin)
+            if env.profile.bedtimeReminders.targetWakeMinute != nil {
+                hourPicker(SettingsStrings.notifBedtimeWake, selection: targetWakeHourBinding)
+                    .padding(.top, BadanSpace.space1)
+                // Honest about the cold start: with no personal baseline there is no need estimate
+                // to subtract, so the reminder falls back rather than inventing a bedtime.
+                LText(SettingsStrings.notifBedtimeFallbackNote)
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Turning this on seeds a 07:00 target so the picker has something to show; turning it off
+    /// clears the target back to `nil`, which returns the wind-down to its fixed hour.
+    private var adaptiveBedtimeBinding: Binding<Bool> {
+        Binding(
+            get: { env.profile.bedtimeReminders.targetWakeMinute != nil },
+            set: { newValue in
+                env.update { $0.bedtimeReminders.targetWakeMinute = newValue ? 7 * 60 : nil }
+                Task { await env.reconcileDecisionNotifications() }
+            }
+        )
+    }
+
+    private var targetWakeHourBinding: Binding<Int> {
+        Binding(
+            get: { (env.profile.bedtimeReminders.targetWakeMinute ?? 7 * 60) / 60 },
+            set: { hour in
+                env.update { $0.bedtimeReminders.targetWakeMinute = hour * 60 }
+                Task { await env.reconcileDecisionNotifications() }
+            }
+        )
     }
 
     private var quietHoursRow: some View {
