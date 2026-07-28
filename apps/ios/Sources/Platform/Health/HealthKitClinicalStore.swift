@@ -34,19 +34,11 @@ final class HealthKitClinicalStore: ClinicalRecordStorePort {
         HKObjectType.clinicalType(forIdentifier: .labResultRecord)
     }
 
-    /// Whether the clinical-records ENTITLEMENT is currently shipped. See
-    /// `App/BADAN.entitlements` — the key is present but commented out, because enabling it
-    /// without the matching capability on the App ID fails every archive. Flip this to `true` in
-    /// the same change that uncomments the entitlement.
-    ///
-    /// Checked separately from `isAvailable()` below rather than folded into it, so the screen can
-    /// say "not available on this device" for a genuinely unsupported device and this build-level
-    /// gate stays legible as what it is: a portal step nobody has done yet, not a device problem.
-    static let entitlementEnabled = false
-
+    /// Clinical records are region- and institution-gated by Apple: `clinicalType(forIdentifier:)`
+    /// returns nil where the feature is unsupported, and the simulator has no connected provider
+    /// accounts. Both are ordinary "not available here" answers, not failures.
     func isAvailable() -> Bool {
-        guard Self.entitlementEnabled else { return false }
-        return HKHealthStore.isHealthDataAvailable() && labRecordType != nil
+        HKHealthStore.isHealthDataAvailable() && labRecordType != nil
     }
 
     func requestAuthorization() async -> Bool {
