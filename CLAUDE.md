@@ -68,9 +68,21 @@ Deployed on the founder's VPS as an isolated service: its own systemd unit, its 
 unprivileged user, its own nginx vhost (`badan.binjamshid.com`), touching no other
 service on that host.
 
+A **second** network-reaching surface is permitted by ADR-0011 / D-37: **opt-in methodology
+telemetry**, default off, on the SAME service (`POST /v1/footprints`) rather than a new one.
+It carries learning footprints only — which metric, which method, the direction of a user's
+disagreement, a bucketed event count, and whether a calibration was in force. No reading, no
+magnitude, no date or period key, no identifier, no region. The payload schema is closed
+(`additionalProperties: false`) and CI-gated so "footprint" cannot quietly widen into "reading".
+
+So there are exactly two files in `apps/ios/Sources/` allowed to open a socket for BADAN's own
+services — `Platform/AICoach/AICoachClient.swift` and `Platform/Telemetry/FootprintClient.swift`
+— plus the user-configured REST export destination, which is network by definition. CI enforces
+this list.
+
 **Do not** widen this into accounts, sync, server-side history, or a second backend
 surface without a new ADR. "The AI coach has a backend" is not a licence for the rest of
-the app to acquire one.
+the app to acquire one, and neither is "telemetry has a route."
 
 BADAN is deliberately **not** on the platform-api identity/backup services the other apps
 in this portfolio share — it has no accounts to attach them to.
@@ -93,10 +105,16 @@ logging shells) are all shipped. What replaces them:
 1. **Widen ingestion.** Nutrition is 0 of 7 metrics and body composition is partial. Several premium
    ideas in `docs/MONETIZATION.md` depend on data BADAN does not yet receive — selling
    interpretation of absent data is the one failure that document is written to prevent.
-2. **Let the user choose what is tracked and shown.** No customization surface exists yet.
+2. **Let the user choose what is tracked and shown** — **delivered** (D-35 branch, 2026-07-28).
+   Per-metric hide/pin lives on `CustomizationProfile` with a Settings manage screen and a Home
+   pinned card. Hiding is presentation only: a hidden metric is still ingested, still derived, still
+   found by explicit name search, and still in the export scope picker. Do not let "hidden" come to
+   mean "not collected" — HealthKit will not backfill what BADAN declined to read.
 3. **Earn the derived numbers.** Every algorithm entry is still `provisional: true`. Constants are
    seeded defaults, not validated ones, and the provisional flag must not be cleared per-metric
-   until that metric's constants actually are.
+   until that metric's constants actually are. Two mechanisms now feed this — user-chosen methods
+   (D-35) and on-device feedback calibration (D-36) — but neither *earns* a constant by itself, and
+   opt-in telemetry (D-37) is explicitly not sufficient grounds either.
 4. **Close the honest-degradation gaps**, not paper over them: the stress density gate hides the
    surface for Apple-Watch-only users, the mood estimate needs two of three terms, and the wake
    summary lands at first unlock on a locked device. These are correct; they should be *explained*
@@ -105,8 +123,12 @@ logging shells) are all shipped. What replaces them:
 
 ## Never
 
-- Add a network dependency to any surface other than the opt-in AI coach without a new ADR.
-- Send user health data off device.
+- Add a network dependency to any surface other than the opt-in AI coach and the opt-in
+  methodology telemetry without a new ADR.
+- Send user health data off device — **narrowed by D-37 / ADR-0011, and the Never survives.** No
+  health datum leaves under that decision; what leaves is a statement about a *method* (metric id,
+  algorithm id, direction, bucketed count). A reading, an offset magnitude, a date or a period key
+  reaching any payload is still a violation, and there is a test that fails loudly if one does.
 - Paywall raw data — **except** the D-33 export cap above. Do not widen that exception: gating the
   metric browser, provenance, manual logging, deletion, or on-device viewing of any reading remains
   prohibited.
