@@ -131,8 +131,26 @@ final class ExportRunner {
     /// bundle's manifest as `previous_manifest_sha` so a consumer can verify the chain link
     /// (§22.6). Meaningful only alongside a non-nil `ingestedSince` (a real delta); a whole-window
     /// or non-delta run ignores it and the manifest's `is_delta` stays false with null cursors.
-    func run(scope: ExportScope, format: ExportFormat, passphrase: String? = nil,
-             ingestedSince: Date? = nil, previousManifestSha: String? = nil) throws -> ExportResult {
+    /// - Parameter entitlement: the caller's access state, or `nil` to run unclamped.
+    ///
+    ///   `nil` is what every internal caller passes — automations, the AI-coach context assembler,
+    ///   diagnostics. The D-33 window is a rule about what a USER may export out of the app, not a
+    ///   rule about what the app may read from its own database, and applying it internally would
+    ///   silently truncate features that have nothing to do with the subscription.
+    func run(scope requestedScope: ExportScope, format: ExportFormat, passphrase: String? = nil,
+             ingestedSince: Date? = nil, previousManifestSha: String? = nil,
+             entitlement: SubscriptionPolicy.State? = nil) throws -> ExportResult {
+        // D-33: the ONE place the export cap is applied. Narrowing the scope here rather than at
+        // each call site means a future export surface cannot forget it, and cannot apply a
+        // different version of it.
+        let scope: ExportScope
+        if let entitlement {
+            scope = SubscriptionPolicy.clampExportScope(requestedScope, state: entitlement,
+                                                        now: clock.now()).scope
+        } else {
+            scope = requestedScope
+        }
+
         if scope.includeSensitive {
             guard let passphrase, ExportPassphrasePolicy.isValid(passphrase) else {
                 throw ExportRunError.sensitiveExportRequiresPassphrase

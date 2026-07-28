@@ -54,6 +54,17 @@ private enum AccountStrings {
 /// paywalled) stated where a user would come looking for the catch, and it should survive
 /// whatever monetization lands.
 struct AccountSettingsScreen: View {
+    /// The row's subtitle states where the user actually stands rather than a generic upsell — the
+    /// same posture `PaywallScreen.statusLine` takes.
+    private var subscriptionStatus: LocalizedString {
+        switch env.subscription.access {
+        case .subscribed: return PaywallCopy.statusSubscribed
+        case .trial(let days): return PaywallCopy.statusTrial(env.format.integer(days))
+        case .trialExpired: return PaywallCopy.statusExpired
+        case .notYetStarted: return PaywallCopy.statusTrial(env.format.integer(SubscriptionPolicy.trialDays))
+        }
+    }
+
     @Environment(AppEnvironment.self) private var env
 
     var body: some View {
@@ -109,7 +120,35 @@ struct AccountSettingsScreen: View {
     private var subscriptionSection: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(AccountStrings.subscriptionHeader))
-            UnbuiltFeatureNotice(feature: AccountStrings.subscribe)
+            // Was an `UnbuiltFeatureNotice` — the honest placeholder this codebase uses for a
+            // surface that does not exist yet. It exists now, so the notice goes rather than
+            // sitting above a working paywall telling the user it is unbuilt.
+            NavigationLink { PaywallScreen() } label: {
+                BadanCard {
+                    HStack(spacing: BadanSpace.space3) {
+                        Image(systemName: "sparkles")
+                            .imageScale(.medium)
+                            .foregroundStyle(BadanColor.primary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(SettingsStrings.subscriptionRow, language: env.language)
+                                .font(BadanFont.body)
+                                .foregroundStyle(BadanColor.textPrimary)
+                            Text(subscriptionStatus, language: env.language)
+                                .font(BadanFont.caption)
+                                .foregroundStyle(BadanColor.textSecondary)
+                        }
+                        Spacer(minLength: BadanSpace.space2)
+                        Image(systemName: "chevron.forward")
+                            .imageScale(.small)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minHeight: BadanSpace.touchMin)
+                    .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
             BadanCard {
                 VStack(alignment: .leading, spacing: BadanSpace.space2) {
                     HStack(spacing: BadanSpace.space2) {

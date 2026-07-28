@@ -30,6 +30,10 @@ final class AppEnvironment {
     let logging: LoggingRepository
     let exportJobs: ExportJobRepository
     let profiles: ProfileRepository
+    /// Entitlements and the trial clock. Every premium gate in the app routes through this one
+    /// object, so "what is gated?" is answerable by finding its call sites rather than by grepping
+    /// for scattered boolean checks.
+    let subscription: StoreKitEntitlementStore
     let backgroundRuns: BackgroundRunRepository
     /// EPIC-03. Workout GPS traces. Wired here like every other repository so the workout detail
     /// screen reads routes through the composition root rather than constructing its own
@@ -317,6 +321,7 @@ final class AppEnvironment {
                                   clock: clock, deviceId: deviceId,
                                   contextAnnotations: contextAnnotations)
         self.stress = stress
+        self.subscription = StoreKitEntitlementStore(clock: clock)
         let mood = MoodEstimateWriter(derivation: derivation, measurements: measurements,
                                       registry: registry, clock: clock, deviceId: deviceId)
         self.derivationCoordinator = DerivationCoordinator(baselines: baselines, sleep: sleepIntelligence,

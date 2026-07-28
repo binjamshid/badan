@@ -91,4 +91,27 @@ public enum SubscriptionPolicy {
     public static func exportWindowDays(_ state: State, now: Date) -> Int? {
         access(state, now: now).isUnlocked ? nil : freeExportDays
     }
+
+    /// The D-33 gate, applied. Returns the scope actually permitted, and whether it was narrowed.
+    ///
+    /// Narrows only `startDate`. Every other dimension of an export — which metrics, which sources,
+    /// raw vs derived, sensitive records, checksums, the manifest — is untouched at every access
+    /// level, because D-33 narrowed exactly one thing and explicitly forbade widening it. A locked
+    /// user still exports *everything about* the last 7 days, at full resolution, with full
+    /// provenance; they do not get a lesser export of a longer period.
+    ///
+    /// `wasNarrowed` is returned rather than inferred so the caller can TELL the user their export
+    /// was clipped. Silently handing back 7 days when someone asked for a year would be the
+    /// dishonest version of this gate, and worse than not having it.
+    public static func clampExportScope(_ scope: ExportScope, state: State,
+                                        now: Date) -> (scope: ExportScope, wasNarrowed: Bool) {
+        guard let windowDays = exportWindowDays(state, now: now) else { return (scope, false) }
+        let earliest = now.addingTimeInterval(-Double(windowDays) * 86_400)
+        // A request that already starts inside the window is not narrowed — asking for 3 days when
+        // 7 are allowed must not be reported as a restriction.
+        if let requested = scope.startDate, requested >= earliest { return (scope, false) }
+        var clamped = scope
+        clamped.startDate = earliest
+        return (clamped, true)
+    }
 }

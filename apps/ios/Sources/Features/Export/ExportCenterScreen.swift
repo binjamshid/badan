@@ -10,6 +10,11 @@ import UIKit
 /// the two surfaces can never drift apart in wording.
 enum ExportCopy {
     static let onDeviceOnly = LocalizedString(en: "On this device — no network", ar: "على هذا الجهاز — دون شبكة")
+    /// D-33. Names the limit and what the file actually contains, so nobody discovers a truncated
+    /// export by noticing rows missing later. Deliberately does not scold or hard-sell.
+    static let clampedToFreeWindow = LocalizedString(
+        en: "Exported the last 7 days. BADAN Pro exports your full history — everything you recorded is still here on your device either way.",
+        ar: "تم تصدير آخر ٧ أيام. يصدّر «بدن برو» سجلك الكامل — وكل ما سجّلته يبقى على جهازك في الحالتين.")
     /// Says what the FILE will contain, not what the screen is showing — the reader of an
     /// exported bundle never saw the in-app sample banner.
     static let inspectHint = LocalizedString(
