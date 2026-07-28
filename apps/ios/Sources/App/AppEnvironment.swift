@@ -898,6 +898,64 @@ final class AppEnvironment {
         background.scheduleScoreBackfillProcessing()
     }
 
+    // MARK: - Recompute scores (D-35 item 2a)
+
+    /// Whether a user-initiated recompute is running, for the Settings row's spinner.
+    private(set) var isRecomputeInFlight = false
+
+    /// The outcome of the last user-initiated recompute: the number of days/sessions touched, or
+    /// `nil` if one has not run this launch. `0` is a real and common answer — a recompute over
+    /// unchanged data writes nothing — and the surface must say that rather than implying failure.
+    private(set) var lastRecomputeTouched: Int?
+
+    /// Re-derive every score across the whole stored span, on demand.
+    ///
+    /// `DerivationCoordinator.backfill` has existed and been tested since EPIC-23, and it has real
+    /// callers — both import screens drive it, and the HR-max editor queues it through
+    /// `requestEffortBackfill`. What it has never had is a way to say "just re-run it": every
+    /// existing entry point is a side effect of doing something else. After changing a method
+    /// (D-35) or accumulating feedback (D-36) a user needs the plain verb.
+    ///
+    /// Runs in the foreground rather than through `ScoreBackfillRequestStore`, deliberately: that
+    /// store's only consumer runs on background wakes iOS may withhold for days, which is the right
+    /// trade for an automatic consequence of an edit and the wrong one for a button someone just
+    /// pressed and is watching.
+    ///
+    /// Append-only (I2), so this is a plain re-run and never a mutation — old rows keep their
+    /// `computed_at`, value and algorithm id, and the latest-wins read surfaces the new ones.
+    func recomputeScores() {
+        guard !isRecomputeInFlight else { return }
+        guard let span = try? measurements.storedMeasurementSpan() else {
+            // Nothing stored: there is no window to re-derive. Report zero rather than running
+            // `backfill` over an invented range.
+            lastRecomputeTouched = 0
+            return
+        }
+        isRecomputeInFlight = true
+        let tz = TimeZone.current.identifier
+        // `to:` is now, not the span's end: baselines and the sleep cluster are anchored at `to`,
+        // so stopping at the last stored reading would leave today's scores computed against a
+        // window that ends in the past.
+        let now = clock.now()
+        let task = Task.detached(priority: .userInitiated) { [derivationCoordinator] () -> Result<Int, Error> in
+            do { return .success(try derivationCoordinator.backfill(from: span.from, to: now, tz: tz)) }
+            catch { return .failure(error) }
+        }
+        Task { [weak self] in
+            let outcome = await task.value
+            guard let self else { return }
+            self.isRecomputeInFlight = false
+            switch outcome {
+            case .success(let touched):
+                self.lastRecomputeTouched = touched
+                self.bumpDataGeneration()
+            case .failure(let error):
+                self.lastRecomputeTouched = nil
+                SyncLog.logger.error("Recompute failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
     // MARK: - Medication reminders (NEW-02/UX-02)
 
     /// Reschedule medication reminders from the *current* active regimens — but only if the

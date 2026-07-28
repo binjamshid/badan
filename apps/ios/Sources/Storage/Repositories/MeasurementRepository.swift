@@ -160,6 +160,31 @@ final class MeasurementRepository {
         return try connection(for: metricId).query(sql, params).map(Self.readIntervalRecord)
     }
 
+    /// The earliest and latest `measured_at` across every live measurement in the NON-sensitive
+    /// store — the span a whole-store re-derivation covers.
+    ///
+    /// Deliberately does not consult the sensitive connection. Scores are derived from the metrics
+    /// in the main store, and reaching into `badan_sensitive.db` to compute a window would widen
+    /// this repository's routing surface for no gain (I7). `nil` when there is nothing stored yet,
+    /// which is a real state on a fresh install and the caller must handle rather than substituting
+    /// an arbitrary window.
+    ///
+    /// Shaped after `ImportBatchRepository.measuredRange`, minus the batch predicate.
+    func storedMeasurementSpan() throws -> (from: Date, to: Date)? {
+        var earliest: Date?
+        var latest: Date?
+        for table in ["raw_samples", "interval_records", "sessions"] {
+            let row = try db.query("""
+                SELECT MIN(measured_at) AS lo, MAX(measured_at) AS hi FROM \(table)
+                WHERE deleted_at IS NULL;
+                """).first
+            if let lo = row?.date("lo") { earliest = earliest.map { min($0, lo) } ?? lo }
+            if let hi = row?.date("hi") { latest = latest.map { max($0, hi) } ?? hi }
+        }
+        guard let from = earliest, let to = latest else { return nil }
+        return (from, to)
+    }
+
     func latestInterval(metricId: String) throws -> IntervalRecord? {
         try connection(for: metricId)
             .query("SELECT * FROM interval_records WHERE metric_id = ? AND deleted_at IS NULL AND suppressed_by IS NULL ORDER BY start_at DESC LIMIT 1;",
