@@ -1,14 +1,44 @@
 # CLAUDE.md
 
-BADAN — health and body-metrics app. Native iOS and Android, local-first.
+BADAN — health and body-metrics app. Native, local-first. A repository that keeps your readings on
+your device, shows where each number came from, and says plainly when it doesn't know.
+
+## Current state (2026-07-28, v1.1 build 4 on TestFlight)
+
+**iOS is the live surface. Android is paused** (founder, 2026-07-22) — `apps/android` still holds a
+real Kotlin mirror of the domain/ontology layer, but it is NOT kept in step and its notification
+registry, budget constant and metric set have already diverged. Do not read either platform as
+evidence of what the other does, and do not claim parity.
+
+Shipping today:
+
+- **Ingestion** — ~15 HealthKit types (sleep sessions + stages, HR, RHR, HRV, steps, energy,
+  distance, floors, weight, body fat, lean mass, VO₂ max, SpO₂, respiratory rate, glucose).
+  Nutrition is still 0 of 7. Clinical records import via FHIR.
+- **Derivation** — personal baselines, readiness, the sleep cluster (need/performance/debt/
+  consistency/disturbances/**score**), day and workout effort, a density-gated daytime stress trend,
+  and a multi-input mood estimate. Every derived row carries an input manifest, a confidence and a
+  provisional flag; engines compute nothing when their contract entry is missing.
+- **Surfaces** — Home/Body/Log/Insights/Settings, Home-Screen and Lock-Screen widgets, a watchOS
+  companion app with readiness/sleep/effort complications, a budgeted notification engine
+  (seven classes, per-class opt-in, quiet hours, user-set daily ceiling, durable ledger).
+- **Export** — CSV/JSON with checksums and a manifest, templates, destinations, automation.
+- **Logging** — medications and reminders, hydration, symptoms, journal, workouts, cycle, and the
+  pregnancy module's P0 slice.
+- **Monetization** — StoreKit 2, no accounts. 7-day app-managed trial from first launch, then
+  monthly/yearly/lifetime. See D-32/D-33 and `docs/MONETIZATION.md`.
 
 ## Working mode
 
 This repository is native-first.
 
 - iOS UI and app integration should be implemented in Swift/SwiftUI.
-- Android UI and app integration should be implemented in Kotlin/Jetpack Compose.
+- Android UI and app integration should be implemented in Kotlin/Jetpack Compose — **when that lane
+  resumes.** Until then, do not write Android code speculatively "for parity".
 - Shared logic should begin as shared contracts, schemas, and domain specs before introducing runtime sharing.
+- Contracts (`packages/metric-ontology/registry.json`, `packages/contracts/algorithms/`) are the
+  canonical copies; `apps/*/…/Resources` hold build-time mirrors. A new derived metric needs a
+  registry entry AND an algorithm entry or its engine will silently produce nothing.
 
 ## Repo layout
 
@@ -57,13 +87,21 @@ in this portfolio share — it has no accounts to attach them to.
 
 ## Development priorities
 
-1. Canonical domain contracts.
-2. Metric ontology seed.
-3. Health source abstraction.
-4. Home summary shell.
-5. Metric detail shell.
-6. Export shell.
-7. Logging shell.
+The original seven (canonical contracts → ontology seed → source abstraction → Home/detail/export/
+logging shells) are all shipped. What replaces them:
+
+1. **Widen ingestion.** Nutrition is 0 of 7 metrics and body composition is partial. Several premium
+   ideas in `docs/MONETIZATION.md` depend on data BADAN does not yet receive — selling
+   interpretation of absent data is the one failure that document is written to prevent.
+2. **Let the user choose what is tracked and shown.** No customization surface exists yet.
+3. **Earn the derived numbers.** Every algorithm entry is still `provisional: true`. Constants are
+   seeded defaults, not validated ones, and the provisional flag must not be cleared per-metric
+   until that metric's constants actually are.
+4. **Close the honest-degradation gaps**, not paper over them: the stress density gate hides the
+   surface for Apple-Watch-only users, the mood estimate needs two of three terms, and the wake
+   summary lands at first unlock on a locked device. These are correct; they should be *explained*
+   in-app, not softened.
+5. **Android, when it resumes** — re-mirror the diverged registry, budget and metric set first.
 
 ## Never
 
