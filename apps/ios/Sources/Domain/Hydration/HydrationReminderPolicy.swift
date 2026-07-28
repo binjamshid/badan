@@ -90,7 +90,7 @@ public struct HydrationReminderSettings: Codable, Hashable, Sendable {
     /// opt-in", and this module's wider rule that no-goal and no-reminder are first-class states.
     public var times: [Int]
     /// At most this many hydration reminders per local day (§7: "initial maximum one notification
-    /// per day"). Independent of, and stricter than, the app-wide ≤2/day notification budget.
+    /// per day"). Independent of, and stricter than, the app-wide daily notification budget.
     public var dailyCap: Int
     /// Set by "Pause today"; nothing fires at or before this instant.
     public var pausedUntil: Date?

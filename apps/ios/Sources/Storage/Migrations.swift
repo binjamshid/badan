@@ -662,7 +662,7 @@ enum Schema {
             // notification of some CLASS was scheduled/delivered, never the health value that
             // notification was about — "readiness summary scheduled for 07:00" is metadata; the
             // readiness score is not stored here (same rule as `background_runs.work_done` holding
-            // counts, never values). This table backs the ≤2/day non-med budget AND the 64-pending
+            // counts, never values). This table backs the daily non-med budget AND the 64-pending
             // cap interplay: EPIC-32 EXTENDS the existing `NotificationScheduler`, it does not replace
             // it, and the decision engine COUNTS rows here — by class and by day-window — to know what
             // it has already sent or queued before deciding whether the next notification fits.

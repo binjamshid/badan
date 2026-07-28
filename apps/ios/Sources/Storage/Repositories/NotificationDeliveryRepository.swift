@@ -54,7 +54,7 @@ struct NotificationDelivery: Equatable {
 
 /// `notification_deliveries` (migration v8) — the budget ledger EPIC-32's decision engine counts
 /// against. It answers exactly one question for the engine ("how many budgeted notifications have I
-/// already committed for this day?") and records what it decides, so the ≤2/day invariant survives
+/// already committed for this day?") and records what it decides, so the daily invariant survives
 /// process death, backgrounding, and multiple evaluations in a day.
 ///
 /// Device-local and pruned like `background_runs`/`export_runs`: this is a record of BADAN's own
@@ -108,7 +108,7 @@ final class NotificationDeliveryRepository {
     /// What this deliberately does NOT claim: a notification delivered while BADAN is not running
     /// and never tapped is unobservable on iOS, so its row stays `scheduled`. That is honest rather
     /// than lossy — `scheduled` and `delivered` are counted identically by `countBudgeted`, so the
-    /// ≤2/day budget is exact either way; only the diagnostic distinction is missing.
+    /// daily budget is exact either way; only the diagnostic distinction is missing.
     func markDelivered(id: String, at date: Date) throws {
         try transition(id: id, to: .delivered, at: date)
     }
@@ -130,7 +130,7 @@ final class NotificationDeliveryRepository {
     // MARK: - Reads (the budget count)
 
     /// How many BUDGETED (non-med) notifications are already committed for the local day containing
-    /// `day`. This is the number the ≤2/day invariant is checked against, so it counts only rows
+    /// `day`. This is the number the daily invariant is checked against, so it counts only rows
     /// that consumed a slot — `scheduled` and `delivered` — and never `suppressed`/`cancelled` ones.
     /// Meds are excluded structurally (`notification_class <> 'meds'`): a med reminder is exempt
     /// from the budget by design.

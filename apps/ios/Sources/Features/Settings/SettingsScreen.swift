@@ -547,6 +547,10 @@ enum SettingsStrings {
         ar: "تُحجب هذه الإشعارات خلال هذه الفترة.")
     static let notifQuietFrom = LocalizedString(en: "From", ar: "من")
     static let notifQuietTo = LocalizedString(en: "To", ar: "إلى")
+    static let notifDailyLimit = LocalizedString(en: "Daily limit", ar: "الحدّ اليومي")
+    static let notifDailyLimitHint = LocalizedString(
+        en: "The most of these BADAN will send in a day. Medication reminders don't count towards it.",
+        ar: "أقصى عدد يرسله «بدن» من هذه الإشعارات في اليوم. تذكيرات الأدوية غير محسوبة ضمنه.")
 
     static let depthChangeNotice = LocalizedString(
         en: "Applied — you'll see the change on Home and other screens.",
