@@ -756,6 +756,23 @@
       "explainerEn": "How stressed you felt when you checked in."
     },
     {
+      "metricId": "subjective.mood_estimate",
+      "family": "subjective",
+      "kind": "derived",
+      "canonicalUnit": "scale_1_5",
+      "displayUnits": [
+        "scale_1_5"
+      ],
+      "nameEn": "Mood estimate",
+      "nameAr": "تقدير المزاج",
+      "casualLabel": "Mood estimate",
+      "preciseLabel": "Physiological mood estimate",
+      "chartHint": "range",
+      "baselineEligible": false,
+      "sensitiveClass": "normal",
+      "explainerEn": "BADAN's read of how your body is trending, on the same 1-5 scale you use when you log your mood yourself - so you can see where the two agree and where they don't. It is an estimate from sleep, resting heart rate and heart-rate variability, not a reading of how you feel. Your own logged mood is always the record; this never overwrites it."
+    },
+    {
       "metricId": "symptoms.severity_avg",
       "family": "symptoms",
       "kind": "derived",
