@@ -28,6 +28,7 @@ struct PersonalizationSettingsScreen: View {
                 }
                 modulesSection
                     .padding(.top, BadanSpace.space3)
+                metricsSection
             }
             .padding(BadanSpace.space4)
         }
@@ -240,7 +241,7 @@ struct PersonalizationSettingsScreen: View {
                 VStack(spacing: 0) {
                     ForEach(Array(sortedHomeModules.enumerated()), id: \.element.id) { index, module in
                         SettingsToggleRow(
-                            title: homeModuleLabel(module.id),
+                            title: Self.homeModuleLabel(module.id),
                             subtitle: nil,
                             isOn: Binding(
                                 get: { env.profile.module(module.id)?.visible ?? module.visible },
@@ -255,6 +256,24 @@ struct PersonalizationSettingsScreen: View {
         .onAppear { sortedHomeModules = env.profile.homeModules.sorted { $0.order < $1.order } }
         .onChange(of: env.profile.homeModules) { _, newValue in
             sortedHomeModules = newValue.sorted { $0.order < $1.order }
+        }
+    }
+
+    /// D-35. Per-metric visibility and pins, one level down: the registry has far too many metrics
+    /// for a section of toggles here, and `modulesSection` above is the coarse control that stays.
+    private var metricsSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(SettingsStrings.metricsHeader))
+            BadanCard {
+                NavigationLink { MetricVisibilityScreen() } label: {
+                    SettingsNavRowLabel(icon: "slider.horizontal.3", title: SettingsStrings.metricsRow)
+                }
+                .buttonStyle(.plain)
+            }
+            LText(SettingsStrings.metricsCaption)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -274,9 +293,17 @@ struct PersonalizationSettingsScreen: View {
         }
     }
 
-    private func homeModuleLabel(_ id: String) -> LocalizedString {
+    /// `static` and non-private so `MetricVisibilityTests` can assert every module in
+    /// `defaultModules` has a real translation rather than falling through to the raw-id branch —
+    /// the bug `"effort"` had. It reads no instance state, so nothing is lost by hoisting it.
+    static func homeModuleLabel(_ id: String) -> LocalizedString {
         switch id {
+        case "pinned": return LocalizedString(en: "Pinned metrics", ar: "المؤشرات المثبّتة")
         case "readiness": return Loc.readiness
+        // Gated by `HomeScreen` since it shipped, but absent from `defaultModules` until D-35 — so
+        // it had no toggle to label. Both halves are fixed together; a case here without the entry
+        // there would still never render.
+        case "effort": return LocalizedString(en: "Effort", ar: "الجهد")
         case "sleep": return LocalizedString(en: "Sleep", ar: "النوم")
         case "activity": return LocalizedString(en: "Activity", ar: "النشاط")
         case "heart": return LocalizedString(en: "Heart", ar: "القلب")

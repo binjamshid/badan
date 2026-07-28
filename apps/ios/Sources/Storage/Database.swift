@@ -298,7 +298,10 @@ final class Database {
     /// Delete only *ingested* measurement data — sources/devices, raw samples, interval
     /// records, sleep sessions, derived values, baselines, insights, and dedup bookkeeping —
     /// leaving every manual-log table (workouts/nutrition/notes), `customization_profile`,
-    /// `goals`, `metric_pins`, `export_jobs`, and the whole sensitive DB untouched (BUG-01).
+    /// `goals`, `export_jobs`, and the whole sensitive DB untouched (BUG-01). Preservation is by
+    /// omission from `ingestedOnlyTables`/`measurementTables` below, not by a per-table branch.
+    /// (`metric_pins` used to be named here; it was dropped in migration 11 — D-35's pins are a
+    /// field on `customization_profile`, which this already preserves.)
     ///
     /// Used by `AppEnvironment.connectHealthKit()`'s post-authorization backfill in place of
     /// `resetAll()`, which used to wipe *both* databases — deleting a user's own logged

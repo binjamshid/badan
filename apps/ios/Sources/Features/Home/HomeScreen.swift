@@ -284,6 +284,11 @@ private struct HomeCasualBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space4) {
+            // D-35, order 0: what the user pinned sits above what BADAN chose for them.
+            if isVisible("pinned"), !data.pinnedMetrics.isEmpty {
+                PinnedMetricsCard(metrics: data.pinnedMetrics)
+            }
+
             // The narrative now lives inside the hero card itself (matching power mode) so the
             // "why" sentence reads as an explanation of the score above it, not a separate,
             // unlabeled aside.
@@ -387,6 +392,12 @@ private struct HomePowerBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space5) {
+            // D-35, order 0 — same placement as casual, so the two altitudes agree about what the
+            // top of Home is.
+            if isVisible("pinned"), !data.pinnedMetrics.isEmpty {
+                PinnedMetricsCard(metrics: data.pinnedMetrics)
+            }
+
             if isVisible("readiness") {
                 ReadinessHeroCard(data: data)
             }
@@ -976,6 +987,42 @@ private struct MetricModuleCard: View {
 
 // MARK: - Metric grid cell (power)
 
+/// D-35. The user's pinned metrics, at the top of Home, in the order they chose.
+///
+/// Renders through the same `MetricGridCell` the key grid uses, so a pinned metric looks like a
+/// metric rather than a second visual language — and so a derived pin (readiness, sleep score)
+/// gets the same treatment as a raw one. `HomeKeyMetric` is already the common shape; the fetch is
+/// what differs, not the presentation.
+///
+/// Renders nothing at all when no pinned metric has a recent reading. That is deliberate: the
+/// alternative is a card of empty slots, and an empty card is worse than no card. Individual
+/// pins that are stale simply do not appear — `loadMetrics` applies `keyMetricMaxAge` to pins
+/// exactly as it does to the key grid, rather than showing a stale number because it was asked for.
+private struct PinnedMetricsCard: View {
+    @Environment(AppEnvironment.self) private var env
+    let metrics: [HomeKeyMetric]
+
+    private static let header = LocalizedString(en: "Pinned", ar: "المثبّتة")
+
+    private let columns = [
+        GridItem(.flexible(), spacing: BadanSpace.space3),
+        GridItem(.flexible(), spacing: BadanSpace.space3),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(Self.header))
+            LazyVGrid(columns: columns, spacing: BadanSpace.space3) {
+                // No `id:` override — `HomeKeyMetric` is `Identifiable` by metricId, and pins are
+                // de-duplicated on write by `clampPins`, so the ids are unique here.
+                ForEach(metrics) { metric in
+                    MetricGridCell(metric: metric)
+                }
+            }
+        }
+    }
+}
+
 private struct MetricGridCell: View {
     @Environment(AppEnvironment.self) private var env
     let metric: HomeKeyMetric
@@ -1340,6 +1387,11 @@ struct HomeData {
     var effort: HomeEffortSummary?
     var sleep: HomeSleepSummary?
     var metrics: [HomeKeyMetric]
+    /// D-35. The user's pinned metrics, in their chosen order, rendered as their own Home card.
+    /// Deliberately separate from `metrics`: the key grid is a fixed editorial choice and pins are
+    /// the user's, and merging them would let a pin quietly displace a metric nobody asked to lose.
+    /// Defaulted so every existing `HomeData` construction (chiefly tests) keeps compiling.
+    var pinnedMetrics: [HomeKeyMetric] = []
     var medsDue: Int
     var medsActive: Int
     var firstDueMedName: String?
@@ -1393,6 +1445,10 @@ struct HomeFetchInputs {
     var cycleModuleEnabled: Bool = false
     var phaseEstimates: CyclePhaseEstimateRepository? = nil
     var sensitiveDerivation: DerivationRepository? = nil
+    /// D-35. The user's pinned metrics, in their chosen order (array position IS order). Empty for
+    /// every install that has not pinned anything, which is the pre-D-35 behaviour exactly — the
+    /// pinned card renders nothing and the four-metric key grid below is untouched.
+    var pinnedMetricIds: [String] = []
 }
 
 /// The result of the off-main fetch, before it's applied to `HomeViewModel.state` on the
@@ -1454,7 +1510,11 @@ final class HomeViewModel {
             phaseEstimates: cycleModuleEnabled
                 ? CyclePhaseEstimateRepository(sensitive: env.database.sensitive) : nil,
             sensitiveDerivation: cycleModuleEnabled
-                ? DerivationRepository(env.database.sensitive) : nil)
+                ? DerivationRepository(env.database.sensitive) : nil,
+            // D-35. No separate load-key field is needed for this: `HomeLoadKey` already carries the
+            // whole `CustomizationProfile`, and `pinnedMetricIds` is a field on it, so pinning
+            // invalidates the key and forces this reload by the mechanism that already existed.
+            pinnedMetricIds: profileSnapshot.pinnedMetricIds)
 
         let outcome = await Task.detached(priority: .userInitiated) {
             Self.fetch(inputs)
@@ -1499,13 +1559,19 @@ final class HomeViewModel {
                 : []
             let effort = try loadEffort(inputs, now: now, tz: tz, readiness: readiness)
             let sleep = try loadSleep(inputs, now: now, tz: tz)
-            let metrics = try loadMetrics(inputs, now: now)
+            let metrics = try loadMetrics(inputs, now: now, tz: tz, ids: defaultKeyMetricIds)
+            // D-35. A separate fetch rather than a merge into `metrics`: the pinned card is its own
+            // Home module (hideable on its own), and a pin must not silently reorder or displace the
+            // key grid. Bounded by `maxPinnedMetrics`, so this is at most 8 more per-metric reads.
+            let pinned = inputs.pinnedMetricIds.isEmpty
+                ? []
+                : try loadMetrics(inputs, now: now, tz: tz, ids: inputs.pinnedMetricIds)
             let meds = try loadMeds(inputs, now: now, tz: tz)
             let insight = try inputs.insightsRepo.recent(limit: 1).first
             let (events, eventsPartial) = inputs.depth.showsPowerDetail ? loadEvents(inputs, now: now) : ([], false)
 
             let hasAny = readiness != nil || sleep != nil || effort != nil || !metrics.isEmpty
-                || meds.active > 0 || insight != nil || !events.isEmpty
+                || !pinned.isEmpty || meds.active > 0 || insight != nil || !events.isEmpty
             guard hasAny else {
                 let hasConnectedSource = (try? inputs.catalog.sources())?.contains { $0.status == .active } ?? false
                 return .empty(hasConnectedSource: hasConnectedSource)
@@ -1523,6 +1589,7 @@ final class HomeViewModel {
                 effort: effort,
                 sleep: sleep,
                 metrics: metrics,
+                pinnedMetrics: pinned,
                 medsDue: meds.due,
                 medsActive: meds.active,
                 firstDueMedName: meds.firstDueName,
@@ -1702,14 +1769,35 @@ final class HomeViewModel {
 
     // MARK: Key metrics
 
-    private nonisolated static func loadMetrics(_ inputs: HomeFetchInputs, now: Date) throws -> [HomeKeyMetric] {
-        let ids = [MetricID.restingHeartRate, MetricID.hrv, MetricID.steps, MetricID.activeEnergy]
+    /// The four metrics the key grid has always shown. Unchanged by D-35 — pins are an additional
+    /// card, not a replacement for this row.
+    static let defaultKeyMetricIds = [MetricID.restingHeartRate, MetricID.hrv,
+                                      MetricID.steps, MetricID.activeEnergy]
+
+    private nonisolated static func loadMetrics(_ inputs: HomeFetchInputs, now: Date, tz: String,
+                                                ids: [String]) throws -> [HomeKeyMetric] {
         // Kept as a plain 14-day window (DATA-11-UI scope note) — a fixed sparkline lookback,
         // not a day-attribution boundary.
         let from = now.addingTimeInterval(-14 * 86_400)
         var result: [HomeKeyMetric] = []
         for id in ids {
-            guard let latest = try inputs.measurements.latestInterval(metricId: id),
+            // D-35: a pinned metric may be one whose value lives in `derived_values` rather than in
+            // a measurement — `readiness.score` and `sleep.score` have no interval record at all.
+            //
+            // The dispatch is deliberately on WHERE THE DATA IS, not on `MetricDefinition.kind`.
+            // Kind is the wrong rule here and quietly so: `heart.rhr` and `heart.hrv` are both
+            // `kind: derived` in the registry, yet Home has always read them from interval records
+            // ingested straight from HealthKit. Branching on kind sent those two down the derived
+            // path, found nothing, and emptied the key grid — caught by
+            // `PhaseAwareBaselineConsumptionTests`. Falling back only when there is no measurement
+            // at all leaves every metric that has one on exactly its existing path.
+            guard let latest = try inputs.measurements.latestInterval(metricId: id) else {
+                if let metric = try derivedKeyMetric(inputs, id: id, now: now, tz: tz, from: from) {
+                    result.append(metric)
+                }
+                continue
+            }
+            guard
                   // (UX-01-Home) Unbounded, this fallback could show a reading weeks old as
                   // "current." Beyond `keyMetricMaxAge`, skip the metric entirely — the grid's
                   // existing no-data treatment for a metric with nothing to show.
@@ -1751,6 +1839,47 @@ final class HomeViewModel {
             ))
         }
         return result
+    }
+
+    /// The derived half of `loadMetrics` (D-35). A derived metric has no interval record and no
+    /// personal baseline of its own — a readiness score is already a position against your
+    /// baselines — so this renders value + sparkline and leaves `position`/`deltaText` nil rather
+    /// than inventing a comparison the number does not have.
+    ///
+    /// `provisional` comes off the stored row instead of a baseline, which is the honest source:
+    /// it is the flag the engine wrote about the constants that produced this exact value.
+    private nonisolated static func derivedKeyMetric(_ inputs: HomeFetchInputs, id: String, now: Date,
+                                                     tz: String, from: Date) throws -> HomeKeyMetric? {
+        let series = try inputs.derivation.latestDerivedSeries(metricId: id)
+        // Day-keyed rows carry the day they describe in `periodKey`; `computedAt` is when BADAN
+        // last ran, which a backfill makes meaningless as a freshness signal. Rows with a period
+        // key this cannot date (session:/week:) are not datable on a daily card and are skipped.
+        let dated: [(date: Date, value: Double, row: DerivedValue)] = series.compactMap { row in
+            guard row.periodKey.hasPrefix("day:"),
+                  let date = DayAttribution.date(fromDayKey: String(row.periodKey.dropFirst(4)), tz: tz)
+            else { return nil }
+            return (date, row.value, row)
+        }
+        guard let latest = dated.last,
+              // Same freshness bound the raw path applies, deliberately not special-cased for
+              // pins: a pinned metric with nothing recent gets the honest empty treatment rather
+              // than a stale number wearing today's date.
+              HomeStaleness.isFresh(latest.date, now: now, maxAge: HomeStaleness.keyMetricMaxAge)
+        else { return nil }
+
+        let def = inputs.registry.definitionOrFallback(id)
+        return HomeKeyMetric(
+            metricId: id,
+            label: def.label(depth: inputs.depth, language: inputs.language),
+            heroValue: inputs.format.heroValue(metricId: id, canonicalValue: latest.value),
+            unit: inputs.format.unitLabel(metricId: id),
+            position: nil,
+            deltaText: nil,
+            spark: dated.filter { $0.date >= from }.map { (date: $0.date, value: $0.value) },
+            familySymbol: def.familyGroup.symbolName,
+            provisional: latest.row.provisional,
+            capturedAt: latest.date,
+            phaseCovariate: nil)
     }
 
     private nonisolated static func signedDelta(_ inputs: HomeFetchInputs, metricId: String, value: Double, center: Double) -> String {

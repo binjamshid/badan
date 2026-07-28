@@ -585,6 +585,15 @@ enum SettingsStrings {
     static let modulesOrderCaption = LocalizedString(
         en: "Choose what appears on Home.", ar: "اختر ما يظهر في الشاشة الرئيسية.")
 
+    // D-35. Deliberately says "browse" and "Home", never "track" or "collect": the setting behind
+    // this row changes what is shown, and nothing about what is recorded.
+    static let metricsHeader = LocalizedString(en: "Metrics", ar: "المؤشرات")
+    static let metricsRow = LocalizedString(en: "Shown metrics & pins", ar: "المؤشرات الظاهرة والمثبّتة")
+    static let metricsCaption = LocalizedString(
+        en: "Choose which metrics you browse, and pin a few to Home. Hiding one never stops BADAN "
+            + "recording it.",
+        ar: "اختر المؤشرات التي تتصفّحها، وثبّت بعضها في الرئيسية. الإخفاء لا يوقف تسجيل بادن لها.")
+
     static let unitsInfoAccessibilityLabel = LocalizedString(en: "About units", ar: "حول الوحدات")
     static let unitsExplainerIntro = LocalizedString(
         en: "Canonical units are exactly what your source recorded — nothing is converted, so provenance "
