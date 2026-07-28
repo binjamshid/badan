@@ -9,6 +9,12 @@ import Foundation
 final class SeedController {
     private let catalog: CatalogRepository
     private let ingestion: IngestionPipeline
+    /// The one ingestion pipeline, for callers that drive their own range walk rather than the
+    /// standard `now − historyDays` window — currently only D-35 item 2b's historical import,
+    /// which chunks by month. Exposed rather than duplicated so plan §13.3's "there is exactly one
+    /// ingestion path" stays literally true.
+    var ingestionPipeline: IngestionPipeline { ingestion }
+
     private let logging: LoggingRepository
     private let measurements: MeasurementRepository
     private let baselines: BaselineEngine

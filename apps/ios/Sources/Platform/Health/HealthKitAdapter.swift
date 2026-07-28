@@ -441,6 +441,18 @@ final class HealthKitAdapter: HealthStorePort {
     /// morning); results are then filtered back down to clusters actually attributed to THIS
     /// night, since a wide window can also catch the tail of an adjacent night.
     private func sessionsForNight(_ night: String, categoryType: HKCategoryType) -> [SessionDTO] {
+        Self.sessionsForNight(night, categoryType: categoryType, store: store, tz: tz)
+    }
+
+    /// `static` for the same reason as `readDailySum` above — see its doc.
+    ///
+    /// This is the ONLY way a historical import is allowed to build sleep sessions. Re-clustering
+    /// from a fresh query would be the single most likely source of duplicate nights: identity here
+    /// is night-keyed plus a within-night ordinal (`disambiguateWithinNight`), and any second
+    /// clustering path would have to reproduce both exactly or silently double every night it
+    /// touched.
+    static func sessionsForNight(_ night: String, categoryType: HKCategoryType,
+                                 store: HKHealthStore, tz: String) -> [SessionDTO] {
         guard let dayStart = DayAttribution.date(fromDayKey: night, tz: tz) else { return [] }
         let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: tz)
         let windowStart = dayStart.addingTimeInterval(-Self.sleepClusterGapSeconds - 12 * 3600)
@@ -455,7 +467,7 @@ final class HealthKitAdapter: HealthStorePort {
         }
         store.execute(query)
         semaphore.wait()
-        let forThisNight = groupIntoSessions(samples)
+        let forThisNight = groupIntoSessions(samples, tz: tz)
             .filter { DayAttribution.localNight(sessionEnd: $0.end, tz: $0.tz) == night }
         return Self.disambiguateWithinNight(forThisNight)
     }
@@ -528,6 +540,19 @@ final class HealthKitAdapter: HealthStorePort {
     /// external id — applies identically to the energy/distance/flights families, because each
     /// one is the same kind of thing: a cross-source daily total with no per-sample metadata.
     private func readDailySum(_ entry: HKTypeMap.Entry, range: HealthDateRange) -> [IntervalDTO] {
+        Self.readDailySum(entry, range: range, store: store, tz: tz)
+    }
+
+    /// `static` so `HistoricalHealthKitReader` can reuse it without holding an adapter (D-35 item
+    /// 2b). That matters: a type with no access to `pendingAnchors` cannot advance or commit a
+    /// live-sync anchor by accident, which is what makes "a historical import leaves `read_anchors`
+    /// byte-identical" a structural property rather than a convention.
+    ///
+    /// Safe to share precisely because this read is already anchor-free and idempotent — it
+    /// recomputes any window from day-keyed external ids, so running it over an overlapping range
+    /// upserts in place rather than doubling.
+    static func readDailySum(_ entry: HKTypeMap.Entry, range: HealthDateRange,
+                             store: HKHealthStore, tz: String) -> [IntervalDTO] {
         guard let metricId = entry.metricId, let type = entry.quantityType else { return [] }
         let predicate = HKQuery.predicateForSamples(withStart: range.start, end: range.end, options: .strictStartDate)
         let cal = DayAttribution.calendar(tz: tz)
@@ -614,28 +639,21 @@ final class HealthKitAdapter: HealthStorePort {
         var out: [WorkoutDTO] = []
         for sample in result.samples {
             guard let workout = sample as? HKWorkout else { continue }
-            let (sourceId, deviceId) = provenanceIds(for: workout)
-            let (tzId, tzAssumed) = measuredTimeZone(for: workout)
-            let uuid = workout.uuid.uuidString
             // Routes are read only with consent — the query is never even issued otherwise, so
             // there is no code path on which an unconsented trace exists in memory. Guarding at
             // the read (rather than filtering before the write) is deliberate: it is the only
             // placement where "off" also means "we did not look".
             let route = consent.granted ? readRoute(for: workout, consent: consent) : nil
-            out.append(WorkoutDTO(
-                activityType: HKTypeMap.activitySlug(for: workout.workoutActivityType),
-                start: workout.startDate, end: workout.endDate, tz: tzId,
-                sourceId: sourceId, deviceId: deviceId,
-                externalId: "healthkit-workout-\(uuid)", sourceWorkoutUUID: uuid,
-                totals: Self.totals(for: workout), route: route,
-                qualityFlags: tzAssumed ? [.tzAssumed] : []))
+            // Shared with `HistoricalHealthKitReader`, so both paths derive the same external id.
+            out.append(HKSampleMapping.workoutDTO(workout, totals: Self.totals(for: workout),
+                                                  route: route, fallbackTz: tz))
         }
 
         // (BUG-10a, extended) Unlike sleep, a deleted workout maps to exactly one session row:
         // its `externalId` embeds this same UUID. See `HealthStoreDeletions`'s doc for why sleep
         // cannot do this and workouts can.
         pendingDeletions.sessions += result.deletedUUIDs.map {
-            DeletedExternalRecord(externalId: "healthkit-workout-\($0)")
+            DeletedExternalRecord(externalId: HKSampleMapping.workoutExternalId(uuid: $0))
         }
         return out
     }
@@ -653,7 +671,7 @@ final class HealthKitAdapter: HealthStorePort {
     /// `distanceCycling`. Reading only `distanceWalkingRunning` (the obvious choice) would report
     /// every bike ride and every swim as having no distance at all, which reads as a broken
     /// import rather than as the wrong query.
-    private static func totals(for workout: HKWorkout) -> WorkoutTotals {
+    static func totals(for workout: HKWorkout) -> WorkoutTotals {
         let kcal = HKQuantityType(.activeEnergyBurned)
         let hr = HKQuantityType(.heartRate)
         let bpm = HKUnit.count().unitDivided(by: .minute())
@@ -857,7 +875,7 @@ final class HealthKitAdapter: HealthStorePort {
     /// never let a long/high-priority nap outrank the night's actual primary sleep.
     private static let sleepPrimaryMinSeconds: TimeInterval = 3 * 3600
 
-    private func groupIntoSessions(_ samples: [HKCategorySample]) -> [SessionDTO] {
+    private static func groupIntoSessions(_ samples: [HKCategorySample], tz: String) -> [SessionDTO] {
         guard !samples.isEmpty else { return [] }
         let bySource = Dictionary(grouping: samples) { $0.sourceRevision.source.bundleIdentifier }
         var out: [SessionDTO] = []
@@ -867,7 +885,7 @@ final class HealthKitAdapter: HealthStorePort {
             func flush() {
                 guard let first = cluster.first,
                       let last = cluster.max(by: { $0.endDate < $1.endDate }) else { cluster = []; return }
-                out.append(makeSession(from: cluster, start: first.startDate, end: last.endDate))
+                out.append(makeSession(from: cluster, start: first.startDate, end: last.endDate, tz: tz))
                 cluster = []
             }
             for sample in sorted {
@@ -882,9 +900,9 @@ final class HealthKitAdapter: HealthStorePort {
         return out
     }
 
-    private func makeSession(from samples: [HKCategorySample], start: Date, end: Date) -> SessionDTO {
-        let (sourceId, deviceId) = provenanceIds(for: samples[0])
-        let (tzId, tzAssumed) = measuredTimeZone(for: samples[0])
+    private static func makeSession(from samples: [HKCategorySample], start: Date, end: Date, tz: String) -> SessionDTO {
+        let (sourceId, deviceId) = HKSampleMapping.provenanceIds(for: samples[0])
+        let (tzId, tzAssumed) = HKSampleMapping.measuredTimeZone(for: samples[0], fallbackTz: tz)
         var stages: [StageDTO] = []
         var asleep: TimeInterval = 0
         for sample in samples {

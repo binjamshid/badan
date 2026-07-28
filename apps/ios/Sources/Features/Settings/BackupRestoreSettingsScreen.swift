@@ -137,6 +137,15 @@ struct BackupRestoreSettingsScreen: View {
                 }
                 .buttonStyle(.plain)
             }
+            // D-35 item 2b. Sits with the other importers rather than beside "Sync now": this
+            // brings in a window the anchored live path cannot reach, which is a different verb
+            // from "check for what changed".
+            BadanCard {
+                NavigationLink { FetchHealthHistoryScreen() } label: {
+                    SettingsNavRowLabel(icon: "clock.arrow.circlepath", title: FetchHistoryCopy.title)
+                }
+                .buttonStyle(.plain)
+            }
             LText(BackupStrings.importBlurb)
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textSecondary)

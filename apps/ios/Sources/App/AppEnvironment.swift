@@ -116,6 +116,10 @@ final class AppEnvironment {
     /// EPIC-26. The durable queue for a historical effort/score re-derivation an HR-max/zone edit
     /// requests. Written by `requestEffortBackfill`, drained by the BGProcessing `.scoreBackfill` step.
     let scoreBackfillStore: ScoreBackfillRequestStore
+    /// D-35 item 2b. The durable window + resume cursor for "Fetch Health history", shared between
+    /// the foreground walk this class drives and the background step that finishes an interrupted
+    /// one — one marker, not two views of the same intent.
+    let historicalImportStore: HistoricalImportRequestStore
 
     // Live presentation state
     var profile: CustomizationProfile
@@ -372,6 +376,8 @@ final class AppEnvironment {
         let connectedKey = Self.healthKitConnectedKey
         let scoreBackfillStore = ScoreBackfillRequestStore()
         self.scoreBackfillStore = scoreBackfillStore
+        let historicalImportStore = HistoricalImportRequestStore()
+        self.historicalImportStore = historicalImportStore
         let bridge = BackgroundIngestBridge(
             seedController: seedController,
             main: main,
@@ -392,7 +398,12 @@ final class AppEnvironment {
             // overlaps an ingest→derive) and the same durable request store the composition root
             // writes to.
             derivationCoordinator: derivationCoordinator,
-            scoreBackfillStore: scoreBackfillStore)
+            scoreBackfillStore: scoreBackfillStore,
+            // D-35 item 2b. A fresh reader per chunk for the same reason `makePort` builds a fresh
+            // adapter per ingest — except this one holds no anchors at all, which is what makes a
+            // historical fetch structurally unable to disturb live sync's resume point.
+            historicalImportStore: historicalImportStore,
+            makeHistoricalPort: { HistoricalHealthKitReader() })
         // EPIC-15 wiring. The automation engine composes Phase-1's runner, so it needs a
         // DELIVERY-capable `ExportRunner` — the plain `self.exporter` above is share-sheet-only
         // (built without the template collaborators). This one carries `templates`/`destinations`/
@@ -953,6 +964,75 @@ final class AppEnvironment {
                 self.lastRecomputeTouched = nil
                 SyncLog.logger.error("Recompute failed: \(String(describing: error), privacy: .public)")
             }
+        }
+    }
+
+    // MARK: - Fetch Health history (D-35 item 2b)
+
+    private(set) var historicalImport: HistoricalImportProgress?
+    private(set) var historicalImportOutcome: HistoricalImportOutcome?
+    /// Set while a run is in flight; read by the walk between chunks.
+    private var historicalImportCancelled = false
+
+    var isHistoricalImportRunning: Bool {
+        guard let phase = historicalImport?.phase else { return false }
+        return phase != .done
+    }
+
+    /// Fetch Health history over `[from, to]` and score what lands.
+    ///
+    /// Foreground and detached, not a `BGProcessingTask`: iOS will not grant one on demand, and the
+    /// user is watching a progress bar. The background step
+    /// (`BackgroundProcessingStep.historicalImportResume`) exists only to finish a walk that was
+    /// interrupted by the app leaving the foreground, which is why the screen also offers an
+    /// explicit Resume rather than promising a wake.
+    func startHistoricalImport(from: Date, to: Date) {
+        guard !isHistoricalImportRunning else { return }
+        historicalImportCancelled = false
+        historicalImportOutcome = nil
+        historicalImportStore.request(from: from, to: to)
+        runHistoricalImport()
+    }
+
+    /// Resume an interrupted import from its persisted cursor. No-op when nothing is pending.
+    func resumeHistoricalImport() {
+        guard !isHistoricalImportRunning, historicalImportStore.resumePoint() != nil else { return }
+        historicalImportCancelled = false
+        historicalImportOutcome = nil
+        runHistoricalImport()
+    }
+
+    /// Ask the walk to stop after the current month. Everything already fetched is kept and still
+    /// scored — see `HistoricalImportCoordinator.run`.
+    func cancelHistoricalImport() { historicalImportCancelled = true }
+
+    var hasResumableHistoricalImport: Bool { historicalImportStore.resumePoint() != nil }
+
+    private func runHistoricalImport() {
+        historicalImport = HistoricalImportProgress(phase: .probing)
+        let tz = TimeZone.current.identifier
+        let coordinator = HistoricalImportCoordinator(
+            pipeline: seedController.ingestionPipeline, derivation: derivationCoordinator,
+            requests: historicalImportStore, tz: tz)
+
+        let task = Task.detached(priority: .userInitiated) { [weak self] () -> HistoricalImportOutcome in
+            coordinator.run(
+                makeReader: { HistoricalHealthKitReader(tz: tz) },
+                isCancelled: {
+                    // Read back on the main actor; the walk only checks between chunks, so the
+                    // hop is infrequent and never inside a write transaction.
+                    MainActor.assumeIsolated { self?.historicalImportCancelled ?? false }
+                },
+                progress: { snapshot in
+                    Task { @MainActor [weak self] in self?.historicalImport = snapshot }
+                })
+        }
+        Task { [weak self] in
+            let outcome = await task.value
+            guard let self else { return }
+            self.historicalImportOutcome = outcome
+            self.historicalImport = HistoricalImportProgress(phase: .done)
+            self.bumpDataGeneration()
         }
     }
 

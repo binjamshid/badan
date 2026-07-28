@@ -53,6 +53,11 @@ protocol BackgroundIngestPerforming: AnyObject {
     /// queued or another derivation holds the lock; clears the request on success. Idempotent, so an
     /// expired run that never cleared the request simply re-runs and skips the days it already wrote.
     func runPendingScoreBackfill(now: Date) throws -> BackgroundWorkCounts?
+
+    /// Resume an interrupted "Fetch Health history" (D-35 item 2b) from its persisted cursor.
+    /// `nil` when nothing is pending, the reader is not wired, or another ingest holds the lock —
+    /// so the next wake retries rather than consuming the step.
+    func resumeHistoricalImportIfPending(now: Date) throws -> BackgroundWorkCounts?
 }
 
 /// Whether iOS Data Protection currently lets us read protected files.
@@ -197,6 +202,16 @@ enum BackgroundProcessingStep: String, CaseIterable {
     /// `backfillResume` (ingesting the data a user is missing outranks re-scoring data they already
     /// have) and before `prune` (housekeeping is last).
     case scoreBackfill
+    /// An interrupted "Fetch Health history" (D-35 item 2b), resumed from its persisted cursor.
+    ///
+    /// Ordered after `scoreBackfill` deliberately. The import runs in the FOREGROUND while the user
+    /// watches — iOS will not grant a `BGProcessingTask` on demand — so this step exists only for
+    /// the case where the app was backgrounded mid-walk. That makes it the least urgent of the
+    /// three: the other two are the ordinary path, this one is recovery.
+    ///
+    /// Per this file's own copy rule, no surface may promise WHEN this happens. iOS decides whether
+    /// a wake occurs at all, which is exactly why the import screen offers an explicit Resume.
+    case historicalImportResume
     case prune
 }
 
@@ -625,6 +640,13 @@ final class BackgroundCoordinator {
                     if ingest.hasPendingScoreBackfill(), let performed = try ingest.runPendingScoreBackfill(now: clock.now()) {
                         counts.add(performed)
                     }
+                case .historicalImportResume:
+                    // Same durable-marker discipline as `scoreBackfill`: the request and its cursor
+                    // are cleared only after the fetch AND its derivation complete, so an expired
+                    // run resumes from the last month it finished rather than starting over.
+                    if let performed = try ingest.resumeHistoricalImportIfPending(now: clock.now()) {
+                        counts.add(performed)
+                    }
                 case .prune:
                     counts.pruned += try runs.prune(now: clock.now())
                 }
@@ -796,6 +818,11 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
     /// concurrently with an ingest→derive pass.
     private let derivationCoordinator: DerivationCoordinator?
     private let scoreBackfillStore: ScoreBackfillRequestStore
+    /// D-35 item 2b. `makeHistoricalPort` is a FACTORY rather than a stored port because the walk
+    /// builds one reader per month chunk, and because a bridge wired without it (a narrow test, or
+    /// a build where the feature is off) must report "nothing to resume" rather than half-run.
+    private let historicalImportStore: HistoricalImportRequestStore
+    private let makeHistoricalPort: (() -> HealthStorePort)?
 
     /// The single mutex around the ingest→derive chain.
     ///
@@ -823,13 +850,17 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
     init(seedController: SeedController, main: SQLiteConnection,
          makePort: @escaping () -> HealthStorePort?, connected: @escaping () -> Bool,
          derivationCoordinator: DerivationCoordinator? = nil,
-         scoreBackfillStore: ScoreBackfillRequestStore = ScoreBackfillRequestStore()) {
+         scoreBackfillStore: ScoreBackfillRequestStore = ScoreBackfillRequestStore(),
+         historicalImportStore: HistoricalImportRequestStore = HistoricalImportRequestStore(),
+         makeHistoricalPort: (() -> HealthStorePort)? = nil) {
         self.seedController = seedController
         self.main = main
         self.makePort = makePort
         self.connected = connected
         self.derivationCoordinator = derivationCoordinator
         self.scoreBackfillStore = scoreBackfillStore
+        self.historicalImportStore = historicalImportStore
+        self.makeHistoricalPort = makeHistoricalPort
     }
 
     var isHealthKitConnected: Bool { connected() }
@@ -885,6 +916,27 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
         defer { ingestLock.unlock() }
         _ = try coordinator.backfill(from: window.from, to: window.to)
         scoreBackfillStore.clear()
+        return BackgroundWorkCounts()
+    }
+
+    /// Resume an interrupted historical import from its persisted cursor.
+    ///
+    /// Under the same `ingestLock` as every other ingest, so a resumed walk can never interleave
+    /// with a live sync — two passes writing the same rows would be idempotent but would also put
+    /// two `pendingAnchors` sets in flight, which is the DATA-08 hazard the lock exists for.
+    ///
+    /// Returns empty counts for the same reason `runPendingScoreBackfill` does: the written rows and
+    /// the cleared request are the evidence, and there is no honest `BackgroundWorkCounts` field for
+    /// "months fetched" to borrow.
+    func resumeHistoricalImportIfPending(now: Date) throws -> BackgroundWorkCounts? {
+        guard let makeHistoricalPort, let coordinator = derivationCoordinator,
+              historicalImportStore.resumePoint() != nil else { return nil }
+        guard ingestLock.try() else { return nil }
+        defer { ingestLock.unlock() }
+        _ = HistoricalImportCoordinator(
+            pipeline: seedController.ingestionPipeline, derivation: coordinator,
+            requests: historicalImportStore, tz: TimeZone.current.identifier
+        ).run(makeReader: makeHistoricalPort)
         return BackgroundWorkCounts()
     }
 
