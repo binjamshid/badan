@@ -279,7 +279,19 @@ final class NotificationScheduler {
     /// `trigger: nil` delivers as soon as the system allows. Content language is captured now
     /// because a scheduled notification's text is static (same limitation, and same reasoning, as
     /// the medication reminders above).
-    func notifyAutomationPaused(scheduleId: String, language: AppLanguage) async {
+    ///
+    /// `optedIn` is the one gate added to this path, and it is the ONLY one. The notice stays
+    /// unbudgeted, unledgered, and outside the decision engine entirely — a paused export is a
+    /// direct consequence of the user's own configuration failing, not an ambient wellness nudge,
+    /// and rationing it behind a daily ceiling would let a real breakage go unreported because the
+    /// morning summary had already spent the day's slots. What the toggle buys is the ability to
+    /// silence it, which is what was missing: before this it fired with no user control at all.
+    ///
+    /// Its identifier prefix is `AutomationPausedCopy.identifierPrefix`, not `decision.`, so it is
+    /// deliberately untouched by `cancelAllDecisionNotifications` — left exactly as it was.
+    func notifyAutomationPaused(scheduleId: String, language: AppLanguage,
+                                optedIn: Bool) async {
+        guard optedIn else { return }
         guard await isAuthorized() else { return }
         let content = UNMutableNotificationContent()
         content.title = AutomationPausedCopy.title.resolved(language)
@@ -335,10 +347,19 @@ final class NotificationScheduler {
     /// `ledgerRowId` is the `notification_deliveries` row the caller already reserved for this
     /// notification. It rides along so the delegate can close that row out on delivery without
     /// guessing which row a fired notification belonged to.
+    ///
+    /// `values` is non-nil only when the user opted into lock-screen readings AND the producer had
+    /// a fresh reading to put there. Note what that rules out: a notification PRE-SCHEDULED for a
+    /// fixed hour is composed hours ahead of firing — the morning summary is written the evening
+    /// before — and last night's numbers are not tomorrow morning's. So the reconcile path passes
+    /// `nil` and stays value-free even for an opted-in user. Values appear on the paths that compose
+    /// at the moment they deliver, which is what the wake-triggered summary is for. Baking a stale
+    /// number into a request that fires twelve hours later would be worse than showing none.
     func scheduleDecisionNotification(_ cls: NotificationClass, identifier: String, fireDate: Date,
                                       ledgerRowId: String, language: AppLanguage,
+                                      values: NotificationValues? = nil,
                                       calendar: Calendar = .current) async {
-        let (title, body) = NotificationClassCopy.content(cls)
+        let (title, body) = NotificationClassCopy.content(cls, values: values)
         let content = UNMutableNotificationContent()
         content.title = title.resolved(language)
         content.body = body.resolved(language)

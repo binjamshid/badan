@@ -124,6 +124,14 @@ public struct NotificationPreference: Codable, Hashable, Sendable {
     public var dailyNonMedLimit: Int {
         didSet { dailyNonMedLimit = Self.clampDailyNonMedLimit(dailyNonMedLimit) }
     }
+    /// Whether a delivered notification may name a reading on the lock screen.
+    ///
+    /// Ships OFF and is only ever turned on by an explicit choice (offered once during onboarding,
+    /// changeable in Settings afterwards). Every notification body in this app was written to carry
+    /// no health value at all — legible on a locked screen to anyone holding the phone — and that
+    /// stays the default. Skipping the onboarding step leaves it off, so silence on the question is
+    /// read as "no", never as consent.
+    public var showValuesInNotifications: Bool
 
     // STUB-12: `morningNarrative`/`weeklyDigest`/`dataPausedAlerts` used to default `true` —
     // pre-consenting every user to notification categories that have no delivery mechanism at
@@ -132,11 +140,13 @@ public struct NotificationPreference: Codable, Hashable, Sendable {
     public init(morningNarrative: Bool = false, weeklyDigest: Bool = false,
                 medicationReminders: Bool = false, dataPausedAlerts: Bool = false,
                 classOptIn: [String: Bool] = [:], quietHours: NotificationQuietHours = .defaultNight,
-                dailyNonMedLimit: Int = NotificationPreference.defaultDailyNonMedLimit) {
+                dailyNonMedLimit: Int = NotificationPreference.defaultDailyNonMedLimit,
+                showValuesInNotifications: Bool = false) {
         self.morningNarrative = morningNarrative; self.weeklyDigest = weeklyDigest
         self.medicationReminders = medicationReminders; self.dataPausedAlerts = dataPausedAlerts
         self.classOptIn = classOptIn; self.quietHours = quietHours
         self.dailyNonMedLimit = Self.clampDailyNonMedLimit(dailyNonMedLimit)
+        self.showValuesInNotifications = showValuesInNotifications
     }
 
     /// The range the daily ceiling may take. 1 so a user who wants exactly one notice a day can have
@@ -178,6 +188,58 @@ public struct NotificationPreference: Codable, Hashable, Sendable {
         // would not say a word.
         dailyNonMedLimit = Self.clampDailyNonMedLimit(
             try c.decodeIfPresent(Int.self, forKey: .dailyNonMedLimit) ?? Self.defaultDailyNonMedLimit)
+        // Defaults to false on any profile that predates the setting: a privacy choice the user has
+        // not made yet must decode as "not made", never as granted.
+        showValuesInNotifications =
+            try c.decodeIfPresent(Bool.self, forKey: .showValuesInNotifications) ?? false
+    }
+}
+
+/// The evening wind-down's schedule, mirroring `HydrationReminderSettings`: a plain, user-authored,
+/// `Codable` value with a clamping init and a `legacyDefault` that reproduces the behaviour an
+/// existing install already has. `BedtimeReminderPolicy` turns it into a fire time.
+public struct BedtimeReminderSettings: Codable, Hashable, Sendable {
+    /// Local minutes-from-midnight the user wants to WAKE, or `nil` if they have not said.
+    ///
+    /// `nil` is the important state and the default. Without a target wake time there is nothing to
+    /// subtract a sleep need from, so the policy falls back to the user's habitual bedtime and then
+    /// to the fixed hour — rather than deriving a bedtime from an assumed wake time, which would be
+    /// the app inventing a personal number and presenting it as observed.
+    public var targetWakeMinute: Int?
+    /// How long before the derived bedtime the wind-down fires. This is the "wind-down" part: the
+    /// nudge is a lead-in to bed, not an alarm at the moment of it.
+    public var leadMinutes: Int
+    /// "Pause tonight", the same escape hatch hydration reminders have.
+    public var pausedUntil: Date?
+
+    public init(targetWakeMinute: Int? = nil, leadMinutes: Int = 30, pausedUntil: Date? = nil) {
+        self.targetWakeMinute = targetWakeMinute.map { Self.clampMinuteOfDay($0) }
+        self.leadMinutes = Self.clampLead(leadMinutes)
+        self.pausedUntil = pausedUntil
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        targetWakeMinute = (try c.decodeIfPresent(Int.self, forKey: .targetWakeMinute))
+            .map { Self.clampMinuteOfDay($0) }
+        leadMinutes = Self.clampLead(try c.decodeIfPresent(Int.self, forKey: .leadMinutes) ?? 30)
+        pausedUntil = try c.decodeIfPresent(Date.self, forKey: .pausedUntil)
+    }
+
+    /// No target wake time ⇒ the policy's fixed-hour tier ⇒ the 21:00 the app has always used.
+    public static let legacyDefault = BedtimeReminderSettings()
+
+    /// Lead is clamped rather than trusted: a negative lead would put the "wind-down" after bedtime,
+    /// and an unbounded one would drift it into the afternoon.
+    public static let leadMinutesRange = 0...180
+
+    static func clampMinuteOfDay(_ value: Int) -> Int {
+        let day = 24 * 60
+        return ((value % day) + day) % day
+    }
+
+    static func clampLead(_ value: Int) -> Int {
+        min(max(value, leadMinutesRange.lowerBound), leadMinutesRange.upperBound)
     }
 }
 
@@ -298,6 +360,11 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     /// Whether reminders fire at all is still governed by `notifications.classOptIn["hydration"]`,
     /// unchanged; this only decides WHEN, and when to stay silent.
     public var hydrationReminders: HydrationReminderSettings
+    /// The evening wind-down's schedule. Whether it fires at all is still governed by
+    /// `notifications.classOptIn["windDown"]`, unchanged; this only decides WHEN. Defaults to a
+    /// settings object with no target wake time, which `BedtimeReminderPolicy` resolves to the same
+    /// fixed 21:00 the app has always used — so nobody's existing reminder moves under them.
+    public var bedtimeReminders: BedtimeReminderSettings
     /// W-11 (EPIC-44 wave 1). How much personal content may reach Home Screen widgets, StandBy, the
     /// Lock Screen, and the watch glance. Defaults to `.standard` — the behaviour every existing
     /// install already has; this setting adds ways to show LESS, never more.
@@ -318,6 +385,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 aiCoachEnabled: Bool = false,
                 pregnancyModuleMode: PregnancyModuleMode = .off,
                 hydrationReminders: HydrationReminderSettings = .legacyDefault,
+                bedtimeReminders: BedtimeReminderSettings = .legacyDefault,
                 ambientPrivacy: AmbientPrivacyConfig = .default) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
@@ -333,6 +401,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.aiCoachEnabled = aiCoachEnabled
         self.pregnancyModuleMode = pregnancyModuleMode
         self.hydrationReminders = hydrationReminders
+        self.bedtimeReminders = bedtimeReminders
         self.ambientPrivacy = ambientPrivacy
     }
 
@@ -409,6 +478,11 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // opt-in gate itself is unchanged and still lives in `notifications.classOptIn`, so this
         // default grants nothing to a user who never turned hydration reminders on.
         hydrationReminders = try c.decodeIfPresent(HydrationReminderSettings.self, forKey: .hydrationReminders)
+            ?? .legacyDefault
+        // Same reasoning, one step simpler: `.legacyDefault` here carries no target wake time, and a
+        // profile without one keeps the fixed 21:00 it already had. Adding the key cannot move an
+        // existing user's wind-down; only their own choice of a wake time can.
+        bedtimeReminders = try c.decodeIfPresent(BedtimeReminderSettings.self, forKey: .bedtimeReminders)
             ?? .legacyDefault
         // `try?` rather than `decodeIfPresent`, so an unrecognized future mode falls back to
         // `.standard` instead of failing the whole profile decode. Permissive is the correct

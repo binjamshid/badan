@@ -169,6 +169,46 @@ final class NotificationDeliveryRepository {
         return (rows.first?.intValue("c") ?? 0) > 0
     }
 
+    /// The live (scheduled/delivered) row for `cls` on the local day of `day`, if there is one.
+    ///
+    /// `hasScheduled` answers "may I schedule?"; this answers "which row is already holding that
+    /// slot?" — the question the wake-triggered summary has to ask. When a wake is detected at 06:40
+    /// the 08:00 row was reserved the evening before, so firing now must MOVE that reservation, not
+    /// take a second one. Without the row's id there is nothing to move, and the only alternatives
+    /// are a duplicate notification or a second budget slot spent on the same summary.
+    func scheduledRow(_ cls: NotificationClass, inDayOf day: Date, calendar: Calendar) -> NotificationDelivery? {
+        let start = calendar.startOfDay(for: day)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
+        let rows = (try? db.query("""
+            SELECT * FROM notification_deliveries
+            WHERE notification_class = ?
+              AND outcome IN (?, ?)
+              AND scheduled_for >= ? AND scheduled_for < ?
+              AND deleted_at IS NULL
+            ORDER BY scheduled_for ASC LIMIT 1;
+            """,
+            [.text(cls.rawValue),
+             .text(NotificationOutcome.scheduled.rawValue), .text(NotificationOutcome.delivered.rawValue),
+             .date(start), .date(end)])) ?? []
+        return rows.first.map(Self.read)
+    }
+
+    /// Move an existing reservation to a new fire time, keeping its id and its budget slot.
+    ///
+    /// Only `scheduled_for` changes. The row is not re-created, because re-creating it would spend a
+    /// second slot against the day's ceiling for a notification the user receives once. Kept honest
+    /// rather than left stale: the ledger's stated purpose is that "why didn't I get my summary?"
+    /// stays answerable, and a row claiming 08:00 for a notification delivered at 06:40 answers it
+    /// wrongly.
+    func retarget(id: String, to scheduledFor: Date, now: Date) throws {
+        try db.run("""
+            UPDATE notification_deliveries
+            SET scheduled_for = ?, updated_at = ?
+            WHERE id = ? AND deleted_at IS NULL;
+            """,
+            [.date(scheduledFor), .date(now), .text(id)])
+    }
+
     func recent(limit: Int = 50) throws -> [NotificationDelivery] {
         try db.query("""
             SELECT * FROM notification_deliveries WHERE deleted_at IS NULL

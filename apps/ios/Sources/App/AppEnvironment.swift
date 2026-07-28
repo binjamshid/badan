@@ -248,7 +248,12 @@ final class AppEnvironment {
             insights: insightsRepo, store: AmbientSnapshotStore(), clock: clock,
             syncToWatch: { WatchSnapshotSync.shared.sync($0) })
         self.exportJobs = ExportJobRepository(main)
-        self.profiles = ProfileRepository(main)
+        // Held in a local as well as on `self`, so the automation-pause notifier can be given THIS
+        // repository rather than constructing its own. A second `ProfileRepository` would carry its
+        // own cache, which nothing invalidates when the preference is written through this one — the
+        // export-health toggle would then appear to do nothing until relaunch.
+        let profilesRepo = ProfileRepository(main)
+        self.profiles = profilesRepo
         self.routes = RouteRepository(main)
         self.hydration = HydrationRepository(main: main)
         let journal = JournalRepository(sensitive: sensitive)
@@ -412,13 +417,21 @@ final class AppEnvironment {
             templates: ExportTemplateRepository(main),
             runner: automationRunner,
             freshness: AutomationDataFreshnessProbe(main),
-            notifier: AutomationPauseNotifier(),
+            notifier: AutomationPauseNotifier(profiles: profilesRepo),
             clock: clock)
 
         self.background = BackgroundCoordinator(runs: backgroundRuns, clock: clock, ingest: bridge,
                                                 protectedData: ProtectedDataMonitor(),
                                                 automation: automationEngine,
                                                 reports: reportGeneration)
+        // Set after construction, not passed in: this closure captures `self`, and `self` is not
+        // fully initialised until the assignment above completes. `[weak self]` because the
+        // coordinator outlives nothing here but the retain cycle would otherwise be permanent, and
+        // the hop to the main actor is done here rather than inside the coordinator, which is
+        // deliberately off-main and holds no app state.
+        self.background.onIngestCompleted = { [weak self] in
+            Task { @MainActor in await self?.evaluateEventDrivenNotifications() }
+        }
 
         applyLaunchOverrides()
     }
@@ -974,6 +987,9 @@ final class AppEnvironment {
         let limit = NotificationDecisionEngine.timeBasedLimit(
             dailyLimit: profile.notifications.dailyNonMedLimit,
             reserveFloatingSlot: anyEventDrivenClassEnabled)
+        // Read once for the whole loop rather than per class: only the wind-down uses these, and
+        // they involve a derived-row read plus a fourteen-night session scan.
+        let bedtime = bedtimeInputs(now: now())
         // Sorted by priority, not left in registry order. The budget is spent in the order this
         // loop evaluates, so before this the ceiling was decided by wherever a class happened to sit
         // in an array literal — hydration was last, and so was always the one starved.
@@ -986,7 +1002,8 @@ final class AppEnvironment {
             // suppressed entirely inside a fasting window, so it can legitimately have NO next
             // time — in which case the right action is to cancel, exactly as for an opted-out
             // class. Every other class keeps its fixed daily hour.
-            guard let fire = Self.nextFireDate(for: cls, after: now(), profile: profile, calendar: .current) else {
+            guard let fire = Self.nextFireDate(for: cls, after: now(), profile: profile,
+                                               calendar: .current, bedtime: bedtime) else {
                 await NotificationScheduler.shared.cancelDecisionNotifications(cls)
                 continue
             }
@@ -1000,6 +1017,179 @@ final class AppEnvironment {
         NotificationClass.eventDriven.contains { isNotificationClassEnabled($0) }
     }
 
+    // MARK: - Event-driven producers
+
+    /// Everything that is raised because something HAPPENED, rather than because a clock struck.
+    ///
+    /// Called on every foreground (`BADANApp`'s `scenePhase == .active`) and after a background
+    /// ingest completes. Both, deliberately: the background hook is what makes the wake summary
+    /// arrive without the user opening the app, and the foreground call is what makes a missed
+    /// background run self-heal instead of silently costing the user that day's summary. Idempotent
+    /// and never prompting, exactly like `reconcileDecisionNotifications`.
+    func evaluateEventDrivenNotifications() async {
+        guard await NotificationScheduler.shared.isAuthorized() else { return }
+        await evaluateWakeSummary()
+        await evaluateGoalReached()
+        await evaluateDeviationNotice()
+    }
+
+    /// Announce at most one reached goal a day. The ledger's class+day idempotency provides the
+    /// "once"; `GoalNotificationPolicy` provides the deterministic "which".
+    func evaluateGoalReached() async {
+        let cls = NotificationClass.goalReached
+        guard isNotificationClassEnabled(cls) else { return }
+        guard !notificationDeliveries.hasScheduled(cls, inDayOf: now(), calendar: .current) else { return }
+        guard let goals = try? profiles.goals(), !goals.isEmpty else { return }
+
+        let candidates = goals.map { goal in
+            GoalNotificationPolicy.Candidate(
+                goalId: goal.id,
+                active: goal.active,
+                evaluation: GoalEvaluation.evaluate(
+                    value: GoalMetricValue.current(for: goal.metricId, measurements: measurements,
+                                                   derivation: derivation),
+                    target: goal.target, direction: goal.direction))
+        }
+        guard GoalNotificationPolicy.goalToAnnounce(candidates) != nil else { return }
+        await raiseDecisionNotification(cls)
+    }
+
+    /// Raise the gentle change notice when a fresh vital is genuinely outside the user's usual band.
+    ///
+    /// `DeviationEngine` is called here rather than from the derivation pipeline, and that is not an
+    /// oversight: `DerivationCoordinator` deliberately refuses to run it, because it writes nothing —
+    /// it is a pure read model over baselines the pipeline already refreshed, and computing it there
+    /// would produce a value the pipeline would immediately discard. So the producer builds it on
+    /// demand, exactly as `HealthMonitorScreen` does, and off the main actor for the same reason:
+    /// it is ~15–20 small SQLite reads across five vitals.
+    ///
+    /// `annotation != nil` is the signal. `VitalTile.annotation` is non-nil precisely when a tile is
+    /// fresh AND out-of-band or off-usual, which is the same predicate the Health Monitor surface
+    /// already renders — so the notification cannot claim something the screen would not show.
+    func evaluateDeviationNotice() async {
+        let cls = NotificationClass.deviationNotice
+        guard isNotificationClassEnabled(cls) else { return }
+        guard !notificationDeliveries.hasScheduled(cls, inDayOf: now(), calendar: .current) else { return }
+
+        let inputs = (derivation: derivation, measurements: measurements, catalog: catalog,
+                      registry: registry, sensorQuality: sensorQuality, now: now())
+        let notable = await Task.detached(priority: .utility) { () -> Bool in
+            let engine = DeviationEngine(
+                derivation: inputs.derivation, measurements: inputs.measurements,
+                catalog: inputs.catalog, registry: inputs.registry,
+                sensorQuality: inputs.sensorQuality, clock: SystemClock())
+            guard let model = try? engine.buildReadModel(asOf: inputs.now) else { return false }
+            return model.vitals.contains { !$0.isStale && $0.annotation != nil }
+        }.value
+
+        guard notable else { return }
+        await raiseDecisionNotification(cls)
+    }
+
+    /// Raise (or re-time) the morning summary because the user has actually woken up.
+    ///
+    /// The wake instant comes from the raw `sessions` table — the last primary sleep session's
+    /// `endAt` — because no derived row carries a wake time; see `WakeSummaryPolicy`'s own doc for
+    /// why persisting one would be the wrong trade.
+    func evaluateWakeSummary() async {
+        let cls = NotificationClass.morningReadinessSummary
+        let calendar = Calendar.current
+        let now = now()
+        let existing = notificationDeliveries.scheduledRow(cls, inDayOf: now, calendar: calendar)
+        let outcome = WakeSummaryPolicy.evaluate(
+            now: now,
+            wakeInstant: latestWakeInstant(now: now),
+            reservation: existing.map {
+                .init(scheduledFor: $0.scheduledFor, delivered: $0.outcome == .delivered)
+            },
+            enabled: isNotificationClassEnabled(cls))
+
+        switch outcome {
+        case .fire:
+            await raiseDecisionNotification(cls)
+        case .retarget:
+            if let existing { await retargetDecisionNotification(cls, row: existing, to: now) }
+        case .notEnabled, .noWakeRecorded, .wakeTooOld, .wakeInFuture, .alreadySentToday:
+            // Nothing to do. Not logged as a suppression row: none of these is a decision the
+            // engine made, and writing a ledger row every foreground would flood the very history
+            // that exists to answer "why didn't I get my summary?".
+            break
+        }
+    }
+
+    /// The end of the most recent primary sleep session, or `nil` if none is recorded.
+    ///
+    /// Looks at today's local night and yesterday's, because a night is keyed by the local day its
+    /// sleep ENDED on (`DayAttribution.localNight(sessionEnd:tz:)`) and an evaluation running just
+    /// after midnight would otherwise miss the night in progress. Takes the last session of the
+    /// night rather than the first, so a split night reports when the user finally got up.
+    func latestWakeInstant(now: Date) -> Date? {
+        let tz = TimeZone.current.identifier
+        let todayKey = DayAttribution.localDayKey(now, tz: tz)
+        let yesterdayKey = SleepIntelligenceEngine.previousDayKey(todayKey)
+        for key in [todayKey, yesterdayKey] {
+            if let sessions = try? measurements.allSleepSessions(localNight: key, includeSuppressed: false),
+               let last = sessions.last {
+                return last.endAt
+            }
+        }
+        return nil
+    }
+
+    /// Move an already-reserved notification to a new fire time, keeping its ledger row and its
+    /// budget slot.
+    ///
+    /// This exists because raising the summary again would not work. Reconcile books today's row the
+    /// evening before, and `evaluateAndScheduleDecision` short-circuits on
+    /// `notificationDeliveries.hasScheduled` — so a 06:40 wake would be deduped away and the user
+    /// would still get 08:00, with the wake trigger appearing to do nothing at all. Retargeting
+    /// cancels the pending request, re-issues it for `newFireDate`, and updates the row in place, so
+    /// the user gets exactly one summary, at the moment they woke, charged once to the budget.
+    func retargetDecisionNotification(_ cls: NotificationClass, row: NotificationDelivery,
+                                      to newFireDate: Date) async {
+        let calendar = Calendar.current
+        await NotificationScheduler.shared.cancelDecisionNotifications(cls)
+        do {
+            try notificationDeliveries.retarget(id: row.id, to: newFireDate, now: now())
+        } catch {
+            // The request has already been cancelled, so returning here would leave the user with
+            // no summary at all. Re-issue anyway and accept a row whose `scheduled_for` is stale by
+            // an hour or two: a slightly wrong diagnostic beats a silently dropped notification.
+            NotificationLog.logger.error(
+                "decision ledger retarget failed for \(cls.rawValue, privacy: .public); scheduling anyway: \(String(describing: error), privacy: .public)")
+        }
+        let identifier = cls.identifierPrefix + Self.decisionDayKey(newFireDate, calendar: calendar)
+        await NotificationScheduler.shared.scheduleDecisionNotification(
+            cls, identifier: identifier, fireDate: newFireDate, ledgerRowId: row.id,
+            language: language, values: notificationValues(for: cls), calendar: calendar)
+    }
+
+    /// The readings a notification may name, or `nil` when the user has not opted in or there is
+    /// nothing to show. Only ever built on paths that compose at delivery time — a pre-scheduled
+    /// request is written hours before it fires, when tonight's numbers do not exist yet.
+    func notificationValues(for cls: NotificationClass) -> NotificationValues? {
+        guard profile.notifications.showValuesInNotifications else { return nil }
+        guard cls == .morningReadinessSummary else { return nil }
+        let values = NotificationValues(
+            readiness: nil,
+            sleepPerformance: sleepPerformancePhrase(),
+            goal: nil)
+        return values.isEmpty ? nil : values
+    }
+
+    /// "Sleep 92% of need" — named for what the engine actually computes. Deliberately NOT called a
+    /// sleep score: `SleepIntelligenceEngine` produces `sleep.performance` (actual ÷ need) and
+    /// `sleep.consistency` (timing regularity) as separate outputs, and the `sleep.score` id sitting
+    /// in `registry.json` has no algorithm entry and no producer at all.
+    private func sleepPerformancePhrase() -> LocalizedString? {
+        guard let latest = (try? derivation.latestDerivedSeries(metricId: MetricID.sleepPerformance))?.last
+        else { return nil }
+        let percent = Int(latest.value.rounded())
+        let en = Numerals.format(Double(percent), language: .en, arabicDigits: false)
+        let ar = Numerals.format(Double(percent), language: .ar, arabicDigits: profile.arabicDigits)
+        return LocalizedString(en: "Sleep \(en)% of need", ar: "النوم \(ar)٪ من حاجتك")
+    }
+
     /// The next fire instant for a time-based class, or `nil` when the class must stay silent.
     ///
     /// Only `.hydration` can return `nil`, and only because its schedule is user-authored and
@@ -1008,11 +1198,85 @@ final class AppEnvironment {
     /// `nonisolated` because it is a pure function of its arguments — it reads no `AppEnvironment`
     /// state, which is what lets a test exercise the real scheduling seam instead of a copy of it.
     nonisolated static func nextFireDate(for cls: NotificationClass, after now: Date,
-                                         profile: CustomizationProfile, calendar: Calendar) -> Date? {
-        guard cls == .hydration else { return nextDecisionFireDate(for: cls, after: now, calendar: calendar) }
-        return HydrationReminderPolicy.nextFireDate(
-            after: now, settings: profile.hydrationReminders,
-            quietHours: profile.notifications.quietHours, enabled: true, calendar: calendar)
+                                         profile: CustomizationProfile, calendar: Calendar,
+                                         bedtime: BedtimeInputs = .unavailable) -> Date? {
+        switch cls {
+        case .hydration:
+            return HydrationReminderPolicy.nextFireDate(
+                after: now, settings: profile.hydrationReminders,
+                quietHours: profile.notifications.quietHours, enabled: true, calendar: calendar)
+        case .eveningWindDown:
+            return BedtimeReminderPolicy.nextFireDate(
+                after: now, settings: profile.bedtimeReminders,
+                sleepNeedSeconds: bedtime.sleepNeedSeconds, needConfidence: bedtime.needConfidence,
+                habitualBedMinute: bedtime.habitualBedMinute,
+                quietHours: profile.notifications.quietHours,
+                fallbackHour: defaultNotificationHour(.eveningWindDown),
+                enabled: true, calendar: calendar)
+        default:
+            return nextDecisionFireDate(for: cls, after: now, calendar: calendar)
+        }
+    }
+
+    /// The sleep facts the wind-down's schedule depends on, read once by the caller and handed to
+    /// the pure policy.
+    ///
+    /// They are a parameter rather than something `nextFireDate` fetches because this function is
+    /// `nonisolated` and pure — that is what lets a test exercise the real scheduling seam instead
+    /// of a copy of it — and reading a repository here would end both properties. The default,
+    /// `.unavailable`, resolves to the fixed 21:00 the app has always used, so every existing caller
+    /// keeps its current behaviour without being touched.
+    struct BedtimeInputs: Equatable, Sendable {
+        var sleepNeedSeconds: Double?
+        var needConfidence: Double
+        /// The user's habitual bedtime as minutes-from-midnight, from their own recent nights.
+        var habitualBedMinute: Int?
+
+        static let unavailable = BedtimeInputs(sleepNeedSeconds: nil, needConfidence: 0,
+                                               habitualBedMinute: nil)
+    }
+
+    /// Read the wind-down's sleep inputs from storage.
+    ///
+    /// `sleep.need` is read as a derived row, but the habitual bedtime is read from the raw
+    /// `sessions` table, because there is no derived row for it: `SleepNight` — the only type that
+    /// carries `bedSecondsOfDay` — is an in-memory intermediate inside `SleepIntelligenceEngine`,
+    /// and `appendScore` persists five metrics, none of them a bedtime.
+    ///
+    /// Confidence is not read alongside the need value because `derived_values` stores the number,
+    /// not the band. A persisted need therefore counts as usable; the policy's `minConfidence` gate
+    /// still applies, and the honest reading of "we have a value but not its band" is to pass the
+    /// gate rather than to invent a confidence. `SleepNeedRange.confidence` stays the right input
+    /// the day it is available to this layer.
+    func bedtimeInputs(now: Date, lookbackNights: Int = 14) -> BedtimeInputs {
+        let need = (try? derivation.latestDerivedSeries(metricId: MetricID.sleepNeed))?.last?.value
+        return BedtimeInputs(sleepNeedSeconds: need,
+                             needConfidence: need == nil ? 0 : 1,
+                             habitualBedMinute: habitualBedMinute(now: now, lookbackNights: lookbackNights))
+    }
+
+    /// The median start-minute of the user's recent primary sleep sessions, or `nil` if there are
+    /// none. Median rather than mean so one 04:00 night does not drag the whole estimate.
+    ///
+    /// Each session's minute-of-day is computed in that session's OWN timezone, the same way
+    /// `SleepIntelligenceEngine.assembleNights` does it — a traveller's bedtime is a local-clock
+    /// fact, and converting through the device's current zone would make every night abroad look
+    /// like a different habit.
+    func habitualBedMinute(now: Date, lookbackNights: Int = 14) -> Int? {
+        guard let from = Calendar.current.date(byAdding: .day, value: -lookbackNights, to: now),
+              let sessions = try? measurements.sessions(kind: .sleepPrimary, from: from, to: now),
+              !sessions.isEmpty
+        else { return nil }
+        let minutes = sessions
+            .map { Int(SleepIntelligenceEngine.localSecondsOfDay(
+                epochSeconds: $0.startAt.timeIntervalSince1970, tz: $0.tzId) / 60) }
+            // Bedtimes straddle midnight, so the raw minutes cluster at both ends of the day.
+            // Fold the small-hours values past midnight before taking a median, or a 23:30 and a
+            // 00:30 night average to lunchtime.
+            .map { $0 < 12 * 60 ? $0 + 24 * 60 : $0 }
+            .sorted()
+        guard !minutes.isEmpty else { return nil }
+        return BedtimeReminderPolicy.wrap(minutes[minutes.count / 2])
     }
 
     /// Raise an event-driven decision notification (deviation, export-health) now, subject to the

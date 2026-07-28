@@ -61,7 +61,7 @@ struct OnboardingView: View {
     // app after it.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let lastStep = 3
+    private let lastStep = 4
     private var pageCount: Int { lastStep + 1 }
 
     var body: some View {
@@ -75,7 +75,12 @@ struct OnboardingView: View {
                     welcomePage.tag(0)
                     valuePage.tag(1)
                     depthPage.tag(2)
-                    connectPage.tag(3)
+                    // Inserted BEFORE connect, not after: the footer shows `Next` only for
+                    // `step < lastStep`, so a page placed after connect would have to own its own
+                    // Done button and duplicate all six of connect's completion arms. Here it
+                    // inherits the shared Next for free, and connect stays the last step.
+                    notificationsPage.tag(3)
+                    connectPage.tag(4)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: step)
@@ -358,7 +363,79 @@ struct OnboardingView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    // MARK: - Page 4: Connect
+    // MARK: - Page 4: Notifications (opt-in + lock-screen values)
+
+    /// Two independent choices, both defaulting to NO. Skipping this page — via the header's Skip,
+    /// or by swiping past it — leaves both off, so silence is never read as consent. Nothing here
+    /// requests notification authorization: that prompt belongs at the moment the user turns a class
+    /// on in Settings (the contextual-permission convention `NotificationsSettingsScreen` already
+    /// follows), not in a flow the user is trying to get through.
+    private var notificationsPage: some View {
+        ScrollView {
+            VStack(spacing: BadanSpace.space4) {
+                VStack(spacing: BadanSpace.space2) {
+                    Text(env.s(Self.notifTitle))
+                        .font(Self.titleFont)
+                        .foregroundStyle(BadanColor.textPrimary)
+                    Text(env.s(Self.notifSubtitle))
+                        .font(BadanFont.body)
+                        .foregroundStyle(BadanColor.textSecondary)
+                }
+                .multilineTextAlignment(.center)
+                .padding(.top, BadanSpace.space4)
+
+                BadanCard {
+                    VStack(alignment: .leading, spacing: BadanSpace.space3) {
+                        SettingsToggleRow(title: Self.notifSummariesLabel,
+                                          subtitle: Self.notifSummariesHint,
+                                          isOn: onboardingSummariesBinding)
+                        Rectangle()
+                            .fill(BadanColor.separator)
+                            .frame(height: 1)
+                        SettingsToggleRow(title: Self.notifValuesLabel,
+                                          subtitle: Self.notifValuesHint,
+                                          isOn: onboardingValuesBinding)
+                    }
+                }
+
+                Text(env.s(Self.notifReassurance))
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, BadanSpace.space5)
+            .padding(.bottom, BadanSpace.space4)
+        }
+    }
+
+    /// Turns on the two daily summary classes together — this page offers "the daily summaries", not
+    /// a per-class matrix, because five toggles mid-onboarding is a decision the user cannot yet make
+    /// meaningfully. Settings → Notifications is where each class is chosen individually.
+    private var onboardingSummariesBinding: Binding<Bool> {
+        Binding(
+            get: {
+                let optIn = env.profile.notifications.classOptIn
+                return (optIn[NotificationClass.morningReadinessSummary.rawValue] ?? false)
+                    || (optIn[NotificationClass.eveningWindDown.rawValue] ?? false)
+            },
+            set: { newValue in
+                env.update {
+                    $0.notifications.classOptIn[NotificationClass.morningReadinessSummary.rawValue] = newValue
+                    $0.notifications.classOptIn[NotificationClass.eveningWindDown.rawValue] = newValue
+                }
+            }
+        )
+    }
+
+    private var onboardingValuesBinding: Binding<Bool> {
+        Binding(
+            get: { env.profile.notifications.showValuesInNotifications },
+            set: { newValue in env.update { $0.notifications.showValuesInNotifications = newValue } }
+        )
+    }
+
+    // MARK: - Page 5: Connect
 
     private var connectPage: some View {
         // UIUX-194: same scroll escape hatch as welcomePage, for the same reason.
@@ -713,6 +790,29 @@ struct OnboardingView: View {
     private static let depthReassurance = LocalizedString(
         en: "You can change this anytime in Settings.",
         ar: "يمكنك تغيير هذا في أي وقت من الإعدادات.")
+
+    private static let notifTitle = LocalizedString(en: "Want a daily nudge?", ar: "تريد تذكيراً يومياً؟")
+    private static let notifSubtitle = LocalizedString(
+        en: "Both are off unless you turn them on, and you can change either later.",
+        ar: "كلاهما متوقّف ما لم تفعّله، ويمكنك تغيير أيّ منهما لاحقاً.")
+
+    private static let notifSummariesLabel = LocalizedString(
+        en: "Daily summaries", ar: "الملخّصات اليومية")
+    private static let notifSummariesHint = LocalizedString(
+        en: "A short check-in each morning and a calm nudge in the evening.",
+        ar: "ملخّص قصير كل صباح وتذكير هادئ في المساء.")
+
+    /// The privacy choice, stated as what it actually does. "Show my readings" would undersell it:
+    /// the point is WHERE they appear — a locked screen anyone holding the phone can read.
+    private static let notifValuesLabel = LocalizedString(
+        en: "Show readings on the lock screen", ar: "إظهار القراءات على شاشة القفل")
+    private static let notifValuesHint = LocalizedString(
+        en: "Off by default. When off, a notification says only that something is ready — never a number.",
+        ar: "متوقّف افتراضياً. عند إيقافه، يذكر الإشعار أن شيئاً جاهز فقط — دون أي رقم.")
+
+    private static let notifReassurance = LocalizedString(
+        en: "BADAN will ask permission the first time it actually needs to send one.",
+        ar: "سيطلب «بدن» الإذن أول مرة يحتاج فيها فعلاً إلى إرسال إشعار.")
 
     private static let whyTitle = LocalizedString(en: "Why BADAN", ar: "لماذا بدن")
 
