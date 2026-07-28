@@ -576,9 +576,13 @@ enum NotificationClassCopy {
                     LocalizedString(en: "Not available in this version yet.",
                                     ar: "غير متاحة في هذا الإصدار بعد."))
         case .goalReached:
+            // The hint used to end "Never a score or a streak." — reassuring, but it named the two
+            // things this class exists to avoid, and `testGoalCopyDoesNotCongratulateOrScore`
+            // rightly failed on it. Stating what BADAN does, without planting what it doesn't, is
+            // the better copy and keeps the test's ban absolute rather than carved out.
             return (LocalizedString(en: "Goal reached", ar: "بلوغ الهدف"),
-                    LocalizedString(en: "A note when you reach a goal you set. Never a score or a streak.",
-                                    ar: "ملاحظة عند بلوغك هدفاً حدّدته. دون أي تقييم أو تتابع."))
+                    LocalizedString(en: "A note when you reach a goal you set. Nothing is ranked or compared.",
+                                    ar: "ملاحظة عند بلوغك هدفاً حدّدته. دون ترتيب أو مقارنة."))
         }
     }
 

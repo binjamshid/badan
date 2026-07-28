@@ -1071,13 +1071,17 @@ final class AppEnvironment {
         guard isNotificationClassEnabled(cls) else { return }
         guard !notificationDeliveries.hasScheduled(cls, inDayOf: now(), calendar: .current) else { return }
 
+        // `sensorQuality` is not threaded through here the way `HealthMonitorScreen` threads it:
+        // that screen holds it as a screen input, `AppEnvironment` has no such property, and
+        // `DeviationEngine` already defaults the parameter to `SensorQualityMap.shared` — the same
+        // instance the screen passes. Taking the default keeps one source of truth rather than
+        // inventing a second handle to it.
         let inputs = (derivation: derivation, measurements: measurements, catalog: catalog,
-                      registry: registry, sensorQuality: sensorQuality, now: now())
+                      registry: registry, now: now())
         let notable = await Task.detached(priority: .utility) { () -> Bool in
             let engine = DeviationEngine(
                 derivation: inputs.derivation, measurements: inputs.measurements,
-                catalog: inputs.catalog, registry: inputs.registry,
-                sensorQuality: inputs.sensorQuality, clock: SystemClock())
+                catalog: inputs.catalog, registry: inputs.registry, clock: SystemClock())
             guard let model = try? engine.buildReadModel(asOf: inputs.now) else { return false }
             return model.vitals.contains { !$0.isStale && $0.annotation != nil }
         }.value
