@@ -96,6 +96,54 @@ final class SubscriptionPolicyTests: XCTestCase {
                        SubscriptionPolicy.freeExportDays)
     }
 
+    // MARK: - The export clamp (D-33 applied)
+
+    func testAnUnlockedUserIsNeverClamped() {
+        let scope = ExportScope(startDate: days(-400))
+        let out = SubscriptionPolicy.clampExportScope(scope, state: state(firstLaunch: start, entitled: true),
+                                                      now: start)
+        XCTAssertFalse(out.wasNarrowed)
+        XCTAssertEqual(out.scope.startDate, days(-400))
+    }
+
+    func testALockedUserIsClampedToTheFreeWindow() {
+        let scope = ExportScope(startDate: days(-400))
+        let out = SubscriptionPolicy.clampExportScope(scope, state: state(firstLaunch: start),
+                                                      now: days(30))
+        XCTAssertTrue(out.wasNarrowed)
+        XCTAssertEqual(out.scope.startDate,
+                       days(30).addingTimeInterval(-Double(SubscriptionPolicy.freeExportDays) * 86_400))
+    }
+
+    /// Asking for less than the free window is not a restriction and must not be reported as one.
+    func testAShortRequestInsideTheWindowIsNotReportedAsNarrowed() {
+        let now = days(30)
+        let scope = ExportScope(startDate: now.addingTimeInterval(-2 * 86_400))
+        let out = SubscriptionPolicy.clampExportScope(scope, state: state(firstLaunch: start), now: now)
+        XCTAssertFalse(out.wasNarrowed)
+    }
+
+    /// D-33 narrowed exactly one dimension. A clamped export is still COMPLETE for the days it
+    /// covers — same metrics, same sources, same raw and derived rows, same sensitive records. A
+    /// locked user gets a shorter export, never a lesser one.
+    func testTheClampTouchesNothingButTheStartDate() {
+        let scope = ExportScope(metricIds: ["heart.rhr"], families: ["sleep"],
+                                startDate: days(-400), endDate: days(30),
+                                sourceIds: ["s1"], includeRaw: true, includeDerived: true,
+                                includeSuppressed: true, includeSensitive: true)
+        let out = SubscriptionPolicy.clampExportScope(scope, state: state(firstLaunch: start),
+                                                      now: days(30)).scope
+        XCTAssertEqual(out.metricIds, scope.metricIds)
+        XCTAssertEqual(out.families, scope.families)
+        XCTAssertEqual(out.endDate, scope.endDate)
+        XCTAssertEqual(out.sourceIds, scope.sourceIds)
+        XCTAssertEqual(out.includeRaw, scope.includeRaw)
+        XCTAssertEqual(out.includeDerived, scope.includeDerived)
+        XCTAssertEqual(out.includeSuppressed, scope.includeSuppressed)
+        XCTAssertEqual(out.includeSensitive, scope.includeSensitive)
+        XCTAssertNotEqual(out.startDate, scope.startDate)
+    }
+
     // MARK: - Product identifiers are a contract
 
     /// Once a product id has been submitted to App Store Connect it can never be reused or renamed.

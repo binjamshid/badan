@@ -51,6 +51,11 @@ struct BADANApp: App {
                         env.markNotificationDelivered(ledgerRowId: rowId, at: env.now())
                     }
                     UNUserNotificationCenter.current().delegate = notificationDelegate
+                    // Subscribe to Transaction.updates BEFORE anything else can complete a
+                    // purchase. Renewals, refunds and Ask-to-Buy approvals that resolved while the
+                    // app was closed are delivered through that stream and nowhere else, so a late
+                    // listener drops them silently and a paying user looks unsubscribed.
+                    env.subscription.start()
                     await env.bootstrap()
                     // NEW-02/UX-02: self-heal medication-reminder scheduling once per launch
                     // (no-op unless the pref is on AND notifications are already authorized;

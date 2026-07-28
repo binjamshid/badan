@@ -562,6 +562,9 @@ enum SettingsStrings {
     static let notifBedtimeFallbackNote = LocalizedString(
         en: "Until BADAN has enough of your nights, this stays on your usual bedtime, then the fixed hour.",
         ar: "إلى أن تتوفّر لدى «بدن» ليالٍ كافية، يبقى على وقت نومك المعتاد، ثم على الساعة الثابتة.")
+    static let iconNeedsProNotice = LocalizedString(
+        en: "Alternate icons are part of BADAN Pro.", ar: "الأيقونات البديلة جزء من «بدن برو».")
+    static let subscriptionRow = LocalizedString(en: "BADAN Pro", ar: "بدن برو")
     static let notifShowValues = LocalizedString(
         en: "Show readings on the lock screen", ar: "إظهار القراءات على شاشة القفل")
     static let notifShowValuesHint = LocalizedString(
