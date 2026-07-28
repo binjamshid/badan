@@ -76,6 +76,7 @@ struct BackupRestoreSettingsScreen: View {
             VStack(alignment: .leading, spacing: BadanSpace.space6) {
                 backupSection
                 importSection
+                recomputeSection
                 automationSection
                 restoreSection
             }
@@ -146,6 +147,17 @@ struct BackupRestoreSettingsScreen: View {
     /// EPIC-19. The Shortcuts/Siri setup guide lives here because a timed export is, on iOS, a
     /// Shortcuts automation calling BADAN's export intent — automation of the very thing this
     /// screen already opens the Export Center for.
+    /// D-35 item 2a. Sits directly under the import rows because that is where it is most often
+    /// wanted — an import that lands older history leaves scores to be re-derived over it — and
+    /// because the two share a mental model: both change derived numbers without fetching anything
+    /// new from HealthKit.
+    private var recomputeSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(RecomputeScoresCopy.title))
+            RecomputeScoresRow()
+        }
+    }
+
     private var automationSection: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(BackupStrings.automationHeader))
