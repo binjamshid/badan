@@ -899,6 +899,41 @@ enum Schema {
             "ALTER TABLE sources ADD COLUMN capabilities TEXT;",
             "ALTER TABLE source_devices ADD COLUMN connection_type TEXT;",
             "ALTER TABLE source_devices ADD COLUMN capabilities TEXT;",
+        ]),
+        // Version 11 (D-35/D-36).
+        //
+        // `metric_pins` is dropped, not migrated. It shipped in version 1 and never acquired a
+        // single caller — `ProfileRepository.pinnedMetrics()`/`setPinned()` were dead code in
+        // Sources and Tests alike — so there is no user data in it to preserve on any install.
+        // D-35's pins live on the customization profile instead, because this table could only
+        // ever express `pinned_at` insertion order and the feature needs user-chosen order.
+        Migration(version: 11, statements: [
+            "DROP TABLE IF EXISTS metric_pins;",
+            // D-36. Feedback is recorded against the exact (algorithm, version) that produced the
+            // row the user reacted to. That is load-bearing, not bookkeeping: feedback about the
+            // sleep-led readiness method must never calibrate the autonomic one, and a version bump
+            // means the number the user judged is not the number the code now produces.
+            """
+            CREATE TABLE derived_feedback (
+              id TEXT PRIMARY KEY, metric_id TEXT NOT NULL, period_key TEXT NOT NULL,
+              derived_value_id TEXT NOT NULL, algorithm_id TEXT NOT NULL,
+              algorithm_version TEXT NOT NULL, direction TEXT NOT NULL,
+              created_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_derived_feedback_metric ON derived_feedback(metric_id, algorithm_id, created_at DESC) WHERE deleted_at IS NULL;",
+            "CREATE UNIQUE INDEX idx_derived_feedback_period ON derived_feedback(metric_id, period_key, algorithm_id) WHERE deleted_at IS NULL;",
+            // Append-only and latest-wins, exactly like `derived_values` (I2). An older calibration
+            // row is what explains a value computed while it was in force, so it is never rewritten.
+            """
+            CREATE TABLE metric_calibrations (
+              id TEXT PRIMARY KEY, metric_id TEXT NOT NULL,
+              algorithm_id TEXT NOT NULL, algorithm_version TEXT NOT NULL,
+              offset REAL NOT NULL, sample_count INTEGER NOT NULL,
+              computed_at INTEGER NOT NULL, \(conventionCols)
+            );
+            """,
+            "CREATE INDEX idx_metric_calibrations_latest ON metric_calibrations(metric_id, algorithm_id, computed_at DESC) WHERE deleted_at IS NULL;",
         ])]
     }
 

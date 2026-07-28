@@ -688,7 +688,11 @@ struct MetricDetailScreen: View {
 
     @ViewBuilder
     private func siblingMetricsRow(_ data: MetricDetailData) -> some View {
-        let siblings = env.registry.metrics(in: data.def.familyGroup).filter { $0.metricId != data.def.metricId }
+        // D-35: hidden siblings drop out of this browse affordance. Navigating *to* a hidden metric
+        // stays possible by search and from the Settings manage screen — this is a suggestion strip,
+        // and suggesting what the user asked not to see is the thing hiding is for.
+        let siblings = env.registry.metrics(in: data.def.familyGroup)
+            .filter { $0.metricId != data.def.metricId && !env.profile.isMetricHidden($0.metricId) }
         if !siblings.isEmpty {
             VStack(alignment: .leading, spacing: BadanSpace.space2) {
                 Text(env.s(MetricDetailStrings.moreInFamily))

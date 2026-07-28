@@ -473,4 +473,53 @@ final class MigrationFixTests: XCTestCase {
             """)
         XCTAssertEqual(readinessInWindow, 2, "the ledger must count queued + delivered rows of a class in a window")
     }
+
+    // MARK: - v11: D-35 drops metric_pins, D-36 adds feedback + calibrations
+
+    /// **The failure mode this file exists for.** `Database.migrate` runs
+    /// `where migration.version > current`, so a migration numbered at or below the highest one an
+    /// install has already applied is silently skipped — no error, no log. The main array was
+    /// already at 10 (`data_conflicts`), so numbering this one 10 would have worked perfectly on
+    /// every fresh simulator and created nothing at all on every device in the field.
+    ///
+    /// Driving the schema to 10 first is what makes this test able to see that.
+    func testMigratingFromV10CreatesTheFeedbackAndCalibrationTablesAndDropsMetricPins() throws {
+        let conn = try connection(atSchemaVersion: 10)
+        XCTAssertEqual(try count(conn, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='metric_pins';"), 1,
+                       "precondition: a v10 database still has the table v11 removes")
+
+        try Database.migrate(conn, Schema.mainMigrations)
+
+        XCTAssertEqual(try count(conn, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='metric_pins';"), 0,
+                       "metric_pins survived v11")
+        for table in ["derived_feedback", "metric_calibrations"] {
+            XCTAssertEqual(try count(conn, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='\(table)';"), 1,
+                           "\(table) was not created on an upgrade from v10. If this migration is "
+                           + "numbered at or below an already-applied version, migrate() skips it "
+                           + "silently — green on a fresh install, absent on every real device.")
+        }
+    }
+
+    /// A dropped table must not take the user's preferences with it. `metric_pins` had no callers,
+    /// but `customization_profile` — where D-35's pins actually live — is in the same database.
+    func testDroppingMetricPinsLeavesTheCustomizationProfileIntact() throws {
+        let conn = try connection(atSchemaVersion: 10)
+        _ = try conn.run("INSERT INTO customization_profile (id, json) VALUES (1, ?);",
+                         [.text(#"{"language":"ar"}"#)])
+
+        try Database.migrate(conn, Schema.mainMigrations)
+
+        XCTAssertEqual(try count(conn, "SELECT COUNT(*) AS c FROM customization_profile;"), 1,
+                       "v11 disturbed the profile row while dropping an unrelated table")
+    }
+
+    /// Every migration version must be unique and ascending. A duplicate is the C1 failure mode in
+    /// its most direct form, and it is cheaper to assert than to rediscover.
+    func testMainMigrationVersionsAreUniqueAndAscending() {
+        let versions = Schema.mainMigrations.map(\.version)
+        XCTAssertEqual(versions, versions.sorted(), "migrations must be listed in ascending order")
+        XCTAssertEqual(Set(versions).count, versions.count,
+                       "duplicate migration version: migrate() runs `version > current`, so the "
+                       + "second copy never executes on an install that already applied the first.")
+    }
 }

@@ -369,6 +369,26 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     /// Lock Screen, and the watch glance. Defaults to `.standard` — the behaviour every existing
     /// install already has; this setting adds ways to show LESS, never more.
     public var ambientPrivacy: AmbientPrivacyConfig
+    /// D-35 (development priority #2). The metrics the user has pinned to Home, in the order they
+    /// chose — **array position IS display order**, which is why this is an array and not a `Set`.
+    /// Capped at `maxPinnedMetrics` so Home stays a summary and the pinned fetch stays bounded.
+    ///
+    /// This deliberately replaces the never-used `metric_pins` table rather than reviving it: that
+    /// table could only express `pinned_at` insertion order, and reorder is the first thing anyone
+    /// asks for. Living on the profile also means a pin change rides the existing
+    /// `AppEnvironment.update` path — optimistic UI, rollback on save failure, and a reload for
+    /// free because `env.profile` is already folded into every screen's `.task(id:)` load key.
+    public var pinnedMetricIds: [String] {
+        didSet { pinnedMetricIds = Self.clampPins(pinnedMetricIds) }
+    }
+    /// D-35. Metrics the user has hidden from browsing surfaces.
+    ///
+    /// **Presentation only, and this is an invariant with a test behind it
+    /// (`testHidingAMetricDoesNotStopItBeingIngestedOrDerived`).** A hidden metric is still
+    /// ingested, still derived, still exportable, still searchable by name, and still deletable.
+    /// Conflating "hidden" with "not collected" would destroy history HealthKit will not backfill
+    /// later — the user would be silently choosing data loss by tidying a list.
+    public var hiddenMetricIds: [String]
 
     public init(depthPolicy: DepthPolicy = .casual, homeModules: [HomeModule] = CustomizationProfile.defaultModules,
                 unitOverrides: [String: String] = [:], unitProfile: UnitProfileMode = .display,
@@ -386,7 +406,9 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 pregnancyModuleMode: PregnancyModuleMode = .off,
                 hydrationReminders: HydrationReminderSettings = .legacyDefault,
                 bedtimeReminders: BedtimeReminderSettings = .legacyDefault,
-                ambientPrivacy: AmbientPrivacyConfig = .default) {
+                ambientPrivacy: AmbientPrivacyConfig = .default,
+                pinnedMetricIds: [String] = [],
+                hiddenMetricIds: [String] = []) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -403,6 +425,21 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.hydrationReminders = hydrationReminders
         self.bedtimeReminders = bedtimeReminders
         self.ambientPrivacy = ambientPrivacy
+        self.pinnedMetricIds = Self.clampPins(pinnedMetricIds)
+        self.hiddenMetricIds = hiddenMetricIds
+    }
+
+    /// The pin ceiling. Eight so Home stays a summary rather than becoming a second Body tab, and
+    /// so the pinned fetch — which issues per-metric reads — stays bounded.
+    public static let maxPinnedMetrics = 8
+
+    /// De-duplicates (array position is order, so a repeat would render twice) and truncates.
+    /// Applied in both initialisers AND on assignment, mirroring `dailyNonMedLimit`'s `didSet`
+    /// reasoning: callers reach this through `AppEnvironment.update { $0.pinnedMetricIds = … }`,
+    /// which writes the property directly and would otherwise bypass a clamp applied only in init.
+    static func clampPins(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { seen.insert($0).inserted }.prefix(maxPinnedMetrics).map { $0 }
     }
 
     // Custom decode so a profile JSON persisted before these two fields existed still loads
@@ -416,7 +453,15 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // `.casual` rather than letting the whole profile decode fail (which ProfileRepository
         // treats as "no saved profile" and silently resets every other preference too).
         depthPolicy = (try? c.decode(DepthPolicy.self, forKey: .depthPolicy)) ?? .casual
-        homeModules = try c.decode([HomeModule].self, forKey: .homeModules)
+        // D-35: union in any module this build knows about that the stored profile predates.
+        //
+        // Without this the fix is cosmetic for everyone who already has BADAN installed: Settings
+        // renders one toggle per entry in `homeModules`, so a module added to `defaultModules` is
+        // invisible — and unhideable — for every profile written before it existed. That is exactly
+        // how `"effort"` came to be permanently on. Appending is additive only: an existing entry's
+        // `visible` and `order` are never touched, and new modules land after everything the user
+        // already has, so nobody's layout moves.
+        homeModules = Self.mergingMissingDefaults(into: try c.decode([HomeModule].self, forKey: .homeModules))
         unitOverrides = try c.decode([String: String].self, forKey: .unitOverrides)
         unitProfile = try c.decode(UnitProfileMode.self, forKey: .unitProfile)
         language = try c.decode(AppLanguage.self, forKey: .language)
@@ -489,19 +534,101 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // default here for the reason the DTO's own decode gives: this setting changes how already-
         // visible content renders, it does not gate content that was previously ungated.
         ambientPrivacy = (try? c.decode(AmbientPrivacyConfig.self, forKey: .ambientPrivacy)) ?? .default
+        // D-35. Both default empty: no pins and nothing hidden is exactly the behaviour every
+        // existing install already has, so adding these keys moves nobody's screen. `decodeIfPresent`
+        // rather than `decode` for the reason this whole initializer exists — every profile on disk
+        // today predates both keys, and a missing-key throw here would send `ProfileRepository.load()`
+        // down its "stored row present but failed to decode" path and reset every other preference.
+        pinnedMetricIds = Self.clampPins(try c.decodeIfPresent([String].self, forKey: .pinnedMetricIds) ?? [])
+        hiddenMetricIds = try c.decodeIfPresent([String].self, forKey: .hiddenMetricIds) ?? []
     }
 
+    /// Every module id Home can render, in default order.
+    ///
+    /// Two entries were added by D-35 and are worth naming, because
+    /// `testEveryGatedHomeModuleIdExistsInDefaultModules` now enforces the relationship:
+    ///
+    /// - `"pinned"` (D-35) is new. Existing profiles have no entry for it, so
+    ///   `isHomeModuleVisible`'s `?? true` fallback resolves it visible — the established way this
+    ///   app adds a Home surface without moving anyone's layout.
+    /// - `"effort"` was **already gated by `HomeScreen` and missing here**, so it always hit that
+    ///   same fallback and could never be switched off, because Settings only ever renders toggles
+    ///   for modules the profile actually lists. Adding it changes no default (still visible) and
+    ///   simply makes the existing switch reachable. It needs a `homeModuleLabel` case too, or the
+    ///   Arabic UI shows the capitalized raw id.
+    ///
+    /// `"nutrition"` is the deliberate exception in the other direction: listed here, never gated by
+    /// Home, because it has no Home surface — see `isHomeModuleVisible`'s own note.
     public static let defaultModules: [HomeModule] = [
-        HomeModule(id: "readiness", visible: true, order: 0),
-        HomeModule(id: "sleep", visible: true, order: 1),
-        HomeModule(id: "activity", visible: true, order: 2),
-        HomeModule(id: "heart", visible: true, order: 3),
-        HomeModule(id: "meds", visible: true, order: 4),
-        HomeModule(id: "nutrition", visible: true, order: 5),
-        HomeModule(id: "timeline", visible: true, order: 6),
+        HomeModule(id: "pinned", visible: true, order: 0),
+        HomeModule(id: "readiness", visible: true, order: 1),
+        HomeModule(id: "effort", visible: true, order: 2),
+        HomeModule(id: "sleep", visible: true, order: 3),
+        HomeModule(id: "activity", visible: true, order: 4),
+        HomeModule(id: "heart", visible: true, order: 5),
+        HomeModule(id: "meds", visible: true, order: 6),
+        HomeModule(id: "nutrition", visible: true, order: 7),
+        HomeModule(id: "timeline", visible: true, order: 8),
     ]
 
+    /// Appends any `defaultModules` entry the stored list has no id for, preserving the stored
+    /// entries exactly (visibility AND order) and ordering newcomers after them. New modules
+    /// therefore arrive visible-by-default, matching `isHomeModuleVisible`'s `?? true` fallback —
+    /// an upgrade adds a toggle, never flips one the user already set.
+    static func mergingMissingDefaults(into stored: [HomeModule]) -> [HomeModule] {
+        let known = Set(stored.map(\.id))
+        let missing = defaultModules.filter { !known.contains($0.id) }
+        guard !missing.isEmpty else { return stored }
+        var next = (stored.map(\.order).max() ?? -1) + 1
+        return stored + missing.map { module in
+            defer { next += 1 }
+            return HomeModule(id: module.id, visible: module.visible, order: next)
+        }
+    }
+
+    /// Module ids that legitimately appear in `defaultModules` with no `HomeScreen` gate, so the
+    /// parity test can be asymmetric rather than failing on a decision made on purpose.
+    /// `"nutrition"` governs Settings copy only; it has no Home card to hide.
+    public static let homeModulesWithoutHomeSurface: Set<String> = ["nutrition"]
+
     public func module(_ id: String) -> HomeModule? { homeModules.first { $0.id == id } }
+
+    // MARK: - Metric visibility (D-35)
+
+    /// Whether a metric is hidden from *browsing* surfaces. Never consult this to decide whether to
+    /// ingest, derive, export, search or delete — see `hiddenMetricIds`' own doc.
+    public func isMetricHidden(_ metricId: String) -> Bool { hiddenMetricIds.contains(metricId) }
+
+    public func isMetricPinned(_ metricId: String) -> Bool { pinnedMetricIds.contains(metricId) }
+
+    /// Whether another pin would fit. The UI disables the control rather than silently dropping the
+    /// tap, so the ceiling is visible before it bites.
+    public var canPinMore: Bool { pinnedMetricIds.count < Self.maxPinnedMetrics }
+
+    /// Pin a metric, **un-hiding it as a side effect.** Pinned-and-hidden is contradictory — the
+    /// pinned card is a browsing surface — and resolving it toward "visible" is the reading that
+    /// cannot strand a metric the user just asked to see. No-op at the cap.
+    public mutating func pinMetric(_ metricId: String) {
+        hiddenMetricIds.removeAll { $0 == metricId }
+        guard !pinnedMetricIds.contains(metricId), canPinMore else { return }
+        pinnedMetricIds.append(metricId)
+    }
+
+    public mutating func unpinMetric(_ metricId: String) {
+        pinnedMetricIds.removeAll { $0 == metricId }
+    }
+
+    /// Hide a metric, **un-pinning it as a side effect** — the same contradiction as above, resolved
+    /// the same way: the user's most recent instruction wins.
+    public mutating func hideMetric(_ metricId: String) {
+        unpinMetric(metricId)
+        guard !hiddenMetricIds.contains(metricId) else { return }
+        hiddenMetricIds.append(metricId)
+    }
+
+    public mutating func unhideMetric(_ metricId: String) {
+        hiddenMetricIds.removeAll { $0 == metricId }
+    }
     public var visibleModulesOrdered: [HomeModule] {
         homeModules.filter { $0.visible }.sorted { $0.order < $1.order }
     }

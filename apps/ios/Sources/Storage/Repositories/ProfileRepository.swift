@@ -2,8 +2,10 @@ import Foundation
 import os
 
 /// The single presentation/preferences record (dual-altitude switch, units, language, theme,
-/// dashboard layout) plus metric pins and goals. Stored as a JSON singleton so preference
-/// evolution never needs a migration.
+/// dashboard layout) plus goals. Stored as a JSON singleton so preference evolution never needs a
+/// migration — which is also why D-35's metric pins and hides are fields on `CustomizationProfile`
+/// rather than the `metric_pins` table this type used to expose. That table had no callers and was
+/// dropped in migration 11.
 final class ProfileRepository {
     private let db: SQLiteConnection
     init(_ db: SQLiteConnection) { self.db = db }
@@ -43,20 +45,6 @@ final class ProfileRepository {
         try db.run("INSERT OR REPLACE INTO customization_profile (id, json) VALUES (1, ?);",
                    [.text(try JSONCoding.encodeOrThrow(profile))])
         cachedLock.withLock { $0 = profile }
-    }
-
-    // MARK: - Metric pins
-
-    func pinnedMetrics() throws -> Set<String> {
-        Set(try db.query("SELECT metric_id FROM metric_pins;").compactMap { $0.string("metric_id") })
-    }
-
-    func setPinned(_ metricId: String, _ pinned: Bool, at date: Date) throws {
-        if pinned {
-            try db.run("INSERT OR REPLACE INTO metric_pins (metric_id, pinned_at) VALUES (?, ?);", [.text(metricId), .date(date)])
-        } else {
-            try db.run("DELETE FROM metric_pins WHERE metric_id = ?;", [.text(metricId)])
-        }
     }
 
     // MARK: - Goals

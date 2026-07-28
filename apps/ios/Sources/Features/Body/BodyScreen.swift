@@ -48,6 +48,11 @@ struct BodyFetchInputs {
     var cycleModuleEnabled: Bool = false
     var phaseEstimates: CyclePhaseEstimateRepository? = nil
     var sensitiveDerivation: DerivationRepository? = nil
+    /// D-35. Metrics the user has hidden, so a hidden metric is not chosen as a family's headline.
+    /// Presentation only — the reading is still stored, still derived from, and still exported;
+    /// this only stops it being the number that represents its family on Body. Defaulted empty so
+    /// every existing construction site (including `ViewModelPerformanceTests`) is unchanged.
+    var hiddenMetricIds: Set<String> = []
 }
 
 @Observable
@@ -113,7 +118,8 @@ final class BodyViewModel {
             phaseEstimates: cycleModuleEnabled
                 ? CyclePhaseEstimateRepository(sensitive: env.database.sensitive) : nil,
             sensitiveDerivation: cycleModuleEnabled
-                ? DerivationRepository(env.database.sensitive) : nil)
+                ? DerivationRepository(env.database.sensitive) : nil,
+            hiddenMetricIds: Set(profileSnapshot.hiddenMetricIds))
 
         let outcome = await Task.detached(priority: .userInitiated) {
             Self.fetch(inputs)
@@ -160,6 +166,10 @@ final class BodyViewModel {
         let eligible = inputs.registry.metrics(in: family).filter { $0.baselineEligible }
         var candidates = Self.headline[family] ?? []
         candidates += eligible.map(\.metricId)
+        // D-35: a hidden metric is not eligible to be the face of its family. If every candidate is
+        // hidden the pillar simply does not render, which is the same honest empty treatment a
+        // family with no data already gets — not a fallback to the thing the user asked to hide.
+        candidates = candidates.filter { !inputs.hiddenMetricIds.contains($0) }
 
         var seen = Set<String>()
         for metricId in candidates where seen.insert(metricId).inserted {
@@ -669,8 +679,18 @@ struct BodyAllMetricsBrowser: View {
         .padding(.vertical, BadanSpace.space1)
     }
 
+    /// D-35. Hidden metrics drop out of *browsing* — but an explicit search still returns them.
+    ///
+    /// That asymmetry is the guardrail, not an oversight. Hiding is a presentation choice, and a
+    /// metric the user cannot find by typing its own name would be a trap with no way back; the
+    /// Settings manage screen is the other way back and is likewise unfiltered. Nothing here
+    /// affects ingestion, derivation, export or deletion — see `hiddenMetricIds`' own doc.
     private var results: [MetricDefinition] {
-        let base = query.trimmingCharacters(in: .whitespaces).isEmpty ? env.registry.all : env.registry.search(query)
+        let isBrowsing = query.trimmingCharacters(in: .whitespaces).isEmpty
+        var base = isBrowsing ? env.registry.all : env.registry.search(query)
+        if isBrowsing {
+            base = base.filter { !env.profile.isMetricHidden($0.metricId) }
+        }
         guard let initialFamily else { return base }
         return base.filter { $0.familyGroup == initialFamily }
     }
