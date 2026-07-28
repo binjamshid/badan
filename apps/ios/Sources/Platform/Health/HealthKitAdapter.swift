@@ -49,7 +49,7 @@ final class HealthKitAdapter: HealthStorePort {
     /// for values HealthKit only ever returns pre-merged across sources (see `readDailySteps`)
     /// or when no data has synced yet (see `sourceDescriptors`) — using this shared token rather
     /// than fabricating a device-specific id keeps provenance honest in both cases.
-    private static let fallbackSourceId = "healthkit"
+    private static let fallbackSourceId = HKSampleMapping.fallbackSourceId
 
     init(anchors: ReadAnchorRepository, tz: String = TimeZone.current.identifier,
          routeConsent: RouteConsentProviding = DeniedRouteConsent()) {
@@ -276,14 +276,10 @@ final class HealthKitAdapter: HealthStorePort {
         for entry in HKTypeMap.anchoredSampleEntries {
             guard let metricId = entry.metricId, let type = entry.quantityType else { continue }
             let result = runAnchoredQuery(type: type, range: range, platformType: entry.platformType)
-            out += result.samples.compactMap { sample -> SampleDTO? in
-                guard let qs = sample as? HKQuantitySample else { return nil }
-                let (sourceId, deviceId) = provenanceIds(for: qs)
-                let (tzId, tzAssumed) = measuredTimeZone(for: qs)
-                return SampleDTO(metricId: metricId, value: qs.quantity.doubleValue(for: entry.hkUnit),
-                                 unit: entry.badanUnit, start: qs.startDate, end: qs.endDate, tz: tzId,
-                                 sourceId: sourceId, deviceId: deviceId, externalId: qs.uuid.uuidString,
-                                 qualityFlags: tzAssumed ? [.tzAssumed] : [])
+            // Shared with `HistoricalHealthKitReader` (D-35 item 2b) — see `HKSampleMapping`'s doc
+            // for why the two paths must not each own a copy of this.
+            out += result.samples.compactMap {
+                HKSampleMapping.sampleDTO($0, entry: entry, metricId: metricId, fallbackTz: tz)
             }
             // (BUG-10a) A deleted sample's UUID *is* the externalId it was ingested under, so
             // the mapping back to a soft-deletable row is exact, not a guess. Extended verbatim
@@ -333,15 +329,9 @@ final class HealthKitAdapter: HealthStorePort {
             guard case .anchoredInterval(let aggregation) = entry.strategy,
                   let metricId = entry.metricId, let type = entry.quantityType else { continue }
             let result = runAnchoredQuery(type: type, range: range, platformType: entry.platformType)
-            out += result.samples.compactMap { sample -> IntervalDTO? in
-                guard let qs = sample as? HKQuantitySample else { return nil }
-                let (sourceId, deviceId) = provenanceIds(for: qs)
-                let (tzId, tzAssumed) = measuredTimeZone(for: qs)
-                return IntervalDTO(metricId: metricId, value: qs.quantity.doubleValue(for: entry.hkUnit),
-                                   unit: entry.badanUnit, start: qs.startDate, end: qs.endDate, tz: tzId,
-                                   aggregation: aggregation, sourceId: sourceId, deviceId: deviceId,
-                                   externalId: qs.uuid.uuidString,
-                                   qualityFlags: tzAssumed ? [.tzAssumed] : [])
+            out += result.samples.compactMap {
+                HKSampleMapping.intervalDTO($0, entry: entry, metricId: metricId,
+                                            aggregation: aggregation, fallbackTz: tz)
             }
             // (BUG-10a) Same exact-UUID mapping as the raw samples above.
             pendingDeletions.intervals += result.deletedUUIDs.map {
@@ -1019,10 +1009,7 @@ final class HealthKitAdapter: HealthStorePort {
     /// Real device info where HealthKit provides it, never fabricated: `localIdentifier` is the
     /// closest thing `HKDevice` has to a stable id (falls back to its human-readable `name`).
     private func provenanceIds(for sample: HKSample) -> (sourceId: String, deviceId: String?) {
-        let bundleId = sample.sourceRevision.source.bundleIdentifier
-        let sourceId = bundleId.isEmpty ? Self.fallbackSourceId : bundleId
-        let deviceId = sample.device?.localIdentifier ?? sample.device?.name
-        return (sourceId, deviceId)
+        HKSampleMapping.provenanceIds(for: sample)
     }
 
     /// The timezone a sample was actually measured in (DATA-07), not whatever zone this device
@@ -1041,9 +1028,6 @@ final class HealthKitAdapter: HealthStorePort {
     /// `SessionDTO` now carry a `qualityFlags` field an adapter can populate, and
     /// `IngestionPipeline.platformProvenance` merges it into the `qualityFlags` it stamps.)
     private func measuredTimeZone(for sample: HKSample) -> (tz: String, assumed: Bool) {
-        if let raw = sample.metadata?[HKMetadataKeyTimeZone] as? String, TimeZone(identifier: raw) != nil {
-            return (raw, false)
-        }
-        return (tz, true)
+        HKSampleMapping.measuredTimeZone(for: sample, fallbackTz: tz)
     }
 }
