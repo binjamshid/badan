@@ -368,6 +368,7 @@ final class SleepIntelligenceEngineTests: XCTestCase {
         return SleepSpec(
             need: bump(base.need), performance: bump(base.performance), debt: bump(base.debt),
             consistency: bump(base.consistency), disturbances: bump(base.disturbances),
+            score: bump(base.score),
             debtRepaymentFraction: base.debtRepaymentFraction, needDebtHalfLifeDays: base.needDebtHalfLifeDays,
             effortFactorSecondsPerPoint: base.effortFactorSecondsPerPoint, napCreditFraction: base.napCreditFraction,
             rangeHalfWidthSeconds: base.rangeHalfWidthSeconds, minNeedSeconds: base.minNeedSeconds,
@@ -376,7 +377,12 @@ final class SleepIntelligenceEngineTests: XCTestCase {
             debtLookbackDays: base.debtLookbackDays, maxDebtSeconds: base.maxDebtSeconds,
             consistencyWindowDays: base.consistencyWindowDays, consistencyMinNights: base.consistencyMinNights,
             zeroScoreStdevSeconds: base.zeroScoreStdevSeconds, bedWakeWeightSplit: base.bedWakeWeightSplit,
-            minEpisodeSeconds: base.minEpisodeSeconds, mergeGapSeconds: base.mergeGapSeconds, isLoaded: base.isLoaded)
+            minEpisodeSeconds: base.minEpisodeSeconds, mergeGapSeconds: base.mergeGapSeconds,
+            performanceWeight: base.performanceWeight, consistencyWeight: base.consistencyWeight,
+            continuityWeight: base.continuityWeight,
+            disturbanceZeroScoreCount: base.disturbanceZeroScoreCount,
+            performanceCapPercent: base.performanceCapPercent,
+            isLoaded: base.isLoaded)
     }
 
     /// Build a pure assembly of consecutive-or-not nights (each a single primary cluster ending at
