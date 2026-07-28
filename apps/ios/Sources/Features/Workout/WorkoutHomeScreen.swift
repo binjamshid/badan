@@ -35,7 +35,10 @@ func makeWorkoutSessionCoordinator(env: AppEnvironment) -> WorkoutSessionCoordin
                                routeConsent: DeniedRouteConsent())
             : nil,
         deviceId: env.deviceId,
-        clock: env.clock)
+        clock: env.clock,
+        // EPIC-42: without this the interval engine still runs the live screen, but its completed
+        // segments are never persisted (see the coordinator's own init doc).
+        intervalRepository: WorkoutIntervalRepository(main: env.database.main))
 }
 
 // MARK: - Quick-start activities
@@ -345,6 +348,31 @@ struct WorkoutHomeScreen: View {
                 }
                 .buttonStyle(.plain)
 
+                // EPIC-42. Sits beside "more activities" rather than among the quick-start tiles:
+                // those tiles start a session on tap, and this one opens a setup screen first.
+                Button {
+                    route = .intervalBuilder
+                } label: {
+                    HStack(spacing: BadanSpace.space3) {
+                        Image(systemName: "timer")
+                            .foregroundStyle(BadanColor.primary)
+                            .accessibilityHidden(true)
+                        Text(env.s(IntervalStrings.openBuilder))
+                            .font(BadanFont.body.weight(.medium))
+                            .foregroundStyle(BadanColor.textPrimary)
+                        Spacer(minLength: BadanSpace.space2)
+                        Image(systemName: "chevron.forward")
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .accessibilityHidden(true)
+                    }
+                    .padding(BadanSpace.space3)
+                    .frame(minHeight: BadanSpace.touchMin)
+                    .background(BadanColor.surface, in: RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: BadanRadius.control, style: .continuous)
+                        .strokeBorder(BadanColor.separator, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+
                 if let startErrorText {
                     HStack(spacing: BadanSpace.space2) {
                         Image(systemName: "exclamationmark.triangle")
@@ -432,6 +460,10 @@ enum WorkoutFlowRoute: Hashable, Identifiable {
     case live
     case strength
     case picker
+    /// EPIC-42. Reached from the home screen's own entry below, not from an activity tile: a
+    /// structured session is a setup step BEFORE an activity starts, so it cannot ride the
+    /// activity-to-screen mapping the other cases use.
+    case intervalBuilder
 
     var id: Self { self }
 
@@ -451,6 +483,14 @@ enum WorkoutFlowRoute: Hashable, Identifiable {
             StrengthLoggingScreen(coordinator: coordinator, returnToLog: returnToLog)
         case .picker:
             ActivityPickerScreen(coordinator: coordinator, returnToLog: returnToLog)
+        case .intervalBuilder:
+            // `makeView` is nonisolated, so the start hop is marked explicitly rather than
+            // relying on inference. `hiit` is the activity slug for a structured session; the plan
+            // itself is what makes it structured, and it is fixed for the session's life (see
+            // `WorkoutSessionCoordinator.intervalPlan`).
+            IntervalPlanBuilderScreen { plan in
+                Task { @MainActor in try? coordinator.start(activityType: "hiit", plan: plan) }
+            }
         }
     }
 }

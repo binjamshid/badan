@@ -158,6 +158,20 @@ struct LiveWorkoutScreen: View {
                     statusBanner(statusLine)
                 }
                 statsRow
+                // EPIC-42: only present for a structured session. `intervalPosition` goes nil once
+                // the plan runs past its end, which is not the end of the workout — hence the
+                // explicit "plan finished, still recording" line rather than the card vanishing
+                // with no explanation.
+                if let plan = coordinator.intervalPlan {
+                    if let position = coordinator.intervalPosition {
+                        IntervalLiveCard(position: position, plan: plan)
+                    } else {
+                        LText(IntervalStrings.planFinished)
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 degradedBanner
                 controls
                 if let actionErrorText { errorRow(actionErrorText) }

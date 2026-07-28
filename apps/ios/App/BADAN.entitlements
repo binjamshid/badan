@@ -43,6 +43,32 @@
 	     widgets. Both BADAN.entitlements and BadanWidgets.entitlements must declare the identical
 	     group id or the extension silently reads an empty/nonexistent container instead of failing
 	     loudly — there is no runtime error for a mismatched group id, only missing data. -->
+	<!-- LAB-11 (EPIC-41) — PRESENT BUT DISABLED, and this is a portal/Apple gate, not unfinished
+	     code. Reading HealthKit Clinical Records needs
+	     `com.apple.developer.healthkit.access-health-records`, which automatic signing CANNOT add
+	     on its own: the capability has to be enabled on the App ID and Apple requires an explicit
+	     entitlement request describing what the app does with health records. Building with the key
+	     present but the capability absent fails the archive outright:
+
+	       error: Entitlement com.apple.developer.healthkit.access-health-records not found and
+	       could not be included in profile.
+
+	     Leaving it enabled would therefore block EVERY TestFlight build until the portal side
+	     lands, so it is commented out rather than shipped broken. Everything else in LAB-11 is
+	     built and tested (FHIRObservationParser, ClinicalRecordImporter, ClinicalRecordsImportScreen
+	     — 29 tests), and the import screen already degrades honestly without it: authorization
+	     simply fails and the screen says so.
+
+	     TO ENABLE, in order:
+	       1. developer.apple.com → Certificates, Identifiers & Profiles → Identifiers →
+	          net.binjamshid.badan → HealthKit → tick "Clinical Health Records".
+	       2. If Apple gates it behind a request form, submit it — the answer they want is: BADAN
+	          reads lab results only, writes nothing back, stores them encrypted on-device in the
+	          user's own lab notebook, and sends nothing off the device.
+	       3. Uncomment the key below, then archive. No code changes are needed.
+	<key>com.apple.developer.healthkit.access-health-records</key>
+	<true/>
+	-->
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.net.binjamshid.badan</string>

@@ -10,7 +10,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "6"
+    CURRENT_PROJECT_VERSION: "7"
     DEVELOPMENT_TEAM: ""
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -159,6 +159,11 @@ targets:
         # Routes are deliberately absent — they are not in the initial authorization bundle and
         # get their own consent screen (plan §13.1/§17), so naming them here would ask for
         # something the first prompt does not request.
+        # LAB-11 (EPIC-41). Required alongside the access-health-records entitlement for reading
+        # HealthKit Clinical Records. Names the one record type BADAN actually asks for (lab
+        # results) rather than "health records" generally, and states the write posture plainly —
+        # App Review reads this string for exactly that.
+        NSHealthClinicalHealthRecordsShareUsageDescription: "BADAN can import lab results you have already connected to Apple Health, so they sit alongside the rest of your record in your own lab notebook. It reads them only, never writes or changes anything, and nothing leaves your phone."
         NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, blood glucose, and workouts on your device to build your personal, private health repository. Nothing leaves your phone."
         # COMP-10 REVISED: originally removed on the reasoning that a write-usage string with no
         # write path was misleading (`HealthKitAdapter.requestAuthorization` calls `toShare: []`,
