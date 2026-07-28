@@ -539,11 +539,67 @@ of writing), `packages/contracts/INVARIANTS.md` (I1–I8), and `docs/MONETIZATIO
 - **Supersession:** none.
 - **Approval:** accepted — Founder, per ADR-0010 (2026-07-23).
 
+## D-29 — Daily notification budget becomes a user preference (1–4, default 3)
+- **Context:** EPIC-32 shipped the non-med budget as a fixed `dailyNonMedLimit = 2`, described in
+  three places in the code as "a hard invariant, not a preference". Adding producers for the
+  wake summary, adaptive bedtime and goals meant more than two classes competing for it.
+- **Choice:** `NotificationPreference.dailyNonMedLimit`, clamped 1…4, default 3.
+- **Rationale:** A fixed 2 stopped being an anti-fatigue measure once there were more than two
+  classes to spend it on. With the morning and evening anchors both on, every other class the
+  user explicitly opted into was starved permanently and silently — a 2 ceiling made BADAN a
+  two-class product regardless of what the user turned on. The anti-fatigue guarantee is now
+  carried by the clamp plus `NotificationClass.priority` (so the ceiling is never merely
+  first-come) rather than by the number being immovable.
+- **Migration impact:** None to storage — the field decodes to 3 on any profile that predates it,
+  and is clamped on decode as well as on assignment. Android still holds
+  `DAILY_NON_MED_LIMIT = 2`; re-mirroring is the Android lane's work when it resumes.
+- **Supersession:** **reverses** EPIC-32's "budget is a hard invariant, not a preference". The
+  doc-comments asserting that were corrected in the same change rather than left contradicting
+  the code.
+- **Approval:** accepted — Founder, 2026-07-28.
+
+## D-30 — Readings on the lock screen are an explicit opt-in, default off
+- **Context:** Every notification body was deliberately value-free, so a notification carried no
+  information on its own. Users asked for the numbers; the numbers are legible to anyone holding
+  a locked phone.
+- **Choice:** `NotificationPreference.showValuesInNotifications`, offered once during onboarding
+  and changeable in Settings. Off unless explicitly turned on; skipping the onboarding step
+  leaves it off.
+- **Rationale:** Silence on a privacy question is read as "no", never as consent. The value-free
+  copy remains byte-identical for everyone who has not opted in — structurally, via a separate
+  `valueFreeContent`, not by keeping two wordings in step by hand.
+- **Migration impact:** None; decodes to `false` on any older profile. Note the constraint this
+  exposes: pre-scheduled notifications are composed hours before they fire, so they stay
+  value-free even for an opted-in user. Values appear only on paths that compose at delivery.
+- **Supersession:** none — narrows nothing, adds an opt-in.
+- **Approval:** accepted — Founder, 2026-07-28.
+
+## D-31 — `goalReached` ships; `goalAtRisk` deliberately does not
+- **Context:** The goals notification work proposed both a reached notice and an at-risk one that
+  would fire late in the day while a goal was still attainable.
+- **Choice:** `goalReached` only. No at-risk class, no streaks, no badges, no congratulation.
+- **Rationale:** `GoalEvaluation`'s own doc states the rule — "There is no scoring, no streak and
+  no judgement here by design: BADAN describes, it doesn't grade" — and `CLAUDE.md` forbids
+  prescriptive framing. Reaching a goal is a fact that occurred and can be stated flatly. Telling
+  someone they are behind with hours left is a verdict on their day and a prompt to act on it,
+  which is the shape of thing that guardrail exists to keep out however gently it is worded.
+- **Migration impact:** `notification_deliveries.notification_class` is bare `TEXT` with no CHECK
+  (migration v8), so the new code is additive and needs no migration.
+- **Supersession:** none. A test pins the absence, so "we decided not to" survives a future change
+  that looks obviously useful.
+- **Approval:** accepted — Founder, 2026-07-28.
+
 ---
 
 ## Doc map cross-link
 
-`CLAUDE.md` (this repo) has no "doc map" section to append to as of this writing — it currently
-covers only Working mode / Product guardrails / Development priorities. This decision log is
-referenced from `docs/DECISIONS.md` itself going forward; if `CLAUDE.md` grows a doc map, this file
-belongs in it alongside `docs/adr/`, `packages/contracts/INVARIANTS.md`, and `docs/MONETIZATION.md`.
+`CLAUDE.md` now carries both a **Repo layout** section naming `docs/adr/` and `docs/DECISIONS.md`,
+and a **Decision log** section stating the rule this file exists to serve: architecture changes go
+to `docs/adr/` as a numbered ADR, product and priority calls come here as a `D-nn`, and an accepted
+decision is not changed without asking first.
+
+(This paragraph previously said `CLAUDE.md` had no doc map and covered "only Working mode / Product
+guardrails / Development priorities". That stopped being true when those sections were added.)
+
+Still worth cross-linking from `CLAUDE.md` if its layout block ever expands:
+`packages/contracts/INVARIANTS.md` and `docs/MONETIZATION.md`, neither of which it names today.

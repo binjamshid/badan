@@ -547,6 +547,18 @@ enum SettingsStrings {
         ar: "تُحجب هذه الإشعارات خلال هذه الفترة.")
     static let notifQuietFrom = LocalizedString(en: "From", ar: "من")
     static let notifQuietTo = LocalizedString(en: "To", ar: "إلى")
+    static let notifBedtimeTitle = LocalizedString(en: "Wind-down timing", ar: "توقيت الاسترخاء")
+    static let notifBedtimeHint = LocalizedString(
+        en: "By default the wind-down arrives at a fixed hour.",
+        ar: "يصل تذكير الاسترخاء افتراضياً في ساعة ثابتة.")
+    static let notifBedtimeAdaptive = LocalizedString(
+        en: "Time it to my recent nights", ar: "اضبطه على لياليّ الأخيرة")
+    static let notifBedtimeWake = LocalizedString(en: "I'd like to wake at", ar: "أودّ الاستيقاظ عند")
+    /// Says plainly that the derived time needs data, rather than implying every user gets one.
+    /// `SleepNightScore.need` is nil until a personal baseline exists.
+    static let notifBedtimeFallbackNote = LocalizedString(
+        en: "Until BADAN has enough of your nights, this stays on your usual bedtime, then the fixed hour.",
+        ar: "إلى أن تتوفّر لدى «بدن» ليالٍ كافية، يبقى على وقت نومك المعتاد، ثم على الساعة الثابتة.")
     static let notifShowValues = LocalizedString(
         en: "Show readings on the lock screen", ar: "إظهار القراءات على شاشة القفل")
     static let notifShowValuesHint = LocalizedString(

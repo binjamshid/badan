@@ -77,15 +77,17 @@ enum NotificationClass: String, CaseIterable, Sendable {
     /// producer in the app can actually schedule. A toggle is a promise, so a class earns a row here
     /// only once something raises it. Mirrors Android's `NotificationClass.userFacing`.
     ///
-    /// Three classes are registered but deliberately NOT offered:
+    /// Two classes are registered but deliberately NOT offered:
     /// - `meds` — medication reminders keep their own preference and their own section, owned by the
     ///   EXISTING `NotificationScheduler` med path rather than by this engine.
-    /// - `deviationNotice` and `exportHealthAlert` — registered for the ledger/budget vocabulary and
-    ///   for their deep links, but no code path raises either yet. They are event-driven by design
-    ///   and `AppEnvironment.raiseDecisionNotification` is the seam waiting for a producer; until a
-    ///   detector calls it, a toggle would promise a notice that never arrives. The automation-pause
-    ///   notice is NOT that producer — it is unbudgeted and ungated, and merely borrows
-    ///   `exportHealthAlert`'s deep link (see `NotificationScheduler.notifyAutomationPaused`).
+    /// - `pregnancy` — registered for the ledger vocabulary and, critically, for its cancellation
+    ///   prefix, but no producer schedules it in this slice. See its own doc.
+    ///
+    /// `deviationNotice`, `goalReached` and `exportHealthAlert` were in that list until they gained
+    /// producers — `AppEnvironment.evaluateDeviationNotice`, `evaluateGoalReached`, and the
+    /// now-opt-in-gated `NotificationScheduler.notifyAutomationPaused` respectively. Note the last
+    /// of those still bypasses this engine entirely and stays unbudgeted; the toggle it gained
+    /// silences it, and nothing more.
     ///
     /// Add a class here in the same change that gives it a producer, never before.
     static let userFacing: [NotificationClass] = [
