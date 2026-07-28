@@ -20,6 +20,11 @@ public enum MetricID {
     public static let sleepDebt = "sleep.debt"
     public static let sleepConsistency = "sleep.consistency"
     public static let sleepDisturbances = "sleep.disturbances"
+    /// The 0–100 sleep composite. Declared in `registry.json` since the ontology seed but with no
+    /// algorithm entry and no producer until 1.1 — which is why `SleepSnapshot.score` in the widget
+    /// path was quietly carrying `sleep.performance` instead. It is a real computed metric now, so
+    /// that substitution should go.
+    public static let sleepScore = "sleep.score"
 
     // Heart
     public static let heartRate = "heart.hr"

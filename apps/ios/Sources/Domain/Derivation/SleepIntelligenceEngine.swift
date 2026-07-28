@@ -133,6 +133,80 @@ struct SleepNightScore: Sendable, Hashable {
     let consistencyWindowSessionIds: [String]
     /// nil when the night carried no stage data — unknown, not zero.
     let disturbanceCount: Int?
+    /// The 0–100 composite, or nil when it cannot honestly be formed (see `SleepScore.compute`).
+    let score: SleepScore?
+}
+
+/// The 0–100 sleep composite and, just as importantly, what went into it.
+///
+/// The components are carried alongside the number because a bare score is the least inspectable
+/// thing this engine produces — "68" answers nothing on its own, and a user who slept well but
+/// irregularly deserves to see which term cost them. It is also what keeps the score from becoming
+/// the kind of opaque proprietary number BADAN exists as an alternative to.
+struct SleepScore: Sendable, Hashable {
+    let value: Double
+    /// Sub-scores actually used, each 0–100. A nil component was absent and was dropped from the
+    /// weighted mean rather than defaulted — defaulting a missing term to zero would punish someone
+    /// for their watch not recording stages, and defaulting it to 100 would flatter them.
+    let performanceComponent: Double?
+    let consistencyComponent: Double?
+    let continuityComponent: Double?
+    /// True when any component was missing and the weights were renormalised over the rest, or when
+    /// the contract itself is still provisional. Surfaces must not present a partial composite as
+    /// though it were the full one.
+    let partial: Bool
+}
+
+extension SleepScore {
+    /// Form the composite, or return nil if it cannot be formed honestly.
+    ///
+    /// Two rules do the work:
+    ///
+    /// 1. **Performance is required.** It is the dominant term, and it is nil until a personal
+    ///    sleep-duration baseline exists — so a new install gets no score rather than a fabricated
+    ///    one. A "sleep score" computed without any notion of whether you slept enough would be a
+    ///    timing score wearing the wrong label.
+    /// 2. **Missing optional terms are dropped, not defaulted.** Consistency is nil below the
+    ///    engine's minimum nights; disturbances are nil without stage data. Each absent term is
+    ///    removed from the weighted mean and the remaining weights renormalised, and the result is
+    ///    marked `partial` so no surface can pass it off as the whole picture.
+    static func compute(performance: SleepPerformance?,
+                        consistency: Double?,
+                        disturbanceCount: Int?,
+                        spec: SleepSpec) -> SleepScore? {
+        guard spec.isLoaded, let performance else { return nil }
+
+        let perfComponent = min(performance.cappedCenterPercent, spec.performanceCapPercent)
+        var terms: [(weight: Double, value: Double)] = [(spec.performanceWeight, perfComponent)]
+
+        var consComponent: Double?
+        if let consistency {
+            let c = clamp01to100(consistency)
+            consComponent = c
+            terms.append((spec.consistencyWeight, c))
+        }
+
+        var contComponent: Double?
+        if let disturbanceCount, spec.disturbanceZeroScoreCount > 0 {
+            let ratio = Double(disturbanceCount) / spec.disturbanceZeroScoreCount
+            let c = clamp01to100(100 * (1 - ratio))
+            contComponent = c
+            terms.append((spec.continuityWeight, c))
+        }
+
+        let totalWeight = terms.reduce(0) { $0 + $1.weight }
+        guard totalWeight > 0 else { return nil }
+        let value = terms.reduce(0) { $0 + $1.weight * $1.value } / totalWeight
+
+        let missingAny = consComponent == nil || contComponent == nil
+        return SleepScore(value: clamp01to100(value),
+                          performanceComponent: perfComponent,
+                          consistencyComponent: consComponent,
+                          continuityComponent: contComponent,
+                          partial: missingAny || spec.score.provisional)
+    }
+
+    private static func clamp01to100(_ v: Double) -> Double { min(max(v, 0), 100) }
 }
 
 // MARK: - Contract-loaded parameters
@@ -161,6 +235,7 @@ struct SleepSpec: Sendable, Hashable {
     let debt: SleepOutputSpec
     let consistency: SleepOutputSpec
     let disturbances: SleepOutputSpec
+    let score: SleepOutputSpec
 
     // need
     let debtRepaymentFraction: Double
@@ -193,6 +268,13 @@ struct SleepSpec: Sendable, Hashable {
     let minEpisodeSeconds: Double
     let mergeGapSeconds: Double
 
+    // score (the 0–100 composite)
+    let performanceWeight: Double
+    let consistencyWeight: Double
+    let continuityWeight: Double
+    let disturbanceZeroScoreCount: Double
+    let performanceCapPercent: Double
+
     let isLoaded: Bool
 
     /// Resolve from a loaded `AlgorithmRegistry`. Returns `.unavailable` (isLoaded=false) if any of
@@ -204,6 +286,7 @@ struct SleepSpec: Sendable, Hashable {
               let debtDef = registry.definition("sleep.debt"),
               let consDef = registry.definition("sleep.consistency"),
               let distDef = registry.definition("sleep.disturbances"),
+              let scoreDef = registry.definition("sleep.score"),
               let repay = needDef.params["debtRepaymentFraction"],
               let needHalf = needDef.params["debtDecayHalfLifeDays"],
               let effortFactor = needDef.params["effortFactorSecondsPerPoint"],
@@ -221,7 +304,12 @@ struct SleepSpec: Sendable, Hashable {
               let zeroStdev = consDef.params["zeroScoreStdevSeconds"],
               let bedWakeSplit = consDef.params["bedWakeWeightSplit"],
               let minEpisode = distDef.params["minEpisodeSeconds"],
-              let mergeGap = distDef.params["mergeGapSeconds"] else {
+              let mergeGap = distDef.params["mergeGapSeconds"],
+              let perfWeight = scoreDef.params["performanceWeight"],
+              let consWeight = scoreDef.params["consistencyWeight"],
+              let contWeight = scoreDef.params["continuityWeight"],
+              let distZero = scoreDef.params["disturbanceZeroScoreCount"],
+              let perfCap = scoreDef.params["performanceCapPercent"] else {
             return .unavailable
         }
         return SleepSpec(
@@ -230,6 +318,7 @@ struct SleepSpec: Sendable, Hashable {
             debt: SleepOutputSpec(algorithm: debtDef.algorithmVersion, provisional: debtDef.provisional),
             consistency: SleepOutputSpec(algorithm: consDef.algorithmVersion, provisional: consDef.provisional),
             disturbances: SleepOutputSpec(algorithm: distDef.algorithmVersion, provisional: distDef.provisional),
+            score: SleepOutputSpec(algorithm: scoreDef.algorithmVersion, provisional: scoreDef.provisional),
             debtRepaymentFraction: repay, needDebtHalfLifeDays: needHalf,
             effortFactorSecondsPerPoint: effortFactor, napCreditFraction: napFrac,
             rangeHalfWidthSeconds: rangeHalf, minNeedSeconds: minNeed, maxNeedSeconds: maxNeed,
@@ -237,7 +326,11 @@ struct SleepSpec: Sendable, Hashable {
             displayDebtHalfLifeDays: displayHalf, debtLookbackDays: Int(lookback), maxDebtSeconds: maxDebt,
             consistencyWindowDays: Int(consWindow), consistencyMinNights: Int(minNights),
             zeroScoreStdevSeconds: zeroStdev, bedWakeWeightSplit: bedWakeSplit,
-            minEpisodeSeconds: minEpisode, mergeGapSeconds: mergeGap, isLoaded: true)
+            minEpisodeSeconds: minEpisode, mergeGapSeconds: mergeGap,
+            performanceWeight: perfWeight, consistencyWeight: consWeight,
+            continuityWeight: contWeight, disturbanceZeroScoreCount: distZero,
+            performanceCapPercent: perfCap,
+            isLoaded: true)
     }
 
     /// The app-default spec, resolved once from the bundled contract.
@@ -250,11 +343,14 @@ struct SleepSpec: Sendable, Hashable {
         debt: SleepOutputSpec(algorithm: AlgorithmVersion(algorithmId: "sleep.debt", semver: "0.0.0", introducedIn: "0.0.0"), provisional: true),
         consistency: SleepOutputSpec(algorithm: AlgorithmVersion(algorithmId: "sleep.consistency", semver: "0.0.0", introducedIn: "0.0.0"), provisional: true),
         disturbances: SleepOutputSpec(algorithm: AlgorithmVersion(algorithmId: "sleep.disturbances", semver: "0.0.0", introducedIn: "0.0.0"), provisional: true),
+        score: SleepOutputSpec(algorithm: AlgorithmVersion(algorithmId: "sleep.score", semver: "0.0.0", introducedIn: "0.0.0"), provisional: true),
         debtRepaymentFraction: 0, needDebtHalfLifeDays: 1, effortFactorSecondsPerPoint: 0,
         napCreditFraction: 0, rangeHalfWidthSeconds: 0, minNeedSeconds: 0, maxNeedSeconds: 0,
         upperBoundPercent: 0, lowConfidenceThreshold: 0, displayDebtHalfLifeDays: 1,
         debtLookbackDays: 0, maxDebtSeconds: 0, consistencyWindowDays: 0, consistencyMinNights: 0,
         zeroScoreStdevSeconds: 1, bedWakeWeightSplit: 0.5, minEpisodeSeconds: 0, mergeGapSeconds: 0,
+        performanceWeight: 0, consistencyWeight: 0, continuityWeight: 0,
+        disturbanceZeroScoreCount: 1, performanceCapPercent: 0,
         isLoaded: false)
 }
 
@@ -440,6 +536,28 @@ final class SleepIntelligenceEngine {
                 metricId: MetricID.sleepDisturbances, value: Double(disturbances), unit: "count", day: s.localNight,
                 confidence: 1.0, output: spec.disturbances, inputs: inputs)
         }
+
+        if let score = s.score {
+            // The manifest names the components that actually contributed, so "why is my score 68?"
+            // resolves to the same three numbers the composite was built from rather than to an
+            // opaque total. An absent component contributes no input row, matching the fact that it
+            // contributed no weight either.
+            var inputs: [InputManifest.Input] = []
+            if let p = score.performanceComponent {
+                inputs.append(.init(recordId: s.primarySessionId, metricId: MetricID.sleepPerformance, value: p))
+            }
+            if let c = score.consistencyComponent {
+                inputs.append(.init(recordId: s.primarySessionId, metricId: MetricID.sleepConsistency, value: c))
+            }
+            if let k = score.continuityComponent {
+                inputs.append(.init(recordId: s.primarySessionId, metricId: MetricID.sleepDisturbances, value: k))
+            }
+            // A partial composite carries lower confidence rather than being withheld: two of three
+            // terms is still informative, but it must not read as the full picture.
+            _ = try upsertDerived(
+                metricId: MetricID.sleepScore, value: score.value, unit: "score_0_100", day: s.localNight,
+                confidence: score.partial ? 0.6 : 1.0, output: spec.score, inputs: inputs, context: context)
+        }
     }
 
     /// Append a derived row unless the latest one for this metric+day is already numerically
@@ -574,6 +692,8 @@ final class SleepIntelligenceEngine {
                                                  wakeTimes: window.map(\.wakeSecondsOfDay), spec: spec)
             }
 
+            let disturbances = night.hasStages ? countDisturbances(night.awakeIntervals, spec: spec) : nil
+
             out.append(SleepNightScore(
                 localNight: key, primarySessionId: night.primarySessionId,
                 actualAsleepSeconds: night.asleepSeconds,
@@ -581,8 +701,9 @@ final class SleepIntelligenceEngine {
                 consistency: consistency, consistencyNights: window.count,
                 consistencySufficient: window.count >= spec.consistencyMinNights,
                 consistencyWindowSessionIds: window.map(\.primarySessionId),
-                disturbanceCount: night.hasStages
-                    ? countDisturbances(night.awakeIntervals, spec: spec) : nil))
+                disturbanceCount: disturbances,
+                score: SleepScore.compute(performance: performance, consistency: consistency,
+                                          disturbanceCount: disturbances, spec: spec)))
         }
         return out
     }
