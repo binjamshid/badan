@@ -317,8 +317,11 @@ final class AppEnvironment {
                                   clock: clock, deviceId: deviceId,
                                   contextAnnotations: contextAnnotations)
         self.stress = stress
+        let mood = MoodEstimateWriter(derivation: derivation, measurements: measurements,
+                                      registry: registry, clock: clock, deviceId: deviceId)
         self.derivationCoordinator = DerivationCoordinator(baselines: baselines, sleep: sleepIntelligence,
-                                                           readiness: readiness, effort: effort, stress: stress)
+                                                           readiness: readiness, effort: effort,
+                                                           stress: stress, mood: mood)
         self.insightEngine = InsightEngine(insights: insightsRepo, derivation: derivation,
                                            measurements: measurements, templates: templates,
                                            registry: registry, clock: clock, deviceId: deviceId)

@@ -151,3 +151,94 @@ enum MoodEstimateEngine {
 
     private static func clamp01(_ v: Double) -> Double { min(max(v, 0), 1) }
 }
+
+/// The thin adapter: gathers the three terms from storage, asks the pure core, writes one row.
+/// Same pure-core / thin-shell split `SleepIntelligenceEngine` and `StressEngine` use.
+struct MoodEstimateWriter {
+    private let derivation: DerivationRepository
+    private let measurements: MeasurementRepository
+    private let registry: MetricRegistry
+    private let clock: Clock
+    private let deviceId: String
+    private let spec: MoodEstimateEngine.Spec
+
+    init(derivation: DerivationRepository, measurements: MeasurementRepository,
+         registry: MetricRegistry = .shared, clock: Clock, deviceId: String,
+         spec: MoodEstimateEngine.Spec = .defaultShared) {
+        self.derivation = derivation
+        self.measurements = measurements
+        self.registry = registry
+        self.clock = clock
+        self.deviceId = deviceId
+        self.spec = spec
+    }
+
+    /// Compute and persist the estimate for `asOf`'s local day, or write nothing.
+    ///
+    /// Writing nothing is the common early case and is not an error: the estimate needs two of its
+    /// three terms, and a fresh install has no sleep composite (no baseline yet) and no stress trend
+    /// (the density gate refuses). Silence there is the honest output.
+    @discardableResult
+    func compute(asOf: Date, tz: String = TimeZone.current.identifier) throws -> Bool {
+        guard spec.isLoaded else { return false }
+        let dayKey = DayAttribution.localDayKey(asOf, tz: tz)
+        let periodKey = "day:\(dayKey)"
+
+        let inputs = MoodEstimateEngine.Inputs(
+            sleepScore: try derivation.latestDerived(metricId: MetricID.sleepScore,
+                                                     periodKey: periodKey)?.value,
+            // Read from the row `StressEngine` wrote, NOT recomputed here. A day its density gate
+            // refused has no row, so this term is simply absent — which is exactly the intended
+            // behaviour, and is why the gate cannot be bypassed from this side.
+            autonomicLoad: try derivation.latestDerived(metricId: MetricID.stressDayTrend,
+                                                        periodKey: periodKey)?.value,
+            restingHeartRateSigmas: try restingHeartRateSigmas())
+
+        guard let estimate = MoodEstimateEngine.estimate(inputs, spec: spec) else { return false }
+
+        let unit = registry.definitionOrFallback(MetricID.moodEstimate).canonicalUnit
+        if let existing = try derivation.latestDerived(metricId: MetricID.moodEstimate, periodKey: periodKey),
+           abs(existing.value - estimate.value) < 0.0001 {
+            return false
+        }
+
+        var manifestInputs: [InputManifest.Input] = []
+        if let s = estimate.sleepComponent {
+            manifestInputs.append(.init(recordId: periodKey, metricId: MetricID.sleepScore, value: s))
+        }
+        if let a = estimate.autonomicComponent {
+            manifestInputs.append(.init(recordId: periodKey, metricId: MetricID.stressDayTrend, value: a))
+        }
+        if let r = estimate.restingHeartRateComponent {
+            manifestInputs.append(.init(recordId: periodKey, metricId: MetricID.restingHeartRate, value: r))
+        }
+
+        let manifest = InputManifest(id: ULID.newID(), inputs: manifestInputs)
+        try derivation.insertManifest(manifest)
+        let now = clock.now()
+        // Append, not upsert: derivation is append-only (I2), and the latest-wins read surfaces the
+        // newest row. The equality short-circuit above is what keeps a re-run from stacking
+        // identical rows.
+        try derivation.appendDerived(DerivedValue(
+            id: ULID.newID(), metricId: MetricID.moodEstimate, value: estimate.value, unit: unit,
+            periodKey: periodKey,
+            confidence: estimate.partial ? 0.5 : 0.8,
+            provisional: true,
+            algorithmId: spec.output.algorithm.algorithmId,
+            algorithmVersion: spec.output.algorithm.semver,
+            inputManifestId: manifest.id, computedAt: now, updatedAt: now, originDeviceId: deviceId))
+        return true
+    }
+
+    /// Today's resting heart rate as sigmas above the personal baseline, or nil without either.
+    /// Uses the same three-shape lookup goals use, so "what is this metric's current value?" has one
+    /// implementation in the app rather than two that can disagree.
+    private func restingHeartRateSigmas() throws -> Double? {
+        guard let baseline = try derivation.latestBaseline(metricId: MetricID.restingHeartRate),
+              let current = GoalMetricValue.current(for: MetricID.restingHeartRate,
+                                                    measurements: measurements,
+                                                    derivation: derivation)
+        else { return nil }
+        return baseline.z(of: current)
+    }
+}
