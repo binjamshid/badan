@@ -403,6 +403,19 @@ final class MockAICoachAttestor: AICoachAttesting {
         return stubKeyId
     }
 
+    // D-37. Counts up so a test can assert the counter advances per submission, which is
+    // the property that makes a replayed assertion rejectable.
+    let stubAssertion = Data("stub-assertion-blob".utf8)
+    private(set) var assertionCallCount = 0
+
+    func generateAssertion(_ keyId: String, clientDataHash: Data) async throws -> Data {
+        assertionCallCount += 1
+        capturedKeyId = keyId
+        capturedClientDataHash = clientDataHash
+        if attestThrows { throw AICoachError.attestationUnavailable }
+        return stubAssertion
+    }
+
     func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data {
         capturedKeyId = keyId
         capturedClientDataHash = clientDataHash

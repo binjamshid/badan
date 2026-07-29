@@ -162,16 +162,36 @@ private enum PrivacyPolicyStrings {
                     ar: "ليس في بدن حسابات ولا حزم برمجية خارجية ولا تقارير أعطال ولا إعلانات. ولا "
                         + "يتعقّبك عبر التطبيقات أو المواقع، ولا يجمع أي معرّف إعلاني."),
                 LocalizedString(
-                    en: "BADAN reaches the internet in exactly two situations, and each one is "
+                    en: "BADAN reaches the internet in exactly three situations, and each one is "
                         + "something you switched on or started yourself: an export you send to a "
-                        + "destination you configured, and the AI coach, if you enabled it, which "
-                        + "sends your question and nothing else. Nothing else in the app opens a "
-                        + "connection — recording, scores and export files are all produced on this "
-                        + "device.",
-                    ar: "يتصل بدن بالإنترنت في حالتين فقط، وكلٌّ منهما شيء فعّلته أو بدأته بنفسك: "
-                        + "تصدير ترسله إلى وجهة أعددتها، والمدرّب الذكي، إن فعّلته، ويرسل سؤالك ولا "
-                        + "شيء غيره. لا شيء آخر في التطبيق يفتح اتصالاً — فالتسجيل والدرجات وملفات "
-                        + "التصدير تُنتَج على هذا الجهاز."),
+                        + "destination you configured; the AI coach, if you enabled it, which sends "
+                        + "your question and nothing else; and methodology feedback, if you enabled "
+                        + "it, described below. Nothing else in the app opens a connection — "
+                        + "recording, scores and export files are all produced on this device.",
+                    ar: "يتصل بدن بالإنترنت في ثلاث حالات فقط، وكلٌّ منها شيء فعّلته أو بدأته بنفسك: "
+                        + "تصدير ترسله إلى وجهة أعددتها؛ والمدرّب الذكي، إن فعّلته، ويرسل سؤالك ولا "
+                        + "شيء غيره؛ وملاحظات المنهجية، إن فعّلتها، الموضّحة أدناه. لا شيء آخر في "
+                        + "التطبيق يفتح اتصالاً — فالتسجيل والدرجات وملفات التصدير تُنتَج على هذا الجهاز."),
+                // D-37, stated as a limit rather than as a reassurance. The last sentence is the
+                // one users are least likely to expect and most entitled to know: with no
+                // identifier there is nothing on the server that is recognisably theirs, so
+                // "delete my data" has no meaning there — which is a consequence of the privacy
+                // design, not a gap in it.
+                LocalizedString(
+                    en: "Methodology feedback is off unless you turn it on, and it never includes a "
+                        + "reading, a date, a location, or anything that identifies you or your "
+                        + "device. It carries only which metric and calculation method you "
+                        + "disagreed with, in which direction, and roughly how often — and only "
+                        + "after you have answered about that metric at least ten times. You can "
+                        + "read every submission it has made, word for word, in Settings. Because "
+                        + "it carries no identifier, nothing on the server is recognisably yours, "
+                        + "which also means there is nothing there to single out and delete.",
+                    ar: "ملاحظات المنهجية معطّلة ما لم تفعّلها، ولا تتضمّن أبداً قراءة أو تاريخاً أو "
+                        + "موقعاً أو أي شيء يعرّفك أو يعرّف جهازك. تحمل فقط أي مؤشر وأي طريقة حساب "
+                        + "اختلفت معها، وفي أي اتجاه، وتقريباً كم مرة — وفقط بعد إجابتك عن ذلك "
+                        + "المؤشر عشر مرات على الأقل. ويمكنك قراءة كل إرسال قامت به، كلمة بكلمة، "
+                        + "في الإعدادات. ولأنها لا تحمل أي معرّف، لا شيء على الخادم يخصّك بشكل "
+                        + "مميّز، ما يعني أيضاً أنه لا يوجد هناك ما يمكن تحديده وحذفه."),
             ]),
         Section(
             heading: LocalizedString(en: "Your control", ar: "ما تتحكّم فيه"),

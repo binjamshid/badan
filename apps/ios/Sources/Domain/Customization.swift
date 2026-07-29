@@ -383,6 +383,17 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     }
     /// D-35. Metrics the user has hidden from browsing surfaces.
     ///
+    /// D-37 / ADR-0011. Whether anonymised methodology footprints may leave this device.
+    ///
+    /// Ships `false` and decodes `false` when absent — the same reasoning
+    /// `showValuesInNotifications` documents: silence on the question is read as "no", never as
+    /// consent. Unlike `calibrationEnabled` below, this authorises a TRANSMISSION, so the default
+    /// is the restrictive one.
+    ///
+    /// Offered only in Settings → Privacy & Security, and only after the user has actually used the
+    /// feedback feature — asking someone to consent to sending "learning footprints" before they
+    /// have any concept of what that means is itself a dark pattern.
+    public var methodologyTelemetryEnabled: Bool
     /// D-36. Whether feedback-learned calibration is applied to future derived values.
     ///
     /// Ships ON, unlike every consent flag in this file, and the difference is deliberate: this
@@ -425,7 +436,8 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 pinnedMetricIds: [String] = [],
                 hiddenMetricIds: [String] = [],
                 methodChoices: [String: String] = [:],
-                calibrationEnabled: Bool = true) {
+                calibrationEnabled: Bool = true,
+                methodologyTelemetryEnabled: Bool = false) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -446,6 +458,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.hiddenMetricIds = hiddenMetricIds
         self.methodChoices = methodChoices
         self.calibrationEnabled = calibrationEnabled
+        self.methodologyTelemetryEnabled = methodologyTelemetryEnabled
     }
 
     /// The pin ceiling. Eight so Home stays a summary rather than becoming a second Body tab, and
@@ -568,6 +581,10 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // no disclosure and no transmission, and it cannot do anything at all until the user has
         // supplied feedback themselves.
         calibrationEnabled = try c.decodeIfPresent(Bool.self, forKey: .calibrationEnabled) ?? true
+        // D-37. `false` when the key is absent — the one value a missing/corrupt key must never
+        // silently produce for a flag that authorises data leaving the device.
+        methodologyTelemetryEnabled =
+            try c.decodeIfPresent(Bool.self, forKey: .methodologyTelemetryEnabled) ?? false
     }
 
     /// Every module id Home can render, in default order.

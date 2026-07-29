@@ -29,6 +29,16 @@ protocol AICoachAttesting {
     /// Attest `keyId` against a server-issued challenge. The returned blob is what
     /// `POST /v2/register` verifies.
     func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data
+
+    /// Sign a request body with the already-attested key (ADR-0011 / D-37).
+    ///
+    /// This is the per-REQUEST half, and `POST /v1/footprints` is its only caller. Telemetry
+    /// uses an assertion rather than the device token deliberately: a token is an identifier,
+    /// and sending one alongside a footprint is precisely the join that decision forbids.
+    ///
+    /// The server rejects any assertion whose counter does not strictly exceed the stored
+    /// one, so the platform's own monotonic counter is what prevents replay.
+    func generateAssertion(_ keyId: String, clientDataHash: Data) async throws -> Data
 }
 
 /// Where the App Attest key id is remembered between registrations.
@@ -133,12 +143,27 @@ struct DeviceCheckAICoachAttestor: AICoachAttesting {
             }
         }
     }
+
+    func generateAssertion(_ keyId: String, clientDataHash: Data) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            service.generateAssertion(keyId, clientDataHash: clientDataHash) { assertion, error in
+                if let assertion {
+                    continuation.resume(returning: assertion)
+                } else {
+                    continuation.resume(throwing: error ?? AICoachError.attestationUnavailable)
+                }
+            }
+        }
+    }
     #else
     // DeviceCheck is unavailable on this platform — report unsupported rather than fail
     // to compile, so the module still builds anywhere the rest of BADAN does.
     var isSupported: Bool { false }
     func generateKey() async throws -> String { throw AICoachError.attestationUnavailable }
     func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data {
+        throw AICoachError.attestationUnavailable
+    }
+    func generateAssertion(_ keyId: String, clientDataHash: Data) async throws -> Data {
         throw AICoachError.attestationUnavailable
     }
     #endif

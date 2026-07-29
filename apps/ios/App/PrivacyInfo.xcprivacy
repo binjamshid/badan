@@ -11,14 +11,20 @@
 	     it. BADAN now reaches the network from exactly two of its own surfaces, both opt-in
 	     and both default-off: the AI coach, and methodology telemetry.
 
-	     NSPrivacyCollectedDataTypes stays EMPTY for now, and that is a statement about what
-	     ships today, not a loophole: the AI coach sends a query you typed and stores nothing,
-	     and methodology telemetry (ADR-0011 / D-37) has its payload boundary and its schema
-	     but no transport and no consent surface yet — nothing transmits. The moment it does,
-	     this array must declare NSPrivacyCollectedDataTypeOtherUsageData, purpose Analytics,
-	     linked false, tracking false. A footprint carries no health value, no date and no
-	     identifier, but it IS collected data sent off device, so it gets declared rather than
-	     argued away. Under-declaring is an App Review risk; over-declaring is not.
+	     NSPrivacyCollectedDataTypes is now NON-EMPTY, and the reason is methodology telemetry
+	     (ADR-0011 / D-37). A footprint carries no health value, no date and no identifier —
+	     but it IS collected data sent off device, so it is declared rather than argued away.
+	     Under-declaring is an App Review risk; over-declaring is not.
+
+	     Declared as OtherUsageData, not HealthFitness: a footprint says which calculation
+	     method a user disagreed with and in which direction, never what any reading was. If
+	     that ever stops being true the declaration is the least of the problems, and there is
+	     a test (testFootprintPayloadContainsNoHealthValue) that fails loudly first.
+
+	     NOT tracking and NOT linked to identity, both truthfully: there is no identifier in
+	     the payload at all, so there is nothing to link it to and nothing to track across
+	     apps. The AI coach remains undeclared because it stores nothing — a query is proxied
+	     to the model and not retained.
 
 	     Reading/writing the app's own on-device SQLite databases and UserDefaults remains
 	     on-device processing, not "collection," which Apple's spec defines as transmission
@@ -39,7 +45,20 @@
 	<key>NSPrivacyTrackingDomains</key>
 	<array/>
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array/>
+	<array>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUsageData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
 		<!-- Database.swift diskUsage() calls FileManager.attributesOfItem(atPath:) on the app's

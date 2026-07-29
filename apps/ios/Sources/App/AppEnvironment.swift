@@ -424,7 +424,24 @@ final class AppEnvironment {
             // adapter per ingest — except this one holds no anchors at all, which is what makes a
             // historical fetch structurally unable to disturb live sync's resume point.
             historicalImportStore: historicalImportStore,
-            makeHistoricalPort: { HistoricalHealthKitReader() })
+            makeHistoricalPort: { HistoricalHealthKitReader() },
+            // D-37. Reads the opt-in from `UserDefaults` at call time — a background wake must not
+            // touch `@Observable` profile state — and returns nil unless the user opted in AND
+            // something clears the 10-event floor. The default install returns nil forever.
+            makeTelemetryBatch: {
+                guard TelemetryConsentStore.isEnabled() else { return nil }
+                let spec = CalibrationSpec.defaultShared
+                guard spec.isLoaded else { return nil }
+                let sources = FootprintCollector(
+                    feedback: FeedbackRepository(main), registry: .shared
+                ).collect(metricIds: [MetricID.readinessScore, MetricID.sleepScore],
+                          floor: spec.minFeedbackEvents)
+                let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
+                return FootprintBuilder.build(from: sources, appVersion: appVersion,
+                                              contractVersion: AlgorithmRegistry.shared.version,
+                                              floor: spec.minFeedbackEvents)
+            },
+            telemetryClient: FootprintClient())
         // EPIC-15 wiring. The automation engine composes Phase-1's runner, so it needs a
         // DELIVERY-capable `ExportRunner` — the plain `self.exporter` above is share-sheet-only
         // (built without the template collaborators). This one carries `templates`/`destinations`/
@@ -950,7 +967,31 @@ final class AppEnvironment {
             metricId: metricId, periodKey: value.periodKey, derivedValueId: value.id,
             algorithmId: value.algorithmId, algorithmVersion: value.algorithmVersion,
             direction: direction)
+        // D-37. ARMS the timer; it never sends now. `scheduleIfNeeded` is idempotent so a burst of
+        // taps cannot keep pushing the due date forward, and the delay is randomised 24-72h so the
+        // moment of transmission carries no information about the moment of disagreement.
+        if profile.methodologyTelemetryEnabled {
+            FootprintScheduler().scheduleIfNeeded(now: clock.now())
+        }
         bumpDataGeneration()
+    }
+
+    /// D-37. Whether the user has ever given feedback — the gate on OFFERING telemetry at all.
+    ///
+    /// Consent to sending "learning footprints" is meaningless to someone who has never seen the
+    /// feature that produces them, so the toggle does not appear until they have. That is a
+    /// dark-pattern guard, not a technical one.
+    var hasUsedFeedbackFeature: Bool {
+        for metricId in [MetricID.readinessScore, MetricID.sleepScore] {
+            for method in MethodResolver.selectableMethods(for: metricId, registry: .shared) {
+                if let events = try? feedback.feedback(metricId: metricId,
+                                                       algorithmId: method.algorithmId),
+                   !events.isEmpty {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     /// "Delete my feedback and calibrations." Clears both tables outright.
@@ -1659,6 +1700,7 @@ final class AppEnvironment {
         // the engine and the UI disagreed about which method is active.
         MethodChoiceStore.write(p.methodChoices)
         MethodChoiceStore.writeCalibrationEnabled(p.calibrationEnabled)
+        TelemetryConsentStore.write(p.methodologyTelemetryEnabled)
 
         // OPT-200: the sensitive DB is independently purgeable; re-enabling it after a purge
         // never reseeds it unless something explicitly checks for that on this transition.

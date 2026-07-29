@@ -336,9 +336,14 @@ final class BackgroundSubstrateTests: XCTestCase {
     /// re-scoring data they already have, which outranks resuming a fetch they were watching in the
     /// foreground anyway, which outranks housekeeping. Asserted on the enum itself so reordering
     /// the cases — which silently reorders the run — has to be deliberate.
-    func testProcessingStepOrderIsIngestThenScoreThenHistoryThenPrune() {
+    func testProcessingStepOrderIsIngestThenScoreThenHistoryThenPruneThenTelemetry() {
         XCTAssertEqual(BackgroundProcessingStep.allCases,
-                       [.backfillResume, .scoreBackfill, .historicalImportResume, .prune])
+                       [.backfillResume, .scoreBackfill, .historicalImportResume, .prune,
+                        .telemetrySubmission])
+        XCTAssertEqual(BackgroundProcessingStep.allCases.last, .telemetrySubmission,
+                       "telemetry is the only step that reaches the network and the least "
+                       + "important thing a wake can do — it yields to every step that serves "
+                       + "the user's own data")
     }
 
     // MARK: - Score-backfill request store (EPIC-26)
@@ -431,7 +436,12 @@ final class BackgroundSubstrateTests: XCTestCase {
         let checkpoints = BackgroundCheckpointStore(defaults: defaults)
         XCTAssertEqual(checkpoints.remainingSteps(), BackgroundProcessingStep.allCases)
         checkpoints.save(nextStep: .prune, at: now)
-        XCTAssertEqual(checkpoints.remainingSteps(), [.prune])
+        // Expressed as "prune and everything after it" rather than a hardcoded tail, so adding a
+        // step (D-37 added `telemetrySubmission`) does not silently fail a test about checkpoint
+        // arithmetic — which is not what this test is about.
+        let fromPrune = Array(BackgroundProcessingStep.allCases.drop(while: { $0 != .prune }))
+        XCTAssertEqual(checkpoints.remainingSteps(), fromPrune)
+        XCTAssertEqual(fromPrune.first, .prune)
         checkpoints.clear()
         XCTAssertEqual(checkpoints.remainingSteps(), BackgroundProcessingStep.allCases)
     }
@@ -748,6 +758,13 @@ private final class FakeIngest: BackgroundIngestPerforming {
     // order, and did not run twice.
     var pendingHistoricalImport = false
     var historicalImportCallCount = 0
+
+    // D-37. Counted so a test can assert the step runs last and is a no-op by default.
+    private(set) var telemetryCallCount = 0
+
+    func submitDueTelemetry(now: Date) throws {
+        telemetryCallCount += 1
+    }
 
     func resumeHistoricalImportIfPending(now: Date) throws -> BackgroundWorkCounts? {
         guard !lockIsHeld, pendingHistoricalImport else { return nil }

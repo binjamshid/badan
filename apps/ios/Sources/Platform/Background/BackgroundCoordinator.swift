@@ -58,6 +58,10 @@ protocol BackgroundIngestPerforming: AnyObject {
     /// `nil` when nothing is pending, the reader is not wired, or another ingest holds the lock —
     /// so the next wake retries rather than consuming the step.
     func resumeHistoricalImportIfPending(now: Date) throws -> BackgroundWorkCounts?
+
+    /// ADR-0011 / D-37. Submit a telemetry batch if one is due and the user opted in. A no-op
+    /// otherwise, which is the state of every install that never enabled it.
+    func submitDueTelemetry(now: Date) throws
 }
 
 /// Whether iOS Data Protection currently lets us read protected files.
@@ -213,6 +217,12 @@ enum BackgroundProcessingStep: String, CaseIterable {
     /// a wake occurs at all, which is exactly why the import screen offers an explicit Resume.
     case historicalImportResume
     case prune
+    /// ADR-0011 / D-37. Submitting a due telemetry batch, LAST of all.
+    ///
+    /// Ordered after `prune` deliberately: this is the only step that reaches the network, and it
+    /// is the least important thing a wake can do. Every other step serves the user's own data;
+    /// this one serves BADAN's methodology, and it yields to all of them.
+    case telemetrySubmission
 }
 
 /// Where a checkpointed processing run got to, so expiration means "resume", not "start over".
@@ -649,6 +659,11 @@ final class BackgroundCoordinator {
                     }
                 case .prune:
                     counts.pruned += try runs.prune(now: clock.now())
+                case .telemetrySubmission:
+                    // Fire-and-forget: a failed submission clears nothing, so the next wake
+                    // retries. Telemetry must never be able to fail a processing run that did
+                    // real work for the user.
+                    try ingest.submitDueTelemetry(now: clock.now())
                 }
             } catch {
                 // Checkpoint at the failing step so the next run retries it rather than skipping
@@ -823,6 +838,10 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
     /// a build where the feature is off) must report "nothing to resume" rather than half-run.
     private let historicalImportStore: HistoricalImportRequestStore
     private let makeHistoricalPort: (() -> HealthStorePort)?
+    /// D-37. Both nil unless the composition root wires telemetry, so a bridge built without it
+    /// (a narrow test, or a build where the feature is absent) is silently inert.
+    private let makeTelemetryBatch: (() -> FootprintBatch?)?
+    private let telemetryClient: FootprintClient?
 
     /// The single mutex around the ingest→derive chain.
     ///
@@ -852,7 +871,9 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
          derivationCoordinator: DerivationCoordinator? = nil,
          scoreBackfillStore: ScoreBackfillRequestStore = ScoreBackfillRequestStore(),
          historicalImportStore: HistoricalImportRequestStore = HistoricalImportRequestStore(),
-         makeHistoricalPort: (() -> HealthStorePort)? = nil) {
+         makeHistoricalPort: (() -> HealthStorePort)? = nil,
+         makeTelemetryBatch: (() -> FootprintBatch?)? = nil,
+         telemetryClient: FootprintClient? = nil) {
         self.seedController = seedController
         self.main = main
         self.makePort = makePort
@@ -861,6 +882,8 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
         self.scoreBackfillStore = scoreBackfillStore
         self.historicalImportStore = historicalImportStore
         self.makeHistoricalPort = makeHistoricalPort
+        self.makeTelemetryBatch = makeTelemetryBatch
+        self.telemetryClient = telemetryClient
     }
 
     var isHealthKitConnected: Bool { connected() }
@@ -938,6 +961,32 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
             requests: historicalImportStore, tz: TimeZone.current.identifier
         ).run(makeReader: makeHistoricalPort)
         return BackgroundWorkCounts()
+    }
+
+    /// Submit a due telemetry batch (ADR-0011 / D-37).
+    ///
+    /// Four gates, any of which is a silent no-op: the user opted in, the batch is actually due
+    /// (a randomised 24-72h after eligibility), a collector is wired, and something clears the
+    /// 10-event floor. The default install fails the first and does nothing forever.
+    ///
+    /// The schedule is cleared only on success, so a failed send retries on a later wake rather
+    /// than being dropped — and a submission that never clears never blocks anything else, because
+    /// this step runs last.
+    func submitDueTelemetry(now: Date) throws {
+        guard let makeBatch = makeTelemetryBatch, let client = telemetryClient else { return }
+        let scheduler = FootprintScheduler()
+        guard scheduler.isDue(now: now), let batch = makeBatch() else { return }
+        Task {
+            do {
+                try await client.submit(batch)
+                scheduler.clear()
+            } catch {
+                // Never logged with a payload, and never escalated: telemetry failing must not
+                // fail a run that did real work for the user.
+                Logger(subsystem: "net.binjamshid.badan", category: "Telemetry")
+                    .warning("Telemetry submission failed")
+            }
+        }
     }
 
     /// The one ingest path. `ingestHealthData` runs HealthKit's anchored queries, so a repeat call
