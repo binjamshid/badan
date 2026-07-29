@@ -12,6 +12,7 @@ struct PrivacySecuritySettingsScreen: View {
     @State private var showPurgeConfirm = false
     @State private var showResetConfirm = false
     @State private var showingDataChoice = false
+    @State private var showDeleteFeedbackConfirm = false
     @State private var transientNotice: LocalizedString?
 
     // STUB-01/COMP-06 (post-onboarding data choice): a second, Settings-side entry point to
@@ -52,6 +53,7 @@ struct PrivacySecuritySettingsScreen: View {
                 sensitiveSection
                 widgetsSection
                 privacySection
+                calibrationSection
                 dataManagementSection
             }
             .padding(BadanSpace.space4)
@@ -327,6 +329,54 @@ struct PrivacySecuritySettingsScreen: View {
 
     // MARK: Data management (reset)
 
+    // MARK: Calibration (D-36)
+
+    /// The off switch and the delete control, together, because they are different promises and a
+    /// user who wants one usually wants to know about the other.
+    private var calibrationSection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(CalibrationSettingsCopy.header))
+            BadanCard {
+                VStack(spacing: 0) {
+                    SettingsToggleRow(
+                        title: CalibrationSettingsCopy.toggleTitle,
+                        subtitle: CalibrationSettingsCopy.toggleSubtitle,
+                        isOn: Binding(
+                            get: { env.profile.calibrationEnabled },
+                            set: { newValue in env.update { $0.calibrationEnabled = newValue } }))
+                    settingsDivider
+                    Button(role: .destructive) { showDeleteFeedbackConfirm = true } label: {
+                        HStack {
+                            Text(CalibrationSettingsCopy.deleteTitle, language: env.language)
+                                .font(BadanFont.body)
+                                .foregroundStyle(BadanColor.critical)
+                            Spacer(minLength: BadanSpace.space2)
+                        }
+                        .frame(minHeight: BadanSpace.touchMin)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            // Both consequences stated BEFORE the tap, not in a toast afterwards.
+            LText(env.profile.calibrationEnabled
+                  ? CalibrationSettingsCopy.explainerOn : CalibrationSettingsCopy.explainerOff)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .confirmationDialog(env.s(CalibrationSettingsCopy.deleteConfirmTitle),
+                            isPresented: $showDeleteFeedbackConfirm, titleVisibility: .visible) {
+            Button(env.s(CalibrationSettingsCopy.deleteConfirmAction), role: .destructive) {
+                env.deleteAllFeedbackAndCalibrations()
+                transientNotice = CalibrationSettingsCopy.deleted
+            }
+            Button(env.s(Loc.cancel), role: .cancel) {}
+        } message: {
+            Text(CalibrationSettingsCopy.deleteConfirmMessage, language: env.language)
+        }
+    }
+
     private var dataManagementSection: some View {
         VStack(alignment: .leading, spacing: BadanSpace.space3) {
             SectionHeader(env.s(SettingsStrings.dataManagementHeader))
@@ -390,4 +440,42 @@ struct PrivacySecuritySettingsScreen: View {
             }
         }
     }
+}
+
+/// D-36 settings copy. States mechanisms and consequences; offers no advice and makes no claim
+/// about accuracy, because a personal offset is not an accuracy improvement — it is a preference.
+enum CalibrationSettingsCopy {
+    static let header = LocalizedString(en: "Personalisation", ar: "التخصيص")
+    static let toggleTitle = LocalizedString(en: "Learn from my feedback", ar: "التعلّم من ملاحظاتي")
+    static let toggleSubtitle = LocalizedString(
+        en: "Adjust future calculated values using your \"does this match\" answers.",
+        ar: "تعديل القيم المحسوبة مستقبلاً باستخدام إجاباتك عن \"هل يطابق هذا\".")
+    static let explainerOn = LocalizedString(
+        en: "Everything here stays on this device. BADAN only adjusts a metric after you have "
+            + "answered about it enough times, and never by more than a few points.",
+        ar: "كل ما هنا يبقى على هذا الجهاز. لا يعدّل بادن مؤشراً إلا بعد إجابتك عنه مرات كافية، "
+            + "ولا بأكثر من بضع نقاط.")
+    /// Says what does NOT happen when it is off, including the part a user might expect and not get.
+    static let explainerOff = LocalizedString(
+        en: "No new answers are recorded and no new value is adjusted. Values already calculated "
+            + "keep the adjustment they were given, and still say so when you open them.",
+        ar: "لا تُسجَّل إجابات جديدة ولا تُعدَّل قيم جديدة. تحتفظ القيم المحسوبة سابقاً بتعديلها، "
+            + "وتظل تُفصح عنه عند فتحها.")
+
+    static let deleteTitle = LocalizedString(en: "Delete my feedback and calibrations",
+                                             ar: "حذف ملاحظاتي ومعايراتي")
+    static let deleteConfirmTitle = LocalizedString(en: "Delete feedback and calibrations?",
+                                                    ar: "حذف الملاحظات والمعايرات؟")
+    /// The limit is stated plainly rather than discovered afterwards: this removes the opinions and
+    /// the learned offsets, and does NOT rewrite values already calculated with them. Rewriting
+    /// history to hide that they were adjusted would be the dishonest option.
+    static let deleteConfirmMessage = LocalizedString(
+        en: "This removes every answer you have given and every adjustment learned from them. "
+            + "Values already calculated are not recalculated, and will still show that they were "
+            + "adjusted.",
+        ar: "يزيل هذا كل إجابة قدّمتها وكل تعديل تعلّمه منها. لا يُعاد حساب القيم المحسوبة سابقاً، "
+            + "وستظل تُظهر أنها عُدّلت.")
+    static let deleteConfirmAction = LocalizedString(en: "Delete", ar: "حذف")
+    static let deleted = LocalizedString(en: "Feedback and calibrations deleted.",
+                                         ar: "تم حذف الملاحظات والمعايرات.")
 }

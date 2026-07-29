@@ -383,6 +383,14 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
     }
     /// D-35. Metrics the user has hidden from browsing surfaces.
     ///
+    /// D-36. Whether feedback-learned calibration is applied to future derived values.
+    ///
+    /// Ships ON, unlike every consent flag in this file, and the difference is deliberate: this
+    /// grants nothing and sends nothing. It is a purely on-device adjustment that only ever exists
+    /// because the user actively tapped "doesn't match" ten or more times — silence produces no
+    /// calibration at all, because the event floor is never reached. Switching it off stops future
+    /// adjustment; rows already computed keep theirs (I2) and keep disclosing it.
+    public var calibrationEnabled: Bool
     /// D-35. The user's chosen calculation method per derived metric — `metricId -> algorithmId`.
     ///
     /// Empty means "use the contract default", which is what every existing install has and what
@@ -416,7 +424,8 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
                 ambientPrivacy: AmbientPrivacyConfig = .default,
                 pinnedMetricIds: [String] = [],
                 hiddenMetricIds: [String] = [],
-                methodChoices: [String: String] = [:]) {
+                methodChoices: [String: String] = [:],
+                calibrationEnabled: Bool = true) {
         self.depthPolicy = depthPolicy; self.homeModules = homeModules
         self.unitOverrides = unitOverrides; self.unitProfile = unitProfile
         self.language = language; self.arabicDigits = arabicDigits; self.theme = theme
@@ -436,6 +445,7 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         self.pinnedMetricIds = Self.clampPins(pinnedMetricIds)
         self.hiddenMetricIds = hiddenMetricIds
         self.methodChoices = methodChoices
+        self.calibrationEnabled = calibrationEnabled
     }
 
     /// The pin ceiling. Eight so Home stays a summary rather than becoming a second Body tab, and
@@ -553,6 +563,11 @@ public struct CustomizationProfile: Codable, Hashable, Sendable {
         // D-35. Empty means "contract default for everything", which is exactly the behaviour of
         // every profile written before methods were selectable.
         methodChoices = try c.decodeIfPresent([String: String].self, forKey: .methodChoices) ?? [:]
+        // D-36. Defaults TRUE when the key is absent, which is the opposite of this file's usual
+        // rule and correct here for the reason `calibrationEnabled`'s own doc gives: it authorises
+        // no disclosure and no transmission, and it cannot do anything at all until the user has
+        // supplied feedback themselves.
+        calibrationEnabled = try c.decodeIfPresent(Bool.self, forKey: .calibrationEnabled) ?? true
     }
 
     /// Every module id Home can render, in default order.

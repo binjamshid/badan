@@ -761,6 +761,29 @@
         "minComponents": "At least two of the three terms must be present. One term is not a composite, and a 1-5 'mood' resting on resting heart rate alone would be indefensible."
       },
       "degradationNotes": "Never produced from fewer than minComponents terms. The autonomic term is gated by the same daytime-HRV density classification stress.day_trend uses, so this cannot become a back door to the real-time stress index that engine exists to refuse. Marked provisional whenever any term is absent."
+    },
+    {
+      "algorithmId": "calibration.user_feedback_offset",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [],
+      "inputMetricIds": [],
+      "methodologyUrl": "docs/algorithms/calibration.md",
+      "summaryEn": "Personal offset learned from a user's own 'does this match how you felt' feedback on a derived value, applied to later values of that metric under that same method. The offset is the time-decayed net direction of their feedback scaled by a learning rate and clamped to a fixed number of points. Never applied below a minimum number of feedback events, and never carried across methods.",
+      "params": {
+        "minFeedbackEvents": 10.0,
+        "maxOffsetPoints": 5.0,
+        "learningRate": 0.5,
+        "decayHalfLifeDays": 30.0
+      },
+      "paramNotes": {
+        "minFeedbackEvents": "PROVISIONAL. Below this NO adjustment is applied at all — not a smaller one. A handful of taps is a mood, not a signal, and an offset built from three of them would move a number the user then has no way to explain. Also the floor below which no telemetry footprint is ever emitted (D-37), so the two thresholds cannot drift apart.",
+        "maxOffsetPoints": "PROVISIONAL, and the constant that keeps a calibrated readiness recognisably a readiness. An unbounded learned offset makes the number mean nothing — a user who always says 'felt worse' would eventually drive it to zero regardless of their data. The clamp is what stops personalisation becoming detachment from the measurement.",
+        "learningRate": "PROVISIONAL. How much of the observed net disagreement is taken as offset. Below 1.0 deliberately: the feedback says the number felt wrong, not by how much, so moving the whole distance would over-read a signal that carries no magnitude.",
+        "decayHalfLifeDays": "PROVISIONAL. Older feedback counts for less, so a calibration follows how someone feels now rather than being anchored to a month they were ill.",
+        "whyThisIsAContractEntry": "The calibration's own constants live here, not in Swift, for the reason AlgorithmRegistry's doc gives: a silent default is indistinguishable, on the stored row, from an authored constant. It also buys the fail-closed property free — no entry means CalibrationSpec does not load, which means no calibration is ever applied, matching every other engine."
+      }
     }
   ]
 }

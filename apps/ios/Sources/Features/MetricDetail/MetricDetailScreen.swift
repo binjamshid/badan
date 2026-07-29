@@ -364,6 +364,17 @@ struct MetricDetailScreen: View {
                 explainerCard(data)
             }
 
+            // D-36. "Does this match how you felt?", for values BADAN calculates.
+            //
+            // Only for derived values: asking whether a directly-measured reading matches how you
+            // felt would be incoherent, since a recorded heart rate is not BADAN's opinion to
+            // adjust. Placed under the value at both depths — the question is casual-safe by
+            // construction, and hiding it in power would mean only power users could correct a
+            // number all users see.
+            if env.profile.calibrationEnabled, let latest = data.latestDerivedValue {
+                DerivedFeedbackCard(metricId: data.def.metricId, value: latest)
+            }
+
             // D-35. The active method shows at BOTH altitudes, not just power.
             //
             // `methodCard` above is power-only and stays that way — it carries the raw

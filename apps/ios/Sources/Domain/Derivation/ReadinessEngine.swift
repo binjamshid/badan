@@ -52,12 +52,22 @@ final class ReadinessEngine {
     /// `ContextAnnotationResolver` for why the boundary is crossed this way. Defaults to "no context
     /// ever", so an engine constructed without the seam annotates nothing rather than guessing.
     private let contextAnnotations: ContextAnnotationResolver
+    /// D-36. Optional so an engine built without it (every existing test, and any build where the
+    /// feature is off) simply never calibrates — the same "wired or inert" shape `phaseEstimates`
+    /// and the score-backfill collaborators already use.
+    private let feedbackRepo: FeedbackRepository?
+    /// Whether the user has calibration switched on. A closure rather than a stored `Bool` because
+    /// derivation runs off the main actor and must not read `@Observable` profile state; it reads
+    /// `UserDefaults` at call time, exactly like `RouteConsentStore`.
+    private let calibrationEnabled: @Sendable () -> Bool
 
     init(derivation: DerivationRepository, measurements: MeasurementRepository,
          clock: Clock, deviceId: String, spec: ReadinessSpec = .defaultShared,
          specProvider: (@Sendable () -> ReadinessSpec)? = nil,
          priorityForSource: @escaping (String) -> Int = { _ in 0 },
-         contextAnnotations: @escaping ContextAnnotationResolver = noContextAnnotations) {
+         contextAnnotations: @escaping ContextAnnotationResolver = noContextAnnotations,
+         feedbackRepo: FeedbackRepository? = nil,
+         calibrationEnabled: @escaping @Sendable () -> Bool = { false }) {
         self.derivation = derivation
         self.measurements = measurements
         self.clock = clock
@@ -65,6 +75,8 @@ final class ReadinessEngine {
         self.specProvider = specProvider ?? { spec }
         self.priorityForSource = priorityForSource
         self.contextAnnotations = contextAnnotations
+        self.feedbackRepo = feedbackRepo
+        self.calibrationEnabled = calibrationEnabled
     }
 
     /// Frozen v2 identity, resolved from the contract (never hand-written — a change is a contract
@@ -107,10 +119,6 @@ final class ReadinessEngine {
 
     // MARK: - Input resolution (I/O; the conflict + soft-dependency layer)
 
-    /// Resolve the present inputs for `dayKey`. Missing inputs are simply absent from the returned
-    /// array — never zero, never imputed (plan §18 "no imputation of physiological inputs, ever;
-    /// missing-input days render as gaps"). A vital with no personal baseline is treated as absent
-    /// too: scoring it would require a population norm, which v1 forbids.
     /// The day's inputs, for the method preview (D-35).
     ///
     /// Read-only by construction: it returns samples and writes nothing, which is what lets
@@ -120,6 +128,10 @@ final class ReadinessEngine {
         try resolveInputs(dayKey: DayAttribution.localDayKey(asOf, tz: tz), asOf: asOf, tz: tz)
     }
 
+    /// Resolve the present inputs for `dayKey`. Missing inputs are simply absent from the returned
+    /// array — never zero, never imputed (plan §18 "no imputation of physiological inputs, ever;
+    /// missing-input days render as gaps"). A vital with no personal baseline is treated as absent
+    /// too: scoring it would require a population norm, which v1 forbids.
     private func resolveInputs(dayKey: String, asOf: Date, tz: String) throws -> [ReadinessInputSample] {
         var samples: [ReadinessInputSample] = []
         // The three vitals: personal z-position against the EPIC-23 baseline.
@@ -200,13 +212,30 @@ final class ReadinessEngine {
         // declaring travel after the fact APPENDS a re-annotated row (I2) instead of being ignored
         // because the value happened to be unchanged.
         let confidence = result.publishedConfidence
+
+        // D-36. The personal offset in force for THIS metric under THIS method, if any. `nil` means
+        // no calibration applies — below the event floor, feedback given about another method, the
+        // feature switched off, or (fail-closed) no contract entry at all.
+        let calibration = try activeCalibration()
+        let published = calibrationApplied(result.computation.score, calibration)
+
         // Skip only when an identical *v2* row already exists — a v1 legacy row (from the interim
         // BaselineEngine composite) must never block the first v2 write, or the migration would stall.
+        //
+        // D-36 adds the CALIBRATION ID to this comparison, for exactly the reason the version check
+        // is already here: if a calibration changes but the adjusted value happens to round to the
+        // same number, skipping would leave the latest row pointing at the OLD calibration through
+        // its manifest — a row misreporting its own provenance. Costs one manifest read per period.
+        //
+        // Folding the calibration id into `algorithmVersion` ("2.0.0+cal.<id>") would have made the
+        // existing comparison do this for free, and was rejected: it corrupts a semver field the
+        // contract, `AlgorithmRegistryTests` and `DerivationPipelineTests` all compare against.
         if let existing = try derivation.latestDerived(metricId: MetricID.readinessScore, periodKey: periodKey),
            existing.algorithmId == algorithm.algorithmId, existing.algorithmVersion == algorithm.semver,
-           Self.approximatelyEqual(existing.value, result.computation.score),
+           Self.approximatelyEqual(existing.value, published),
            Self.approximatelyEqual(existing.confidence ?? -1, confidence),
-           existing.provisional == result.computation.provisional {
+           existing.provisional == result.computation.provisional,
+           try existingCalibrationId(of: existing) == calibration?.id {
             return
         }
 
@@ -216,20 +245,60 @@ final class ReadinessEngine {
             // `weight` carries that input's ADDITIVE CONTRIBUTION to the composite (points out of
             // 100), so the anatomy sheet renders contribution bars straight from the manifest and
             // Σ(weights) == the score by construction. See `docs/algorithms/readiness.md`.
-            let manifest = InputManifest(id: ULID.newID(), inputs: result.computation.contributions.map {
+            var inputs = result.computation.contributions.map {
                 InputManifest.Input(recordId: $0.recordId, metricId: $0.metricId,
                                     value: $0.measuredValue, weight: $0.contribution)
-            })
+            }
+            // D-36 disclosure. A reserved synthetic `recordId`, following the convention
+            // `CorrelationEngine` already documents for `stat:<name>` — the manifest is the surface
+            // that explains a number, so a personally-adjusted number explains itself there. A
+            // calibrated row therefore ALWAYS carries a manifest; it can never have a nil
+            // `inputManifestId`, which is what would make the adjustment undisclosable.
+            if let calibration {
+                inputs.append(InputManifest.Input(recordId: calibration.manifestRecordId,
+                                                  metricId: MetricID.readinessScore,
+                                                  value: calibration.offset, weight: calibration.offset))
+            }
+            let manifest = InputManifest(id: ULID.newID(), inputs: inputs)
             try derivation.insertManifest(manifest)
 
             let now = clock.now()
             try derivation.appendDerived(DerivedValue(
-                id: ULID.newID(), metricId: MetricID.readinessScore, value: result.computation.score,
+                id: ULID.newID(), metricId: MetricID.readinessScore, value: published,
                 unit: "score_0_100", periodKey: periodKey, confidence: confidence,
                 provisional: result.computation.provisional, algorithmId: algorithm.algorithmId,
                 algorithmVersion: algorithm.semver, inputManifestId: manifest.id,
                 computedAt: now, updatedAt: now, originDeviceId: deviceId))
         }
+    }
+
+    // MARK: - Calibration (D-36)
+
+    /// The offset in force, or `nil` for an uncalibrated row.
+    ///
+    /// Every gate is fail-closed: no feedback repository wired, the user switched calibration off,
+    /// no contract entry, or too little feedback all resolve to "apply nothing" rather than to a
+    /// default offset.
+    private func activeCalibration() throws -> MetricCalibration? {
+        guard let feedbackRepo, calibrationEnabled() else { return nil }
+        return try feedbackRepo.latestCalibration(metricId: MetricID.readinessScore,
+                                                  algorithmId: algorithm.algorithmId)
+    }
+
+    /// The calibration id an already-stored row was computed under, read from its manifest.
+    private func existingCalibrationId(of existing: DerivedValue) throws -> String? {
+        guard let manifestId = existing.inputManifestId,
+              let manifest = try derivation.manifest(id: manifestId) else { return nil }
+        return manifest.inputs
+            .first { $0.recordId.hasPrefix(MetricCalibration.manifestRecordIdPrefix) }
+            .map { String($0.recordId.dropFirst(MetricCalibration.manifestRecordIdPrefix.count)) }
+    }
+
+    /// The score with the offset applied, clamped back into the metric's own 0-100 range so a
+    /// calibrated readiness is still a readiness.
+    private func calibrationApplied(_ score: Double, _ calibration: MetricCalibration?) -> Double {
+        guard let calibration else { return score }
+        return min(100, max(0, score + calibration.offset))
     }
 
     // MARK: - Pure composite (identical on both platforms — golden-tested)

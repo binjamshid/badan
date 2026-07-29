@@ -513,6 +513,29 @@ struct MetricAnatomySheet: View {
         }
     }
 
+    /// The calibration disclosure for THIS row, or nil when it was computed from the contract
+    /// constants alone.
+    ///
+    /// Reconstructs the pre-calibration value by subtracting the offset, so the sheet can state
+    /// both numbers — what the published method produced and what the user's own feedback made of
+    /// it. Stating only the adjusted one would leave "adjusted from what?" unanswerable.
+    private var calibrationNote: LocalizedString? {
+        guard let value = data.latestDerivedValue,
+              let input = data.manifest?.inputs.first(where: {
+                  $0.recordId.hasPrefix(MetricCalibration.manifestRecordIdPrefix)
+              }) else { return nil }
+        let offset = input.value
+        let published = value.value - offset
+        let sign = offset >= 0 ? "+" : "\u{2212}"
+        let magnitude = env.format.integer(Int(abs(offset).rounded()))
+        let base = env.format.integer(Int(published.rounded()))
+        return LocalizedString(
+            en: "Adjusted by \(sign)\(magnitude) from your feedback. The published method produced "
+                + "\(base). This calibration is personal to this device and is not sent anywhere.",
+            ar: "مُعدَّلة بمقدار \(sign)\(magnitude) بناءً على ملاحظاتك. أنتجت الطريقة المنشورة "
+                + "\(base). هذه المعايرة خاصة بهذا الجهاز ولا تُرسل إلى أي مكان.")
+    }
+
     // MARK: Contributing records
 
     @ViewBuilder
@@ -598,6 +621,18 @@ struct MetricAnatomySheet: View {
                 if !data.contextCaveats.isEmpty {
                     ContextCaveatNote(caveats: data.contextCaveats, language: env.language)
                     Text(env.s(AnatomyStrings.contextValueUnchanged))
+                        .font(BadanFont.caption)
+                        .foregroundStyle(BadanColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // D-36. Directly under the method and confidence, mirroring `ContextCaveatNote`'s
+                // placement above and for the same reason: this is the number a personal
+                // calibration moved, so saying so where that number is shown is the difference
+                // between an unexplained value and an honest one. Read from the manifest, which is
+                // the row's own disclosure — not from a preference, which could disagree with what
+                // actually produced this row.
+                if let note = calibrationNote {
+                    Text(env.s(note))
                         .font(BadanFont.caption)
                         .foregroundStyle(BadanColor.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

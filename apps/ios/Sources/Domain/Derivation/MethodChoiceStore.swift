@@ -29,6 +29,19 @@ enum MethodChoiceStore {
         else { defaults.set(choices, forKey: key) }
     }
 
+    /// D-36. Whether calibration may be applied, mirrored for the same off-main-actor reason.
+    private static let calibrationKey = "badan.derivation.calibrationEnabled"
+
+    static func calibrationEnabled(defaults: UserDefaults = .standard) -> Bool {
+        // Absent means ON, matching the profile's own decode default — a fresh install with no
+        // mirror yet must behave the same as one whose profile says true.
+        defaults.object(forKey: calibrationKey) as? Bool ?? true
+    }
+
+    static func writeCalibrationEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: calibrationKey)
+    }
+
     /// The `algorithmId` derivation should run for `metricId`, resolved against the real contract.
     ///
     /// Goes through `MethodResolver` rather than reading the dictionary directly, so a stored id
