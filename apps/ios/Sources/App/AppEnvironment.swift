@@ -329,7 +329,11 @@ final class AppEnvironment {
                                          priorityForSource: { sourceId in
                                              AppEnvironment.readinessSourcePriority(sourceId: sourceId, catalog: catalog)
                                          },
-                                         contextAnnotations: contextAnnotations)
+                                         contextAnnotations: contextAnnotations,
+                                         // D-36. Both read off the main actor per derivation, same
+                                         // reasoning as the method spec provider above.
+                                         feedbackRepo: FeedbackRepository(main),
+                                         calibrationEnabled: { MethodChoiceStore.calibrationEnabled() })
         // Effort reads HR max / zones off the live profile per recompute (never a cached copy), so a
         // mid-session HR-max edit is picked up on the next run — the reason it takes a provider, not a
         // stored `UserProfile` (see `EffortEngine`).
@@ -924,6 +928,39 @@ final class AppEnvironment {
         let from = DayAttribution.addingDays(-historyDays, to: clock.now(), tz: TimeZone.current.identifier)
         scoreBackfillStore.request(from: from, to: clock.now())
         background.scheduleScoreBackfillProcessing()
+    }
+
+    // MARK: - Derived-value feedback (D-36)
+
+    /// Feedback and calibration storage, for the surfaces that record and disclose it.
+    ///
+    /// Computed rather than stored: `FeedbackRepository` holds only a connection reference, so
+    /// constructing one per read costs nothing and keeps this off the init's dependency ordering.
+    var feedback: FeedbackRepository { FeedbackRepository(database.main) }
+
+    /// Record the user's reaction to a derived value and recompute that method's calibration.
+    ///
+    /// Recomputing immediately is what makes the tenth tap visibly do something. Rows already
+    /// computed are untouched (I2) — the new calibration applies from the next derivation, which is
+    /// exactly what the card says will happen.
+    func recordDerivedFeedback(metricId: String, value: DerivedValue, direction: FeedbackDirection) {
+        let coordinator = CalibrationCoordinator(feedback: feedback, clock: clock,
+                                                 spec: .defaultShared)
+        try? coordinator.recordFeedback(
+            metricId: metricId, periodKey: value.periodKey, derivedValueId: value.id,
+            algorithmId: value.algorithmId, algorithmVersion: value.algorithmVersion,
+            direction: direction)
+        bumpDataGeneration()
+    }
+
+    /// "Delete my feedback and calibrations." Clears both tables outright.
+    ///
+    /// Deliberately does NOT rewrite derived rows already computed: they keep their `calibration:`
+    /// manifest input and therefore keep disclosing that they were adjusted. Rewriting history to
+    /// hide that would be the dishonest option, and the surface says so before this runs.
+    func deleteAllFeedbackAndCalibrations() {
+        try? feedback.deleteAllFeedbackAndCalibrations()
+        bumpDataGeneration()
     }
 
     // MARK: - Recompute scores (D-35 item 2a)
@@ -1621,6 +1658,7 @@ final class AppEnvironment {
         // unconditional rather than diffed — it is a small dictionary, and a missed write would mean
         // the engine and the UI disagreed about which method is active.
         MethodChoiceStore.write(p.methodChoices)
+        MethodChoiceStore.writeCalibrationEnabled(p.calibrationEnabled)
 
         // OPT-200: the sensitive DB is independently purgeable; re-enabling it after a purge
         // never reseeds it unless something explicitly checks for that on this transition.
