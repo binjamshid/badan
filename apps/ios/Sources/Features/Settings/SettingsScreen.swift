@@ -449,17 +449,21 @@ enum SettingsStrings {
         en: "Kept in a separate store on this device.",
         ar: "تُحفظ في مخزن منفصل على هذا الجهاز.")
     static let sensitivePurgeNote = LocalizedString(
-        en: "Turning this off removes all medication and symptom records from this device.",
-        ar: "إيقاف هذا يزيل جميع سجلات الأدوية والأعراض من هذا الجهاز.")
+        en: "Turning this off removes everything in your sensitive store from this device — "
+            + "medications, symptoms, journal entries, cycle records, and any lab results you "
+            + "imported.",
+        ar: "إيقاف هذا يزيل كل ما في مخزنك الحساس من هذا الجهاز — الأدوية والأعراض ومدوّناتك "
+            + "وسجلات الدورة وأي نتائج مخبرية استوردتها.")
     static let sensitiveReenableNotice = LocalizedString(
         en: "Sensitive records are back on. Previously removed data is not restored.",
         ar: "عادت السجلات الحساسة إلى العمل. البيانات التي أُزيلت سابقاً لن تعود.")
 
     static let purgeConfirmTitle = LocalizedString(
-        en: "Turn off and remove meds & symptoms?",
-        ar: "إيقاف وإزالة الأدوية والأعراض؟")
+        en: "Turn off and remove your sensitive records?",
+        ar: "إيقاف وإزالة سجلاتك الحساسة؟")
     static let purgeConfirmMessage = LocalizedString(
-        en: "This permanently removes every medication and symptom record from this device.",
+        en: "This permanently removes every medication, symptom, journal, cycle and imported lab "
+            + "record from this device. It cannot be undone.",
         ar: "يزيل هذا نهائياً كل سجلات الأدوية والأعراض من هذا الجهاز.")
     static let purgeConfirmAction = LocalizedString(en: "Turn off & remove", ar: "إيقاف وإزالة")
     // EDGE-01: shown when the underlying file delete genuinely failed — the toggle stays on in
