@@ -25,6 +25,13 @@ struct PaywallScreen: View {
                     .font(BadanFont.caption)
                     .foregroundStyle(BadanColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // Guideline 3.1.2(c). Apple requires FUNCTIONAL links to both the Terms of Use
+                // (EULA) and the privacy policy inside the app itself, in the purchase flow — not
+                // only in App Store Connect metadata, and not only buried in Settings. 1.1(4) was
+                // rejected for the missing EULA link; the privacy link is on the same required
+                // list, so both are here rather than fixing exactly what was cited and being
+                // asked again next time.
+                legalLinks
             }
             .padding(BadanSpace.space4)
         }
@@ -134,7 +141,13 @@ struct PaywallScreen: View {
                             .foregroundStyle(BadanColor.textPrimary)
                         // The store's own localized price string — never hand-formatted. Prices
                         // differ by storefront, and a hardcoded "$2.99" is wrong in most countries.
-                        Text(product.displayPrice)
+                        //
+                        // Guideline 3.1.2(c) also requires the LENGTH of the subscription to be
+                        // stated. The product name usually carries it ("Monthly"), but relying on
+                        // a name someone can edit in App Store Connect is not a guarantee — this
+                        // reads the period off the product itself, so it is right by construction.
+                        // Lifetime is non-renewing and has no period, which renders as price alone.
+                        Text(priceLine(product))
                             .font(BadanFont.caption)
                             .foregroundStyle(BadanColor.textSecondary)
                     }
@@ -149,6 +162,35 @@ struct PaywallScreen: View {
         }
         .buttonStyle(.plain)
         .disabled(purchasing != nil)
+    }
+
+    /// Terms of Use (EULA) and privacy policy, as real tappable links.
+    ///
+    /// `Link` rather than a `Button` + `openURL`: it renders as a link to VoiceOver and to Apple's
+    /// reviewer, and it cannot silently no-op. The URLs are the same ones App Store Connect's
+    /// Privacy Policy and EULA fields point at, so the app and the listing cannot disagree about
+    /// what a user agreed to.
+    private var legalLinks: some View {
+        HStack(spacing: BadanSpace.space4) {
+            Link(destination: PaywallCopy.termsURL) {
+                LText(PaywallCopy.termsLink)
+                    .font(BadanFont.bodyCompact)
+                    .foregroundStyle(BadanColor.primary)
+            }
+            Link(destination: PaywallCopy.privacyURL) {
+                LText(PaywallCopy.privacyLink)
+                    .font(BadanFont.bodyCompact)
+                    .foregroundStyle(BadanColor.primary)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(minHeight: BadanSpace.touchMin)
+    }
+
+    /// "\u{200E}$4.99 / month" — price and length together, both from StoreKit.
+    private func priceLine(_ product: Product) -> String {
+        guard let period = product.subscription?.subscriptionPeriod else { return product.displayPrice }
+        return "\(product.displayPrice) / \(env.s(PaywallCopy.periodLabel(unit: period.unit, value: period.value)))"
     }
 
     private var restoreRow: some View {
@@ -166,6 +208,37 @@ struct PaywallScreen: View {
 
 enum PaywallCopy {
     static let title = LocalizedString(en: "BADAN Pro", ar: "بدن برو")
+
+    // Guideline 3.1.2(c). These must match the App Store Connect Privacy Policy and EULA fields
+    // exactly — the same documents served from the VPS at these addresses.
+    static let termsURL = URL(string: "https://badan.binjamshid.com/eula.html")!
+    static let privacyURL = URL(string: "https://badan.binjamshid.com/privacy.html")!
+    static let termsLink = LocalizedString(en: "Terms of Use", ar: "شروط الاستخدام")
+    static let privacyLink = LocalizedString(en: "Privacy Policy", ar: "سياسة الخصوصية")
+
+    /// The subscription's length, spelled out. Reads the unit and count off StoreKit rather than
+    /// parsing a product name, so a renamed product cannot make this wrong.
+    /// Takes the unit and count rather than a `Product.SubscriptionPeriod`, because that type has
+    /// no accessible initializer — a formatter that cannot be called from a test is a formatter
+    /// whose plural and Arabic forms nobody ever checks.
+    static func periodLabel(unit: Product.SubscriptionPeriod.Unit, value n: Int) -> LocalizedString {
+        switch unit {
+        case .day:
+            return n == 1 ? LocalizedString(en: "day", ar: "يوم")
+                          : LocalizedString(en: "\(n) days", ar: "\(n) أيام")
+        case .week:
+            return n == 1 ? LocalizedString(en: "week", ar: "أسبوع")
+                          : LocalizedString(en: "\(n) weeks", ar: "\(n) أسابيع")
+        case .month:
+            return n == 1 ? LocalizedString(en: "month", ar: "شهر")
+                          : LocalizedString(en: "\(n) months", ar: "\(n) أشهر")
+        case .year:
+            return n == 1 ? LocalizedString(en: "year", ar: "سنة")
+                          : LocalizedString(en: "\(n) years", ar: "\(n) سنوات")
+        @unknown default:
+            return LocalizedString(en: "period", ar: "فترة")
+        }
+    }
 
     static let statusSubscribed = LocalizedString(en: "You're subscribed. Thank you.",
                                                   ar: "أنت مشترك. شكراً لك.")
