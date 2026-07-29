@@ -2,12 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- BADAN is local-first: zero network calls, no third-party SDKs, no analytics, no
-	     accounts. Nothing is ever transmitted off-device, so there is no tracking and no
-	     "collected data" in the App Store Privacy Nutrition Label sense — reading/writing
-	     data into the app's own on-device SQLite databases and UserDefaults is on-device
-	     processing, not "collection," which Apple's privacy manifest spec defines as
-	     transmission off the device (or to a third party on-device).
+	<!-- BADAN is local-first: no third-party SDKs, no analytics providers, no accounts.
+	     Ingestion, scores and export generation are all on-device and open no connection.
+
+	     CORRECTED (ADR-0011 / D-37). This block previously said "zero network calls" and
+	     "nothing is ever transmitted off-device". That stopped being true when the AI coach
+	     shipped (ADR-0010 / D-22), which required this correction before ship and never got
+	     it. BADAN now reaches the network from exactly two of its own surfaces, both opt-in
+	     and both default-off: the AI coach, and methodology telemetry.
+
+	     NSPrivacyCollectedDataTypes stays EMPTY for now, and that is a statement about what
+	     ships today, not a loophole: the AI coach sends a query you typed and stores nothing,
+	     and methodology telemetry (ADR-0011 / D-37) has its payload boundary and its schema
+	     but no transport and no consent surface yet — nothing transmits. The moment it does,
+	     this array must declare NSPrivacyCollectedDataTypeOtherUsageData, purpose Analytics,
+	     linked false, tracking false. A footprint carries no health value, no date and no
+	     identifier, but it IS collected data sent off device, so it gets declared rather than
+	     argued away. Under-declaring is an App Review risk; over-declaring is not.
+
+	     Reading/writing the app's own on-device SQLite databases and UserDefaults remains
+	     on-device processing, not "collection," which Apple's spec defines as transmission
+	     off the device (or to a third party on-device).
 
 	     A2 (ADR-0009) reviewed and deliberately changed nothing here. Background delivery and
 	     BGTaskScheduler let BADAN do the SAME on-device work at a different time; they move no

@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://badan.binjamshid.com/contracts/telemetry/footprint.schema.json",
+  "title": "BADAN methodology telemetry — learning footprint batch",
+  "description": "ADR-0011 / D-37. One submission = one batch of learning footprints. This schema IS the boundary: `additionalProperties: false` at every level and closed enums are what stop 'footprint' quietly widening into 'reading'. Every omission below is deliberate and is listed in `x-deliberatelyOmitted` so a future field has to argue with a written reason rather than an absence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "appVersion", "contractVersion", "footprints"],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "Bumped only by a decision that widens or narrows the boundary."
+    },
+    "appVersion": {
+      "type": "string",
+      "maxLength": 16,
+      "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+      "description": "Low cardinality. Without it a footprint cannot be attributed to the build whose constants it is about."
+    },
+    "contractVersion": {
+      "type": "string",
+      "maxLength": 16,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "The algorithms.json version the footprint's constants came from — the whole point of collecting this at all."
+    },
+    "footprints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": { "$ref": "#/definitions/footprint" }
+    }
+  },
+  "definitions": {
+    "footprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metricId", "algorithmId", "algorithmSemver", "direction", "eventCountBucket", "calibrationApplied"],
+      "properties": {
+        "metricId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_.]+$",
+          "description": "A contract identifier from the shipped registry, not user data."
+        },
+        "algorithmId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_.]+$",
+          "description": "Which method drew the reaction. The entire analytic point."
+        },
+        "algorithmSemver": {
+          "type": "string",
+          "maxLength": 16,
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["matches", "over", "under"],
+          "description": "The SIGN of disagreement. Carries no magnitude and no reading."
+        },
+        "eventCountBucket": {
+          "type": "string",
+          "enum": ["10-19", "20-49", "50+"],
+          "description": "Never a raw count. The floor is 10 because that is the calibration minimum — below it nothing is sent at all. A count of 1 would re-identify a single tap."
+        },
+        "calibrationApplied": {
+          "type": "boolean",
+          "description": "Feedback on a calibrated number means something different from feedback on a raw one. Boolean, so it carries no magnitude."
+        }
+      }
+    }
+  },
+  "x-deliberatelyOmitted": {
+    "readings": "Every health value. The Never this decision narrows survives precisely because none of these leave.",
+    "offsetMagnitude": "How far a calibration moved a number is a function of that number.",
+    "periodKeyOrDate": "A period key is a date the user had a reading, which is health-adjacent. No timestamps of underlying values, at any granularity.",
+    "countsBelow10": "Anything under the calibration floor is not sent at all, bucketed or otherwise.",
+    "installOrDeviceIdentifier": "None, at all. See ADR-0011 for what this costs: aggregates cannot be deduplicated.",
+    "localeRegionTimezone": "With a small user base, region is an identifier.",
+    "deviceModel": "Same reasoning as region.",
+    "osVersion": "osMajor was considered and dropped — no analytic use was identifiable, and a field with no use is pure risk."
+  }
+}

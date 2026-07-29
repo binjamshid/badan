@@ -48,3 +48,8 @@ sync_file "$ROOT/packages/contracts/dictionaries/movements.json" "$DEST/movement
 sync_file "$ROOT/packages/contracts/analytes/analytes.json" "$DEST/analytes.json"
 sync_file "$ROOT/packages/contracts/analytes/units.json"    "$DEST/lab_units.json"
 echo "Synced canonical data -> $DEST"
+
+# ADR-0011 / D-37. The telemetry payload boundary. Mirrored like every other contract so the
+# client validates against the SAME schema the backend does, and drift-gated in ci.yml alongside
+# the others — an unmirrored boundary is a boundary only one side believes in.
+sync_file "$ROOT/packages/contracts/telemetry/footprint.schema.json" "$DEST/footprint.schema.json"
