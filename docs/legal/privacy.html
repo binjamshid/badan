@@ -66,16 +66,16 @@
   <!-- ====================== ENGLISH ====================== -->
   <section id="en" dir="ltr" lang="en">
     <h1>Privacy Policy</h1>
-    <p class="meta">Last updated: 21 July 2026 · Applies to BADAN for iOS</p>
+    <p class="meta">Last updated: 29 July 2026 · Applies to BADAN for iOS</p>
 
     <div class="callout">
       <strong>BADAN is a private, on-device health repository.</strong> Everything stays on your
-      device. BADAN has no servers of its own, no accounts, and it never sends your data anywhere on
-      its own initiative. <strong>Creating an export file involves no network</strong> — that is a
-      property of how the app is built, not a setting you have to find. In this version there is no
-      way to point an export at a server, so nothing leaves the device except a file you hand to
-      another app yourself. If a later version lets you deliver an export to a server, it will only
-      ever be a server <em>you</em> entered and control; BADAN never picks a destination for you.
+      device. BADAN has no accounts, and it never sends your health data anywhere on its own
+      initiative. <strong>Recording, scores and creating an export file all happen on your
+      device and involve no network</strong> — that is a property of how the app is built, not a
+      setting you have to find. Two features can reach the internet, both of them off until you
+      turn them on and neither of them automatic: the AI coach, and delivering an export to an
+      address you entered yourself. Section 4 says exactly what each one sends.
     </div>
 
     <h2>1. Who this is for and what BADAN is</h2>
@@ -123,19 +123,34 @@
 
     <h2>4. What BADAN does not do</h2>
     <ul>
-      <li><strong>Makes no network calls</strong>: BADAN has no server of its own to talk to, no
-        analytics, no crash uploads, and no background transfers. <strong>Creating an export file
-        involves no network</strong> — generation happens entirely on your device, and the build is
-        checked for that on every change, so it cannot quietly stop being true. Sending an export
-        somewhere would be a separate, deliberate act with its own code; this version has no way for
-        you to set one up, so no data is transmitted at all.</li>
+      <li><strong>Makes no network calls while recording or calculating</strong>: reading from
+        Apple Health, working out your scores, and <strong>creating an export file</strong> all
+        happen entirely on your device. The build is checked for that on every change, so it cannot
+        quietly stop being true.</li>
       <li><strong>Has no accounts and no sign-in.</strong></li>
-      <li><strong>Uses no third-party SDKs</strong>: no analytics, no crash reporting, no telemetry,
-        no advertising.</li>
+      <li><strong>Uses no third-party SDKs</strong>: no analytics services, no crash reporting, no
+        advertising.</li>
       <li><strong>Does not track you</strong> across apps or websites, and collects no advertising
         identifier.</li>
-      <li><strong>Shares nothing automatically.</strong> The only way data leaves the app is an
-        export you start yourself.</li>
+      <li><strong>Shares nothing automatically.</strong> Nothing leaves your device unless you
+        started it or switched it on — see the next section for the two things that can.</li>
+    </ul>
+
+    <h2>4a. When BADAN does reach the internet</h2>
+    <p>
+      There are exactly two, and both are off until you turn them on. Neither happens in the
+      background, and neither sends your stored health records.
+    </p>
+    <ul>
+      <li><strong>The AI coach</strong> (off by default). If you enable it from its own consent
+        screen, your question — plus whatever short context the app assembled for that one question
+        — is sent to a service run by BADAN's developer at badan.binjamshid.com, which passes it to
+        a language model and returns the answer. That service holds no account for you and keeps no
+        copy of your health records. Leave the coach switched off and nothing is ever sent.</li>
+      <li><strong>Delivering an export to an address you entered</strong>. If you set up an export
+        destination, BADAN sends the export file there. The file is still <em>created</em> entirely
+        on your device, and the address is one you typed in — BADAN never chooses a destination for
+        you.</li>
     </ul>
 
     <h2>5. Your control over your data</h2>
@@ -143,10 +158,8 @@
       <li><strong>Export</strong>: Settings → Data &amp; privacy → Export gives you a CSV or JSON
         export with a checksummed manifest, created on your device with no network involved and
         handed to you (e.g. via the share sheet) or saved to a folder you picked. BADAN sends it
-        nowhere. If a later version offers to deliver an export to a server, the file is still
-        <em>created</em> with no network, and the address is one you typed in — BADAN never chooses a
-        destination for you, and it would ask you to confirm that in as many words before the first
-        send.</li>
+        nowhere unless you have set up a delivery destination yourself, in which case it goes only
+        to the address you entered — BADAN never chooses a destination for you.</li>
       <li><strong>Delete everything</strong>: Settings → Data management → "Delete all data"
         permanently deletes everything on the device. This cannot be undone.</li>
       <li><strong>Erase sensitive records separately</strong>: turning off "Sensitive records" in
@@ -174,7 +187,7 @@
     <h2>8. Changes to this policy</h2>
     <p>
       If the app's behavior changes in a way that affects your privacy, this document will be updated
-      and the date above will change. Because there is no account and no server, we cannot notify you
+      and the date above will change. Because there is no account, we cannot notify you
       individually; the current policy always ships inside the app (Settings → Data &amp; privacy →
       Privacy Policy) and lives at this address.
     </p>
@@ -188,15 +201,15 @@
   <!-- ====================== العربية ====================== -->
   <section id="ar" dir="rtl" lang="ar">
     <h1>سياسة الخصوصية</h1>
-    <p class="meta">آخر تحديث: ٢١ يوليو ٢٠٢٦ · تنطبق على تطبيق بدن لنظام iOS</p>
+    <p class="meta">آخر تحديث: ٢٩ يوليو ٢٠٢٦ · تنطبق على تطبيق بدن لنظام iOS</p>
 
     <div class="callout">
       <strong>بدن مستودع صحي خاص يعمل بالكامل على جهازك.</strong> كل شيء يبقى على جهازك. ليست لبدن
-      خوادم خاصة به ولا حسابات، ولا يرسل بياناتك إلى أي مكان من تلقاء نفسه.
-      <strong>إنشاء ملف التصدير لا يتضمّن أي اتصال شبكي</strong> — وهذه خاصية في طريقة بناء التطبيق،
-      لا إعداد عليك البحث عنه. وفي هذه النسخة لا توجد أي وسيلة لتوجيه التصدير إلى خادم، فلا يغادر
-      الجهاز شيء سوى ملف تسلّمه أنت بنفسك إلى تطبيق آخر. وإن أتاحت نسخة لاحقة إرسال التصدير إلى خادم،
-      فلن يكون إلا خادماً <em>أنت</em> من أدخل عنوانه وتتحكم فيه؛ ولا يختار بدن الوجهة نيابةً عنك أبداً.
+      حسابات، ولا يرسل بياناتك الصحية إلى أي مكان من تلقاء نفسه.
+      <strong>التسجيل وحساب الدرجات وإنشاء ملف التصدير كلها تجري على جهازك دون أي اتصال شبكي</strong>
+      — وهذه خاصية في طريقة بناء التطبيق، لا إعداد عليك البحث عنه. وهناك ميزتان يمكنهما الاتصال
+      بالإنترنت، كلتاهما معطّلة حتى تفعّلها أنت ولا تعمل أي منهما تلقائياً: المدرّب الذكي، وتسليم
+      التصدير إلى عنوان أدخلته بنفسك. ويوضّح القسم ٤ ما ترسله كلٌّ منهما بالضبط.
     </div>
 
     <h2>١. لمن هذا التطبيق وما هو بدن</h2>
@@ -240,24 +253,38 @@
 
     <h2>٤. ما لا يفعله بدن</h2>
     <ul>
-      <li><strong>لا يُجري أي اتصال شبكي</strong>: ليس لبدن خادم خاص به يتواصل معه، ولا تحليلات، ولا
-        رفع لتقارير الأعطال، ولا عمليات نقل في الخلفية. <strong>وإنشاء ملف التصدير لا يتضمّن أي اتصال
-        شبكي</strong> — إذ يجري توليده بالكامل على جهازك، ويُفحص البناء على ذلك مع كل تغيير، فلا يمكن
-        أن يتوقف هذا عن الصحّة بصمت. أما إرسال التصدير إلى مكان ما فسيكون فعلاً منفصلاً ومقصوداً وله
-        شيفرته الخاصة؛ وهذه النسخة لا تتيح لك إعداد ذلك أصلاً، فلا تُنقل أي بيانات على الإطلاق.</li>
+      <li><strong>لا يُجري أي اتصال شبكي أثناء التسجيل أو الحساب</strong>: قراءة بيانات صحة Apple،
+        وحساب درجاتك، و<strong>إنشاء ملف التصدير</strong> كلها تجري بالكامل على جهازك. ويُفحص البناء
+        على ذلك مع كل تغيير، فلا يمكن أن يتوقف هذا عن الصحّة بصمت.</li>
       <li><strong>لا حسابات ولا تسجيل دخول.</strong></li>
-      <li><strong>لا يستخدم أي حزم أدوات من طرف ثالث</strong>: لا تحليلات، لا تتبّع أعطال، لا قياس
-        عن بُعد، لا إعلانات.</li>
+      <li><strong>لا يستخدم أي حزم أدوات من طرف ثالث</strong>: لا خدمات تحليلات، ولا تتبّع أعطال،
+        ولا إعلانات.</li>
       <li><strong>لا يتتبّعك</strong> عبر التطبيقات أو المواقع، ولا يجمع معرّف الإعلانات.</li>
-      <li><strong>لا يشارك شيئاً تلقائياً.</strong> الطريقة الوحيدة لمغادرة البيانات التطبيق هي تصدير
-        تبدأه أنت بنفسك.</li>
+      <li><strong>لا يشارك شيئاً تلقائياً.</strong> لا يغادر جهازك شيء إلا إذا بدأته أنت أو فعّلته —
+        وانظر القسم التالي للأمرين اللذين يمكنهما ذلك.</li>
+    </ul>
+
+    <h2>٤أ. متى يتصل بدن بالإنترنت</h2>
+    <p>
+      هناك حالتان فقط، وكلتاهما معطّلة حتى تفعّلها أنت. ولا تحدث أي منهما في الخلفية، ولا ترسل أي
+      منهما سجلاتك الصحية المخزّنة.
+    </p>
+    <ul>
+      <li><strong>المدرّب الذكي</strong> (معطّل افتراضياً). إذا فعّلته من شاشة الموافقة الخاصة به،
+        يُرسل سؤالك — مع ما جمّعه التطبيق من سياق قصير لذلك السؤال وحده — إلى خدمة يشغّلها مطوّر بدن
+        على badan.binjamshid.com، تمرّره إلى نموذج لغوي وتعيد الإجابة. ولا تحتفظ تلك الخدمة بحساب لك
+        ولا بنسخة من سجلاتك الصحية. واتركه معطّلاً فلا يُرسل شيء أبداً.</li>
+      <li><strong>تسليم التصدير إلى عنوان أدخلته</strong>. إذا أعددت وجهة تصدير، يرسل بدن ملف
+        التصدير إليها. ويظل الملف <em>يُنشأ</em> بالكامل على جهازك، والعنوان هو ما كتبته أنت — ولا
+        يختار بدن الوجهة نيابةً عنك أبداً.</li>
     </ul>
 
     <h2>٥. تحكّمك في بياناتك</h2>
     <ul>
       <li><strong>التصدير</strong>: الإعدادات ← البيانات والخصوصية ← تصدير، يمنحك ملف CSV أو JSON
-        مصحوباً بقائمة تحقّق (checksum)، يُنشأ على جهازك ويُسلَّم لك (مثلاً عبر ورقة المشاركة). لا
-        يُرسله بدن إلى أي مكان.</li>
+        مصحوباً بقائمة تحقّق (checksum)، يُنشأ على جهازك ويُسلَّم لك (مثلاً عبر ورقة المشاركة). ولا
+        يُرسله بدن إلى أي مكان ما لم تكن قد أعددت وجهة تسليم بنفسك، وعندها يذهب فقط إلى العنوان الذي
+        أدخلته — ولا يختار بدن الوجهة نيابةً عنك أبداً.</li>
       <li><strong>حذف كل شيء</strong>: الإعدادات ← إدارة البيانات ← "حذف جميع البيانات" يحذف كل شيء
         على الجهاز نهائياً، ولا يمكن التراجع عن ذلك.</li>
       <li><strong>محو السجلات الحساسة بشكل منفصل</strong>: تعطيل "السجلات الحساسة" في الإعدادات يزيل
