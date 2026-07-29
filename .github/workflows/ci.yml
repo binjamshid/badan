@@ -43,6 +43,12 @@ jobs:
               'apps/ios/Sources/Resources/algorithms.json',
               'apps/android/app/src/main/assets/algorithms.json',
             ],
+            # ADR-0011 / D-37. iOS only: Android has no telemetry client, so there is no Android
+            # mirror to keep honest. This is the schema that IS the payload boundary, so a drifted
+            # copy would mean the client and the server disagreed about what may be sent.
+            'packages/contracts/telemetry/footprint.schema.json': [
+              'apps/ios/Sources/Resources/footprint.schema.json',
+            ],
             'packages/contracts/sensor_quality.json': [
               'apps/ios/Sources/Resources/sensor_quality.json',
               'apps/android/app/src/main/assets/sensor_quality.json',
@@ -307,6 +313,28 @@ jobs:
             "Android export generation references a networking API — export generation must stay network-free (ADR D-8)"
           scan apps/android/app/src/main/java/net/albayyan/badan/export/ '/destinations/' "$AND_REMOTE_URL" \
             "Android export generation constructs a java.net URL/URI — generation may only touch java.io.File paths under its own output dir (§8.3)"
+
+          # ADR-0011 / D-37: BADAN now has TWO surfaces allowed to open a socket, and until this
+          # existed nothing in CI would have caught a third. The socket-API pattern therefore widens
+          # from Sources/Export/ to ALL of Sources/, with an explicit allowlist.
+          #
+          # Only IOS_NET_API widens. IOS_REMOTE_URL stays scoped to export generation on purpose:
+          # constructing a URL is legitimate all over the app (shortcuts:// deep links, App Store
+          # links, UIApplication.openSettingsURLString), and it proves something only inside
+          # generation, where it shows a remote Data(contentsOf:) is impossible. Widening it would
+          # produce noise, and a gate that cries wolf gets deleted.
+          #
+          # The allowlist is the whole point — adding a file here should require saying why in a PR.
+          #   Platform/AICoach/AICoachClient.swift        the AI coach (ADR-0010 / D-22)
+          #   Platform/Telemetry/FootprintClient.swift    methodology telemetry (ADR-0011 / D-37)
+          #   Export/Destinations/RESTDestination*.swift  the user's own configured export endpoint
+          NET_ALLOWLIST='Sources/Platform/AICoach/AICoachClient.swift|Sources/Platform/Telemetry/FootprintClient.swift|Sources/Export/Destinations/RESTDestination.swift|Sources/Export/Destinations/RESTDestinationAvailability.swift'
+          net_hits="$(grep -rnE "$IOS_NET_API" apps/ios/Sources/ | grep -vE "$NET_ALLOWLIST" || true)"
+          if [ -n "$net_hits" ]; then
+            echo "::error::A file outside the network allowlist references a socket-opening API. BADAN reaches the network from exactly two of its own surfaces (AI coach, methodology telemetry) plus the user-configured REST export destination. A third requires an ADR — see ADR-0010 and ADR-0011."
+            printf '%s\n' "$net_hits"
+            fail=1
+          fi
 
           # §8.3: the Destinations layer moves finished artifacts and must NOT reach into writer
           # internals — it consumes file URLs + manifests only. Enforced by banning construction of,
@@ -715,6 +743,29 @@ jobs:
         working-directory: apps/android
         continue-on-error: true
         run: ./gradlew :app:lint --no-daemon
+
+  # ADR-0011 / D-37. backend/api has had a pytest suite since App Attest landed and NOTHING ran it.
+  # Adding a route to that service without running its tests is not acceptable, and the suite
+  # includes the G8 assertion that no request body reaches the log — a property worth a gate.
+  backend-tests:
+    name: Backend API tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 3.13, not latest: the pinned pydantic 2.9.2 has no prebuilt wheel for 3.14 and building
+          # pydantic-core from source fails. The pin is deliberate (see requirements.txt), so the
+          # runtime moves to match it rather than the other way round.
+          python-version: '3.13'
+      - name: Install dependencies
+        working-directory: backend/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Run tests
+        working-directory: backend/api
+        run: python -m pytest tests/ -v
 
   reachability-ratchet:
     name: SwiftUI screen reachability ratchet

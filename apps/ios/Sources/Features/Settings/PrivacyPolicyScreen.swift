@@ -151,21 +151,27 @@ private enum PrivacyPolicyStrings {
         Section(
             heading: LocalizedString(en: "What BADAN does not do", ar: "ما لا يفعله بدن"),
             paragraphs: [
+                // Corrected for ADR-0010/D-22 and ADR-0011/D-37. The previous wording — "makes no
+                // network calls", "no telemetry", "the only way data leaves the app is an export you
+                // start yourself" — was already false when the AI coach shipped. ADR-0010 §A9
+                // required this update before ship and it never landed; it is discharged here.
                 LocalizedString(
-                    en: "In this version, BADAN makes no network calls — there is no server to talk "
-                        + "to. It has no accounts, no third-party SDKs, no analytics, no crash "
-                        + "reporting, no telemetry, and no advertising.",
-                    ar: "في هذا الإصدار، لا يجري بدن أي اتصال بالشبكة — فلا يوجد خادم يتحدّث إليه. "
-                        + "وليس فيه حسابات ولا حزم برمجية خارجية ولا تحليلات ولا تقارير أعطال ولا "
-                        + "قياس عن بُعد ولا إعلانات."),
+                    en: "BADAN has no accounts, no third-party SDKs, no crash reporting, and no "
+                        + "advertising. It does not track you across apps or websites and collects "
+                        + "no advertising identifier.",
+                    ar: "ليس في بدن حسابات ولا حزم برمجية خارجية ولا تقارير أعطال ولا إعلانات. ولا "
+                        + "يتعقّبك عبر التطبيقات أو المواقع، ولا يجمع أي معرّف إعلاني."),
                 LocalizedString(
-                    en: "BADAN does not track you across apps or websites and collects no advertising "
-                        + "identifier. Its bundled privacy manifest declares no tracking and no "
-                        + "collected data. The only way data leaves the app is an export you start "
-                        + "yourself.",
-                    ar: "لا يتعقّبك بدن عبر التطبيقات أو المواقع، ولا يجمع أي معرّف إعلاني. ويعلن ملف "
-                        + "الخصوصية المرفق به عدم وجود أي تعقّب أو بيانات مجموعة. والطريق الوحيد "
-                        + "لخروج أي بيانات من التطبيق هو تصدير تبدؤه أنت بنفسك."),
+                    en: "BADAN reaches the internet in exactly two situations, and each one is "
+                        + "something you switched on or started yourself: an export you send to a "
+                        + "destination you configured, and the AI coach, if you enabled it, which "
+                        + "sends your question and nothing else. Nothing else in the app opens a "
+                        + "connection — recording, scores and export files are all produced on this "
+                        + "device.",
+                    ar: "يتصل بدن بالإنترنت في حالتين فقط، وكلٌّ منهما شيء فعّلته أو بدأته بنفسك: "
+                        + "تصدير ترسله إلى وجهة أعددتها، والمدرّب الذكي، إن فعّلته، ويرسل سؤالك ولا "
+                        + "شيء غيره. لا شيء آخر في التطبيق يفتح اتصالاً — فالتسجيل والدرجات وملفات "
+                        + "التصدير تُنتَج على هذا الجهاز."),
             ]),
         Section(
             heading: LocalizedString(en: "Your control", ar: "ما تتحكّم فيه"),
