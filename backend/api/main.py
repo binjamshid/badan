@@ -57,6 +57,7 @@ import hashlib
 import logging
 import os
 import secrets
+import datetime
 import sqlite3
 import time
 import uuid
@@ -69,7 +70,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from appattest import AttestationError, verify_attestation
+from appattest import AttestationError, verify_assertion, verify_attestation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("badan-api")
@@ -336,6 +337,18 @@ class AttestedKeyStore:
                 );
                 """
             )
+            # ADR-0011 / D-37. The assertion counter for the per-request scheme
+            # `/v1/footprints` uses. Added by ALTER so an existing deployment upgrades in
+            # place rather than needing the table rebuilt.
+            #
+            # This is the only thing preventing replay of a captured assertion, per
+            # `appattest.verify_assertion`'s own contract: the caller must persist the
+            # returned counter and reject anything that does not strictly exceed it.
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(attested_keys);")}
+            if "assertion_counter" not in cols:
+                conn.execute(
+                    "ALTER TABLE attested_keys ADD COLUMN assertion_counter INTEGER NOT NULL DEFAULT 0;"
+                )
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -365,6 +378,44 @@ class AttestedKeyStore:
             conn.execute(
                 "UPDATE attested_keys SET tokens_issued = tokens_issued + 1 WHERE key_id = ?;",
                 (key_hex,),
+            )
+            conn.commit()
+            return True
+
+    def public_key(self, key_id: bytes) -> bytes | None:
+        """The registered public key for an attestation key id, or None if never attested.
+
+        ADR-0011 states this precisely rather than overclaiming: verifying a footprint
+        assertion REQUIRES this lookup, so the server does learn a key id at verification
+        time. What it never does is write that key id beside the payload — the non-join is
+        a code boundary with a test behind it, not a cryptographic guarantee.
+        """
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT public_key FROM attested_keys WHERE key_id = ?;", (key_id.hex(),)
+            ).fetchone()
+            return row[0] if row else None
+
+    def assertion_counter(self, key_id: bytes) -> int:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT assertion_counter FROM attested_keys WHERE key_id = ?;", (key_id.hex(),)
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def advance_assertion_counter(self, key_id: bytes, counter: int) -> bool:
+        """Store a strictly larger counter. False when the presented counter does not
+        advance — i.e. a replay — checked and written under one lock so two concurrent
+        submissions cannot both pass the same value."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT assertion_counter FROM attested_keys WHERE key_id = ?;", (key_id.hex(),)
+            ).fetchone()
+            if row is None or counter <= int(row[0]):
+                return False
+            conn.execute(
+                "UPDATE attested_keys SET assertion_counter = ? WHERE key_id = ?;",
+                (counter, key_id.hex()),
             )
             conn.commit()
             return True
@@ -579,3 +630,202 @@ async def chat(body: ChatRequest, authorization: str = Header(default="")):
 
     data = r.json()
     return JSONResponse({"reply": data["choices"][0]["message"]["content"]})
+
+
+# --- Methodology telemetry (ADR-0011 / D-37) --------------------------------
+#
+# Learning footprints only: which metric, which method, the direction of a user's
+# disagreement, a bucketed event count, and whether a calibration was in force. No reading,
+# no offset magnitude, no date or period key, no identifier, no locale or region.
+#
+# This narrows CLAUDE.md's "Never: send user health data off device" and the Never survives:
+# no health datum arrives here. What arrives is a statement about a METHOD.
+
+FOOTPRINTS_DB_PATH = DATA_DIR / "footprints.db"
+
+# 400 days. Long enough to compare a constant across a year of releases plus a margin;
+# short enough that a store breach cannot yield an indefinite history.
+FOOTPRINT_RETENTION_DAYS = int(os.environ.get("BADAN_FOOTPRINT_RETENTION_DAYS", "400"))
+
+FOOTPRINT_DIRECTIONS = frozenset({"matches", "over", "under"})
+FOOTPRINT_BUCKETS = frozenset({"10-19", "20-49", "50+"})
+FOOTPRINT_SCHEMA_VERSION = 1
+MAX_FOOTPRINTS_PER_BATCH = 200
+
+
+class FootprintStore:
+    """Footprints, in their OWN SQLite file.
+
+    Separate from `device_tokens.db` on purpose (ADR-0011): footprints and attestation keys
+    must not be joinable in one query, and a compromise of one file is not a compromise of
+    the other. There is no key id, no token hash and no device column in this table at all —
+    the schema is where the non-join is enforced, not the query layer.
+
+    `received_day` is a date, never a timestamp: a precise receive time is a weak identifier
+    (it correlates with when a person opened their phone), and day granularity is all the
+    analysis needs.
+    """
+
+    def __init__(self, db_path: Path):
+        self._db_path = db_path
+        self._lock = Lock()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS footprints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    received_day TEXT NOT NULL,
+                    app_version TEXT NOT NULL,
+                    contract_version TEXT NOT NULL,
+                    metric_id TEXT NOT NULL,
+                    algorithm_id TEXT NOT NULL,
+                    algorithm_semver TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    event_count_bucket TEXT NOT NULL,
+                    calibration_applied INTEGER NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_footprints_day ON footprints(received_day);"
+            )
+            conn.commit()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self._db_path)
+
+    def insert_batch(self, *, received_day: str, app_version: str, contract_version: str,
+                     footprints: list[dict]) -> int:
+        """Write a batch and prune anything past retention, in one transaction.
+
+        Pruning on write rather than on a schedule keeps retention a property of the store
+        instead of a cron job someone can forget to install.
+        """
+        cutoff = datetime.date.today() - datetime.timedelta(days=FOOTPRINT_RETENTION_DAYS)
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO footprints
+                    (received_day, app_version, contract_version, metric_id, algorithm_id,
+                     algorithm_semver, direction, event_count_bucket, calibration_applied)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                [
+                    (received_day, app_version, contract_version, f["metricId"],
+                     f["algorithmId"], f["algorithmSemver"], f["direction"],
+                     f["eventCountBucket"], 1 if f["calibrationApplied"] else 0)
+                    for f in footprints
+                ],
+            )
+            conn.execute("DELETE FROM footprints WHERE received_day < ?;", (cutoff.isoformat(),))
+            conn.commit()
+            return len(footprints)
+
+
+footprint_store = FootprintStore(FOOTPRINTS_DB_PATH)
+
+# One submission per device per ~day is the intended cadence (the client waits a randomised
+# 24-72h), so this is generous by an order of magnitude and still bounds a runaway client.
+footprint_rate_limiter = SlidingWindowRateLimiter(
+    int(os.environ.get("BADAN_FOOTPRINT_RATE_LIMIT_MAX", "10")),
+    int(os.environ.get("BADAN_FOOTPRINT_RATE_LIMIT_WINDOW_SECONDS", "3600")),
+)
+
+
+class FootprintItem(BaseModel):
+    """One footprint. `extra="forbid"` mirrors the contract's `additionalProperties: false`
+    — the schema IS the boundary, so an unknown field is a rejected request, not an ignored
+    one. Without this a future client could widen the payload silently."""
+
+    model_config = {"extra": "forbid"}
+
+    metricId: str = Field(max_length=64, pattern=r"^[a-z0-9_.]+$")
+    algorithmId: str = Field(max_length=64, pattern=r"^[a-z0-9_.]+$")
+    algorithmSemver: str = Field(max_length=16, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    direction: str
+    eventCountBucket: str
+    calibrationApplied: bool
+
+
+class FootprintBatchRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    schemaVersion: int
+    appVersion: str = Field(max_length=16, pattern=r"^[0-9]+\.[0-9]+(\.[0-9]+)?$")
+    contractVersion: str = Field(max_length=16, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    footprints: list[FootprintItem] = Field(min_length=1, max_length=MAX_FOOTPRINTS_PER_BATCH)
+    # The attestation proving this is a genuine app instance. Not part of the stored
+    # payload and never written beside it — see `/v1/footprints`.
+    keyId: str
+    assertion: str
+    clientData: str
+
+
+@app.post("/v1/footprints")
+async def submit_footprints(body: FootprintBatchRequest, request: Request):
+    """Accept a batch of learning footprints from a genuine app instance.
+
+    Flood control is an App Attest assertion per submission rather than a device token,
+    which is what lets this endpoint carry NO identifier: a token would be one, and storing
+    it beside a footprint is exactly the join ADR-0011 forbids.
+
+    **The honest statement of what that buys.** Verifying an assertion requires looking the
+    key up in `attested_keys`, so this process does learn a key id here. It never writes it
+    alongside the payload, and `test_footprints_table_has_no_identifier_column` plus
+    `test_footprint_row_cannot_be_joined_to_an_attestation_key` are what keep that true.
+    This is a code boundary, not cryptographic unlinkability, and the ADR does not claim
+    otherwise.
+    """
+    client_ip = _client_ip(request)
+    if not footprint_rate_limiter.allow(client_ip):
+        log.warning("footprint_rate_limited=true scope=ip")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    if body.schemaVersion != FOOTPRINT_SCHEMA_VERSION:
+        raise HTTPException(status_code=400, detail="unsupported schema version")
+
+    # Closed enums, checked here as well as in the contract: pydantic validates shape, this
+    # validates the boundary's own vocabulary. A value outside these sets could carry more
+    # than the decision authorised.
+    for item in body.footprints:
+        if item.direction not in FOOTPRINT_DIRECTIONS:
+            raise HTTPException(status_code=400, detail="invalid direction")
+        if item.eventCountBucket not in FOOTPRINT_BUCKETS:
+            raise HTTPException(status_code=400, detail="invalid bucket")
+
+    key_id = _decode_base64(body.keyId, max_bytes=64)
+    assertion = _decode_base64(body.assertion, max_bytes=8_000)
+    client_data = _decode_base64(body.clientData, max_bytes=4_000)
+
+    public_key = attested_key_store.public_key(key_id)
+    if public_key is None:
+        log.warning("footprint_rejected=true stage=unknown_key")
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    try:
+        counter = verify_assertion(
+            assertion=assertion,
+            client_data=client_data,
+            public_key_der=public_key,
+            previous_counter=attested_key_store.assertion_counter(key_id),
+            app_id=ATTEST_APP_ID,
+        )
+    except AttestationError:
+        # G8: the assertion blob is caller-supplied content and never reaches the log.
+        log.warning("footprint_rejected=true stage=verify")
+        raise HTTPException(status_code=401, detail="unauthorized") from None
+
+    if not attested_key_store.advance_assertion_counter(key_id, counter):
+        log.warning("footprint_rejected=true stage=replay")
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    # From here on `key_id` is deliberately out of scope for what gets stored. The insert
+    # below takes only the payload — there is no parameter to pass it through.
+    written = footprint_store.insert_batch(
+        received_day=datetime.date.today().isoformat(),
+        app_version=body.appVersion,
+        contract_version=body.contractVersion,
+        footprints=[item.model_dump() for item in body.footprints],
+    )
+    log.info("footprints_accepted=%s", written)
+    return JSONResponse({"accepted": written})

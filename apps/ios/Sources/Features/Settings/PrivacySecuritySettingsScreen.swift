@@ -54,6 +54,10 @@ struct PrivacySecuritySettingsScreen: View {
                 widgetsSection
                 privacySection
                 calibrationSection
+                // D-37. Only after the user has actually used the feedback feature — asking for
+                // consent to send "learning footprints" before they have any concept of what that
+                // means is itself a dark pattern.
+                if env.hasUsedFeedbackFeature { telemetrySection }
                 dataManagementSection
             }
             .padding(BadanSpace.space4)
@@ -374,6 +378,21 @@ struct PrivacySecuritySettingsScreen: View {
             Button(env.s(Loc.cancel), role: .cancel) {}
         } message: {
             Text(CalibrationSettingsCopy.deleteConfirmMessage, language: env.language)
+        }
+    }
+
+    /// D-37. One row into the consent screen; the toggle itself lives there, below the three cards
+    /// that state the terms — so the terms are read before the switch is reachable.
+    private var telemetrySection: some View {
+        VStack(alignment: .leading, spacing: BadanSpace.space3) {
+            SectionHeader(env.s(TelemetryConsentCopy.title))
+            BadanCard {
+                NavigationLink { TelemetryConsentScreen() } label: {
+                    SettingsNavRowLabel(icon: "chart.bar.doc.horizontal",
+                                        title: TelemetryConsentCopy.toggleTitle)
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
