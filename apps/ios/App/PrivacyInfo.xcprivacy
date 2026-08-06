@@ -2,14 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- BADAN is local-first: no third-party SDKs, no analytics providers, no accounts.
-	     Ingestion, scores and export generation are all on-device and open no connection.
+	<!-- BADAN is local-first: no third-party SDKs and no analytics providers. Ingestion,
+	     scores and export generation are all on-device and open no connection.
 
 	     CORRECTED (ADR-0011 / D-37). This block previously said "zero network calls" and
 	     "nothing is ever transmitted off-device". That stopped being true when the AI coach
 	     shipped (ADR-0010 / D-22), which required this correction before ship and never got
 	     it. BADAN now reaches the network from exactly two of its own surfaces, both opt-in
 	     and both default-off: the AI coach, and methodology telemetry.
+
+	     CORRECTED AGAIN (ADR-0014 / D-44). The line above said "no accounts", and BADAN now
+	     has one — optional, Sign in with Apple, and scoped to carrying a subscription between
+	     platforms and running referrals. That makes THREE network surfaces, and it adds a
+	     collected data type this file did not previously carry: an account identifier.
 
 	     NSPrivacyCollectedDataTypes is now NON-EMPTY, and the reason is methodology telemetry
 	     (ADR-0011 / D-37). A footprint carries no health value, no date and no identifier —
@@ -46,6 +51,40 @@
 	<array/>
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array>
+		<!-- ADR-0014 / D-44. The account identifier.
+
+		     Declared as UserID and as LINKED, both truthfully and neither reluctantly: the
+		     server holds an account row keyed to a hash of Apple's subject claim, and that row
+		     is by definition linked to the person who signed in. Arguing that a salted hash is
+		     "not really an identifier" is exactly the kind of reasoning App Review is right to
+		     distrust, and under-declaring is the expensive mistake here.
+
+		     Purpose is AppFunctionality and nothing else. The account exists to answer "what
+		     did this person buy, and on which platform" and to run referrals. It is NOT used
+		     for analytics, NOT for personalisation, and NOT for advertising — and there is no
+		     code that could, since the only fields the server keeps are a product id, an
+		     expiry, a referral code and a count (see backend/api/accounts.py, and the test
+		     that pins its column list).
+
+		     Tracking stays false: the identifier is never joined with data from other
+		     companies' apps or sites, never leaves this service, and no advertising
+		     identifier is collected at all.
+
+		     What is NOT declared, deliberately: name and email. The client requests neither
+		     Apple scope (AppleSignInController leaves requestedScopes empty), so neither is
+		     ever received, let alone transmitted or stored. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeOtherUsageData</string>

@@ -150,6 +150,21 @@ def test_footprints_keeps_its_own_zone(blocks):
         assert "zone=badan_footprints" in matched[2]
 
 
+def test_account_sign_in_keeps_its_own_zone(blocks):
+    """ADR-0014 / D-44: `/v1/account/apple` is the only route in this service that creates
+    persistent per-user state, and nothing authenticates the caller before Apple's token is
+    verified. Left on the loose `/v1/` prefix it would inherit the chat zone's 60r/m, which is
+    the budget for someone typing questions — not for minting accounts and referral codes."""
+    for index, block in enumerate(blocks):
+        matched = _matching_location(_locations(block), "/v1/account/apple")
+        assert matched is not None, f"/v1/account/apple is unrouted in server block {index}"
+        assert matched[0] == "=", (
+            f"/v1/account/apple is served by prefix location `{matched[1]}` in block {index}; "
+            f"an exact match is what keeps it out of the chat zone"
+        )
+        assert "zone=badan_account" in matched[2]
+
+
 def test_the_catch_all_is_still_a_404(blocks):
     """The reason this file is an allowlist at all. If this ever became a proxy_pass, every
     test above would pass vacuously."""

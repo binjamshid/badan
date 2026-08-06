@@ -77,6 +77,19 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from appattest import AttestationError, verify_assertion, verify_attestation
+from accounts import (
+    MAX_ENTITLEMENTS_PER_PUSH,
+    MAX_PRODUCT_ID_LENGTH,
+    PLATFORMS,
+    REFERRAL_ALPHABET,
+    REFERRAL_CODE_LENGTH,
+    AccountRecord,
+    AccountStore,
+    Entitlement,
+    ReferralRefused,
+    load_subject_salt,
+)
+from apple_identity import APPLE_JWKS_URL, AppleIdentityError, verify_identity_token
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("badan-api")
@@ -970,3 +983,326 @@ async def submit_footprints(body: FootprintBatchRequest, request: Request):
     )
     log.info("footprints_accepted=%s", written)
     return JSONResponse({"accepted": written})
+
+
+# --- Accounts, cross-platform entitlements and referrals (ADR-0014 / D-44) -----
+#
+# The reversal. Until D-44 this service held no accounts and no per-user state, and three
+# separate places in the repository said so. It now holds an account id, a salted hash of
+# Apple's subject claim, a referral code, and one store product id per platform — and
+# nothing else. In particular it still holds NO health data, which is the Never that
+# survived D-44 completely intact; `tests/test_accounts.py` pins the column list so a later
+# migration cannot quietly widen it.
+#
+# Everything below is gated behind an Apple-signed identity token on the way in and an
+# opaque bearer session thereafter. See `accounts.py` and `apple_identity.py`.
+
+ACCOUNTS_DB_PATH = DATA_DIR / "accounts.db"
+
+# The bundle id Apple sets as `aud` in the identity token. Checking it is what stops a token
+# minted for some OTHER app — including one an attacker controls and can mint from freely —
+# being presented here to create an account.
+APPLE_AUDIENCE = os.environ.get("BADAN_APPLE_AUDIENCE", "net.binjamshid.badan")
+
+# How long Apple's published signing keys are cached. Apple rotates them without notice, so
+# a miss triggers exactly one forced refetch (see `_apple_jwks`) before the request is
+# refused — the alternative, refetching per sign-in, would put a third-party network call on
+# BADAN's authentication path and make Apple's availability our availability.
+APPLE_JWKS_TTL_SECONDS = float(os.environ.get("BADAN_APPLE_JWKS_TTL_SECONDS", "3600"))
+APPLE_JWKS_TIMEOUT_SECONDS = float(os.environ.get("BADAN_APPLE_JWKS_TIMEOUT_SECONDS", "10"))
+
+# Sign-in is the expensive, account-creating route, so it is limited like `/v1/register` and
+# for the same reason: nothing authenticates the caller before the token is verified, and an
+# unbounded account-creation endpoint is an unbounded referral-code printer.
+ACCOUNT_SIGNIN_RATE_LIMIT_MAX = int(os.environ.get("BADAN_ACCOUNT_SIGNIN_RATE_LIMIT_MAX", "10"))
+ACCOUNT_SIGNIN_RATE_LIMIT_WINDOW_SECONDS = float(
+    os.environ.get("BADAN_ACCOUNT_SIGNIN_RATE_LIMIT_WINDOW_SECONDS", "3600")
+)
+account_signin_rate_limiter = SlidingWindowRateLimiter(
+    ACCOUNT_SIGNIN_RATE_LIMIT_MAX, ACCOUNT_SIGNIN_RATE_LIMIT_WINDOW_SECONDS
+)
+
+# Referral claims are limited per session, not per IP: the abuse being bounded is one account
+# guessing codes, and the code space (29^8) is large enough that a low ceiling makes brute
+# force pointless while never inconveniencing a user who mistypes a friend's code twice.
+ACCOUNT_CLAIM_RATE_LIMIT_MAX = int(os.environ.get("BADAN_ACCOUNT_CLAIM_RATE_LIMIT_MAX", "5"))
+ACCOUNT_CLAIM_RATE_LIMIT_WINDOW_SECONDS = float(
+    os.environ.get("BADAN_ACCOUNT_CLAIM_RATE_LIMIT_WINDOW_SECONDS", "3600")
+)
+account_claim_rate_limiter = SlidingWindowRateLimiter(
+    ACCOUNT_CLAIM_RATE_LIMIT_MAX, ACCOUNT_CLAIM_RATE_LIMIT_WINDOW_SECONDS
+)
+
+account_store = AccountStore(ACCOUNTS_DB_PATH, salt=load_subject_salt(DATA_DIR))
+
+_jwks_cache: dict[str, object] = {"keys": [], "fetched_at": 0.0}
+_jwks_lock = Lock()
+
+
+async def _apple_jwks(*, force_refresh: bool = False) -> list[dict]:
+    """Apple's current identity-token signing keys, cached.
+
+    Not a `SlidingWindowRateLimiter`-style structure because it holds exactly one entry; a
+    plain dict under a lock is the whole requirement. The lock guards the write, not the
+    fetch: two concurrent sign-ins during a rotation may both fetch, and that is fine and
+    cheaper than serialising every sign-in behind one HTTP call.
+    """
+    now = time.time()
+    if not force_refresh:
+        with _jwks_lock:
+            keys = _jwks_cache["keys"]
+            age = now - float(_jwks_cache["fetched_at"])
+        if keys and age < APPLE_JWKS_TTL_SECONDS:
+            return list(keys)  # type: ignore[arg-type]
+
+    try:
+        async with httpx.AsyncClient(timeout=APPLE_JWKS_TIMEOUT_SECONDS) as client:
+            response = await client.get(APPLE_JWKS_URL)
+            response.raise_for_status()
+            keys = response.json().get("keys", [])
+    except (httpx.HTTPError, ValueError):
+        # Serve a stale cache rather than failing sign-in over Apple being briefly
+        # unreachable. Verification itself is unaffected: a stale key either verifies the
+        # signature or it does not, and a rotated-away key simply produces a kid miss.
+        with _jwks_lock:
+            stale = list(_jwks_cache["keys"])  # type: ignore[arg-type]
+        if stale:
+            log.warning("apple_jwks_fetch_failed=true served=stale")
+            return stale
+        log.warning("apple_jwks_fetch_failed=true served=none")
+        raise HTTPException(status_code=503, detail="identity provider unavailable") from None
+
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=503, detail="identity provider unavailable")
+    with _jwks_lock:
+        _jwks_cache["keys"] = keys
+        _jwks_cache["fetched_at"] = now
+    return keys
+
+
+def _bearer(authorization: str) -> str:
+    scheme, _, value = authorization.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" else ""
+
+
+def _require_account(authorization: str) -> str:
+    account_id = account_store.account_for_session(_bearer(authorization))
+    if account_id is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return account_id
+
+
+def _iso(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return (
+        datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _account_response(record: AccountRecord, *, token: str | None = None) -> dict:
+    """The one response shape every account route returns.
+
+    Deliberately assembled field by field rather than by dumping the dataclass: a new column
+    on `accounts` cannot reach a client without someone adding a line here, which is the
+    point of the closed-shape test on the iOS side.
+    """
+    body: dict = {
+        "accountId": record.account_id,
+        "createdAt": _iso(record.created_at),
+        "referralCode": record.referral_code,
+        "successfulReferrals": record.successful_referrals,
+        "hasClaimedReferral": record.has_claimed_referral,
+        "referralGrantExpiresAt": _iso(record.referral_grant_expires_at),
+        "entitlements": [
+            {
+                "platform": e.platform,
+                "productId": e.product_id,
+                "isLifetime": e.is_lifetime,
+                "expiresAt": _iso(e.expires_at),
+                "observedAt": _iso(e.observed_at),
+            }
+            for e in record.entitlements
+        ],
+    }
+    if token is not None:
+        body["accountToken"] = token
+    return body
+
+
+class AppleSignInRequest(BaseModel):
+    identityToken: str = Field(max_length=8192)
+    nonce: str = Field(max_length=256)
+
+
+@app.post("/v1/account/apple")
+async def account_sign_in(body: AppleSignInRequest, request: Request):
+    """Exchange an Apple identity token for a BADAN session.
+
+    Creates the account on first sign-in and resolves to the existing one afterwards — the
+    client cannot tell which happened and does not need to, because the response is the same
+    shape either way.
+    """
+    client_ip = _client_ip(request)
+    if not account_signin_rate_limiter.allow(client_ip):
+        log.warning("account_signin_rate_limited=true scope=ip")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    now = time.time()
+    keys = await _apple_jwks()
+    try:
+        identity = verify_identity_token(
+            body.identityToken,
+            jwks=keys,
+            audience=APPLE_AUDIENCE,
+            expected_nonce=body.nonce,
+            now=now,
+        )
+    except AppleIdentityError:
+        # One forced refetch, then give up. Apple rotates signing keys without warning, and
+        # a stale cache is by far the most likely cause of a first failure on an otherwise
+        # healthy install — but retrying forever on a genuinely bad token would turn a
+        # forgery attempt into unbounded outbound requests to Apple.
+        keys = await _apple_jwks(force_refresh=True)
+        try:
+            identity = verify_identity_token(
+                body.identityToken,
+                jwks=keys,
+                audience=APPLE_AUDIENCE,
+                expected_nonce=body.nonce,
+                now=now,
+            )
+        except AppleIdentityError:
+            # G8, and more: the token and the reason are both withheld. Telling a caller
+            # WHICH check failed would let a forgery be tuned against the checks one by one.
+            log.warning("account_signin_rejected=true")
+            raise HTTPException(status_code=401, detail="unauthorized") from None
+
+    token, record = account_store.sign_in(identity.subject, now=now)
+    log.info("account_signin_accepted=true")
+    return JSONResponse(_account_response(record, token=token))
+
+
+@app.get("/v1/account")
+async def account_read(authorization: str = Header(default="")):
+    account_id = _require_account(authorization)
+    record = account_store.read(account_id)
+    if record is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return JSONResponse(_account_response(record))
+
+
+class EntitlementItem(BaseModel):
+    platform: str = Field(max_length=16)
+    productId: str = Field(max_length=MAX_PRODUCT_ID_LENGTH)
+    isLifetime: bool
+    expiresAt: datetime.datetime | None = None
+    observedAt: datetime.datetime
+
+
+class EntitlementPushRequest(BaseModel):
+    entitlements: list[EntitlementItem] = Field(max_length=MAX_ENTITLEMENTS_PER_PUSH)
+
+
+@app.put("/v1/account/entitlement")
+async def account_push_entitlement(
+    body: EntitlementPushRequest, authorization: str = Header(default="")
+):
+    """Record what the calling platform's store says it owns.
+
+    An empty list is a meaningful, expected body — "I looked and there is nothing" — and is
+    what lets a cancellation on one platform stop granting on the other. It cannot be
+    inferred from silence, because silence is also what an offline device produces.
+    """
+    account_id = _require_account(authorization)
+    now = time.time()
+
+    platforms = {item.platform for item in body.entitlements}
+    if not platforms.issubset(PLATFORMS):
+        raise HTTPException(status_code=400, detail="unknown platform")
+    if len(platforms) > 1:
+        # A device may only ever speak for its own platform. Accepting a mixed push would
+        # let any signed-in client grant itself a subscription by asserting the other side.
+        raise HTTPException(status_code=400, detail="a push may only describe one platform")
+
+    if not body.entitlements:
+        # With nothing in the body there is no platform to clear. The client sends the header
+        # so an empty push is still unambiguous; a missing header clears nothing rather than
+        # guessing, since guessing wrong would revoke the other platform's entitlement.
+        raise HTTPException(status_code=400, detail="platform required for an empty push")
+
+    entitlements = [
+        Entitlement(
+            platform=item.platform,
+            product_id=item.productId,
+            is_lifetime=item.isLifetime,
+            expires_at=item.expiresAt.timestamp() if item.expiresAt else None,
+            observed_at=now,
+        )
+        for item in body.entitlements
+    ]
+    record = account_store.replace_entitlements(account_id, entitlements, now=now)
+    return JSONResponse(_account_response(record))
+
+
+@app.delete("/v1/account/entitlement/{platform}")
+async def account_clear_entitlement(platform: str, authorization: str = Header(default="")):
+    """The empty push, as its own route.
+
+    A DELETE with the platform in the path rather than a PUT with an empty body: it makes the
+    platform being cleared explicit and un-guessable, which matters because the wrong guess
+    here revokes the entitlement the whole feature exists to carry.
+    """
+    account_id = _require_account(authorization)
+    if platform not in PLATFORMS:
+        raise HTTPException(status_code=400, detail="unknown platform")
+    record = account_store.clear_platform(account_id, platform)
+    return JSONResponse(_account_response(record))
+
+
+class ReferralClaimRequest(BaseModel):
+    code: str = Field(max_length=32)
+
+
+@app.post("/v1/account/referral/claim")
+async def account_claim_referral(
+    body: ReferralClaimRequest, authorization: str = Header(default="")
+):
+    account_id = _require_account(authorization)
+    if not account_claim_rate_limiter.allow(account_id):
+        log.warning("account_claim_rate_limited=true")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    code = "".join(c for c in body.code.upper() if c in REFERRAL_ALPHABET)
+    if len(code) != REFERRAL_CODE_LENGTH:
+        raise HTTPException(status_code=422, detail={"reason": "unknown_code"})
+
+    try:
+        record = account_store.claim_referral(account_id, code, now=time.time())
+    except ReferralRefused as refusal:
+        # 409, with the reason code and nothing else. No account id, no referral count, no
+        # hint about whether the code exists — a claimer is not entitled to learn anything
+        # about the account behind a code they do not hold.
+        raise HTTPException(status_code=409, detail={"reason": refusal.reason}) from None
+    except LookupError:
+        raise HTTPException(status_code=401, detail="unauthorized") from None
+    return JSONResponse(_account_response(record))
+
+
+@app.delete("/v1/account")
+async def account_delete(authorization: str = Header(default="")):
+    """Delete the account and everything attached to it.
+
+    Required by App Review guideline 5.1.1(v) for any app offering account creation, and
+    required by this repository's posture regardless: ADR-0014 reversed "no accounts", and an
+    account that cannot be removed would be a far larger reversal than one that can.
+
+    Idempotent by construction — an already-deleted account presents a session that no longer
+    resolves, which `_require_account` answers 401 to, and the client treats that as done.
+    """
+    account_id = _require_account(authorization)
+    account_store.delete_account(account_id)
+    log.info("account_deleted=true")
+    return JSONResponse({"deleted": True})

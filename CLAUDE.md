@@ -29,8 +29,13 @@ Shipping today:
 - **Export** — CSV/JSON with checksums and a manifest, templates, destinations, automation.
 - **Logging** — medications and reminders, hydration, symptoms, journal, workouts, cycle, and the
   pregnancy module's P0 slice.
-- **Monetization** — StoreKit 2, no accounts. 7-day app-managed trial from first launch, then
-  monthly/yearly/lifetime. See D-32/D-33 and `docs/MONETIZATION.md`.
+- **Monetization** — StoreKit 2. 7-day app-managed trial from first launch, then
+  monthly/yearly/lifetime. See D-33 and `docs/MONETIZATION.md`.
+- **Accounts** — an **optional** Sign in with Apple account (D-44 / ADR-0014, replacing D-32's
+  no-accounts posture). Carries entitlement between platforms and runs referrals; holds no health
+  data; signed out is a complete state. **iOS only so far** — the service speaks Android's half of
+  the wire but no Android client exists (`docs/android-parity-status.md`), so do not describe this
+  to users as working across platforms yet.
 
 ## Working mode
 
@@ -81,17 +86,26 @@ disagreement, a bucketed event count, and whether a calibration was in force. No
 magnitude, no date or period key, no identifier, no region. The payload schema is closed
 (`additionalProperties: false`) and CI-gated so "footprint" cannot quietly widen into "reading".
 
-So there are exactly two files in `apps/ios/Sources/` allowed to open a socket for BADAN's own
-services — `Platform/AICoach/AICoachClient.swift` and `Platform/Telemetry/FootprintClient.swift`
-— plus the user-configured REST export destination, which is network by definition. CI enforces
-this list.
+A **third** is permitted by ADR-0014 / D-44: **optional accounts**, created with Sign in with
+Apple, on the SAME service. They carry two things and no more — which store product a user owns on
+which platform, and referrals. `POST /v1/account/apple`, `GET/DELETE /v1/account`,
+`PUT /v1/account/entitlement`, `POST /v1/account/referral/claim`. The server stores an account id,
+an HMAC of Apple's subject claim (never the claim), a referral code, and one product id per
+platform. No name, no email, no device list, **no health datum**.
 
-**Do not** widen this into accounts, sync, server-side history, or a second backend
+So there are exactly three files in `apps/ios/Sources/` allowed to open a socket for BADAN's own
+services — `Platform/AICoach/AICoachClient.swift`, `Platform/Telemetry/FootprintClient.swift` and
+`Platform/Account/AccountClient.swift` — plus the user-configured REST export destination, which is
+network by definition. CI enforces this list.
+
+**Do not** widen this into health-data sync, server-side history, backup, or a second backend
 surface without a new ADR. "The AI coach has a backend" is not a licence for the rest of
-the app to acquire one, and neither is "telemetry has a route."
+the app to acquire one; neither is "telemetry has a route"; and neither is "there are accounts now."
+Accounts authorise *entitlement* state and nothing else.
 
-BADAN is deliberately **not** on the platform-api identity/backup services the other apps
-in this portfolio share — it has no accounts to attach them to.
+BADAN is still **not** on the platform-api identity/backup services the other apps in this
+portfolio share. D-44 gave it an account of its own, scoped to entitlement; it did not join a shared
+identity system, and it has no health data server-side to back up.
 
 ## Product guardrails
 
@@ -143,8 +157,15 @@ logging shells) are all shipped. What replaces them:
 - Re-add the HealthKit Clinical Records API, the `health-records` entitlement value, or
   `NSHealthClinicalHealthRecordsShareUsageDescription` — App Review has already refused them once
   (D-43 / ADR-0013), and doing it again re-opens a rejection rather than a question.
-- Add accounts or a login. BADAN has none, and IAP does not require one (D-32 — Apple's SIWA rule
-  applies only to apps offering third-party login).
+- ~~Add accounts or a login.~~ **Reversed by D-44 / ADR-0014 (2026-08-07).** BADAN now has an
+  **optional** Sign in with Apple account, and its scope is fixed: carrying a subscription between
+  platforms, and referrals. D-32's reasoning was not repudiated — SIWA is still not *required* by
+  Guideline 4.8, and StoreKit still binds a purchase to the Apple ID by itself. The account exists
+  because entitlement is the one piece of state that has to outlive a single vendor's ecosystem.
+  What survives as a hard rule: **signed out is a complete, permanent state** (nothing in the app
+  may ever require an account), the account holds **no health data**, and the remote may **grant**
+  access but never **revoke** it. Widening the account past entitlement and referrals needs a new
+  decision.
 - Use diagnostic or prescriptive framing in copy.
 - Break the offline path for ingestion, scores, or exports.
 

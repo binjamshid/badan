@@ -5,13 +5,19 @@ import os
 /// The thin StoreKit 2 shell around `SubscriptionPolicy`. Loads products, runs purchases, watches
 /// for transaction updates, and answers "is anything active right now?".
 ///
-/// ## No accounts, by design (D-32)
+/// ## Accounts (ADR-0014 / D-44) — and what did NOT change
 ///
-/// There is no Sign in with Apple here and no BADAN account. Apple's guideline 4.8 requires SIWA
-/// only when an app offers OTHER third-party logins, and StoreKit binds a purchase to the signed-in
-/// Apple ID by itself — so Restore works, family sharing works, and a reinstall recovers the
-/// purchase, all without BADAN knowing who anyone is. That keeps ADR-0002/ADR-0010's no-accounts
-/// posture intact rather than reversing it to satisfy a requirement that does not exist.
+/// This type used to carry a note explaining that BADAN had no accounts by design (D-32). D-44
+/// reversed that: there is now an optional Sign in with Apple account whose only jobs are carrying
+/// a subscription between iOS and Android and running referrals.
+///
+/// What did not change is everything StoreKit already did well. A purchase is still bound to the
+/// signed-in Apple ID by StoreKit itself, Restore still works with no account, family sharing still
+/// works, and a reinstall still recovers the purchase — all without signing in to BADAN. The account
+/// is strictly additive: `entitlementSyncHook` reports what this device owns, `syncedSnapshotSource`
+/// reads what the account knows, and `EntitlementMerge` combines them under a rule that lets the
+/// remote grant access and never revoke it. A user who never signs in sees the behaviour this file
+/// had before D-44, exactly.
 ///
 /// ## Offline is not a lock
 ///
@@ -40,6 +46,19 @@ final class StoreKitEntitlementStore {
     private var updatesTask: Task<Void, Never>?
     private let defaults: UserDefaults
     private let clock: Clock
+
+    /// Where this device reports what it owns (ADR-0014). Set by `AppEnvironment`; `nil` in tests
+    /// and in any build where the account surface is not wired, in which case this type behaves
+    /// exactly as it did before D-44.
+    ///
+    /// A closure rather than a stored `AccountController` on purpose: the dependency runs one way
+    /// (account knows nothing about StoreKit, StoreKit knows nothing about the account), so neither
+    /// type can grow a reference to the other, and every test in `SubscriptionPolicyTests` keeps
+    /// working without an account in sight.
+    var entitlementSyncHook: (@MainActor ([SyncedEntitlement]) async -> Void)?
+
+    /// Where the account's view of entitlements is read from, for the merge.
+    var syncedSnapshotSource: (@MainActor () -> EntitlementSnapshot?)?
 
     init(defaults: UserDefaults = .standard, clock: Clock = SystemClock()) {
         self.defaults = defaults
@@ -83,7 +102,14 @@ final class StoreKitEntitlementStore {
     var policyState: SubscriptionPolicy.State {
         .init(firstLaunch: firstLaunch,
               hasActiveEntitlement: !activeProductIds.isEmpty,
-              storeReachable: storeReachable)
+              storeReachable: storeReachable,
+              syncedSnapshot: syncedSnapshotSource?())
+    }
+
+    /// Where the current entitlement comes from — this device's store, the account, or nothing.
+    /// Drives the copy on the paywall and the account screen.
+    var entitlementSource: EntitlementMerge.Source {
+        policyState.entitlementSource(now: clock.now())
     }
 
     var access: SubscriptionPolicy.Access {
@@ -165,12 +191,50 @@ final class StoreKitEntitlementStore {
     /// dates itself — which is the correct division of labour, since the device clock is not
     /// trustworthy for enforcement.
     func refreshEntitlements() async {
+        await refreshEntitlements(forcingSync: false)
+    }
+
+    /// Re-read the store and push upward unconditionally.
+    ///
+    /// Called right after a sign-in. The change-detection below is the right default for the
+    /// recurring case, but it makes the FIRST push after signing in impossible: a user who already
+    /// owned the subscription before they made an account has an `activeProductIds` that has not
+    /// changed in a long time and never will, so nothing would ever be reported and their other
+    /// platform would stay locked.
+    func syncEntitlementsNow() async {
+        await refreshEntitlements(forcingSync: true)
+    }
+
+    private func refreshEntitlements(forcingSync: Bool) async {
         var active: Set<String> = []
+        var synced: [SyncedEntitlement] = []
+        let now = clock.now()
         for await entitlement in Transaction.currentEntitlements {
             guard case .verified(let transaction) = entitlement else { continue }
-            if transaction.revocationDate == nil { active.insert(transaction.productID) }
+            guard transaction.revocationDate == nil else { continue }
+            active.insert(transaction.productID)
+            // `expirationDate` is nil for a non-consumable, which is exactly the lifetime tier. The
+            // flag is derived from the ABSENCE of an expiry rather than by string-matching the
+            // product id, so a future non-consumable does not need this line edited to be handled
+            // correctly.
+            synced.append(SyncedEntitlement(platform: .ios,
+                                            productId: transaction.productID,
+                                            isLifetime: transaction.expirationDate == nil,
+                                            expiresAt: transaction.expirationDate,
+                                            observedAt: now))
         }
+        let changed = active != activeProductIds
         activeProductIds = active
+
+        // Pushed only when this device's view actually changed. `refreshEntitlements` runs on every
+        // launch, every foreground and every transaction update; pushing unconditionally would put
+        // a network call on all of them for a value that almost never moves.
+        //
+        // The empty list is pushed too — see `AccountClient.pushEntitlement`. "I looked and there
+        // is nothing" is the update that lets a cancellation propagate.
+        if changed || forcingSync, let hook = entitlementSyncHook {
+            await hook(synced)
+        }
     }
 
     private func recordFirstLaunchIfNeeded() {

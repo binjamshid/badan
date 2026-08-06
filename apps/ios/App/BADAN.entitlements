@@ -77,6 +77,27 @@
 	     scheduling property, not a licence for urgent, diagnostic or prescriptive wording. -->
 	<key>com.apple.developer.usernotifications.time-sensitive</key>
 	<true/>
+	<!-- Sign in with Apple (ADR-0014 / D-44), for the optional account that carries a
+	     subscription between iOS and Android and runs referrals.
+
+	     Read D-32 before assuming this was always here. It was explicitly NOT: D-32 dropped
+	     SIWA by name on the correct reading that Guideline 4.8 requires it only when an app
+	     offers OTHER third-party logins, and that adding it meant adding an account system to
+	     satisfy a requirement that does not exist. D-44 added the account for a different
+	     reason — cross-platform entitlement sync and referrals, neither of which StoreKit can
+	     do on its own — and this entitlement follows from that decision, not from 4.8.
+
+	     Two consequences that are easy to miss:
+	       • The client requests NO scopes. Apple would hand over name and email for the
+	         asking; `AppleSignInController` asks for neither, and the server stores only a
+	         salted hash of the subject claim. A field never collected cannot later leak.
+	       • Offering account creation makes in-app account DELETION mandatory under App
+	         Review 5.1.1(v). It is implemented (`AccountSettingsScreen.deleteAccountRow`,
+	         `DELETE /v1/account`); removing it would fail review, not merely disappoint. -->
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
 	<!-- Container-wide default file protection. CompleteUntilFirstUserAuthentication, NOT
 	     Complete, and the distinction is load-bearing twice over:
 	       • HealthKit background delivery wakes BADAN via HKObserverQuery while the device is
