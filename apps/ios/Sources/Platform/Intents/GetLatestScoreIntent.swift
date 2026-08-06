@@ -43,6 +43,22 @@ struct GetLatestScoreIntent: AppIntent {
 
     static var openAppWhenRun = false
 
+    // No `authenticationPolicy` here, unlike `RunExportTemplateIntent`, and the asymmetry is the
+    // point rather than an oversight.
+    //
+    // The two families this intent can read are the two BADAN already classifies as NOT
+    // sensitive-plus: `RingSingleWidget` and `SleepCardWidget` publish exactly these numbers as
+    // Lock Screen accessory complications, and `AmbientPrivacyConfig.neverOnLockScreen` lists only
+    // `medsDue`. Requiring an unlock to *speak* a number the same locked screen may already be
+    // *showing* would be a gate on nothing, while breaking the legitimate hands-free case ("if
+    // readiness is below 40, …") the epic added a returned value for — an automation that fails on
+    // a locked phone is the silent-skip failure `ShortcutsSetupGuideScreen` warns about.
+    //
+    // What this leaves open, honestly: a user in `AmbientPrivacyMode.discreet`/`.off` has said no
+    // numbers on ambient surfaces, and Siri would still say one. Closing that means teaching this
+    // intent the ambient mode, not an unlock — and it would silently break Shortcuts the user built
+    // deliberately, so it wants a decision of its own rather than a change smuggled in here.
+
     private static let table = "AppIntents"
 
     @Parameter(title: LocalizedStringResource("intent.get_score.param.score", table: Self.table))

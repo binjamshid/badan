@@ -66,6 +66,11 @@ struct SentenceWidgetView: View {
         case .accessoryRectangular:
             Text(sentenceText)
                 .font(.footnote)
+                // S-5: iOS does NOT redact accessory-family content by itself. A one-true-sentence
+                // is the most disclosing thing this extension can put on a Lock Screen — it is
+                // prose about the person's day, not a bare number — so it is marked in whole;
+                // there is no label-versus-value split to preserve here.
+                .privacySensitive()
                 // Fixed `.leading` — it is NOT swapped to `.trailing` when the language is
                 // Arabic. `.leading`/`.trailing` already auto-mirror against the ambient
                 // `layoutDirection` set on `body` above. Swapping this a second time based on the
@@ -83,6 +88,9 @@ struct SentenceWidgetView: View {
                     .foregroundStyle(WidgetColor.textPrimary)
                     .lineLimit(4)
                     .multilineTextAlignment(.leading)
+                    // S-5: `.systemSmall` is a StandBy surface too, and StandBy redacts
+                    // privacy-sensitive content while the device is locked.
+                    .privacySensitive()
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)

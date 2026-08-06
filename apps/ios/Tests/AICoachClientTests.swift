@@ -1,4 +1,5 @@
 import CryptoKit
+import DeviceCheck
 import XCTest
 @testable import BADAN
 
@@ -14,6 +15,14 @@ final class AICoachClientTests: XCTestCase {
     // server will not mint a token without a verifying attestation, so these tests always
     // supply a `MockAICoachAttestor` — the real `DCAppAttestService` reports unsupported on
     // the simulator, which is exactly why the seam exists.
+
+    /// A real `DCError` of a given code — the errors `DCAppAttestService` itself throws, which is
+    /// what `register()` classifies. Built from `DCErrorDomain` rather than faked with a
+    /// look-alike, so these tests fail if the classification ever stops recognising the real
+    /// thing.
+    private func dcError(_ code: DCError.Code) -> DCError {
+        DCError(_nsError: NSError(domain: DCErrorDomain, code: code.rawValue, userInfo: nil))
+    }
 
     /// The canned two-response sequence a successful registration consumes.
     private func registerResponses(token: String = "fresh-token-abc",
@@ -129,6 +138,128 @@ final class AICoachClientTests: XCTestCase {
             // expected
         }
         XCTAssertNil(tokenStore.token())
+    }
+
+    func testRegisterDoesNotPersistAKeyIdThatNeverAttested() async throws {
+        // The key id used to be stored the instant `generateKey()` returned, before anything had
+        // attested with it — and `disable()` deliberately never clears that store, so one failed
+        // opt-in pinned a dead key id for the life of the install.
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let keyStore = InMemoryAICoachAttestKeyStore()
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "never-attested", attestThrows: true),
+                                   attestKeyStore: keyStore,
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected the attestation failure to propagate")
+        } catch AICoachError.attestationUnavailable {
+            // expected
+        }
+        XCTAssertNil(keyStore.keyId(), "a key that never attested must not be remembered")
+    }
+
+    func testRegisterFailsRetryablyWhenTheKeyIdCannotBePersistedAndNeverMintsAToken() async throws {
+        // A silently failing Keychain write meant every later `register()` found no stored key
+        // and generated a NEW one, each with its own server-side `MAX_TOKENS_PER_KEY` budget —
+        // exactly the multi-key minting per-key budgets exist to bound. So the write result is
+        // checked, and `/v2/register` is never reached: no token is spent against a key this
+        // device cannot remember.
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let keyStore = FailingAICoachAttestKeyStore()
+        let tokenStore = InMemoryAICoachDeviceTokenStore()
+        let client = AICoachClient(transport: transport, tokenStore: tokenStore,
+                                   attestor: MockAICoachAttestor(keyId: "unstorable"),
+                                   attestKeyStore: keyStore,
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .attestationFailedTransiently")
+        } catch AICoachError.attestationFailedTransiently {
+            // expected — retrying is the right advice for a Keychain write
+        }
+        XCTAssertEqual(keyStore.storeCallCount, 1)
+        XCTAssertNil(tokenStore.token())
+        XCTAssertEqual(transport.captured.count, 1, "only the challenge — /v2/register is never reached")
+        XCTAssertEqual(transport.captured[0].url?.absoluteString, "https://coach.test/v1/attest/challenge")
+    }
+
+    func testRegisterMapsAServerUnavailableAttestationToTheRetryableCase() async throws {
+        // `DCAppAttestService.attestKey` needs a live round trip to Apple and reports a failed
+        // one as `DCError.serverUnavailable`. That used to arrive at the consent screen as
+        // `.attestationUnavailable` — "this device can't verify the app", with no retry offered
+        // — to a user who was merely offline for a moment.
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "k", attestError: dcError(.serverUnavailable)),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .attestationFailedTransiently")
+        } catch AICoachError.attestationFailedTransiently {
+            // expected
+        }
+    }
+
+    func testRegisterMapsAServerUnavailableKeyGenerationToTheRetryableCase() async throws {
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "k",
+                                                                 generateKeyError: dcError(.serverUnavailable)),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .attestationFailedTransiently")
+        } catch AICoachError.attestationFailedTransiently {
+            // expected
+        }
+    }
+
+    func testRegisterKeepsNonRetryableDeviceCheckFailuresAsAttestationUnavailable() async throws {
+        // The other half of the split, and the reason it is a narrowing rather than a rename:
+        // an unsupported feature fails identically on every retry, so it must NOT acquire retry
+        // copy just because `serverUnavailable` did.
+        let transport = MockAICoachTransport(responses: registerResponses())
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "k", attestError: dcError(.featureUnsupported)),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .attestationUnavailable")
+        } catch AICoachError.attestationUnavailable {
+            // expected
+        }
+    }
+
+    func testRegisterSurfacesAChallengeStage429AsARateLimitTheCallerCanRecognize() async throws {
+        // One opt-in attempt spends TWO of the server's 5-per-hour per-IP registration budget,
+        // because `/v1/attest/challenge` and `/v2/register` share `register_rate_limiter`
+        // (`backend/api/main.py`). So the 429 a user actually hits arrives at the CHALLENGE
+        // stage, before any attestation — the status has to survive to the consent screen so it
+        // can say "wait" rather than "check your connection".
+        let transport = MockAICoachTransport(responses: [
+            .success(status: 429, json: ["detail": "rate limit exceeded"]),
+        ])
+        let client = AICoachClient(transport: transport, tokenStore: InMemoryAICoachDeviceTokenStore(),
+                                   attestor: MockAICoachAttestor(keyId: "k"),
+                                   attestKeyStore: InMemoryAICoachAttestKeyStore(),
+                                   baseURL: URL(string: "https://coach.test")!)
+
+        do {
+            _ = try await client.register()
+            XCTFail("expected .serverError(429)")
+        } catch AICoachError.serverError(let status) {
+            XCTAssertEqual(status, 429)
+        }
+        XCTAssertEqual(transport.captured.count, 1)
     }
 
     func testRegisterDoesNotStoreAnythingOnServerError() async throws {
@@ -388,18 +519,27 @@ final class MockAICoachAttestor: AICoachAttesting {
 
     private let stubKeyId: String
     private let attestThrows: Bool
+    /// Throw a SPECIFIC error rather than the generic `attestThrows` one, so a test can pin how
+    /// `register()` classifies a real `DCError` — the whole point of the retryable/non-retryable
+    /// split is that those two must not land in the same case.
+    private let attestError: Error?
+    private let generateKeyError: Error?
     private(set) var generateKeyCallCount = 0
     private(set) var capturedKeyId: String?
     private(set) var capturedClientDataHash: Data?
 
-    init(keyId: String, isSupported: Bool = true, attestThrows: Bool = false) {
+    init(keyId: String, isSupported: Bool = true, attestThrows: Bool = false,
+         attestError: Error? = nil, generateKeyError: Error? = nil) {
         self.stubKeyId = keyId
         self.isSupported = isSupported
         self.attestThrows = attestThrows
+        self.attestError = attestError
+        self.generateKeyError = generateKeyError
     }
 
     func generateKey() async throws -> String {
         generateKeyCallCount += 1
+        if let generateKeyError { throw generateKeyError }
         return stubKeyId
     }
 
@@ -419,8 +559,22 @@ final class MockAICoachAttestor: AICoachAttesting {
     func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data {
         capturedKeyId = keyId
         capturedClientDataHash = clientDataHash
+        if let attestError { throw attestError }
         if attestThrows { throw AICoachError.attestationUnavailable }
         return stubAttestation
+    }
+}
+
+/// An attest-key store whose Keychain write always fails — `KeychainAICoachAttestKeyStore.store`
+/// returns `false` on any non-`errSecSuccess` status, and that `Bool` used to be discarded. The
+/// only way to exercise that path is a double that reports the failure.
+final class FailingAICoachAttestKeyStore: AICoachAttestKeyStoring {
+    private(set) var storeCallCount = 0
+    func keyId() -> String? { nil }
+    @discardableResult
+    func store(_ keyId: String) -> Bool {
+        storeCallCount += 1
+        return false
     }
 }
 

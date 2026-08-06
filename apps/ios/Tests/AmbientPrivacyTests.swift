@@ -77,6 +77,49 @@ final class AmbientPrivacyTests: XCTestCase {
         }
     }
 
+    /// S-5: iOS does NOT redact accessory-family widget content on its own. `AmbientPrivacyMode
+    /// .standard`'s doc claimed for a long time that "widgets mark values `.privacySensitive()`"
+    /// while the modifier appeared nowhere in the repository — so in the DEFAULT mode readiness,
+    /// effort, sleep and the day's sentence all rendered in full on a locked Lock Screen.
+    ///
+    /// A source scan, for the same reason `testMedsDueWidgetRegistersNoLockScreenFamily` is one:
+    /// this target cannot `@testable import BadanWidgets`, and the guarantee has to survive the
+    /// NEXT widget as well as the four that exist. Enumerating the directory rather than a hard-
+    /// coded list is the point — a widget added later is covered the day it lands.
+    func testEveryLockScreenCapableWidgetMarksItsValuesPrivacySensitive() throws {
+        let directory = Self.widgetSourceDirectory
+        let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasSuffix(".swift") }
+            .sorted()
+        XCTAssertFalse(files.isEmpty, "found no widget sources to scan — the path navigation has drifted")
+
+        var scanned = 0
+        for file in files {
+            let code = Self.strippingComments(
+                try String(contentsOf: directory.appendingPathComponent(file), encoding: .utf8))
+            guard let families = Self.supportedFamiliesArgument(code),
+                  ["accessoryCircular", "accessoryRectangular", "accessoryInline", "accessoryCorner"]
+                      .contains(where: families.contains)
+            else { continue }
+            scanned += 1
+            XCTAssertTrue(code.contains(".privacySensitive()"),
+                          "\(file) registers a Lock Screen family but marks nothing "
+                          + ".privacySensitive() — iOS will not redact it for you, so its values "
+                          + "render on a LOCKED Lock Screen to whoever is holding the phone")
+        }
+        XCTAssertGreaterThan(scanned, 0, "no widget registers a Lock Screen family — has the scan stopped matching?")
+    }
+
+    /// The argument list of a file's `.supportedFamilies([...])` call, or nil if it makes none.
+    /// Scoped to the call rather than the whole file because these headers name accessory families
+    /// in prose precisely to explain when NOT to register them (see
+    /// `testMedsDueWidgetRegistersNoLockScreenFamily`'s own comment on the same hazard).
+    private static func supportedFamiliesArgument(_ code: String) -> String? {
+        guard let call = code.range(of: "supportedFamilies("),
+              let close = code[call.upperBound...].firstIndex(of: ")") else { return nil }
+        return String(code[call.upperBound..<close])
+    }
+
     // MARK: - Modes actually change what is written
 
     func testOffModeAssemblesNoPersonalContentAtAll() async throws {
@@ -146,15 +189,16 @@ final class AmbientPrivacyTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// `#filePath` is this test file inside `apps/ios/Tests/`; the widget target sits alongside it
+    /// under `apps/ios/BadanWidgets/`. Same navigation the existing widget source-scan test uses,
+    /// kept in one place so every scan here breaks together if the layout moves.
+    private static let widgetSourceDirectory: URL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("BadanWidgets")
+
     private func widgetSourcePath(_ name: String) -> String {
-        // `#filePath` is this test file inside `apps/ios/Tests/`; the widget target sits alongside
-        // it under `apps/ios/BadanWidgets/`. Same navigation the existing widget source-scan test
-        // uses, kept identical so both break together if the layout moves.
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("BadanWidgets/\(name)")
-            .path
+        Self.widgetSourceDirectory.appendingPathComponent(name).path
     }
 
     /// Strips `//` line comments before scanning. A doc comment that MENTIONS `accessoryCircular`

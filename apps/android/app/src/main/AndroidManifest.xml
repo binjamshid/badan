@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
       Health Connect READ permissions for the record types BADAN ingests.
@@ -54,6 +55,27 @@
     <uses-permission android:name="android.permission.health.READ_VO2_MAX" />
 
     <!--
+      Glucose (D-26 / ADR-0010 approval A21). A21 approves ingestion of glucose that is ALREADY on
+      the platform store — the reading a user's meter or CGM app has written into Health Connect —
+      and leaves vendor OAuth (Dexcom/Libre direct) deferred. Health Connect's BloodGlucoseRecord
+      is exactly that platform-written path, so this permission is the whole of A21's Android
+      surface; there is no second network-reaching integration behind it.
+
+      Declared ahead of its reader by the batch that pre-declares the manifest, so no later feature
+      task has to edit this file. `HcTypeMap` has NO BloodGlucoseRecord entry today, which means
+      this permission is currently requested by nothing and lands no rows — the manifest's own rule
+      three blocks up ("asking for a permission BADAN does not act on spends the user's trust on
+      nothing") is therefore in tension with this line until the glucose ingestion task lands its
+      `HcTypeMap` entry. If that task does not land, this line must be swept back out rather than
+      left to disclose a data type on the Play Data Safety form that never enters the app.
+
+      Note this is invisible to `HcTypeMapTest`: that test polices the two directions it can see —
+      requested-but-undeclared, and deferred-entry-but-declared — and a permission with no table
+      entry at all is in neither set. The check is this comment and the Batch 4 sweep.
+    -->
+    <uses-permission android:name="android.permission.health.READ_BLOOD_GLUCOSE" />
+
+    <!--
       Workouts. READ_EXERCISE covers ExerciseSessionRecord.
 
       There is deliberately NO route-read permission here. connect-client 1.1.0 defines only
@@ -83,6 +105,45 @@
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
 
     <!--
+      ============================================================================================
+      WRITE permissions — BADAN becomes a WRITER to the platform store. This is a posture change,
+      not an implementation detail, and it is flagged here rather than tucked in with the reads.
+      ============================================================================================
+
+      Every other line in this file is a READ. The app's own comments above describe a read-only
+      relationship with Health Connect ("the record types BADAN ingests"), the privacy policy
+      describes a device that receives and keeps, and Play Data Safety has so far been filled in
+      against a manifest that only ever asked for other apps' data.
+
+      These four lines change that. A live workout recorded IN BADAN produces a session, heart-rate
+      samples, active energy and distance that exist nowhere else; leaving them inside BADAN alone
+      would make BADAN the one app on the device whose workouts the rest of the user's health
+      picture cannot see — the exact siloing this product exists to argue against. Writing them
+      back is the honest resolution, and it is also what iOS's live workout already does through
+      HKWorkoutBuilder.
+
+      What has to be true before these are actually requested, none of which is this batch's to
+      decide:
+        * a decision on file that BADAN writes (there is none yet — D-38's parity mandate implies
+          it but does not state it);
+        * a Play Data Safety answer that says BADAN shares data with Health Connect;
+        * user-facing copy at the point of the ask, since a WRITE grant reads very differently to
+          a user than a READ grant does;
+        * a rule for what BADAN will and will not write — it must never write a DERIVED number
+          (readiness, effort, sleep score) into the platform store, because a derived value with
+          BADAN's provisional constants behind it would then propagate into other apps stripped of
+          its input manifest, its confidence and its provisional flag. Only measured session data.
+
+      Until then these are declared and unrequested, exactly as the READ set is: declaring is not
+      requesting (see the top of this file). If the live-workout task does not land, they get swept
+      back out with everything else that never got an implementation.
+    -->
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
+    <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.WRITE_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.WRITE_DISTANCE" />
+
+    <!--
       WorkManager's own manifest already merges this in, so the build works without the line.
       It is stated explicitly anyway: this manifest should read as what BADAN needs, not as what
       it happened to inherit — a reviewer auditing "why can this app run at boot?" should find
@@ -101,6 +162,92 @@
       is local, generic and value-free — no health value ever appears on a lock screen.
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      Live workout (the Android counterpart to iOS's HKWorkoutSession).
+
+      A workout the user starts in BADAN has to keep sampling while the screen is off and while
+      another app is in front, which on Android means a foreground service and nothing else — any
+      other substrate is killed mid-session by the process lifecycle. FOREGROUND_SERVICE is the
+      base permission; FOREGROUND_SERVICE_HEALTH is the per-type permission Android 14 (API 34)
+      requires alongside the `foregroundServiceType="health"` on the <service> below.
+
+      The type is `health`, NOT `specialUse`. `specialUse` requires a written justification
+      submitted to and reviewed by Google Play, and is intended for services that genuinely fit no
+      declared category — a workout recorder fits `health` exactly, so claiming `specialUse` would
+      buy a review cycle in exchange for nothing.
+
+      ACTIVITY_RECOGNITION is here for two reasons that happen to coincide: it is what lets the
+      session read step/cadence during the workout, and from API 34 a `health` foreground service
+      must hold one of ACTIVITY_RECOGNITION / BODY_SENSORS / HIGH_SAMPLING_RATE_SENSORS at runtime
+      or `startForeground` throws. ACTIVITY_RECOGNITION is the one of those three BADAN can justify
+      to a user in a sentence.
+
+      What is deliberately NOT here: ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION, and
+      `foregroundServiceType="location"`. v1 mirrors iOS, which excludes GPS from live workouts —
+      so a BADAN-recorded workout has no route, the Data Safety story stays "no location collected"
+      unchanged, and the one location-bearing record in the app remains the route Health Connect
+      hands over per-session under its own consent dialog (see the READ_EXERCISE block above).
+      Adding GPS is a product decision with a Data Safety consequence, not a capability to switch
+      on because the service type allows it.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
+    <!--
+      BLE chest straps / external sensors paired directly to BADAN during a live workout.
+
+      `neverForLocation` is a promise made to the platform, not a hint: it tells Android that BADAN
+      will not derive the phone's physical location from scan results, and in exchange the scan
+      permission stops implying location access. It is accurate here — BADAN scans to find a heart
+      rate strap and for nothing else — and it is what keeps "BADAN collects no location" true on
+      the Data Safety form even with a scanner in the app.
+
+      Known gap, stated rather than silently shipped: BLUETOOTH_SCAN/BLUETOOTH_CONNECT are API 31+.
+      `minSdk` is 26, so on API 26-30 devices BLE pairing has no permission behind it at all and
+      will fail; closing that needs the legacy `BLUETOOTH` / `BLUETOOTH_ADMIN` pair declared with
+      `android:maxSdkVersion="30"`. Those lines are not added here because the BLE task has not
+      landed and the legacy pair carries its own Play Data Safety wording — whichever task builds
+      the scanner adds them, or explicitly raises the feature's floor to API 31.
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!--
+      Lab-report OCR. D-43 removed the clinical-records ingestion path on iOS after App Review
+      refused it, leaving the camera as the lab notebook's third way in alongside a photo already
+      in the library and a PDF already on the device. Android inherits that shape, so the camera is
+      load-bearing here rather than a convenience: without it the notebook has two import paths,
+      not three.
+
+      OCR itself is on-device (ML Kit text recognition, the Android counterpart to iOS's Vision) —
+      a photographed lab report never leaves the phone, which is the property that makes pointing a
+      camera at a medical document acceptable at all.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!--
+      Declaring CAMERA makes Google Play treat `android.hardware.camera` as REQUIRED unless it is
+      declared optional here, which would filter BADAN off camera-less devices for a feature that
+      is one of three import paths. Same for BLE. Both features degrade honestly when the hardware
+      is absent; neither is a reason to make the app uninstallable.
+    -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <!--
+      Play Billing (D-40). A normal permission with no runtime prompt — the Play Billing Library
+      requires it to bind to the Play Store service. It is not a network permission: the billing
+      client talks to the Play Store app over IPC, which is why this line does not contradict the
+      INTERNET note below. Per D-32/D-40 there is still no account and no login behind it; Play
+      binds the purchase to the signed-in Google account by itself.
+    -->
+    <uses-permission android:name="com.android.vending.BILLING" />
 
     <!--
       android.permission.INTERNET is DELIBERATELY ABSENT, and this note exists so its absence reads
@@ -179,6 +326,172 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <!--
+          EPIC-05 / D-42 — re-establish the hourly Health Connect sync after a reboot.
+
+          This element is a bug fix, not new surface. `BootReceiver` has existed in the source tree
+          since EPIC-05 and has been DEAD the entire time: RECEIVE_BOOT_COMPLETED was declared, the
+          class was written, and nothing ever registered it — and a boot receiver is the one kind
+          that cannot be registered at runtime, because the process is not alive to do it. The
+          class's own KDoc carries the exact XML below and says plainly it is inert without it.
+          D-42 names this registration as what makes the receiver live.
+
+          `exported="false"` is correct despite the intent filter: BOOT_COMPLETED is a protected
+          broadcast only the system can send, so the receiver needs no external visibility, and an
+          exported one would let any app on the device poke BADAN's sync schedule.
+        -->
+        <receiver
+            android:name=".platform.background.BootReceiver"
+            android:exported="false"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Live workout foreground service — the Android counterpart to iOS's HKWorkoutSession.
+
+          `foregroundServiceType="health"` (see the FOREGROUND_SERVICE_HEALTH block above for why
+          `health` and not `specialUse`, and for why no location type appears here). Not exported:
+          nothing outside the app may start or bind a recording session; it is started from the
+          app's own UI and stopped from the notification.
+
+          The service is a STUB in this batch — it declares the component so no later task edits
+          this manifest, and its class documents exactly what it does not yet do.
+        -->
+        <service
+            android:name=".platform.workout.LiveWorkoutService"
+            android:exported="false"
+            android:foregroundServiceType="health"
+            tools:targetApi="34" />
+
+        <!--
+          ============================================================================================
+          Home-screen widgets — the five kinds iOS ships (EPIC-33).
+          ============================================================================================
+
+          Kinds are named after iOS's own widget kind strings
+          (`Platform/Ambient/AmbientSnapshotWriter.swift:43` plus EffortRingWidget) so the two
+          platforms' widget sets can be diffed by name: ring_single, one_true_sentence, meds_due,
+          sleep_last_night, effort_ring.
+
+          Per ADR-0012 these live INSIDE `:app`, not in a separate module or process. iOS's
+          `AmbientSnapshotDto` is hand-duplicated across an App Extension boundary because an iOS
+          widget is a different process with no call path home; an AppWidget receiver on Android is
+          an ordinary BroadcastReceiver in this same APK and this same process, so there is no
+          boundary to duplicate a DTO across and none should be invented.
+
+          The receivers below extend `android.appwidget.AppWidgetProvider` — the framework base
+          class that `androidx.glance.appwidget.GlanceAppWidgetReceiver` itself extends. The Glance
+          artifacts landed on `:app` in the same batch as this file, so the swap is now available;
+          it is deliberately not made here because `GlanceAppWidgetReceiver` requires an override
+          returning a real `GlanceAppWidget`, i.e. an actual composable widget UI, which belongs to
+          the task that builds the widget rather than to the one that declares the component.
+          Making that swap changes NOTHING in this manifest: the element, the class name and the
+          widget-info metadata are identical for both superclasses, which is the whole point of
+          declaring them now.
+
+          `exported="true"` is required — the launcher and the system AppWidget host send
+          APPWIDGET_UPDATE to these from outside the app, and an unexported receiver simply never
+          receives it. There is no data in a widget-update broadcast for an attacker to supply.
+
+          iOS's Lock Screen / StandBy accessory families have NO Android analogue: keyguard widgets
+          were removed from the platform after API 21, so `widgetCategory` is `home_screen` only.
+          The nearest real Android surface for glanceable-without-unlocking is the Wear tile set,
+          which is why the tile labels are pre-declared in strings.xml alongside these.
+        -->
+        <receiver
+            android:name=".platform.widgets.RingSingleWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_ring_single_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/ring_single_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".platform.widgets.OneTrueSentenceWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_one_true_sentence_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/one_true_sentence_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".platform.widgets.MedsDueWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_meds_due_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/meds_due_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".platform.widgets.SleepLastNightWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_sleep_last_night_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/sleep_last_night_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".platform.widgets.EffortRingWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_effort_ring_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/effort_ring_widget_info" />
+        </receiver>
+
+        <!--
+          No Wear data-layer listener service is declared here, and the omission is deliberate
+          rather than forgotten.
+
+          A phone-side listener for the Watch->phone refresh nudge (D-34) has to extend
+          `com.google.android.gms.wearable.WearableListenerService` and carry a
+          `com.google.android.gms.wearable.BIND_LISTENER` filter with the appropriate
+          DATA_CHANGED / MESSAGE_RECEIVED data scheme. `play-services-wearable` landed on `:app`
+          in the same batch as this file, so the class is now compilable — the reason it is still
+          not declared is not a missing dependency.
+
+          It is that the listener is only NEEDED if `:wear`'s transport wakes the phone while the
+          app is backgrounded. If the nudge is instead handled by a runtime
+          `MessageClient.addListener` registered while the app is in the foreground, a
+          manifest-declared service is dead weight that the system binds for nothing. That is a
+          `:wear` design question, being answered by the module that owns it, and inventing a
+          component here to satisfy the "declare everything up front" rule would mean guessing a
+          class name and a package for a service someone else is about to write — producing either
+          a duplicate or a registered service that silently receives nothing.
+
+          So this is the ONE component this batch could not pre-declare, and the one manifest edit
+          a later task in this port is expected to make. Whoever adds it: it goes here, next to
+          this comment, `android:exported="true"` (the Wear framework binds it from outside the
+          app) and named for a class under `platform/wear/`.
+
+          Notification channels are absent from this manifest for a different and ordinary reason:
+          Android has no manifest element for them. Channels are created in code
+          (`platform/notifications/NotificationScheduler.kt`, `AutomationPauseNotifier.kt`); what
+          this batch pre-declares for them is their bilingual name/description strings.
+        -->
 
         <!--
           Exports are shared as content:// uris through this provider. Previously they were

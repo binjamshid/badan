@@ -102,7 +102,47 @@ final class WatchSnapshotSync: NSObject {
     /// so `sync(_:)`'s own guard would make its encode step untestable otherwise). `sync(_:)` above
     /// is the only production caller.
     static func applicationContext(for dto: AmbientSnapshotDto) throws -> [String: Any] {
-        [applicationContextKey: try encoder.encode(dto)]
+        [applicationContextKey: try encoder.encode(watchPayload(for: dto))]
+    }
+
+    /// W-11: the ambient privacy mode, enforced for the watch by what this transport carries.
+    ///
+    /// `AmbientPrivacyConfig`'s `mode` says it "applies to Home Screen widgets, StandBy, and the
+    /// watch glance", and for the first two that is true — the widget extension reads the
+    /// `AmbientSnapshotDto.privacy` flags and obeys them (`BadanWidgets/WidgetPrivacy.swift`). The
+    /// watch never could. `BadanWatch`'s own copy of the DTO carries no `privacy` field at all, so
+    /// the flags are dropped the moment the payload is decoded, and every watch render site — the
+    /// `TodayView` rows and sentence, `WatchMetricDetailView`, and all three `BadanWatchWidgets`
+    /// face complications — draws whatever number it was handed. A user who chose `.discreet` got
+    /// shapes on the phone and full values on an always-on wrist display, which is the opposite of
+    /// what they asked for.
+    ///
+    /// Fixed at the choke point rather than at each render site, which is the argument
+    /// `AmbientPrivacyConfig`'s own header makes ("the widget extension cannot leak what the main
+    /// app never wrote") and the shape `AmbientSnapshotWriter` already uses for `.off`: when values
+    /// are not allowed, they are removed from the payload before it is encoded. Nothing on the
+    /// watch has to remember a fourth flag, and a watch surface added later inherits the rule for
+    /// free — it cannot render a value it was never sent.
+    ///
+    /// The stricter of the two value flags governs, deliberately. A watch face is an always-on
+    /// ambient display glanceable by anyone standing next to the wearer — far closer to a Lock
+    /// Screen than to a Home Screen widget behind a passcode — so `lockScreenValuesAllowed` applies
+    /// here even though the surface is not literally a Lock Screen.
+    ///
+    /// What the watch shows instead is its ordinary "no data yet" copy, which reads as absence
+    /// where the truth is "withheld". That is imperfect and worth stating plainly — but it is
+    /// exactly what `.off` has always produced on the watch (the writer assembles nothing in that
+    /// mode), so this is the established behaviour of the privacy model rather than a new
+    /// inaccuracy, and a real number visible to a stranger is the worse of the two failures.
+    static func watchPayload(for dto: AmbientSnapshotDto) -> AmbientSnapshotDto {
+        let valuesAllowedOnAWrist = dto.privacy.valuesAllowed && dto.privacy.lockScreenValuesAllowed
+        guard !valuesAllowedOnAWrist else { return dto }
+        return AmbientSnapshotDto(
+            schemaVersion: dto.schemaVersion, generatedAt: dto.generatedAt, language: dto.language,
+            readiness: nil, sentence: nil, sleep: nil, medsDue: nil, effort: nil,
+            // The flags travel anyway, so the wire shape stays the byte-for-byte twin the three
+            // copies of this DTO promise each other — they simply have nothing left to gate.
+            privacy: dto.privacy)
     }
 }
 

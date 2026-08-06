@@ -189,6 +189,107 @@ final class FeedbackCalibrationTests: XCTestCase {
                                                 algorithmId: "composite.readiness_score"))
     }
 
+    // MARK: - What the app SAYS a calibration does (D-36, and ADR-0011 for the second half)
+    //
+    // Feedback is collected under EVERY derived value, but `ReadinessEngine.activeCalibration()` is
+    // the only place a stored calibration is ever read back. That gap is fine; describing it wrongly
+    // is not. Both tests below hold a claim about calibration to `CalibrationConsumers` — the one
+    // list that names the engines which actually consume one — rather than to "a row exists".
+
+    /// The card must not promise an adjustment for a metric nothing calibrates.
+    ///
+    /// Before this, tapping "felt worse" on sleep score produced the paragraph "BADAN uses this to
+    /// adjust future values of this metric on this device" and a counter that filled to "10 of 10",
+    /// after which `sleep.score` was computed exactly as before, forever. The feature is still
+    /// offered on those metrics — what changes is that it says what it does.
+    func testTheCardPromisesAdjustmentOnlyForMetricsAnEngineActuallyCalibrates() {
+        XCTAssertEqual(FeedbackCopy.whatThisDoes(for: MetricID.readinessScore),
+                       FeedbackCopy.whatThisDoesAdjusts,
+                       "readiness IS calibrated — the card must still say so")
+        XCTAssertNotNil(DerivedFeedbackCard.adjustmentProgress(
+                            metricId: MetricID.readinessScore, have: 0, spec: spec,
+                            calibrationEnabled: true),
+                        "the countdown belongs on the one metric that has something to count to")
+
+        for metricId in [MetricID.sleepScore, MetricID.sleepPerformance, MetricID.effortDay,
+                         MetricID.stressDayTrend, MetricID.moodEstimate] {
+            XCTAssertFalse(CalibrationConsumers.adjustsFutureValues(of: metricId),
+                           "precondition: no engine reads a calibration for \(metricId). If one now "
+                           + "does, wire it and add it to CalibrationConsumers — do not relax this.")
+            XCTAssertEqual(FeedbackCopy.whatThisDoes(for: metricId),
+                           FeedbackCopy.whatThisDoesRecordOnly,
+                           "\(metricId) is told its feedback adjusts future values, and nothing in "
+                           + "the app adjusts them")
+            XCTAssertFalse(FeedbackCopy.whatThisDoes(for: metricId).en.contains("adjust future"),
+                           "\(metricId)'s copy still promises adjustment")
+            XCTAssertNil(DerivedFeedbackCard.adjustmentProgress(
+                            metricId: metricId, have: spec.minFeedbackEvents - 1, spec: spec,
+                            calibrationEnabled: true),
+                         "\(metricId) counts down to an adjustment that never happens — the more "
+                         + "convincing half of the same false promise")
+        }
+    }
+
+    /// `calibrationApplied` on the wire is a statement about METHODOLOGY, so it must be false for a
+    /// metric whose engine never reads a calibration — the stored row is not the claim.
+    ///
+    /// ADR-0011's closed schema keeps health data out of the payload. It cannot keep an untrue field
+    /// out, and "a calibration was in force" about a number computed without reference to one is
+    /// exactly the kind of statement the route exists to make honestly or not at all.
+    func testTelemetryNeverReportsACalibrationAppliedForAMetricNoEngineCalibrates() throws {
+        let repo = FeedbackRepository(db.main)
+        try seedFeedbackAndCalibration(repo, metricId: MetricID.sleepScore,
+                                       algorithmId: "sleep.score", count: 12)
+        try seedFeedbackAndCalibration(repo, metricId: MetricID.readinessScore,
+                                       algorithmId: "composite.readiness_score", count: 12)
+
+        let collector = FootprintCollector(feedback: repo, registry: .shared,
+                                           calibrationEnabled: { true })
+
+        let sleep = try XCTUnwrap(collector.collect(metricIds: [MetricID.sleepScore], floor: 10)
+            .first { $0.algorithmId == "sleep.score" })
+        XCTAssertEqual(sleep.eventCount, 12, "precondition: the footprint is collected at all")
+        XCTAssertFalse(sleep.calibrationApplied,
+                       "a calibration row exists for sleep.score, but SleepIntelligenceEngine holds "
+                       + "no FeedbackRepository and never reads one — reporting it as applied tells "
+                       + "the server something false about how the number was computed")
+
+        let readiness = try XCTUnwrap(
+            collector.collect(metricIds: [MetricID.readinessScore], floor: 10)
+                .first { $0.algorithmId == "composite.readiness_score" })
+        XCTAssertTrue(readiness.calibrationApplied,
+                      "readiness IS calibrated — the flag must still be reportable as true, or the "
+                      + "fix has emptied the field rather than corrected it")
+
+        // The engine's other gate, mirrored: with the feature off, no offset reaches a value, so
+        // nothing was in force regardless of what the table holds.
+        let disabled = FootprintCollector(feedback: repo, registry: .shared,
+                                          calibrationEnabled: { false })
+        XCTAssertFalse(try XCTUnwrap(
+            disabled.collect(metricIds: [MetricID.readinessScore], floor: 10)
+                .first { $0.algorithmId == "composite.readiness_score" }).calibrationApplied,
+            "with calibration switched off ReadinessEngine applies nothing, so no calibration was "
+            + "in force for these values")
+    }
+
+    /// Feedback on an uncalibrated metric is still RECORDED — the fix is about what is claimed, not
+    /// about quietly dropping the feature on every metric but readiness.
+    func testFeedbackOnAnUncalibratedMetricIsStillRecorded() throws {
+        let repo = FeedbackRepository(db.main)
+        let coordinator = CalibrationCoordinator(feedback: repo, clock: clock, spec: spec)
+        for day in 0..<(spec.minFeedbackEvents + 2) {
+            try coordinator.recordFeedback(
+                metricId: MetricID.sleepScore,
+                periodKey: "day:2026-02-\(String(format: "%02d", day + 1))",
+                derivedValueId: "dv-\(day)", algorithmId: "sleep.score",
+                algorithmVersion: "1.0.0", direction: .over)
+        }
+        XCTAssertEqual(try repo.feedback(metricId: MetricID.sleepScore, algorithmId: "sleep.score").count,
+                       spec.minFeedbackEvents + 2,
+                       "the answers must still be kept — they are the evidence the constants are "
+                       + "waiting on (priority 3)")
+    }
+
     // MARK: - What a calibrated row says about itself
 
     /// A calibrated row discloses its calibration through the manifest, and a reader can tell a
@@ -393,6 +494,23 @@ final class FeedbackCalibrationTests: XCTestCase {
                                      clock: clock, deviceId: "test-device",
                                      feedbackRepo: feedback, calibrationEnabled: { true })
         return (engine, derivation, measurements, feedback, tz)
+    }
+
+    /// Enough feedback on one (metric, method) pair to clear the floor, PLUS a stored calibration
+    /// row for it. The row is what the old `calibrationApplied` read, so a metric no engine
+    /// calibrates has to be able to have one for the assertion to mean anything.
+    private func seedFeedbackAndCalibration(_ repo: FeedbackRepository, metricId: String,
+                                            algorithmId: String, count: Int) throws {
+        for index in 0..<count {
+            try repo.record(DerivedFeedback(
+                id: ULID.newID(), metricId: metricId, periodKey: "day:\(algorithmId)-\(index)",
+                derivedValueId: "dv-\(index)", algorithmId: algorithmId,
+                algorithmVersion: "1.0.0", direction: .over,
+                createdAt: clock.now().addingTimeInterval(-Double(index) * 86_400)))
+        }
+        try repo.appendCalibration(MetricCalibration(
+            id: ULID.newID(), metricId: metricId, algorithmId: algorithmId,
+            algorithmVersion: "1.0.0", offset: -5, sampleCount: count, computedAt: clock.now()))
     }
 
     private func feedbackEvent(_ direction: FeedbackDirection, daysAgo: Int) -> DerivedFeedback {

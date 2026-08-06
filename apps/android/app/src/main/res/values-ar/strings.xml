@@ -34,4 +34,43 @@
     <string name="shortcut_water_long">تسجيل ماء</string>
     <string name="tile_run_export_label">تشغيل قالب تصدير</string>
     <string name="tile_run_export_subtitle">يفتح تصدير بدن</string>
+    <!-- اختصار بدء تمرين — مُعلَن مسبقاً، ولا يشير إليه shortcuts.xml بعد. -->
+    <string name="shortcut_workout_short">تمرين</string>
+    <string name="shortcut_workout_long">ابدأ تمريناً</string>
+
+    <!--
+      EPIC-33 — تسميات أدوات الشاشة الرئيسية وأوصافها.
+
+      نفس المصطلحات المستعملة في core/Strings.kt: الجاهزية، النوم، الجهد، الأدوية — حتى تقرأ الأداة
+      وشاشة التطبيق بالكلمات نفسها. نفس السجل أيضاً: الأداة تعرض رقماً حسبه التطبيق، ولا تَعِد بتفسير.
+      وصف أداة الأدوية يقول صراحةً إنها تبقى فارغة حتى تُفعِّل الأدوية في الإعدادات، لأن أداة فارغة
+      بلا تفسير تُقرأ على أنها معطّلة.
+    -->
+    <string name="widget_ring_single_label">الجاهزية</string>
+    <string name="widget_ring_single_description">جاهزيتك اليوم بلمحة.</string>
+    <string name="widget_one_true_sentence_label">جملة اليوم</string>
+    <string name="widget_one_true_sentence_description">جملة واحدة هادئة عن كيف يمضي يومك.</string>
+    <string name="widget_meds_due_label">أدوية مستحقّة</string>
+    <string name="widget_meds_due_description">الأدوية المستحقّة قريباً، بعد أن تُفعِّل ذلك في الإعدادات.</string>
+    <string name="widget_sleep_last_night_label">النوم</string>
+    <string name="widget_sleep_last_night_description">مدة نومك الليلة الماضية ودرجتها.</string>
+    <string name="widget_effort_ring_label">الجهد</string>
+    <string name="widget_effort_ring_description">جهدك اليوم بلمحة.</string>
+
+    <!-- بطاقات ساعة Wear — نظير تعقيدات watchOS. تنتقل إلى وحدة ‎:wear‎ حين تُنشأ. -->
+    <string name="wear_tile_readiness_label">الجاهزية</string>
+    <string name="wear_tile_sleep_label">النوم</string>
+    <string name="wear_tile_effort_label">الجهد</string>
+
+    <!--
+      التمرين المباشر — قناة الإشعارات وخدمة المقدّمة.
+
+      يقرأ المستخدم اسم القناة ووصفها في إعدادات أندرويد نفسها لا داخل بدن، لذلك يشرح الوصف سبب
+      بقاء الإشعار: هو ما يسمح للنظام بمواصلة التسجيل والشاشة مطفأة. ولا يحمل نصّ الإشعار أي قراءة
+      صحية — لا تظهر أي قيمة على شاشة القفل.
+    -->
+    <string name="channel_live_workout_name">تمرين قيد التسجيل</string>
+    <string name="channel_live_workout_description">يعرض إشعاراً مستمراً أثناء تسجيل بدن لتمرينك. يحتاجه أندرويد لمواصلة التسجيل والشاشة مطفأة، لذلك يبقى حتى ينتهي التمرين.</string>
+    <string name="notification_live_workout_title">يسجّل تمرينك</string>
+    <string name="notification_live_workout_text">بدن يسجّل الآن. اضغط للفتح، أو أنهِ التمرين لإيقاف التسجيل.</string>
 </resources>

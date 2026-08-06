@@ -72,6 +72,33 @@ TOP_LEVEL_VIEW_RE = re.compile(
 PREVIEW_START_RE = re.compile(r"#Preview(?:\([^)]*\))?\s*\{")
 
 
+# A construction site is `Name(` — or `Name {`, which is what a SwiftUI view built with ONLY a
+# trailing closure looks like: there are no parentheses in the call at all.
+#
+# (2026-08-06) Searching just `Name(` produced a FALSE POSITIVE, which is the direction that makes a
+# ratchet untrustworthy — a wired screen reported as dead code invites the next person to lower the
+# bar or allowlist a real gap. `IntervalPlanBuilderScreen { plan in ... }`, wired at
+# `WorkoutHomeScreen`'s navigation-destination switch, is reachable and was flagged. Any view whose
+# only call site passes a trailing closure had the same problem.
+#
+# `Name {` must not let a type satisfy its own declaration: `struct Name: View {` and
+# `extension Name {` both end in those same two tokens. Both are excluded by looking at what
+# immediately precedes the name, which is also why this stays a false-POSITIVE-averse check —
+# an unrecognised construction form can only over-report, never hide real dead code.
+DECL_KEYWORD_RE = re.compile(r"\b(?:struct|class|enum|protocol|actor|extension)\s+$")
+
+
+def is_constructed(name: str, text: str) -> bool:
+    """Whether `text` contains a construction of `name`, ignoring its own declaration/extensions."""
+    pattern = re.compile(r"\b" + re.escape(name) + r"\s*[({]")
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 40):match.start()]
+        if DECL_KEYWORD_RE.search(prefix):
+            continue
+        return True
+    return False
+
+
 def find_swift_files() -> list[Path]:
     files: list[Path] = []
     for rel in SOURCE_DIRS:
@@ -153,8 +180,7 @@ def main() -> int:
 
     unreachable: list[tuple[str, Path, int]] = []
     for name, (decl_path, decl_line) in sorted(declarations.items()):
-        call_re = re.compile(r"\b" + re.escape(name) + r"\s*\(")
-        reachable = any(call_re.search(stripped_by_file[p]) for p in files)
+        reachable = any(is_constructed(name, stripped_by_file[p]) for p in files)
         if not reachable:
             unreachable.append((name, decl_path, decl_line))
 

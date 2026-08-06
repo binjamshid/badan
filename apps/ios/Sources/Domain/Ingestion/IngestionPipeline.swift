@@ -1,5 +1,20 @@
 import Foundation
 
+/// (AUDIT 2026-08-06, SLEEP-H2) A `HealthStorePort` that can say which local nights it just
+/// rebuilt in FULL — meaning it re-read that night's complete current sleep sample set and the
+/// `SessionDTO`s it returned for the night are the whole truth about it, not an addition to
+/// whatever is already stored.
+///
+/// An opt-in side protocol rather than a defaulted `HealthStorePort` requirement, deliberately.
+/// Only a port that can distinguish "this night holds no sleep" from "I could not read this
+/// night" may claim a rebuild — HealthKit answers a denied READ with an empty set and no error,
+/// so `HistoricalHealthKitReader` conforms to neither and says so in its own doc. A port that
+/// does not conform is treated as claiming nothing, and its nights are upserted into exactly as
+/// they always were.
+protocol SleepNightRebuilding {
+    func rebuiltSleepNights(_ range: HealthDateRange) -> Set<String>
+}
+
 /// The single path health data takes to become BADAN facts: register sources/devices, pull
 /// samples/intervals/sessions from a `HealthStorePort`, canonicalize units, stamp embedded
 /// provenance, then run dedup-lite over each affected night. Every write is idempotent by
@@ -132,6 +147,10 @@ final class IngestionPipeline {
         // Must run after the read* calls above for this same `range` — see
         // `HealthStorePort.deletions(_:)`'s doc.
         let deletions = port.deletions(range)
+        // (SLEEP-H2) Drained here for the same reason and with the same ordering requirement as
+        // `deletions` above: it reports what `readSessions` just did. A port that cannot claim a
+        // full-night rebuild claims nothing, and nothing is pruned.
+        let rebuiltNights = (port as? SleepNightRebuilding)?.rebuiltSleepNights(range) ?? []
 
         // Phase 2: the write transactions. `measurements`, `catalog` and `reconciliation` all
         // share the same main-DB connection, so batching upserts into a transaction (rather than
@@ -153,7 +172,7 @@ final class IngestionPipeline {
         let summary = try applyIngestBatched(descriptors: descriptors, samples: samples,
                                              intervals: intervals, sessionDTOs: sessionDTOs,
                                              workoutDTOs: workoutDTOs, deletions: deletions,
-                                             origin: origin)
+                                             rebuiltNights: rebuiltNights, origin: origin)
 
         // (DATA-08) Phase 3: only persist the port's read cursor/anchor AFTER the write
         // transaction above has actually committed. Persisting eagerly (the old behavior) only
@@ -182,6 +201,7 @@ final class IngestionPipeline {
                                     intervals: [IntervalDTO], sessionDTOs: [SessionDTO],
                                     workoutDTOs: [WorkoutDTO],
                                     deletions: HealthStoreDeletions,
+                                    rebuiltNights: Set<String>,
                                     origin: IngestOrigin) throws -> IngestSummary {
         let now = clock.now()
         var summary = IngestSummary()
@@ -246,6 +266,19 @@ final class IngestionPipeline {
                 affectedNights.formUnion(nights)
                 summary.sessions += written
             }
+        }
+
+        // (d1) (AUDIT 2026-08-06, SLEEP-H2) Hold every fully-rebuilt night to the set the port
+        // just emitted for it. Runs after (d) so the fresh rows exist, and before (e) so the
+        // night is reconciled against the corrected set rather than against the orphan.
+        if !rebuiltNights.isEmpty {
+            try measurements.transaction {
+                try pruneRebuiltNights(rebuiltNights, emitted: sessionDTOs, now: now)
+            }
+            // A night the rebuild emptied has no DTO and so never reached `affectedNights` via
+            // `writeSessions` — but its rollups still name sessions that are now tombstoned, so it
+            // has to be reconciled too.
+            affectedNights.formUnion(rebuiltNights)
         }
 
         // (d2) Workout episodes -> sessions (+ routes). Batched on the same rule; a workout's
@@ -467,14 +500,63 @@ final class IngestionPipeline {
         return (affectedNights, written)
     }
 
+    /// (d1) (AUDIT 2026-08-06, SLEEP-H2) Tombstone every stored sleep session in a fully-rebuilt
+    /// night that the rebuild no longer claims.
+    ///
+    /// The leak this closes: `HealthKitAdapter.disambiguateWithinNight` numbers a night's clusters
+    /// by POSITION within the night (`base`, `base-1`, `base-2`), so deleting the night's LAST
+    /// cluster in Health makes the rebuild emit `base` and `base-1` and simply stop mentioning
+    /// `base-2`. Nothing then removed it: `writeSessions` only upserts, sleep never populates
+    /// `HealthStoreDeletions.sessions` (that list is written exclusively by the workout read —
+    /// see the comment on the deletions loop above), and `DedupLite` suppresses only losers that
+    /// OVERLAP a winner, which a cluster at a different time of day never does. The orphan stayed
+    /// live and unsuppressed and kept feeding `SleepIntelligenceEngine` — as nap credit against
+    /// the following night's need, or as asleep seconds inflating the night's total. Deleting an
+    /// EARLIER cluster happened to self-heal (the survivor shifts down into the lower-ordinal id
+    /// and the two rows then overlap 1.0, so dedup suppresses one), which is why this only ever
+    /// showed up for the trailing cluster — the afternoon nap, i.e. the common case.
+    ///
+    /// Soft-deleted, never hard (I3), and revivable: `upsertSession`'s `DO UPDATE SET` carries
+    /// `deleted_at=excluded.deleted_at`, so a cluster that comes back is un-tombstoned by the next
+    /// rebuild rather than staying dead.
+    ///
+    /// Two scoping conditions, both required, so this can only ever reach rows the rebuild
+    /// actually owns: the row's `ingestionPath` is `.platformStore`, and its `externalId` is in
+    /// `HealthKitAdapter.sleepExternalIdPrefix`'s namespace. A manually-logged or
+    /// differently-imported sleep row for the same night is left alone. Nights the port did not
+    /// report as rebuilt are never visited at all — a partial-range or delta-only sync would
+    /// otherwise tombstone live sessions it simply had not read.
+    private func pruneRebuiltNights(_ nights: Set<String>, emitted: [SessionDTO], now: Date) throws {
+        var emittedIdsByNight: [String: Set<String>] = [:]
+        for dto in emitted {
+            emittedIdsByNight[DayAttribution.localNight(sessionEnd: dto.end, tz: dto.tz), default: []]
+                .insert(dto.externalId)
+        }
+        for night in nights.sorted() {
+            // Absent rather than empty is the same thing here, and deliberately so: a night the
+            // rebuild emptied (every sample deleted in Health) must have its stale rows removed,
+            // which is the case F4 exists for and could not previously reach.
+            let stillClaimed = emittedIdsByNight[night] ?? []
+            for stored in try measurements.allSleepSessions(localNight: night, includeSuppressed: true) {
+                guard stored.provenance.ingestionPath == .platformStore,
+                      let externalId = stored.provenance.externalId,
+                      externalId.hasPrefix(HealthKitAdapter.sleepExternalIdPrefix),
+                      !stillClaimed.contains(externalId)
+                else { continue }
+                try measurements.softDelete(table: "sessions", metricId: nil, externalId: externalId,
+                                            sourceId: stored.provenance.sourceId, updatedAt: now)
+            }
+        }
+    }
+
     // MARK: - Dedup + derived rollups
 
     /// Reconcile one night and return how many *new* suppressions were journaled.
     ///
     /// Primary sleep and naps are reconciled as two independent same-kind competitions
-    /// (never mixed into one winner pool): the downstream daily-sleep rollup
-    /// (`measurements.primarySleep`) only ever reads `sleepPrimary`, so a long/high-priority
-    /// nap must never be able to out-rank the night's actual primary sleep session.
+    /// (never mixed into one winner pool): the downstream daily-sleep rollup below only ever
+    /// reads `sleepPrimary` rows, so a long/high-priority nap must never be able to out-rank the
+    /// night's actual primary sleep session.
     private func dedup(night: String, priorityBySource: [String: Int],
                        batchId: String, now: Date) throws -> Int {
         let sessions = try measurements.allSleepSessions(localNight: night, includeSuppressed: true)
@@ -522,16 +604,71 @@ final class IngestionPipeline {
 
         // (e) Rebuild the night's daily sleep rollups from the surviving primary sleep so
         // charts/baselines read one uniform interval regardless of how many sources reported.
-        if let primary = try measurements.primarySleep(localNight: night) {
+        //
+        // (AUDIT 2026-08-06, SLEEP-H1) The night's TOTAL, summed across every surviving primary
+        // cluster — deliberately not `measurements.primarySleep(localNight:)`, which returns ONE
+        // row. A night can legitimately hold more than one unsuppressed `sleepPrimary`:
+        // `HealthKitAdapter.makeSession` calls any cluster with at least
+        // `sleepPrimaryMinSeconds` (3h) of asleep time primary, `groupIntoSessions` splits on any
+        // wake gap over `sleepClusterGapSeconds` (3h), and `DedupLite.reconcile` only suppresses
+        // losers that actually OVERLAP a winner — two disjoint clusters score 0 against each other
+        // and both survive. `SleepIntelligenceEngine.assembleNights` sums them on purpose ("a
+        // split night is one night's sleep, not two", golden-tested), so a single-row rollup made
+        // `sleep.time_asleep` state a fraction of the night the derivation layer had already
+        // agreed was one night — and `BaselineEngine.latestPerDay` reads that understated interval
+        // back in as the baseline the engine then scores the full total against.
+        //
+        // Ordered `start_at ASC` by `allSleepSessions`, so `first` is the night's earliest
+        // cluster. That is deliberately the anchor for provenance and lineage: it matches
+        // `SleepNight.primarySessionId` (`sessionIds.first` over start-sorted clusters), so the
+        // rollup and the derived night name the same session as the night's origin.
+        let primaries = try measurements.allSleepSessions(localNight: night, includeSuppressed: false)
+            .filter { $0.kind == .sleepPrimary }
+        if let anchor = primaries.first {
             try upsertDailySleepInterval(metricId: "sleep.time_asleep",
-                                         seconds: primary.detail.timeAsleepSeconds,
-                                         winner: primary, night: night, now: now)
+                                         seconds: totalSeconds(primaries.map { $0.detail.timeAsleepSeconds }),
+                                         winner: anchor, night: night, now: now)
             try upsertDailySleepInterval(metricId: "sleep.time_in_bed",
-                                         seconds: primary.detail.timeInBedSeconds,
-                                         winner: primary, night: night, now: now)
-            try upsertStageIntervals(winner: primary, night: night, now: now)
+                                         seconds: totalSeconds(primaries.map { $0.detail.timeInBedSeconds }),
+                                         winner: anchor, night: night, now: now)
+            try upsertStageIntervals(primaries: primaries, anchor: anchor, night: night, now: now)
+        } else {
+            try tombstoneSleepRollups(night: night, now: now)
         }
         return newSuppressions
+    }
+
+    /// (SLEEP-H2) A night with no surviving primary sleep must not keep the derived rollups a
+    /// previous run wrote for it.
+    ///
+    /// Newly reachable because the rebuilt-night prune above can now empty a night whose sleep the
+    /// user deleted in Health. Without this, `sleep.time_asleep` (and its stage siblings) would
+    /// keep reporting a night that no longer has a session behind it — the same "BADAN kept
+    /// showing sleep the user had already removed" failure one layer up, and worse than the gap
+    /// because the number looks measured.
+    ///
+    /// Soft-deleted rather than suppressed, unlike the winner-flip cases in
+    /// `upsertDailySleepInterval`/`suppressStageRollupWithoutABasis`: those have a winner to point
+    /// `suppressed_by` at, and this case is defined by there not being one. Revivable for the same
+    /// reason every tombstone here is — `upsertIntervalRecord` carries `deleted_at` across, so if
+    /// primary sleep returns to this night the next rollup write un-deletes the row in place.
+    private func tombstoneSleepRollups(night: String, now: Date) throws {
+        for metricId in ["sleep.time_asleep", "sleep.time_in_bed"] + Self.stageRollupMetrics {
+            try measurements.softDelete(table: "interval_records", metricId: metricId,
+                                        externalId: "derived.\(metricId).\(night)",
+                                        sourceId: nil, updatedAt: now)
+        }
+    }
+
+    /// (SLEEP-H1) Sum the figures that are present, or `nil` when none is.
+    ///
+    /// The `nil` matters: it keeps `upsertDailySleepInterval`'s "no basis, write nothing" branch
+    /// reachable for a night whose sources reported no asleep/in-bed figure at all, rather than
+    /// collapsing that absence into a fabricated `0 s` carrying full provenance. A cluster that
+    /// reported nothing simply contributes nothing to a night where another cluster did.
+    private func totalSeconds(_ values: [Double?]) -> Double? {
+        let present = values.compactMap { $0 }
+        return present.isEmpty ? nil : present.reduce(0, +)
     }
 
     /// `workout.session_overlap.v1` (EPIC-03, plan §9.1): an ingested workout suppresses a
@@ -867,21 +1004,48 @@ final class IngestionPipeline {
     /// method is where DATA-01's day-anchoring and DATA-05's winner-flip suppression live, and
     /// both bugs apply to a stage row exactly as they apply to `sleep.time_asleep`. Re-deriving
     /// either one at a second call site is how they come back.
-    private func upsertStageIntervals(winner: Session, night: String, now: Date) throws {
-        let seconds = try stageSeconds(for: winner)
+    ///
+    /// (SLEEP-H1) Summed over the night's whole surviving primary set for the same reason
+    /// `sleep.time_asleep` is — a split night's second cluster is stage data belonging to this
+    /// night, and reading one session's stages made `sleep.deep` disagree with a
+    /// `sleep.time_asleep` that had just been written as the total. `anchor` (the earliest
+    /// cluster) supplies provenance and the day key only.
+    private func upsertStageIntervals(primaries: [Session], anchor: Session,
+                                      night: String, now: Date) throws {
+        let seconds = try stageSeconds(for: primaries)
         for metricId in Self.stageRollupMetrics {
             if let value = seconds[metricId] {
                 try upsertDailySleepInterval(metricId: metricId, seconds: value,
-                                             winner: winner, night: night, now: now)
+                                             winner: anchor, night: night, now: now)
             } else {
-                try suppressStageRollupWithoutABasis(metricId: metricId, winner: winner,
+                try suppressStageRollupWithoutABasis(metricId: metricId, winner: anchor,
                                                      night: night, now: now)
             }
         }
     }
 
-    /// (COV-01) Per-stage seconds for `winner`, or an EMPTY map when this source does not stage
-    /// sleep at all.
+    /// (SLEEP-H1) The night's per-stage seconds: every primary cluster that genuinely stages sleep,
+    /// summed; empty when none of them does.
+    ///
+    /// Per cluster rather than over one flattened segment list, because `stageSeconds(forOne:)`'s
+    /// `sleep.awake` clipping is defined relative to *that cluster's* sleep onset. A split night
+    /// has two onsets — the second cluster's settling-down stretch is pre-onset time for that
+    /// cluster, not post-onset wakefulness of the first — so flattening would fold a whole
+    /// re-settling period into "awake after sleep onset" and overstate the metric under its own
+    /// registry label. A cluster that stages nothing contributes nothing rather than zeros, which
+    /// keeps the honesty gate meaningful on a night where only one source staged.
+    private func stageSeconds(for sessions: [Session]) throws -> [String: Double] {
+        var totals: [String: Double] = [:]
+        for session in sessions {
+            let perCluster = try stageSeconds(forOne: session)
+            guard !perCluster.isEmpty else { continue }
+            for (metricId, value) in perCluster { totals[metricId, default: 0] += value }
+        }
+        return totals
+    }
+
+    /// (COV-01) Per-stage seconds for ONE primary cluster, or an EMPTY map when this source does
+    /// not stage sleep at all. Summed across the night's clusters by `stageSeconds(for:)` above.
     ///
     /// Read from `session_stages` rather than from the winner's `detail.stageSummarySeconds`,
     /// even though the latter is already sitting in memory. `sleep.awake` is defined by the
@@ -904,7 +1068,7 @@ final class IngestionPipeline {
     /// `asleepUnspecified` time on an otherwise-staged night is deliberately attributed to no
     /// stage. It is time the source declined to classify, and folding it into `sleep.light`
     /// because light sleep is the most common stage would be a guess presented as a measurement.
-    private func stageSeconds(for winner: Session) throws -> [String: Double] {
+    private func stageSeconds(forOne winner: Session) throws -> [String: Double] {
         let segments = try measurements.stages(sessionId: winner.id).sorted { $0.startAt < $1.startAt }
         guard segments.contains(where: { Self.stagedSleepMarkers.contains($0.stage) }),
               // Sleep onset: the first segment the source calls sleep of any kind. `inBed` is
@@ -976,11 +1140,32 @@ final class IngestionPipeline {
     /// Upsert a Source (and Device, when present) per descriptor and return the sourceId ->
     /// dedup-priority map. Explicit descriptor priority wins; otherwise a wrist device
     /// outranks a phone (watch > phone), falling back to 0.
+    ///
+    /// (AUDIT 2026-08-06, INGESTION-01) The map covers every source in the STORED catalog, not
+    /// only the ones THIS run's port handed over. `HistoricalHealthKitReader.sourceDescriptors()`
+    /// deliberately returns `[]` — it reads the same store live sync already catalogued and must
+    /// not race to author those rows — so on that path the map used to come back EMPTY, and
+    /// `dedup(night:priorityBySource:)` resolved every source to `?? 0`. With every source tied at
+    /// zero, `DedupLite.reconcile` fell straight through its priority comparison to "longest
+    /// duration, then id": an Apple Watch night lost to a phone sleep-app's longer in-bed cluster,
+    /// the compensation loop flipped the stored suppressions, and the rollups were rewritten from
+    /// the phone's numbers — for EVERY night in the import window, including the ~90 days live
+    /// sync had already reconciled correctly, since the two windows overlap by construction and
+    /// `HistoricalHealthKitReader.readSessions` rebuilds every night in its range unconditionally.
+    /// Nothing repaired it afterwards: live sync only re-dedups a night when HealthKit re-delivers
+    /// a sleep sample for it, which never happens for settled history.
+    ///
+    /// The catalog is where the answer actually lives, so the map is seeded from there rather than
+    /// from whichever descriptors happened to arrive.
     private func upsertSourcesAndDevices(_ descriptors: [SourceDescriptor], now: Date) throws -> [String: Int] {
-        var priorityBySource: [String: Int] = [:]
         // Fetch the known device set once instead of re-querying per descriptor — devices
         // rarely change between ingest calls, and this runs on every sync, not just the first.
         let allDevices = try catalog.devices()
+        // (INGESTION-01) Seed from the stored catalog first; the descriptor loop below then
+        // overwrites its own entries with the fresher, explicit value. A descriptor is strictly
+        // better information than a re-derivation — it carries the source's own `priority` — but
+        // its ABSENCE says nothing at all about a source, which is the assumption that broke.
+        var priorityBySource = try storedSourcePriorities(devices: allDevices)
         for d in descriptors {
             let existing = try catalog.source(id: d.id)
             // AUDIT FIX (debt-closeout wave 2, pre-existing gap): this used to hardcode
@@ -1007,6 +1192,27 @@ final class IngestionPipeline {
         return priorityBySource
     }
 
+    /// (INGESTION-01) The dedup priority of every source already in the catalog, whether or not
+    /// this run's port described it.
+    ///
+    /// `sources` carries no priority column — dedup priority is derived, never stored — so this
+    /// re-derives it from exactly the naming signals a descriptor carries, read back out of the
+    /// catalog rows that descriptor wrote: the source's display name plus the name/model of each
+    /// device filed under it. For a source live sync has seen, the two paths therefore agree.
+    /// What is deliberately NOT recovered is a descriptor's explicit non-zero `priority`, because
+    /// that value was never persisted; a port that supplies one still overwrites this entry in
+    /// `upsertSourcesAndDevices` above, and a port that supplies no descriptors at all gets the
+    /// keyword tier instead of a flat zero, which is the whole point.
+    private func storedSourcePriorities(devices: [Device]) throws -> [String: Int] {
+        let devicesBySource = Dictionary(grouping: devices, by: \.sourceId)
+        var priorityBySource: [String: Int] = [:]
+        for source in try catalog.sources(includeHidden: true) {
+            let words = (devicesBySource[source.id] ?? []).flatMap { [$0.name, $0.model ?? ""] } + [source.displayName]
+            priorityBySource[source.id] = Self.priorityForNaming(words.joined(separator: " "))
+        }
+        return priorityBySource
+    }
+
     /// Non-Apple wearable keywords recognized as a wrist/ring-class device (same tier as
     /// "watch"): without this, any two of these default to priority 0 and are reconciled by
     /// arbitrary id tie-breaking instead of a meaningful source-quality signal.
@@ -1014,8 +1220,15 @@ final class IngestionPipeline {
 
     private func inferredPriority(_ d: SourceDescriptor) -> Int {
         if d.priority != 0 { return d.priority }
-        let hay = ((d.deviceName ?? "") + " " + (d.deviceModel ?? "") + " " + d.displayName).lowercased()
-        if Self.wearableKeywords.contains(where: hay.contains) { return 2 }
+        return Self.priorityForNaming((d.deviceName ?? "") + " " + (d.deviceModel ?? "") + " " + d.displayName)
+    }
+
+    /// Wrist/ring class > phone > unknown, from whatever naming signal is available. Shared by the
+    /// descriptor path and the stored-catalog path (INGESTION-01) so the two cannot drift into
+    /// disagreeing about the same physical device depending on which port did the reading.
+    private static func priorityForNaming(_ text: String) -> Int {
+        let hay = text.lowercased()
+        if wearableKeywords.contains(where: hay.contains) { return 2 }
         if hay.contains("phone") { return 1 }
         return 0
     }

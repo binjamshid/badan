@@ -4,9 +4,15 @@
 > iOS implementation (`apps/ios/`), `packages/` contracts, and the blueprint. Updated as the
 > Android milestone progresses. Legend: ✅ done · 🟡 partial · ⏸ intentionally deferred · ⛔ blocked.
 >
-> **Verification note:** there is no Android CI job yet (tracked separately). Every ✅ below
-> reflects a local, point-in-time check (`assembleDebug`/`./gradlew test`/manual emulator run),
-> not a continuously-enforced CI guarantee — treat it as a snapshot, not a regression net.
+> **Verification note:** an Android CI job exists — `android-build-test`
+> (`.github/workflows/ci.yml`), running `testDebugUnitTest`, `assembleDebug` and a non-blocking
+> lint pass on every push/PR. But it declares `needs: data-contracts`, and `data-contracts` fails
+> shut the instant any iOS or Android resource mirror (`apps/*/…/assets|Resources/*.json`) drifts
+> from its `packages/*.json` source. When that gate is red, `android-build-test` does not run and
+> does not fail — it simply never executes, so no Android CI result is produced at all until the
+> drift is fixed. Treat "green ✅" below as what was verified locally
+> (`assembleDebug`/`./gradlew test`/manual emulator run); CI coverage of Android is structurally
+> intermittent, gated on contract sync, not a standing regression net yet.
 
 ## Stack & bridge decisions
 
@@ -33,11 +39,11 @@
 | Repositories | ✅ | mirror of iOS repos (idempotent upsert, suppression, append-only) |
 | Ingestion + dedup | ✅ | normalize → tz/day attribution → sleep dedup + reversible journal (verified at runtime) |
 | Baselines + insights | ✅ | 14-day median/MAD, wellness-safe templates (en+ar) — same numbers as iOS |
-| Export (CSV/JSON/manifest) | ✅ | 24-column CSV contract, JSON bundle, SHA-256 manifest |
+| Export (CSV/JSON/manifest) | ✅ | 26-column CSV contract, JSON bundle, SHA-256 manifest |
 | FakeHealthStore (deterministic seed) | ✅ | 90-day two-source generator (dedup demo) — identical values to iOS |
-| Health Connect integration | ✅ | real paged `readRecords` → DTOs for 9 record types; availability states; staged permission request + denial retry; sync through the ingestion pipeline; UI card in Sources (`HealthConnectCard`). Manifest: 9 `READ_*` perms + provider `<queries>` + rationale filters |
+| Health Connect integration | ✅ | real paged `readRecords` → DTOs for 16 record types; availability states; staged permission request + denial retry; sync through the ingestion pipeline; UI card in Sources (`HealthConnectCard`). Manifest: 17 `permission.health.READ_*` entries — 16 are record-type reads, the 17th is `READ_HEALTH_DATA_IN_BACKGROUND` (a capability permission, not a record type) — plus provider `<queries>` + rationale filters |
 | Design system (Compose) | ✅ | tokens (light/dark), theme, Card/StatusChip/StatBox/MetricChart(Canvas)/State/Provenance/Pills |
-| Screens (15) | ✅ | onboarding, home, body+sources, metric detail+anatomy, timeline, log hub, symptom/med/workout/nutrition, export, settings, insights |
+| Screens (27) | ✅ | 27 `*Screen.kt` files under `app/src/main/java/`: nav root, onboarding, home, body+sources, metric detail+anatomy, timeline, log hub, symptom/medication/workout/nutrition logging, export family (basic/advanced/health/template manager/automation setup), settings, insights+correlations, journal+context status, health monitor, reports (list+detail), workout detail, route consent |
 | App shell + nav + seed | ✅ | AppEnvironment DI (Compose state), hand-rolled nav, seed on first launch (WAL-fast) |
 | en/ar + RTL | ✅ | structural; Arabic RTL Home verified (full mirroring + Arabic duration) |
 | Unit tests (pure logic) | ✅ | 10 JVM parity tests: units, dedup overlap/reconcile, ULID, median/MAD |
@@ -49,12 +55,18 @@
 - **Persistence engine** (framework SQLite vs Room) and **instant type** (`Long` vs `Date`) — ADR-0007.
 - **Icons**: Material icon keys instead of SF Symbols (UI concern; family/meaning identical).
 - **Compose layout / Material motion / file-share** idioms are Android-native (allowed divergence).
-- **Export byte-identical-with-iOS** is a later conformance goal; Android export is structurally
-  correct and follows the same 24-column contract now.
+- **Export byte-identical-with-iOS** is enforced today, not a later goal: `ExportSchemaParityTest`,
+  `GpxAggregationParityTest` and `ExportEncryptorTest`
+  (`apps/android/app/src/test/java/net/albayyan/badan/`) assert byte-for-byte equality against the
+  shared goldens in `packages/fixtures/`, read from disk rather than copied into either platform's
+  source. `ExportEncryptorTest.iosWrittenContainerDecryptsOnAndroid` decrypts an export container
+  `apps/ios/Sources/Export/ExportEncryption.swift` actually produced — proven interop, not just
+  parallel construction. Android export follows the same 26-column contract
+  (`packages/export-schemas/csv_columns.json`).
 
 ### Health Connect note
 
-Reads are **real** (`HealthConnectAdapter` maps 9 record types via paged `readRecords`) and wired
+Reads are **real** (`HealthConnectAdapter` maps 16 record types via paged `readRecords`) and wired
 end-to-end: availability → staged permission request → sync through the ingestion pipeline, with a
 `HealthConnectCard` in Data Sources. On a stock emulator with no Health Connect provider set up,
 the card honestly shows the "Set up Health Connect" path (verified); on a device with Health
@@ -63,9 +75,18 @@ Timezone attribution uses the device's current zone (HC stores offsets, not IANA
 
 ## Deferred (non-blocking, smaller than what's done)
 
-Health Connect **background delivery / change-token incremental sync** (foreground pull is done) ·
-multi-device sync · vendor integrations · notifications · widgets/Wear · LLM insights · automated
-instrumented/Robolectric DB-pipeline tests (validated at runtime) · screenshot/AR-snapshot CI lane.
+Health Connect **background delivery** (the OS passive-push API; change-token incremental sync on
+the foreground/periodic pull path shipped — EPIC-02, see the header comment in
+`platform/background/SyncWorker.kt`) · multi-device sync · vendor integrations · widgets/Wear ·
+LLM insights · automated instrumented/Robolectric DB-pipeline tests (validated at runtime) ·
+screenshot/AR-snapshot CI lane.
+
+**Notifications shipped, one gap remains (EPIC-32):** channels, `POST_NOTIFICATIONS`, a
+WorkManager-scheduled decision engine, and a durable `notification_deliveries` ledger are all in
+(`platform/notifications/`). The standing gap is medication reminders: unlike iOS's
+`NotificationScheduler` + `MedicationReminderPlan`, **Android has no medication-reminder delivery
+at all** — no `meds` row is ever written and the Notifications settings surface offers no
+medication toggle (see the doc comment on `NotificationClass` in `NotificationDecisionEngine.kt`).
 
 **File-import gap (Apple Health ZIP importer, plan §19):** iOS ships an `export.zip` importer
 (`apps/ios/Sources/Platform/Import/`) that streams Apple's `export.xml` through the ordinary
@@ -85,3 +106,22 @@ Timeline, Symptom/Medication/Workout/Nutrition logging, Export, Insights, Onboar
 have no screenshot yet, and none of the 5 existing images is dark-mode. Capturing these is a
 manual, same-day QA task (use the `badan_route` deep-link extras in `MainActivity.kt` for fast
 navigation to each screen) — not something to synthesize.
+
+**Instrumented-test gap (the module's largest standing test debt):** `apps/android/app/src/`
+has exactly two source sets, `main` and `test` — there is **no `androidTest` source set at all**.
+Yet `app/build.gradle.kts` still declares
+`testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"` in `defaultConfig`, which
+is dead configuration: there is no instrumented source set for a runner to execute. 20 files under
+`app/src/test/java/net/albayyan/badan/` (`BackgroundSubstrateTest`, `BaselineAppendOnlyMigrationTest`,
+`ContextAnnotationWiringTest`, `ExportDeltaBundleTest`, `ExportDeltaCsvTest`, `ExportDestinationsTest`,
+`ExportRunnerTemplateTest`, `ExportSurfacesTest`, `ExportTemplateSystemTest`,
+`HydrationExportInclusionTest`, `HydrationSurfacePresentationTest`, `HydrationTest`,
+`JournalSurfacePresentationTest`, `JournalTest`, `NotificationDecisionEngineTest`,
+`ProfileHRZonesTest`, `ReportBuilderTest`, `ReportRendererTest`, `ReportsNotificationsMigrationTest`,
+`ShortcutActionsTest`) carry an explicit doc-comment caveat naming what they cannot verify because
+there is no androidTest/Robolectric run — real SQLite behavior, `ContentResolver`/`Context`-backed
+paths, and other framework-dependent code covered only by JVM-reachable proxies (writer-layer
+assertions, in-memory fakes) instead of the real Android runtime. The "DB-backed pipeline tests 🟡"
+row in the table above is the tip of this: the debt is systemic across roughly a third of the JVM
+test suite, not confined to the database layer, and closing it means adding an actual
+`androidTest` source set (or Robolectric) — not just writing more JVM tests.

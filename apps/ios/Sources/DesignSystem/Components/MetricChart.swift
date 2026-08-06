@@ -114,7 +114,7 @@ struct MetricChart: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary)
         .accessibilityChartDescriptor(
-            ChartAccessibilityRepresentable(points: points, unit: unit, language: language, arabicDigits: arabicDigits)
+            ChartAccessibilityRepresentable(points: points, unit: unit, language: language)
         )
         .animation(BadanMotion.easeInOut(BadanMotion.standard, reduceMotion: reduceMotion), value: points)
     }
@@ -224,11 +224,7 @@ struct MetricChart: View {
     }
 
     private func dateText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = language.locale
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
+        ChartDateFormatter.string(date, language: language)
     }
 
     // MARK: Outlier clamping (UIUX-088)
@@ -303,7 +299,10 @@ struct MetricChart: View {
             parts.append(Copy.trendSteady.resolved(language))
         }
         if let last = points.last {
-            parts.append("\(Copy.latestValue.resolved(language)) \(yAxisLabel(last.value))")
+            // The spoken form, not `yAxisLabel`: this string is announced and never drawn, so it
+            // takes Latin numerals whatever the user's Arabic-Indic DISPLAY preference says
+            // (`Numerals.accessibleSpokenForm`, FEAT-244).
+            parts.append("\(Copy.latestValue.resolved(language)) \(MetricChartAccessibility.spokenValue(last.value, unit: unit))")
             if let band {
                 if last.value < band.low { parts.append(Copy.belowRange.resolved(language)) }
                 else if last.value > band.high { parts.append(Copy.aboveRange.resolved(language)) }
@@ -314,13 +313,73 @@ struct MetricChart: View {
     }
 }
 
+/// The chart's spoken layer, pulled out of the views the way `CorrelationsPresentation` is, so the
+/// two rules that govern it can be asserted without rendering a chart:
+///
+/// * **Everything announced is bilingual.** The audio graph's axis titles and series name are read
+///   aloud like any other copy, and were English literals — so every chart said "Date" and "Value"
+///   in English to an Arabic reader, in the one layer where a monolingual string is hardest to
+///   notice and does the most damage.
+/// * **Announced numbers are Latin-numeral**, whatever the user's Arabic-Indic DISPLAY preference:
+///   these strings are spoken and never drawn, which is exactly the contract
+///   `Numerals.accessibleSpokenForm` was written for (FEAT-244).
+enum MetricChartAccessibility {
+    static let dateAxisTitle = LocalizedString(en: "Date", ar: "التاريخ")
+    static let valueAxisTitle = LocalizedString(en: "Value", ar: "القيمة")
+    /// The series name VoiceOver announces on entering the audio graph. A chart knows its unit and
+    /// nothing else about the metric it is drawing, so the unit is the name — an unnamed series is
+    /// announced as a bare ordinal, which tells a listener nothing about what they are hearing.
+    static let namedSeries = LocalizedString(en: "Readings in {unit}", ar: "القراءات بوحدة {unit}")
+    static let unnamedSeries = LocalizedString(en: "Readings", ar: "القراءات")
+
+    static func seriesName(unit: String?, language: AppLanguage) -> String {
+        guard let unit, !unit.isEmpty else { return unnamedSeries.resolved(language) }
+        return namedSeries.filling(["unit": unit]).resolved(language)
+    }
+
+    /// The spoken twin of `MetricChart.yAxisLabel` — same number, same unit suffix, Latin digits.
+    static func spokenValue(_ value: Double, unit: String?) -> String {
+        let number = Numerals.accessibleSpokenForm(value)
+        guard let unit, !unit.isEmpty else { return number }
+        return "\(number) \(unit)"
+    }
+}
+
+/// `DateFormatter` is comparatively expensive to construct (locale resolution, symbol tables) and
+/// both callers in this file sit in a loop: the selection caption reformats on every drag update,
+/// and the audio-graph x-axis closure below runs on every VoiceOver scrub tick. One formatter per
+/// language, built once — the same shape as `CSVFileParser`'s cached ISO formatters.
+private enum ChartDateFormatter {
+    private static let en = ChartDateFormatter.medium(.en)
+    private static let ar = ChartDateFormatter.medium(.ar)
+
+    private static func medium(_ language: AppLanguage) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = language.locale
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }
+
+    /// Both instances are configured at initialization and never mutated afterwards, which is the
+    /// condition under which `DateFormatter.string(from:)` is safe to call from several threads.
+    static func string(_ date: Date, language: AppLanguage) -> String {
+        switch language {
+        case .en: return en.string(from: date)
+        case .ar: return ar.string(from: date)
+        }
+    }
+}
+
 /// `AXChartDescriptorRepresentable` for `MetricChart`, enabling iOS's native audio-graph
 /// gesture (VoiceOver users can "hear" the trend shape, not just a spoken summary) (FEAT-240).
 private struct ChartAccessibilityRepresentable: AXChartDescriptorRepresentable {
     var points: [MetricChart.Point]
     var unit: String?
     var language: AppLanguage
-    var arabicDigits: Bool
+    // No `arabicDigits` here on purpose: it used to be threaded in and fed to `Numerals.format`,
+    // which put Eastern Arabic-Indic glyphs into strings that are only ever spoken. The digit
+    // preference governs what is drawn; the audio graph is not drawn.
 
     func makeChartDescriptor() -> AXChartDescriptor {
         let xValues = points.map { $0.date.timeIntervalSince1970 }
@@ -331,31 +390,24 @@ private struct ChartAccessibilityRepresentable: AXChartDescriptorRepresentable {
         let yMax = yValues.max() ?? yMin + 1
 
         let xAxis = AXNumericDataAxisDescriptor(
-            title: "Date",
+            title: MetricChartAccessibility.dateAxisTitle.resolved(language),
             range: xMin...max(xMax, xMin + 1),
             gridlinePositions: []
         ) { [language] value in
-            let formatter = DateFormatter()
-            formatter.locale = language.locale
-            formatter.dateStyle = .medium
-            formatter.timeStyle = .none
-            return formatter.string(from: Date(timeIntervalSince1970: value))
+            ChartDateFormatter.string(Date(timeIntervalSince1970: value), language: language)
         }
 
         let unit = self.unit
-        let language = self.language
-        let arabicDigits = self.arabicDigits
         let yAxis = AXNumericDataAxisDescriptor(
-            title: "Value",
+            title: MetricChartAccessibility.valueAxisTitle.resolved(language),
             range: yMin...max(yMax, yMin + 1),
             gridlinePositions: []
         ) { value in
-            let number = Numerals.format(value, language: language, arabicDigits: arabicDigits)
-            return unit.map { "\(number) \($0)" } ?? number
+            MetricChartAccessibility.spokenValue(value, unit: unit)
         }
 
         let series = AXDataSeriesDescriptor(
-            name: "",
+            name: MetricChartAccessibility.seriesName(unit: unit, language: language),
             isContinuous: true,
             dataPoints: points.map {
                 AXDataPoint(x: $0.date.timeIntervalSince1970, y: $0.value)

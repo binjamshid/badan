@@ -279,9 +279,27 @@ final class MeasurementRepository {
         return try db.query(sql, params).map(Self.readSession)
     }
 
-    /// The "last night" query: the primary sleep session for a local night.
+    /// The "last night" query: the primary sleep session a local night STARTED with.
+    ///
+    /// (AUDIT 2026-08-06, SLEEP-H1) `ORDER BY start_at ASC` — this used to be `DESC`, which was
+    /// wrong the moment a night held more than one unsuppressed `sleepPrimary` row, and it
+    /// legitimately can: `HealthKitAdapter` classifies any cluster with 3h+ of asleep time as
+    /// primary and files it under the night it ENDS in, while `DedupLite` only suppresses losers
+    /// that overlap a winner, so a 13:00–16:30 afternoon sleep survives alongside the night that
+    /// ended at 07:00 that morning. `DESC` then made "last night" mean the afternoon episode on
+    /// every surface that reads this — the Home sleep card, the Insights sleep row and the
+    /// ambient/watch snapshot. `ASC` names the night's first cluster instead, agreeing with
+    /// `SleepNight.primarySessionId` (`sessionIds.first`) in the derivation layer.
+    ///
+    /// This deliberately still returns ONE row, so it remains the wrong thing to compute a night's
+    /// DURATION from — that is a sum over the night's whole primary set, which is what
+    /// `IngestionPipeline.dedup(night:)` writes into the `sleep.time_asleep` rollup and what
+    /// `SleepIntelligenceEngine` derives. Use this for the night's identity and bedtime, not its
+    /// totals.
+    ///
+    /// The `suppressed_by IS NULL` predicate stays: a session that lost a dedup is not the night.
     func primarySleep(localNight: String) throws -> Session? {
-        try db.query("SELECT * FROM sessions WHERE kind = 'sleepPrimary' AND local_night = ? AND deleted_at IS NULL AND suppressed_by IS NULL ORDER BY start_at DESC LIMIT 1;",
+        try db.query("SELECT * FROM sessions WHERE kind = 'sleepPrimary' AND local_night = ? AND deleted_at IS NULL AND suppressed_by IS NULL ORDER BY start_at ASC LIMIT 1;",
                      [.text(localNight)]).first.map(Self.readSession)
     }
 

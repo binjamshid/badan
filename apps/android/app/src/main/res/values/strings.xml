@@ -55,4 +55,71 @@
     <string name="shortcut_water_long">Log water</string>
     <string name="tile_run_export_label">Run export template</string>
     <string name="tile_run_export_subtitle">Opens BADAN\'s Export</string>
+    <!--
+      Pre-declared for the live-workout launcher shortcut. `shortcuts.xml` does not reference it
+      yet: a static shortcut also needs an action constant in `platform/shortcuts/ShortcutActions.kt`
+      and a branch in `MainActivity.handleShortcutIntent`, neither of which this batch owns. The
+      string is here so that task adds a shortcut, not a shortcut plus two locale files.
+    -->
+    <string name="shortcut_workout_short">Workout</string>
+    <string name="shortcut_workout_long">Start a workout</string>
+
+    <!--
+      EPIC-33 — home-screen widget labels and descriptions, one pair per widget kind.
+
+      The label is what the widget picker lists and what the manifest's `android:label` points at;
+      the description is the sentence under it in the picker (`android:description` on
+      appwidget-provider, API 31+). Both are drawn from iOS's own `configurationDisplayName` /
+      `.description` for the same kind — apps/ios/BadanWidgets/*.swift — so the two platforms
+      describe the same widget the same way rather than each inventing its own copy.
+
+      Same register as everything else: a widget shows a number the app already computed. None of
+      these promise an interpretation, and `meds_due` says out loud that it shows nothing until the
+      user turns medications on, because a permanently empty widget with no explanation reads as
+      broken.
+    -->
+    <string name="widget_ring_single_label">Readiness</string>
+    <string name="widget_ring_single_description">Today\'s readiness at a glance.</string>
+    <string name="widget_one_true_sentence_label">Today\'s sentence</string>
+    <string name="widget_one_true_sentence_description">One calm sentence about how today is going.</string>
+    <string name="widget_meds_due_label">Meds due</string>
+    <string name="widget_meds_due_description">Medications due soon, once you turn this on in Settings.</string>
+    <string name="widget_sleep_last_night_label">Sleep</string>
+    <string name="widget_sleep_last_night_description">Last night\'s sleep duration and score.</string>
+    <string name="widget_effort_ring_label">Effort</string>
+    <string name="widget_effort_ring_description">Today\'s effort at a glance.</string>
+
+    <!--
+      Wear tile labels — the Android counterpart to iOS's watchOS complications (readiness, sleep,
+      effort). Pre-declared here rather than in the `:wear` module because `:wear` does not exist
+      yet (`settings.gradle.kts` still reads `include(":app")` alone); when it lands, these three
+      pairs move to its own `values/` + `values-ar/` rather than being retyped from scratch, and
+      whatever is left unused here gets swept out.
+
+      A Wear tile is also where iOS's Lock Screen / StandBy accessory widgets end up on Android:
+      keyguard widgets were removed from the platform after API 21, so "glanceable without opening
+      the app" is the watch, not the lock screen.
+    -->
+    <string name="wear_tile_readiness_label">Readiness</string>
+    <string name="wear_tile_sleep_label">Sleep</string>
+    <string name="wear_tile_effort_label">Effort</string>
+
+    <!--
+      Live workout — the foreground-service notification channel, plus the ongoing notification the
+      service must post to exist at all.
+
+      The channel name and description are what the user reads in Android's own Settings, not in
+      BADAN's UI, so the description has to explain WHY the notification cannot be dismissed —
+      otherwise the only available reading is that the app is being pushy. It cannot be dismissed
+      because it is the foreground service; that is the trade Android offers for being allowed to
+      keep recording with the screen off.
+
+      The notification body deliberately carries no reading. A workout notification sits on a lock
+      screen, and BADAN's rule is that no health value ever appears there (see POST_NOTIFICATIONS
+      in AndroidManifest.xml).
+    -->
+    <string name="channel_live_workout_name">Workout in progress</string>
+    <string name="channel_live_workout_description">Shows an ongoing notification while BADAN is recording a workout. Android needs it in order to keep the recording running with your screen off, so it stays until the workout ends.</string>
+    <string name="notification_live_workout_title">Recording your workout</string>
+    <string name="notification_live_workout_text">BADAN is recording. Tap to open, or end the workout to stop.</string>
 </resources>

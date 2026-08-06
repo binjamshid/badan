@@ -35,14 +35,19 @@ final class SensitiveMeasurementRoutingTests: XCTestCase {
             .first?.intValue("n") ?? 0
     }
 
-    private func sample(metricId: String, value: Double, externalId: String) -> RawSample {
-        RawSample(id: ULID.newID(), metricId: metricId, value: value, unit: "mmol/L",
+    /// `batchId`/`measuredAt` default to the pre-existing behaviour (no import lineage, "now"), so
+    /// every call site written before the import-undo cases below is unchanged.
+    private func sample(metricId: String, value: Double, externalId: String,
+                        batchId: String? = nil, measuredAt: Date? = nil) -> RawSample {
+        let at = measuredAt ?? clock.now()
+        return RawSample(id: ULID.newID(), metricId: metricId, value: value, unit: "mmol/L",
                   originalValue: value, originalUnit: "mmol/L",
-                  startAt: clock.now(), endAt: nil, tzId: "Asia/Muscat",
+                  startAt: at, endAt: nil, tzId: "Asia/Muscat",
                   provenance: Provenance(sourceId: "src", ingestionPath: .platformStore,
-                                         externalId: externalId, measuredAt: clock.now(),
+                                         externalId: externalId, importBatchId: batchId,
+                                         measuredAt: at,
                                          measuredTimezone: "Asia/Muscat",
-                                         recordedAt: clock.now(), ingestedAt: clock.now()),
+                                         recordedAt: at, ingestedAt: clock.now()),
                   updatedAt: clock.now(), originDeviceId: "dev", deletedAt: nil)
     }
 
@@ -220,6 +225,102 @@ final class SensitiveMeasurementRoutingTests: XCTestCase {
         XCTAssertTrue(try routed().rawSamples(metricId: MetricID.glucose).isEmpty,
                       "a suppressed row drops out of the default read")
         XCTAssertEqual(try routed().rawSamples(metricId: MetricID.glucose, includeSuppressed: true).count, 1)
+    }
+
+    // MARK: - Import undo (STORAGE-2)
+
+    /// The concrete scenario: a CGM user imports `export.xml`, its glucose is routed into
+    /// `badan_sensitive.db` by `MeasurementRepository` (the Apple Health importer writes its DTOs
+    /// through that same repository, and `HKQuantityTypeIdentifierBloodGlucose` resolves to
+    /// `MetricID.glucose`), then they tap "Undo this import".
+    ///
+    /// `ImportBatchRepository` held only the MAIN connection, so every statement in `undo` — the
+    /// live-id scan, the range, the tombstoning — ran against `badan.db` alone and found none of
+    /// it. The batch was marked `undone` anyway, which `ImportBatch.isUndone` reads as "nothing
+    /// left to take back", so the user could not even try again: told the import was reversed,
+    /// while every imported reading stayed live in the app and in every export.
+    func testImportUndoTombstonesRowsRoutedToTheSensitiveFile() throws {
+        let batches = ImportBatchRepository(db.main, sensitive: db.sensitive)
+        let batchId = ULID.newID()
+        try batches.create(id: batchId, sourceKind: ImportBatch.appleHealthSourceKind,
+                           fileName: "export.xml", state: ImportBatch.stateCompleted,
+                           createdAt: clock.now())
+        let repo = routed()
+        try repo.upsertRawSample(sample(metricId: MetricID.glucose, value: 5.4, externalId: "ig1", batchId: batchId))
+        try repo.upsertRawSample(sample(metricId: MetricID.glucose, value: 7.9, externalId: "ig2", batchId: batchId))
+        try repo.upsertRawSample(sample(metricId: MetricID.restingHeartRate, value: 58, externalId: "ir1", batchId: batchId))
+        XCTAssertEqual(try count(db.sensitive, "raw_samples", metricId: MetricID.glucose), 2, "precondition")
+
+        let result = try batches.undo(id: batchId, now: clock.now())
+
+        XCTAssertEqual(result.removedSamples, 3,
+                       "removedSamples must count the rows in badan_sensitive.db too, not just main's")
+        XCTAssertTrue(try repo.rawSamples(metricId: MetricID.glucose).isEmpty,
+                      "undo must actually take back imported glucose, not merely report that it did")
+        XCTAssertTrue(try repo.rawSamples(metricId: MetricID.restingHeartRate).isEmpty,
+                      "and must still reach the main file it always reached")
+        XCTAssertEqual(try batches.find(id: batchId)?.state, ImportBatch.stateUndone)
+    }
+
+    /// Tombstoned, not hard-deleted, on BOTH sides — the sensitive rows' removal has to reach a
+    /// delta export's `deletions[]` exactly as the main rows' does (see `undo`'s own header).
+    func testImportUndoLeavesRevivableTombstonesInTheSensitiveFile() throws {
+        let batches = ImportBatchRepository(db.main, sensitive: db.sensitive)
+        let batchId = ULID.newID()
+        try batches.create(id: batchId, sourceKind: ImportBatch.appleHealthSourceKind,
+                           fileName: "export.xml", state: ImportBatch.stateCompleted,
+                           createdAt: clock.now())
+        try routed().upsertRawSample(sample(metricId: MetricID.glucose, value: 5.4,
+                                            externalId: "ig3", batchId: batchId))
+
+        try batches.undo(id: batchId, now: clock.now())
+
+        XCTAssertEqual(try count(db.sensitive, "raw_samples", metricId: MetricID.glucose), 1,
+                       "the row must survive as a tombstone, not vanish")
+        let tombstoned = try db.sensitive.query(
+            "SELECT COUNT(*) AS n FROM raw_samples WHERE batch_id = ? AND deleted_at IS NOT NULL;",
+            [.text(batchId)]).first?.intValue("n") ?? 0
+        XCTAssertEqual(tombstoned, 1)
+        // A second undo must be a no-op rather than a second round of writes — the same idempotence
+        // `undo` already guaranteed for main, now that it can see the sensitive rows at all.
+        XCTAssertEqual(try batches.undo(id: batchId, now: clock.now()).removedSamples, 0)
+    }
+
+    /// `affectedRange` is what the caller re-derives over. A window computed from `main` alone
+    /// stops where the non-sensitive rows stop, so scores fed by the imported glucose would keep
+    /// being fed by data the undo was supposed to un-feed.
+    func testImportUndoAffectedRangeCoversTheSensitiveRoutedSpan() throws {
+        let batches = ImportBatchRepository(db.main, sensitive: db.sensitive)
+        let batchId = ULID.newID()
+        try batches.create(id: batchId, sourceKind: ImportBatch.appleHealthSourceKind,
+                           fileName: "export.xml", state: ImportBatch.stateCompleted,
+                           createdAt: clock.now())
+        let tenDaysBack = clock.now().addingTimeInterval(-10 * 86_400)
+        let repo = routed()
+        try repo.upsertRawSample(sample(metricId: MetricID.glucose, value: 5.4, externalId: "ig4",
+                                        batchId: batchId, measuredAt: tenDaysBack))
+        try repo.upsertRawSample(sample(metricId: MetricID.restingHeartRate, value: 58, externalId: "ir2",
+                                        batchId: batchId, measuredAt: clock.now()))
+
+        let range = try XCTUnwrap(try batches.undo(id: batchId, now: clock.now()).affectedRange)
+
+        XCTAssertEqual(range.from, tenDaysBack,
+                       "the window must start at the earliest row in EITHER file")
+        XCTAssertEqual(range.to, clock.now())
+    }
+
+    /// Single-connection mode must keep behaving exactly as it did — ~20 existing test call sites
+    /// construct `ImportBatchRepository(db.main)` and must not start touching a second file.
+    func testImportUndoInSingleConnectionModeIsUnchanged() throws {
+        let batches = ImportBatchRepository(db.main)
+        let batchId = ULID.newID()
+        try batches.create(id: batchId, sourceKind: ImportBatch.appleHealthSourceKind,
+                           fileName: "export.xml", state: ImportBatch.stateCompleted,
+                           createdAt: clock.now())
+        try MeasurementRepository(db.main).upsertRawSample(
+            sample(metricId: MetricID.restingHeartRate, value: 58, externalId: "ir3", batchId: batchId))
+
+        XCTAssertEqual(try batches.undo(id: batchId, now: clock.now()).removedSamples, 1)
     }
 
     // MARK: - The rule itself

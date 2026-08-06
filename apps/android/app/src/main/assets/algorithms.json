@@ -13,8 +13,12 @@
       "semver": "2.0.0",
       "introducedIn": "0.2.0",
       "provisional": false,
-      "producesMetricIds": ["*"],
-      "inputMetricIds": ["*"],
+      "producesMetricIds": [
+        "*"
+      ],
+      "inputMetricIds": [
+        "*"
+      ],
       "methodologyUrl": "docs/algorithms/baselines.md",
       "summaryEn": "Personal-normal band as a robust median with a median-absolute-deviation spread over a per-metric trailing window. Log-normal vitals (HRV) are banded in the log domain; MAD-based outlier rejection removes single wild readings before the band is drawn; the band stays provisional until it has enough points to be honest about.",
       "params": {
@@ -27,9 +31,30 @@
         "retroactiveGraceDays": 2
       },
       "windowTable": [
-        { "metrics": ["heart.hrv"], "windowDays": 60, "transform": "log" },
-        { "metrics": ["heart.rhr", "respiratory.rate", "body.wrist_temp_deviation"], "windowDays": 14, "transform": "identity" },
-        { "metrics": ["sleep.time_asleep", "sleep.time_in_bed"], "windowDays": 28, "transform": "identity" }
+        {
+          "metrics": [
+            "heart.hrv"
+          ],
+          "windowDays": 60,
+          "transform": "log"
+        },
+        {
+          "metrics": [
+            "heart.rhr",
+            "respiratory.rate",
+            "body.wrist_temp_deviation"
+          ],
+          "windowDays": 14,
+          "transform": "identity"
+        },
+        {
+          "metrics": [
+            "sleep.time_asleep",
+            "sleep.time_in_bed"
+          ],
+          "windowDays": 28,
+          "transform": "identity"
+        }
       ],
       "paramNotes": {
         "windowDays": "The DEFAULT trailing window in days for any baseline-eligible metric without an explicit windowTable rule. Overridden per metric by windowTable — HRV 60d, RHR/RR/temp 14d, sleep-need inputs 28d (plan §18). Published rationale in docs/algorithms/baselines.md.",
@@ -47,8 +72,13 @@
       "semver": "1.0.0",
       "introducedIn": "0.1.0",
       "provisional": false,
-      "producesMetricIds": ["sleep.efficiency"],
-      "inputMetricIds": ["sleep.time_asleep", "sleep.time_in_bed"],
+      "producesMetricIds": [
+        "sleep.efficiency"
+      ],
+      "inputMetricIds": [
+        "sleep.time_asleep",
+        "sleep.time_in_bed"
+      ],
       "methodologyUrl": "docs/algorithms/sleep-efficiency.md",
       "summaryEn": "Time asleep as a share of time in bed.",
       "params": {}
@@ -58,8 +88,14 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["sleep.need"],
-      "inputMetricIds": ["sleep.time_asleep", "sleep.debt", "effort.day"],
+      "producesMetricIds": [
+        "sleep.need"
+      ],
+      "inputMetricIds": [
+        "sleep.time_asleep",
+        "sleep.debt",
+        "effort.day"
+      ],
       "methodologyUrl": "docs/algorithms/sleep-need.md",
       "summaryEn": "Personal baseline duration + a decayed share of accumulated debt + a prior-day effort allowance, minus credit for naps. Emitted as a range, never a fake-exact minutes target (plan §4 principle 9).",
       "params": {
@@ -83,8 +119,13 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["sleep.performance"],
-      "inputMetricIds": ["sleep.time_asleep", "sleep.need"],
+      "producesMetricIds": [
+        "sleep.performance"
+      ],
+      "inputMetricIds": [
+        "sleep.time_asleep",
+        "sleep.need"
+      ],
       "methodologyUrl": "docs/algorithms/sleep-need.md",
       "summaryEn": "Actual sleep as a share of estimated need, bounded, shown as a range when the need estimate's confidence is low.",
       "params": {
@@ -101,8 +142,13 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["sleep.debt"],
-      "inputMetricIds": ["sleep.time_asleep", "sleep.need"],
+      "producesMetricIds": [
+        "sleep.debt"
+      ],
+      "inputMetricIds": [
+        "sleep.time_asleep",
+        "sleep.need"
+      ],
       "methodologyUrl": "docs/algorithms/sleep-need.md",
       "summaryEn": "Rolling accumulator of (need - actual), decaying exponentially so old shortfalls stop counting rather than accumulating forever.",
       "params": {
@@ -120,8 +166,13 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["sleep.consistency"],
-      "inputMetricIds": ["sleep.midpoint", "sleep.time_asleep"],
+      "producesMetricIds": [
+        "sleep.consistency"
+      ],
+      "inputMetricIds": [
+        "sleep.midpoint",
+        "sleep.time_asleep"
+      ],
       "methodologyUrl": "docs/algorithms/sleep-consistency.md",
       "summaryEn": "0-100 from the variance of bed and wake times across a trailing window; tighter timing scores higher.",
       "params": {
@@ -140,8 +191,12 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["sleep.disturbances"],
-      "inputMetricIds": ["sleep.awake"],
+      "producesMetricIds": [
+        "sleep.disturbances"
+      ],
+      "inputMetricIds": [
+        "sleep.awake"
+      ],
       "methodologyUrl": "docs/algorithms/sleep-consistency.md",
       "summaryEn": "Count of wake-stage episodes lasting at least a threshold duration.",
       "params": {
@@ -154,12 +209,131 @@
       }
     },
     {
+      "algorithmId": "sleep.score",
+      "semver": "0.1.0",
+      "introducedIn": "1.1.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "sleep.score"
+      ],
+      "inputMetricIds": [
+        "sleep.performance",
+        "sleep.consistency",
+        "sleep.disturbances"
+      ],
+      "methodologyUrl": "docs/algorithms/sleep-score.md",
+      "summaryEn": "0-100 composite of how much you slept against your own need, how regular your timing was, and how unbroken the night stayed. Weighted toward duration adequacy, with regularity carrying real weight because timing regularity predicts long-run outcomes at least as well as duration. Renormalised over whichever components exist, and never produced at all without a performance term.",
+      "params": {
+        "performanceWeight": 0.5,
+        "consistencyWeight": 0.3,
+        "continuityWeight": 0.2,
+        "disturbanceZeroScoreCount": 8.0,
+        "performanceCapPercent": 100.0
+      },
+      "paramNotes": {
+        "performanceWeight": "PROVISIONAL. Duration against personal need is the dominant term; a score that ignored it would not be a sleep score.",
+        "consistencyWeight": "PROVISIONAL. Deliberately large for a secondary term: sleep regularity is at least as predictive of long-run outcomes as duration (UK Biobank, SLEEP 2024), so weighting it as a rounding error would misrepresent the evidence.",
+        "continuityWeight": "PROVISIONAL. Smallest weight because disturbance counts are the least reliable input - nil entirely without stage data, and sensitive to how a source segments awakenings.",
+        "disturbanceZeroScoreCount": "PROVISIONAL. Disturbance count at which the continuity term reaches 0.",
+        "performanceCapPercent": "Performance is stored uncapped (sleeping 130% of need is real); the SCORE caps it at 100 so oversleeping cannot buy down a poor consistency term."
+      },
+      "degradationNotes": "Requires sleep.performance, which is nil until a personal sleep-duration baseline exists - so a new install has no score rather than a fabricated one. Consistency (nil below the consistency minimum) and disturbances (nil without stage data) are each dropped from the weighted mean and the remaining weights renormalised, with the result marked provisional whenever any component is absent."
+    },
+    {
+      "algorithmId": "sleep.score_continuity_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "sleep.score"
+      ],
+      "inputMetricIds": [
+        "sleep.performance",
+        "sleep.consistency",
+        "sleep.disturbances"
+      ],
+      "methodologyUrl": "docs/algorithms/sleep-score.md",
+      "summaryEn": "0-100 composite of duration against your own need, timing regularity and how unbroken the night stayed — weighted toward continuity. A long night broken repeatedly scores below a shorter undisturbed one. Renormalised over whichever components exist, and never produced at all without a performance term.",
+      "params": {
+        "performanceWeight": 0.35,
+        "consistencyWeight": 0.15,
+        "continuityWeight": 0.5,
+        "disturbanceZeroScoreCount": 8.0,
+        "performanceCapPercent": 100.0
+      },
+      "paramNotes": {
+        "continuityWeight": "The majority term, and the one to be most careful with: disturbance counts are the least reliable input BADAN has — nil entirely without stage data, and sensitive to how a source segments awakenings. Weighting them heaviest is a legitimate preference, not a better measurement.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of sleep.score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "sleep.score_regularity_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "sleep.score"
+      ],
+      "inputMetricIds": [
+        "sleep.performance",
+        "sleep.consistency",
+        "sleep.disturbances"
+      ],
+      "methodologyUrl": "docs/algorithms/sleep-score.md",
+      "summaryEn": "0-100 composite of duration against your own need, timing regularity and how unbroken the night stayed — weighted toward regularity of timing. A consistent schedule scores well even on a shorter night. Renormalised over whichever components exist, and never produced at all without a performance term.",
+      "params": {
+        "performanceWeight": 0.3,
+        "consistencyWeight": 0.55,
+        "continuityWeight": 0.15,
+        "disturbanceZeroScoreCount": 8.0,
+        "performanceCapPercent": 100.0
+      },
+      "paramNotes": {
+        "consistencyWeight": "The majority term. Sleep regularity is at least as predictive of long-run outcomes as duration (UK Biobank, SLEEP 2024) — that citation supports regularity mattering, NOT this particular weight, which is BADAN's own and unvalidated.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of sleep.score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "sleep.score_duration_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "sleep.score"
+      ],
+      "inputMetricIds": [
+        "sleep.performance",
+        "sleep.consistency",
+        "sleep.disturbances"
+      ],
+      "methodologyUrl": "docs/algorithms/sleep-score.md",
+      "summaryEn": "0-100 composite of duration against your own need, timing regularity and how unbroken the night stayed — weighted hard toward duration. Closest to 'did I get enough hours', with regularity and continuity as adjustments. Renormalised over whichever components exist, and never produced at all without a performance term.",
+      "params": {
+        "performanceWeight": 0.75,
+        "consistencyWeight": 0.15,
+        "continuityWeight": 0.1,
+        "disturbanceZeroScoreCount": 8.0,
+        "performanceCapPercent": 100.0
+      },
+      "paramNotes": {
+        "performanceWeight": "Dominant by design. States plainly that this variant is close to a duration measure, for someone who wants the score to answer 'did I sleep enough'.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of sleep.score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
       "algorithmId": "composite.readiness_score",
       "semver": "2.0.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["readiness.score"],
-      "inputMetricIds": ["heart.hrv", "heart.rhr", "respiratory.rate", "sleep.performance"],
+      "producesMetricIds": [
+        "readiness.score"
+      ],
+      "inputMetricIds": [
+        "heart.hrv",
+        "heart.rhr",
+        "respiratory.rate",
+        "sleep.performance"
+      ],
       "methodologyUrl": "docs/algorithms/readiness.md",
       "summaryEn": "Weighted composite of each input's z-position against its own personal baseline, mapped to 0-100. Reduced-input variants drop a term and redistribute its weight rather than substituting a default.",
       "params": {
@@ -179,12 +353,107 @@
       }
     },
     {
+      "algorithmId": "composite.readiness_score_autonomic",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "readiness.score"
+      ],
+      "inputMetricIds": [
+        "heart.hrv",
+        "heart.rhr",
+        "respiratory.rate",
+        "sleep.performance"
+      ],
+      "methodologyUrl": "docs/algorithms/readiness.md",
+      "summaryEn": "0-100 from the two cardiac autonomic measures only — HRV and resting heart rate against their own personal baselines. Sleep performance and respiratory rate are excluded entirely, so this number never moves because of how you slept, only because of what your heart did.",
+      "params": {
+        "weightHrv": 0.65,
+        "weightRhr": 0.35,
+        "weightSleepPerformance": 0.0,
+        "weightRespiratoryRate": 0.0,
+        "zClampSigmas": 2.5,
+        "minInputsForFullScore": 2,
+        "minInputsToScoreAtAll": 2
+      },
+      "paramNotes": {
+        "weightSleepPerformance": "Zero: this variant excludes sleep by design. Useful when sleep is tracked poorly or not at all, where a sleep term contributes noise rather than signal.",
+        "minInputsForFullScore": "Lowered to 2 because only two inputs exist here at all; leaving it at 3 would mean this variant could never reach full confidence.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of composite.readiness_score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "composite.readiness_score_sleep_led",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "readiness.score"
+      ],
+      "inputMetricIds": [
+        "heart.hrv",
+        "heart.rhr",
+        "respiratory.rate",
+        "sleep.performance"
+      ],
+      "methodologyUrl": "docs/algorithms/readiness.md",
+      "summaryEn": "Weighted composite of each input's z-position against its own personal baseline, mapped to 0-100 — with sleep performance carrying the majority of the weight. How you slept dominates; the heart and respiratory measures adjust around it. Reduced-input variants drop a term and redistribute its weight rather than substituting a default.",
+      "params": {
+        "weightHrv": 0.2,
+        "weightRhr": 0.15,
+        "weightSleepPerformance": 0.55,
+        "weightRespiratoryRate": 0.1,
+        "zClampSigmas": 2.5,
+        "minInputsForFullScore": 3,
+        "minInputsToScoreAtAll": 2
+      },
+      "paramNotes": {
+        "weightSleepPerformance": "The majority term. For someone who finds their readiness tracks how they slept more than anything their watch measured overnight, this states that directly rather than leaving them to distrust the number.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of composite.readiness_score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
+      "algorithmId": "composite.readiness_score_equal",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "readiness.score"
+      ],
+      "inputMetricIds": [
+        "heart.hrv",
+        "heart.rhr",
+        "respiratory.rate",
+        "sleep.performance"
+      ],
+      "methodologyUrl": "docs/algorithms/readiness.md",
+      "summaryEn": "Weighted composite of each input's z-position against its own personal baseline, mapped to 0-100 — with every present input weighted equally. No single measure is privileged, so a day is only called ready when the inputs broadly agree. Reduced-input variants drop a term and redistribute its weight rather than substituting a default.",
+      "params": {
+        "weightHrv": 0.25,
+        "weightRhr": 0.25,
+        "weightSleepPerformance": 0.25,
+        "weightRespiratoryRate": 0.25,
+        "zClampSigmas": 2.5,
+        "minInputsForFullScore": 3,
+        "minInputsToScoreAtAll": 2
+      },
+      "paramNotes": {
+        "weightHrv": "Equal by construction. The behaviour this offers is that no input can carry the score on its own, which suits someone whose HRV is noisy enough that a 0.5 weight makes the number swing more than their experience does.",
+        "variantOf": "PROVISIONAL, and provisional in a second sense: this is a WEIGHTING VARIANT of composite.readiness_score, not an independently validated method. It reuses that entry's computation and param names exactly and changes only the constants. No published study establishes this weighting as more or less correct than the default — what it offers is a different, stateable behaviour the user can judge against their own numbers."
+      }
+    },
+    {
       "algorithmId": "effort.day",
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["effort.day"],
-      "inputMetricIds": ["heart.hr"],
+      "producesMetricIds": [
+        "effort.day"
+      ],
+      "inputMetricIds": [
+        "heart.hr"
+      ],
       "methodologyUrl": "docs/algorithms/effort.md",
       "summaryEn": "Log-curve accumulation over time spent in each heart-rate zone, relative to the user's max HR. Monotonic: more time or higher zones never lower the score.",
       "params": {
@@ -217,8 +486,15 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["effort.workout"],
-      "inputMetricIds": ["heart.hr", "workout.duration", "workout.avg_hr", "workout.max_hr"],
+      "producesMetricIds": [
+        "effort.workout"
+      ],
+      "inputMetricIds": [
+        "heart.hr",
+        "workout.duration",
+        "workout.avg_hr",
+        "workout.max_hr"
+      ],
       "methodologyUrl": "docs/algorithms/effort.md",
       "summaryEn": "The effort.day curve applied over a single session's window instead of the day.",
       "params": {
@@ -236,8 +512,12 @@
       "semver": "0.2.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["stress.day_trend"],
-      "inputMetricIds": ["heart.hrv"],
+      "producesMetricIds": [
+        "stress.day_trend"
+      ],
+      "inputMetricIds": [
+        "heart.hrv"
+      ],
       "methodologyUrl": "docs/algorithms/stress.md",
       "summaryEn": "A DAILY direction of autonomic load, read from DAYTIME heart-rate-variability sampling against the person's own recent daytime pattern — never a live or instantaneous number. A density detector decides first whether anything may be said at all: below the published samples-per-hour gate the surface is hidden with an explanation about the device's sampling, because an Apple-Watch-class wearable does not record daytime HRV densely enough to support a real-time stress index.",
       "params": {
@@ -281,7 +561,9 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["workout.strength.e1rm"],
+      "producesMetricIds": [
+        "workout.strength.e1rm"
+      ],
       "inputMetricIds": [],
       "methodologyUrl": "docs/algorithms/strength.md",
       "summaryEn": "Epley estimated one-repetition maximum: weight * (1 + reps/30), computed per exercise from logged sets.",
@@ -299,7 +581,9 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["workout.strength.e1rm"],
+      "producesMetricIds": [
+        "workout.strength.e1rm"
+      ],
       "inputMetricIds": [],
       "methodologyUrl": "docs/algorithms/strength.md",
       "summaryEn": "Brzycki estimated one-repetition maximum: weight * 36 / (37 - reps), computed per exercise from logged sets. A second published formula alongside workout.strength.e1rm's Epley curve (EPIC-42/28) — shown side by side rather than one replacing the other, since the two diverge meaningfully at higher rep counts and neither is universally more accurate. Shares workout.strength.e1rm's producesMetricIds on purpose: the registry metric is method-agnostic (an estimated one-rep max), and algorithmId/algorithmVersion on the stored row is what says which formula produced it, the same way composite.readiness_score's 1.0.0/2.0.0 both produce readiness.score.",
@@ -319,7 +603,9 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["workout.strength.volume"],
+      "producesMetricIds": [
+        "workout.strength.volume"
+      ],
       "inputMetricIds": [],
       "methodologyUrl": "docs/algorithms/strength.md",
       "summaryEn": "Volume load: the sum of weight * reps across a session's working sets.",
@@ -335,7 +621,9 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["workout.strength.pr"],
+      "producesMetricIds": [
+        "workout.strength.pr"
+      ],
       "inputMetricIds": [],
       "methodologyUrl": "docs/algorithms/strength.md",
       "summaryEn": "Flags a logged set that beats the previous best weight for that exercise, within the same rep-range bucket.",
@@ -354,8 +642,13 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["hydration.volume", "hydration.goal_pct"],
-      "inputMetricIds": ["nutrition.water"],
+      "producesMetricIds": [
+        "hydration.volume",
+        "hydration.goal_pct"
+      ],
+      "inputMetricIds": [
+        "nutrition.water"
+      ],
       "methodologyUrl": "docs/algorithms/hydration.md",
       "summaryEn": "Sums the hydration ledger for a local day and expresses it against the user's own goal. The goal is user-set, not computed for them.",
       "params": {
@@ -372,8 +665,15 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["cycle.day", "cycle.length", "cycle.period_length", "cycle.phase"],
-      "inputMetricIds": ["cycle.flow"],
+      "producesMetricIds": [
+        "cycle.day",
+        "cycle.length",
+        "cycle.period_length",
+        "cycle.phase"
+      ],
+      "inputMetricIds": [
+        "cycle.flow"
+      ],
       "methodologyUrl": "docs/algorithms/cycle.md",
       "summaryEn": "Descriptive-only arithmetic over period start and end dates the user recorded. Emits no prediction of any kind.",
       "params": {
@@ -391,8 +691,14 @@
       "semver": "0.1.0",
       "introducedIn": "0.2.0",
       "provisional": true,
-      "producesMetricIds": ["journal.correlation"],
-      "inputMetricIds": ["readiness.score", "sleep.performance", "effort.day"],
+      "producesMetricIds": [
+        "journal.correlation"
+      ],
+      "inputMetricIds": [
+        "readiness.score",
+        "sleep.performance",
+        "effort.day"
+      ],
       "methodologyUrl": "docs/algorithms/correlations.md",
       "summaryEn": "Behaviour-vs-score association (EPIC-29). For one logged behaviour and one daily score, splits the days the user actually journaled into a behaviour-present arm and a behaviour-absent arm, then compares the NEXT DAY's score distribution between the two. Effect size is Cliff's delta and the interval is a percentile bootstrap — NON-PARAMETRIC throughout, because score distributions are skewed and n is small, so a t-test would be assuming a shape the data does not have. Below the minimum-n gates nothing is emitted at all (suppressed, with the shortfall reported); above them an interval spanning zero is reported honestly as 'no clear association' rather than withheld. Findings are association only; this algorithm makes no causal claim and no surface built on it may.",
       "params": {
@@ -423,6 +729,60 @@
         "confidenceFullNDays": "Paired-day count at which the sample-size half of the confidence factor saturates. Confidence is sampleFactor x precisionFactor (see the doc); it is NOT a p-value and is never rendered as one.",
         "contextCeilingNote": "The confidence ceiling applied when the window overlaps a declared ContextStatus is NOT duplicated here. It lives once, in ContextAnnotator.activeContextConfidenceCeiling, alongside the caveat sentences it belongs with — two copies of one number is exactly the drift this contract exists to prevent (same rule stress.day_trend follows for madToSigma).",
         "noParametricConstants": "There is deliberately no alpha, no critical value, no assumed-sigma and no normality constant in this block. If one ever appears here, the method changed from the published non-parametric one and needs a semver bump and a doc rewrite, not a params tweak."
+      }
+    },
+    {
+      "algorithmId": "subjective.mood_estimate",
+      "semver": "0.1.0",
+      "introducedIn": "1.1.0",
+      "provisional": true,
+      "producesMetricIds": [
+        "subjective.mood_estimate"
+      ],
+      "inputMetricIds": [
+        "sleep.score",
+        "heart.rhr",
+        "heart.hrv"
+      ],
+      "methodologyUrl": "docs/algorithms/mood-estimate.md",
+      "summaryEn": "A daily 1-5 estimate from last night's sleep composite, resting-heart-rate deviation from personal baseline, and - only where daytime HRV sampling is dense enough to permit it - autonomic load. Deliberately multi-input: an estimate resting on HRV alone would be hidden on Apple-Watch-class devices for the same sampling reason stress.day_trend hides, and would be false precision if it were not. Reported on the same scale as the user's own logged mood so the two are directly comparable, and never written over it.",
+      "params": {
+        "sleepWeight": 0.5,
+        "autonomicWeight": 0.3,
+        "restingHeartRateWeight": 0.2,
+        "rhrZeroScoreSigmas": 2.0,
+        "minComponents": 2.0
+      },
+      "paramNotes": {
+        "sleepWeight": "PROVISIONAL. Sleep is the heaviest term because it is the best-sampled input BADAN has and the one with the least contested relationship to next-day subjective state.",
+        "autonomicWeight": "PROVISIONAL. Contributes only when the stress density gate already permits saying anything about daytime HRV at all; otherwise dropped and the weights renormalised.",
+        "restingHeartRateWeight": "PROVISIONAL. Smallest weight: RHR moves for many reasons that have nothing to do with mood (illness, alcohol, altitude, a late meal).",
+        "rhrZeroScoreSigmas": "PROVISIONAL. Deviation above personal baseline, in sigmas, at which the RHR term reaches its floor.",
+        "minComponents": "At least two of the three terms must be present. One term is not a composite, and a 1-5 'mood' resting on resting heart rate alone would be indefensible."
+      },
+      "degradationNotes": "Never produced from fewer than minComponents terms. The autonomic term is gated by the same daytime-HRV density classification stress.day_trend uses, so this cannot become a back door to the real-time stress index that engine exists to refuse. Marked provisional whenever any term is absent."
+    },
+    {
+      "algorithmId": "calibration.user_feedback_offset",
+      "semver": "0.1.0",
+      "introducedIn": "1.2.0",
+      "provisional": true,
+      "producesMetricIds": [],
+      "inputMetricIds": [],
+      "methodologyUrl": "docs/algorithms/calibration.md",
+      "summaryEn": "Personal offset learned from a user's own 'does this match how you felt' feedback on a derived value, applied to later values of that metric under that same method. The offset is the time-decayed net direction of their feedback scaled by a learning rate and clamped to a fixed number of points. Never applied below a minimum number of feedback events, and never carried across methods.",
+      "params": {
+        "minFeedbackEvents": 10.0,
+        "maxOffsetPoints": 5.0,
+        "learningRate": 0.5,
+        "decayHalfLifeDays": 30.0
+      },
+      "paramNotes": {
+        "minFeedbackEvents": "PROVISIONAL. Below this NO adjustment is applied at all — not a smaller one. A handful of taps is a mood, not a signal, and an offset built from three of them would move a number the user then has no way to explain. Also the floor below which no telemetry footprint is ever emitted (D-37), so the two thresholds cannot drift apart.",
+        "maxOffsetPoints": "PROVISIONAL, and the constant that keeps a calibrated readiness recognisably a readiness. An unbounded learned offset makes the number mean nothing — a user who always says 'felt worse' would eventually drive it to zero regardless of their data. The clamp is what stops personalisation becoming detachment from the measurement.",
+        "learningRate": "PROVISIONAL. How much of the observed net disagreement is taken as offset. Below 1.0 deliberately: the feedback says the number felt wrong, not by how much, so moving the whole distance would over-read a signal that carries no magnitude.",
+        "decayHalfLifeDays": "PROVISIONAL. Older feedback counts for less, so a calibration follows how someone feels now rather than being anchored to a month they were ill.",
+        "whyThisIsAContractEntry": "The calibration's own constants live here, not in Swift, for the reason AlgorithmRegistry's doc gives: a silent default is indistinguishable, on the stored row, from an authored constant. It also buys the fail-closed property free — no entry means CalibrationSpec does not load, which means no calibration is ever applied, matching every other engine."
       }
     }
   ]

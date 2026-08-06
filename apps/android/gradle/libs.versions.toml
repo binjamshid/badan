@@ -14,6 +14,107 @@ kotlinxSerialization = "1.7.3"
 work = "2.9.1"
 junit = "4.13.2"
 
+# ---------------------------------------------------------------------------
+# Everything below was declared in one pass (B1-1) so that no later task in the
+# Android parity port has to edit this file again. An unused declared dependency
+# costs a few seconds of resolution; a version-catalog merge conflict between two
+# concurrent agents costs a batch barrier.
+#
+# Versions were resolved against Google's Maven and Maven Central on 2026-08-04,
+# not copied from memory. Where the newest published version is an alpha/beta/rc,
+# the newest *stable* is used and the newer line is named in the comment so the
+# next person does not have to re-derive why.
+#
+# The toolchain (agp / kotlin / composeBom above) is deliberately NOT bumped here.
+# Bumping Kotlin or the Compose BOM recompiles the whole module and would land in
+# the middle of concurrent sibling tasks; where a library line is pinned below to
+# stay compatible with Kotlin 2.0.21 / Compose 1.7.x, that is said explicitly.
+# ---------------------------------------------------------------------------
+
+# --- Test infrastructure ---------------------------------------------------
+# Robolectric 4.16.1 (4.17 is still -beta-2). 4.16 is the first line that ships an
+# `android-all` image for Android 16 / API 36, which is this module's targetSdk —
+# an older Robolectric would force every Robolectric test to carry @Config(sdk=…)
+# pinning it below the SDK the app actually targets.
+robolectric = "4.16.1"
+# androidx.test core/runner/rules share one version line; ext:junit is versioned
+# separately by AndroidX and is currently 1.3.0.
+androidxTest = "1.7.0"
+androidxTestExtJunit = "1.3.0"
+# kotlinx-coroutines-test only ever lands on test classpaths; the main source set
+# keeps whatever coroutines version lifecycle resolves.
+#
+# 1.9.0, NOT the current stable 1.11.0 — and this is the same trap as `billing` below, so read
+# that comment too. coroutines-test 1.10.x is built against kotlin-stdlib 2.1.0 and 1.11.0 against
+# 2.2.20; either drags kotlin-stdlib past this module's Kotlin 2.0.21 compiler, which then refuses
+# the metadata outright ("binary version of its metadata is 2.2.0, expected version is 2.0.0").
+# 1.9.0 is the newest line built against stdlib 2.0.x. Bump it in the same change that bumps
+# `kotlin`, never on its own.
+coroutines = "1.9.0"
+
+# --- Glance app widgets (stay inside :app — ADR-0012) ----------------------
+# 1.1.1 is the newest stable; 1.2.0-rc01 / 1.3.0-alpha02 exist but a widget host is
+# not a place to run a release candidate.
+glance = "1.1.1"
+
+# --- Wear OS (:wear) -------------------------------------------------------
+# Wear Compose 1.4.1 rather than the newest stable (1.6.2) *on purpose*: 1.4.1's POM
+# pins androidx.compose.* to 1.7.0, which is the generation the shared Compose BOM
+# (2024.10.01 → 1.7.4) resolves. Wear Compose 1.5.x pulls Compose 1.8.x and 1.6.x
+# pulls 1.9.x, either of which would silently run a Compose runtime newer than the
+# Compose compiler bundled with Kotlin 2.0.21. Bump `wearCompose` in the same change
+# that bumps `kotlin` + `composeBom`, never on its own.
+wearCompose = "1.4.1"
+wear = "1.4.0"
+# Tiles and the complications data source are not Compose-based (ProtoLayout), so
+# they carry no Compose-generation constraint and take the newest stable.
+wearTiles = "1.6.2"
+wearWatchface = "1.3.0"
+# Phone↔watch transport. Declared for BOTH :app and :wear — the DataClient/MessageClient
+# wire format lives in :contracts and both ends need the same GMS library to speak it.
+playServicesWearable = "20.0.1"
+
+# --- Monetization / attestation -------------------------------------------
+# D-40: one `badan_pro` subscription with monthly/yearly base plans + a separate
+# one-time `pro.lifetime` product.
+#
+# 8.0.0, NOT the current stable 9.1.0 — verified empirically, not guessed. Play Billing 8.1.0 and
+# every line after it is compiled with a Kotlin newer than this module's, and the Kotlin 2.0.21
+# compiler rejects the metadata outright:
+#
+#   e: …/billing-ktx-9.1.0-api.jar!/…/ktbilling_granule.kotlin_module Module was compiled with an
+#      incompatible version of Kotlin. The binary version of its metadata is 2.3.0, expected 2.0.0
+#
+# and then dies with "Internal compiler error … source must not be null" pointing at MainActivity.kt
+# — a failure whose message names the wrong file entirely. 8.0.0 is the newest line still built
+# against kotlin-stdlib 1.4.0, and it already has everything D-40 needs (base plans, the 3-day
+# acknowledgment requirement, queryPurchasesAsync for restore).
+#
+# Bump this in the same change that bumps `kotlin`, and not before. See also the kotlin-stdlib
+# `strictly` constraint in app/build.gradle.kts, which turns this class of mistake into a legible
+# version-conflict error instead of a compiler crash.
+billing = "8.0.0"
+# D-41: Play Integrity stands in for App Attest. Note this is the one dependency here
+# that implies a network round trip at the attestation layer itself — D-41 records that
+# honestly rather than calling it a like-for-like swap.
+playIntegrity = "1.6.0"
+
+# --- Storage ---------------------------------------------------------------
+# D-39: `sqlcipher-android`, the maintained successor. ADR-0010 §A16 names the archived
+# `net.zetetic:android-database-sqlcipher`; that artifact is not used and must not be
+# reintroduced. Scoped to badan_sensitive.db only, key Android-Keystore-derived.
+sqlcipher = "4.17.0"
+# security-crypto reached stable 1.1.0 (it sat on 1.1.0-alphaNN for years) — use the
+# stable, not 1.0.0 and not an alpha.
+securityCrypto = "1.1.0"
+
+# --- OCR -------------------------------------------------------------------
+# ML Kit Text Recognition v2. See the note on `mlkit-text-recognition` below: the
+# Latin-script model is bundled in this artifact, and there is NO Arabic model in
+# ML Kit at any version. That is a real capability gap against iOS Vision, not a
+# missing dependency line.
+mlkitTextRecognition = "16.0.1"
+
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
@@ -35,8 +136,65 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
+# --- Test infrastructure ---------------------------------------------------
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTest" }
+androidx-test-core-ktx = { group = "androidx.test", name = "core-ktx", version.ref = "androidxTest" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTest" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTest" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
+# Compose test artifacts are versioned by the Compose BOM, same as the ui/material3
+# lines above — pinning them separately is how a Compose/Compose-test skew starts.
+androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+# work-testing MUST track `work` exactly — WorkManager's TestDriver reaches into
+# internals, and a runtime/testing version skew fails at run time, not at resolution.
+androidx-work-testing = { group = "androidx.work", name = "work-testing", version.ref = "work" }
+
+# --- Glance app widgets ----------------------------------------------------
+# Lives in :app, not a separate module: a GlanceAppWidgetReceiver is an ordinary
+# BroadcastReceiver in the same process and the same APK (ADR-0012, "Module topology").
+androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
+androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
+
+# --- Wear OS ---------------------------------------------------------------
+androidx-wear = { group = "androidx.wear", name = "wear", version.ref = "wear" }
+androidx-wear-compose-material = { group = "androidx.wear.compose", name = "compose-material", version.ref = "wearCompose" }
+androidx-wear-compose-foundation = { group = "androidx.wear.compose", name = "compose-foundation", version.ref = "wearCompose" }
+androidx-wear-compose-navigation = { group = "androidx.wear.compose", name = "compose-navigation", version.ref = "wearCompose" }
+androidx-wear-tiles = { group = "androidx.wear.tiles", name = "tiles", version.ref = "wearTiles" }
+androidx-wear-tiles-material = { group = "androidx.wear.tiles", name = "tiles-material", version.ref = "wearTiles" }
+androidx-wear-watchface-complications-data-source-ktx = { group = "androidx.wear.watchface", name = "watchface-complications-data-source-ktx", version.ref = "wearWatchface" }
+play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
+
+# --- Monetization / attestation -------------------------------------------
+billing-ktx = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }
+play-integrity = { group = "com.google.android.play", name = "integrity", version.ref = "playIntegrity" }
+
+# --- Storage ---------------------------------------------------------------
+sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+
+# --- OCR -------------------------------------------------------------------
+# ML Kit Text Recognition v2. The base artifact IS the Latin-script model — there is no
+# separate `text-recognition-latin`. The only separate script models Google publishes are
+# `-chinese`, `-devanagari`, `-japanese` and `-korean`; a `text-recognition-arabic`
+# artifact DOES NOT EXIST (checked against Google's Maven, 2026-08-04 — 404).
+#
+# That is a genuine parity gap, not an omission here: iOS reads Arabic lab reports through
+# Vision (see apps/ios/Sources/Ingest/OCR/LabDocumentOCR.swift, which explicitly handles
+# Arabic letters, tashkeel, Arabic-Indic digits and RTL reading order). ML Kit cannot do
+# that at any version. Whoever ports the lab notebook must NOT quietly ship a Latin-only
+# Android OCR path and call it parity — this needs a decided answer (a different OCR
+# engine, or a declared G6 variance), which is a decision, not a dependency line.
+mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+# :contracts is a pure kotlin("jvm") module — no Android plugin, by design, so that it
+# physically cannot reach Context, SQLite or Health Connect (ADR-0012).
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

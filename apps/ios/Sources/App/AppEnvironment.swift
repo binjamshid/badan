@@ -270,7 +270,11 @@ final class AppEnvironment {
         let journal = JournalRepository(sensitive: sensitive)
         self.journal = journal
         self.correlations = CorrelationRepository(sensitive: sensitive)
-        self.importBatches = ImportBatchRepository(main)
+        // STORAGE-2: `sensitive:` for the same reason `measurements` above takes it. An import's
+        // rows go wherever `MeasurementRepository` routed them, so an undo wired with `main` alone
+        // cannot reach the glucose an Apple Health archive wrote into `badan_sensitive.db` — it
+        // would report the batch undone while every one of those readings stayed live.
+        self.importBatches = ImportBatchRepository(main, sensitive: sensitive)
         self.notificationDeliveries = NotificationDeliveryRepository(main)
         let reportRepo = ReportRepository(main)
         self.reports = reportRepo

@@ -1,0 +1,24 @@
+Thank you — attached are sample screens of the app with Health Records data imported, along with a note on how they were produced.
+
+Health Records are gated by region and by participating institution, and the iOS Simulator has no connected provider accounts, so HKObjectType.clinicalType(forIdentifier: .labResultRecord) is unavailable there. We do not currently have access to a device with a live provider account connected. Rather than send nothing, we produced these screens by feeding representative FHIR R4 resources — the same shapes HealthKit returns from HKClinicalRecord.fhirResource, namely standalone Observation resources and a DiagnosticReport carrying contained Observations — through the app's own import path. Everything shown is the shipping code: the FHIR parser, the importer, the local database and all four screens. Only the HealthKit fetch itself was substituted. The provider names and the values are invented.
+
+The screens, in order:
+
+1. "Import from Health", immediately after the user taps Import. The screen states the terms of the import — the app only reads and never writes anything back to Health, and imported results are stored encrypted on the device — and reports the outcome: "Imported 15 results into 2 reports."
+
+2. The Lab notebook after the import. The imported records appear as two reports, one per provider and collection date.
+
+3. One imported report, listing each lab result with the value and unit exactly as the provider reported them.
+
+4. A single marker over time, assembled from the two imported reports.
+
+How the app uses the Health Records API:
+
+- Read-only. We call requestAuthorization(toShare: [], read: [labResultRecord]) with an empty share set. The app never writes to Health.
+- We request lab result records only. No other clinical record type is requested.
+- The import is user-initiated. Nothing is read in the background; the user must open this screen and tap the button.
+- Imported records stay on the device, in an encrypted local database. The app has no accounts and no server for health data — nothing read from Health Records is transmitted anywhere.
+- Values and units are preserved as the provider reported them. The app presents them as a record of what the lab said; it offers no diagnosis, no interpretation and no medical advice.
+- If nothing comes back, the app says so without telling the user they were denied. HealthKit does not distinguish "no records available" from "access not granted", so we do not guess which occurred.
+
+Please let us know if anything further would help.

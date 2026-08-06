@@ -9,8 +9,8 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "1.1"
-    CURRENT_PROJECT_VERSION: "5"
+    MARKETING_VERSION: "1.2"
+    CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: ""
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -159,6 +159,13 @@ targets:
         UIBackgroundModes:
           - fetch
           - processing
+        # LAB-06. The document camera in the lab notebook ("Scan with camera"), which is the only
+        # thing in BADAN that opens a capture session. Phrased as scanning a page rather than
+        # "using your camera": the sheet is the one place the user cannot see our own explainer
+        # first, and the honest fact — the pages are read by Vision on this device and go nowhere —
+        # belongs in it. There is no NSPhotoLibraryUsageDescription counterpart on purpose;
+        # `PHPickerViewController` runs out of process and needs no library permission at all.
+        NSCameraUsageDescription: "BADAN opens the camera only when you ask it to scan a lab report, so the pages can be read on this device. Nothing is uploaded, and BADAN never opens the camera on its own."
         # COMP-08: names exactly what's read and the on-device benefit, rather than a generic
         # "your health data" description. Widened alongside A2's read-set expansion — the string
         # is contractually tied to `HealthKitAdapter.readTypes`: a type present here but never
@@ -168,11 +175,12 @@ targets:
         # Routes are deliberately absent — they are not in the initial authorization bundle and
         # get their own consent screen (plan §13.1/§17), so naming them here would ask for
         # something the first prompt does not request.
-        # LAB-11 (EPIC-41). Required alongside the access-health-records entitlement for reading
-        # HealthKit Clinical Records. Names the one record type BADAN actually asks for (lab
-        # results) rather than "health records" generally, and states the write posture plainly —
-        # App Review reads this string for exactly that.
-        NSHealthClinicalHealthRecordsShareUsageDescription: "BADAN can import lab results you have already connected to Apple Health, so they sit alongside the rest of your record in your own lab notebook. It reads them only, never writes or changes anything, and nothing leaves your phone."
+        # NSHealthClinicalHealthRecordsShareUsageDescription is deliberately ABSENT, and must stay
+        # absent. LAB-11 originally read HealthKit Clinical Records; App Review rejected that under
+        # Guideline 2.5.1 (submission d3fd0270, 1.1 build 5) on the grounds that no primary feature
+        # required the API, and the lab notebook now fills from PDFs, photos and the document
+        # camera instead — all on-device Vision OCR. Reintroducing this key without a new ADR
+        # re-opens a rejection Apple has already ruled on once.
         NSHealthShareUsageDescription: "BADAN reads your sleep, heart rate, resting heart rate, heart rate variability, breathing rate, blood oxygen, wrist temperature, steps, distance, flights climbed, energy burned, cardio fitness, body measurements, blood glucose, and workouts on your device to build your personal, private health repository. Nothing leaves your phone."
         # COMP-10 REVISED: originally removed on the reasoning that a write-usage string with no
         # write path was misleading (`HealthKitAdapter.requestAuthorization` calls `toShare: []`,

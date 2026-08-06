@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    :wear's own resources. `apps/android/app/src/main/res/values/strings.xml` is a frozen magnet
+    file and is NOT this module's; anything the watch surface needs is declared here, in both
+    locales, in the same change (android-port-conventions.md §7).
+-->
+<resources>
+    <string name="wear_app_name">BADAN</string>
+</resources>

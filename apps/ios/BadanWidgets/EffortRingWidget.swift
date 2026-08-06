@@ -68,6 +68,11 @@ struct EffortRingWidgetView: View {
             } currentValueLabel: {
                 if showsValue {
                     Text("\(Int(effort.score.rounded()))")
+                        // S-5: iOS does NOT redact accessory-family content by itself, so without
+                        // this the number renders in full on a LOCKED Lock Screen. Same reasoning,
+                        // same placement as `RingSingleWidget` — see that file for the long form.
+                        // The arc stays unmarked: a shape is not a disclosure.
+                        .privacySensitive()
                 } else {
                     Image(systemName: "eye.slash")
                 }
@@ -95,6 +100,9 @@ struct EffortRingWidgetView: View {
                     .font(.system(size: 40, weight: .semibold, design: .rounded))
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
+                    // S-5: this `.systemSmall` body is also what StandBy renders, and StandBy
+                    // redacts privacy-sensitive content while the device is locked.
+                    .privacySensitive()
             } else if effort != nil {
                 Image(systemName: "eye.slash")
                     .font(.title2)

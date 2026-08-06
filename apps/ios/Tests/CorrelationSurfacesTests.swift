@@ -129,6 +129,52 @@ final class CorrelationSurfacesTests: XCTestCase {
         XCTAssertTrue(note.ar.contains("14") && note.ar.contains("5"))
     }
 
+    // MARK: - The denominator
+
+    /// One run evaluates every journaled behaviour against every correlated score and applies no
+    /// familywise or false-discovery correction to any of them, so the count of comparisons is part
+    /// of reading any single one. The model carries both counts off the rows it actually built —
+    /// the survivors and the shortfalls together are the run.
+    func testTheNumberOfComparisonsRunIsCountedAlongsideTheOnesThatCleared() {
+        let built = model([
+            .finding(finding(behaviorId: "alcohol")),
+            .finding(finding(behaviorId: "caffeine")),
+            .suppressed(.init(behaviorId: "nap", scoreId: MetricID.readinessScore, nObserved: 9,
+                              nWith: 4, nWithout: 5, reason: .tooFewObservedDays(moreDaysNeeded: 5))),
+            .suppressed(.init(behaviorId: "nap", scoreId: MetricID.sleepPerformance, nObserved: 16,
+                              nWith: 3, nWithout: 13, reason: .tooFewDaysWithBehavior(moreDaysNeeded: 2))),
+            .suppressed(.init(behaviorId: "nicotine", scoreId: MetricID.effortDay, nObserved: 16,
+                              nWith: 14, nWithout: 2, reason: .tooFewDaysWithoutBehavior(moreDaysNeeded: 3))),
+        ])
+        XCTAssertEqual(built.comparisonsRun, 5, "every pair the engine evaluated, not only the listed ones")
+        XCTAssertEqual(built.comparisonsCleared, 2)
+        XCTAssertEqual(built.comparisonsRun, built.findings.count + built.notYet.count)
+    }
+
+    /// And both counts reach the reader, in both languages. A list that shows only what cleared,
+    /// without saying how many were tried, overstates every row on it.
+    func testTheDenominatorNoteStatesBothCountsInBothLanguages() {
+        let built = model([
+            .finding(finding(behaviorId: "alcohol")),
+            .suppressed(.init(behaviorId: "nap", scoreId: MetricID.readinessScore, nObserved: 9,
+                              nWith: 4, nWithout: 5, reason: .tooFewObservedDays(moreDaysNeeded: 5))),
+        ])
+        let note = CorrelationsStrings.denominatorNote.filling([
+            "total": "\(built.comparisonsRun)", "cleared": "\(built.comparisonsCleared)"])
+        for text in [note.en, note.ar] {
+            XCTAssertTrue(text.contains("2"), "the number of comparisons run is stated: \(text)")
+            XCTAssertTrue(text.contains("1"), "the number that cleared is stated: \(text)")
+            XCTAssertFalse(text.contains("{"), "an unfilled placeholder reached the reader: \(text)")
+        }
+        // Counts, never a corrected threshold: no correction was computed, and naming one would be
+        // the same overstatement in the other direction.
+        let en = note.en.lowercased()
+        for jargon in ["p-value", "p value", "bonferroni", "false discovery", "familywise",
+                       "multiple comparison"] {
+            XCTAssertFalse(en.contains(jargon), "the denominator line claims a test that was never run: \(jargon)")
+        }
+    }
+
     // MARK: - A null result is a result
 
     func testNoClearAssociationIsListedAsAFindingNotFilteredOut() throws {
@@ -249,7 +295,9 @@ final class CorrelationSurfacesTests: XCTestCase {
             ("title", CorrelationsStrings.title), ("subtitle", CorrelationsStrings.subtitle),
             ("findingsHeader", CorrelationsStrings.findingsHeader),
             ("notYetHeader", CorrelationsStrings.notYetHeader),
-            ("gateNote", CorrelationsStrings.gateNote), ("emptyTitle", CorrelationsStrings.emptyTitle),
+            ("gateNote", CorrelationsStrings.gateNote),
+            ("denominatorNote", CorrelationsStrings.denominatorNote),
+            ("emptyTitle", CorrelationsStrings.emptyTitle),
             ("emptyMessage", CorrelationsStrings.emptyMessage),
             ("methodNote", CorrelationsStrings.methodNote),
             ("sensitiveOffMessage", CorrelationsStrings.sensitiveOffMessage),
