@@ -66,24 +66,31 @@
   <!-- ====================== ENGLISH ====================== -->
   <section id="en" dir="ltr" lang="en">
     <h1>Privacy Policy</h1>
-    <p class="meta">Last updated: 29 July 2026 · Applies to BADAN for iOS</p>
+    <p class="meta">Last updated: 7 August 2026 · Applies to BADAN for iOS</p>
 
     <div class="callout">
-      <strong>BADAN is a private, on-device health repository.</strong> Everything stays on your
-      device. BADAN has no accounts, and it never sends your health data anywhere on its own
-      initiative. <strong>Recording, scores and creating an export file all happen on your
-      device and involve no network</strong> — that is a property of how the app is built, not a
-      setting you have to find. Three features can reach the internet, all of them off until you
-      turn them on and none of them automatic: the AI coach, delivering an export to an address you
-      entered yourself, and methodology feedback. Section 4 says exactly what each one sends.
+      <strong>BADAN is a private, on-device health repository.</strong> Your health data stays on
+      your device, and BADAN never sends a reading anywhere on its own initiative.
+      <strong>Recording, scores and creating an export file all happen on your device and involve
+      no network</strong> — that is a property of how the app is built, not a setting you have to
+      find. Four features can reach the internet, all of them off until you turn them on and none
+      of them automatic: the AI coach, delivering an export to an address you entered yourself,
+      methodology feedback, and — new in this version — an optional account. Section 4a says
+      exactly what each one sends.
     </div>
 
     <h2>1. Who this is for and what BADAN is</h2>
     <p>
       BADAN organizes your own health readings and the things you choose to log, and presents them
-      back to you. There is no sign-up and no account. You do not give BADAN a name, email, phone
-      number, or password, because there is nowhere for that information to go: the app has no
-      backend.
+      back to you. <strong>You can use all of it without an account</strong>, permanently — nothing
+      in the app is withheld until you sign in.
+    </p>
+    <p>
+      Signing in with Apple is optional and does exactly two things: it lets a subscription you
+      bought follow you to another device, and it lets you invite a friend. Even then, you do not
+      give BADAN a name, email, phone number, or password. BADAN does not ask Apple for your name
+      or your email address, and what it stores is a scrambled (hashed) form of the anonymous
+      identifier Apple issues — never anything that can be turned back into your Apple ID.
     </p>
     <p>
       BADAN is a wellness and self-tracking tool. It is <strong>not a medical device</strong> and does
@@ -127,18 +134,20 @@
         Apple Health, working out your scores, and <strong>creating an export file</strong> all
         happen entirely on your device. The build is checked for that on every change, so it cannot
         quietly stop being true.</li>
-      <li><strong>Has no accounts and no sign-in.</strong></li>
+      <li><strong>Does not require an account.</strong> Signing in is optional, and every part of
+        the app works without it. If you do sign in, the account holds what you bought and your
+        referral code — <strong>never a single health reading</strong>.</li>
       <li><strong>Uses no third-party SDKs</strong>: no analytics services, no crash reporting, no
         advertising.</li>
       <li><strong>Does not track you</strong> across apps or websites, and collects no advertising
         identifier.</li>
       <li><strong>Shares nothing automatically.</strong> Nothing leaves your device unless you
-        started it or switched it on — see the next section for the two things that can.</li>
+        started it or switched it on — see the next section for the things that can.</li>
     </ul>
 
     <h2>4a. When BADAN does reach the internet</h2>
     <p>
-      There are exactly three, and all are off until you turn them on. None of them sends your
+      There are exactly four, and all are off until you turn them on. None of them sends your
       stored health records.
     </p>
     <ul>
@@ -151,6 +160,14 @@
         destination, BADAN sends the export file there. The file is still <em>created</em> entirely
         on your device, and the address is one you typed in — BADAN never chooses a destination for
         you.</li>
+      <li><strong>Your account</strong> (off by default — there is no account until you create
+        one). If you sign in with Apple, BADAN's own service at badan.binjamshid.com stores an
+        account number it generates, a scrambled form of the anonymous identifier Apple gave it,
+        the date you signed up, your referral code, and — for each platform — which subscription
+        product you own and when it runs out. That is the complete list. There is no name, no email
+        address, no device list, and <strong>no health data of any kind</strong>. You can delete the
+        account, and everything in it, from Settings → Account → Delete account; deleting it removes
+        nothing from your device, because none of your readings were ever on our server.</li>
       <li><strong>Methodology feedback</strong> (off by default, and only offered after you have
         used the "does this match how you felt?" option). BADAN's calculations use constants that
         have never been checked against real people. If you switch this on, the app sends which
@@ -176,6 +193,11 @@
         to the address you entered — BADAN never chooses a destination for you.</li>
       <li><strong>Delete everything</strong>: Settings → Data management → "Delete all data"
         permanently deletes everything on the device. This cannot be undone.</li>
+      <li><strong>Delete your account</strong>: Settings → Account → Delete account removes it
+        from our server permanently, along with your referral code and the record of which
+        platforms you are subscribed on. It touches none of your readings — those live on your
+        device and were never on our server. A subscription you bought on this device keeps
+        working.</li>
       <li><strong>Erase sensitive records separately</strong>: turning off "Sensitive records" in
         Settings permanently removes all medication and symptom records independently of the rest of
         your data.</li>
@@ -193,9 +215,9 @@
     <h2>7. Children</h2>
     <p>
       BADAN is not directed at children and does not knowingly request or collect personal
-      information from anyone. Because the app has no accounts and transmits nothing off the device,
-      it does not gather age or identity information at all. A device's owner is responsible for who
-      uses the device.
+      information from anyone. It never asks for your age, name or address — not even when you sign
+      in, because it does not ask Apple for them either. Signing in is optional and the app is
+      complete without it. A device's owner is responsible for who uses the device.
     </p>
 
     <h2>8. Changes to this policy</h2>

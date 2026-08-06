@@ -335,11 +335,21 @@ jobs:
           # The allowlist is the whole point — adding a file here should require saying why in a PR.
           #   Platform/AICoach/AICoachClient.swift        the AI coach (ADR-0010 / D-22)
           #   Platform/Telemetry/FootprintClient.swift    methodology telemetry (ADR-0011 / D-37)
+          #   Platform/Account/AccountClient.swift        accounts + entitlement sync (ADR-0014 / D-44)
           #   Export/Destinations/RESTDestination*.swift  the user's own configured export endpoint
-          NET_ALLOWLIST='Sources/Platform/AICoach/AICoachClient.swift|Sources/Platform/Telemetry/FootprintClient.swift|Sources/Export/Destinations/RESTDestination.swift|Sources/Export/Destinations/RESTDestinationAvailability.swift'
+          #
+          # 2026-08-07: the third entry is the one to read twice. ADR-0014 reversed D-32's
+          # no-accounts posture, so this list grew for the first time since ADR-0011 — and the
+          # reason it is a list rather than a "no network" rule is precisely so a reversal has to
+          # be written down here, in a diff, next to the ADR that authorised it. A FOURTH still
+          # requires a new decision. The Never that did NOT move is "send no health data off
+          # device": AccountPayloadShapeTests pins the encoded shape of every request this new
+          # client can build, and test_the_accounts_schema_holds_no_health_column pins the
+          # server's columns.
+          NET_ALLOWLIST='Sources/Platform/AICoach/AICoachClient.swift|Sources/Platform/Telemetry/FootprintClient.swift|Sources/Platform/Account/AccountClient.swift|Sources/Export/Destinations/RESTDestination.swift|Sources/Export/Destinations/RESTDestinationAvailability.swift'
           net_hits="$(grep -rnE "$IOS_NET_API" apps/ios/Sources/ | grep -vE "$NET_ALLOWLIST" || true)"
           if [ -n "$net_hits" ]; then
-            echo "::error::A file outside the network allowlist references a socket-opening API. BADAN reaches the network from exactly two of its own surfaces (AI coach, methodology telemetry) plus the user-configured REST export destination. A third requires an ADR — see ADR-0010 and ADR-0011."
+            echo "::error::A file outside the network allowlist references a socket-opening API. BADAN reaches the network from exactly three of its own surfaces (AI coach, methodology telemetry, the account service) plus the user-configured REST export destination. A fourth requires an ADR — see ADR-0010, ADR-0011 and ADR-0014."
             printf '%s\n' "$net_hits"
             fail=1
           fi

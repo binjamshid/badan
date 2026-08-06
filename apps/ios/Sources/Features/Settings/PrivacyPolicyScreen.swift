@@ -78,15 +78,21 @@ private enum PrivacyPolicyStrings {
 
     static let title = LocalizedString(en: "Privacy Policy", ar: "سياسة الخصوصية")
 
+    // Corrected for ADR-0014 / D-44. This sentence still said "no servers, no accounts, and makes
+    // no network calls" — every clause of which had stopped being true, the first two at different
+    // times. The lede is the only part of this policy most people read, so it is the one place a
+    // stale reassurance does the most damage.
     static let lede = LocalizedString(
-        en: "Everything stays on your device. BADAN has no servers, no accounts, and makes no "
-            + "network calls — nothing you see here is ever transmitted anywhere.",
-        ar: "كل شيء يبقى على جهازك. لا يملك بدن أي خوادم ولا حسابات، ولا يجري أي اتصال بالشبكة — "
-            + "ولا يُنقل أي شيء تراه هنا إلى أي مكان.")
+        en: "Your health data stays on your device. BADAN never sends a reading anywhere. You can "
+            + "now sign in with Apple if you want a subscription to follow you between devices — "
+            + "that account holds what you bought, and nothing about your body.",
+        ar: "تبقى بياناتك الصحية على جهازك. ولا يرسل بدن أي قراءة إلى أي مكان. ويمكنك الآن تسجيل "
+            + "الدخول عبر Apple إن أردت أن يتبعك اشتراكك بين أجهزتك — ويحتفظ ذلك الحساب بما "
+            + "اشتريته، ولا شيء عن جسدك.")
 
     static let appliesTo = LocalizedString(
-        en: "Applies to BADAN for iOS, version 0.1.0. Last updated 2026-07-12.",
-        ar: "ينطبق على بدن لنظام iOS، الإصدار 0.1.0. آخر تحديث 2026-07-12.")
+        en: "Applies to BADAN for iOS, version 1.2. Last updated 2026-08-07.",
+        ar: "ينطبق على بدن لنظام iOS، الإصدار 1.2. آخر تحديث 2026-08-07.")
 
     static let sections: [Section] = [
         Section(
@@ -94,11 +100,16 @@ private enum PrivacyPolicyStrings {
             paragraphs: [
                 LocalizedString(
                     en: "BADAN organizes your own health readings and the things you choose to log, "
-                        + "and shows them back to you. There is no sign-up and no account — you give "
-                        + "BADAN no name, email, or password, because there is nowhere for it to go.",
-                    ar: "ينظّم بدن قراءاتك الصحية وما تختار تسجيله، ويعرضها لك مجدداً. لا يوجد تسجيل "
-                        + "دخول ولا حساب — فأنت لا تعطي بدن اسماً ولا بريداً ولا كلمة مرور، لأنه لا "
-                        + "مكان يذهب إليه أيٌّ من ذلك."),
+                        + "and shows them back to you. You can use all of it without an account. "
+                        + "Signing in with Apple is optional and does one thing: it lets a "
+                        + "subscription follow you to another device, and lets you invite a friend. "
+                        + "Even then you give BADAN no name, email, or password — Apple is not asked "
+                        + "for your name or address, and we keep no record of which Apple ID you are.",
+                    ar: "ينظّم بدن قراءاتك الصحية وما تختار تسجيله، ويعرضها لك مجدداً. ويمكنك استخدامه "
+                        + "بالكامل دون حساب. وتسجيل الدخول عبر Apple اختياري ويؤدي وظيفة واحدة: أن "
+                        + "يتبعك الاشتراك إلى جهاز آخر، وأن تدعو صديقاً. وحتى حينها لا تعطي بدن اسماً "
+                        + "ولا بريداً ولا كلمة مرور — فلا نطلب من Apple اسمك ولا عنوانك، ولا نحتفظ "
+                        + "بسجل لهوية Apple الخاصة بك."),
                 LocalizedString(
                     en: "BADAN is a wellness and self-tracking tool. It is not a medical device and "
                         + "does not diagnose, treat, or give medical advice.",
@@ -156,22 +167,30 @@ private enum PrivacyPolicyStrings {
                 // start yourself" — was already false when the AI coach shipped. ADR-0010 §A9
                 // required this update before ship and it never landed; it is discharged here.
                 LocalizedString(
-                    en: "BADAN has no accounts, no third-party SDKs, no crash reporting, and no "
-                        + "advertising. It does not track you across apps or websites and collects "
-                        + "no advertising identifier.",
-                    ar: "ليس في بدن حسابات ولا حزم برمجية خارجية ولا تقارير أعطال ولا إعلانات. ولا "
-                        + "يتعقّبك عبر التطبيقات أو المواقع، ولا يجمع أي معرّف إعلاني."),
+                    en: "BADAN has no third-party SDKs, no crash reporting, and no advertising. It "
+                        + "does not track you across apps or websites and collects no advertising "
+                        + "identifier. If you sign in, the account stores which subscription you own "
+                        + "on which platform, your referral code, and a scrambled form of the "
+                        + "identifier Apple gives us — never your readings, and never anything we "
+                        + "could turn back into your Apple ID.",
+                    ar: "ليس في بدن حزم برمجية خارجية ولا تقارير أعطال ولا إعلانات. ولا يتعقّبك عبر "
+                        + "التطبيقات أو المواقع، ولا يجمع أي معرّف إعلاني. وإن سجّلت الدخول، يخزّن "
+                        + "الحساب الاشتراك الذي تملكه وعلى أي منصة، ورمز الإحالة الخاص بك، وصورة "
+                        + "مشفّرة من المعرّف الذي تمنحنا إياه Apple — لا قراءاتك أبداً، ولا أي شيء "
+                        + "يمكننا إعادته إلى هوية Apple الخاصة بك."),
                 LocalizedString(
-                    en: "BADAN reaches the internet in exactly three situations, and each one is "
+                    en: "BADAN reaches the internet in exactly four situations, and each one is "
                         + "something you switched on or started yourself: an export you send to a "
                         + "destination you configured; the AI coach, if you enabled it, which sends "
-                        + "your question and nothing else; and methodology feedback, if you enabled "
-                        + "it, described below. Nothing else in the app opens a connection — "
-                        + "recording, scores and export files are all produced on this device.",
-                    ar: "يتصل بدن بالإنترنت في ثلاث حالات فقط، وكلٌّ منها شيء فعّلته أو بدأته بنفسك: "
+                        + "your question and nothing else; methodology feedback, if you enabled it, "
+                        + "described below; and your account, if you signed in, which checks what "
+                        + "you have bought. Nothing else in the app opens a connection — recording, "
+                        + "scores and export files are all produced on this device.",
+                    ar: "يتصل بدن بالإنترنت في أربع حالات فقط، وكلٌّ منها شيء فعّلته أو بدأته بنفسك: "
                         + "تصدير ترسله إلى وجهة أعددتها؛ والمدرّب الذكي، إن فعّلته، ويرسل سؤالك ولا "
-                        + "شيء غيره؛ وملاحظات المنهجية، إن فعّلتها، الموضّحة أدناه. لا شيء آخر في "
-                        + "التطبيق يفتح اتصالاً — فالتسجيل والدرجات وملفات التصدير تُنتَج على هذا الجهاز."),
+                        + "شيء غيره؛ وملاحظات المنهجية، إن فعّلتها، الموضّحة أدناه؛ وحسابك، إن سجّلت "
+                        + "الدخول، ويتحقّق مما اشتريته. لا شيء آخر في التطبيق يفتح اتصالاً — "
+                        + "فالتسجيل والدرجات وملفات التصدير تُنتَج على هذا الجهاز."),
                 // D-37, stated as a limit rather than as a reassurance. The last sentence is the
                 // one users are least likely to expect and most entitled to know: with no
                 // identifier there is nothing on the server that is recognisably theirs, so
@@ -209,6 +228,18 @@ private enum PrivacyPolicyStrings {
                         + "logged yourself. This can't be undone.",
                     ar: "حذف كل شيء: إدارة البيانات ← حذف جميع البيانات يحذف نهائياً كل شيء على "
                         + "الجهاز في القاعدتين، بما في ذلك كل ما سجّلته بنفسك. ولا يمكن التراجع عنه."),
+                // App Review 5.1.1(v) requires in-app account deletion for any app offering
+                // account creation. Stated here as a user right rather than only implemented, and
+                // deliberately next to the data-deletion controls so the difference between the two
+                // is visible: deleting the account touches no reading.
+                LocalizedString(
+                    en: "Delete your account: Settings → Account → Delete account removes it from "
+                        + "our server for good, along with your referral code. It touches none of "
+                        + "your readings — those are on this device and were never on our server. A "
+                        + "subscription you bought on this device keeps working.",
+                    ar: "حذف حسابك: الإعدادات ← الحساب ← حذف الحساب يزيله من خادمنا نهائياً، مع رمز "
+                        + "الإحالة الخاص بك. ولا يمسّ أياً من قراءاتك — فهي على هذا الجهاز ولم تكن "
+                        + "يوماً على خادمنا. ويستمر الاشتراك الذي اشتريته على هذا الجهاز في العمل."),
                 LocalizedString(
                     en: "Erase sensitive records separately: turning off Sensitive records "
                         + "permanently removes all medication and symptom records on their own. "
@@ -222,11 +253,12 @@ private enum PrivacyPolicyStrings {
             paragraphs: [
                 LocalizedString(
                     en: "BADAN is not directed at children and does not knowingly request or collect "
-                        + "personal information from anyone. Because it has no accounts and transmits "
-                        + "nothing off the device, it gathers no age or identity information at all.",
+                        + "personal information from anyone. It never asks your age, name or "
+                        + "address — not even when you sign in, because Apple is not asked for them "
+                        + "either. Signing in is optional and the app is complete without it.",
                     ar: "بدن ليس موجّهاً للأطفال ولا يطلب أو يجمع عن قصد أي معلومات شخصية من أي أحد. "
-                        + "ولأنه بلا حسابات ولا يَنقل شيئاً خارج الجهاز، فهو لا يجمع أي معلومات عن "
-                        + "العمر أو الهوية إطلاقاً."),
+                        + "ولا يسألك يوماً عن عمرك أو اسمك أو عنوانك — ولا حتى عند تسجيل الدخول، "
+                        + "لأننا لا نطلبها من Apple أصلاً. وتسجيل الدخول اختياري والتطبيق كامل دونه."),
             ]),
         Section(
             heading: LocalizedString(en: "Health data and wellness", ar: "البيانات الصحية والعافية"),

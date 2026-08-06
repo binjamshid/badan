@@ -23,15 +23,30 @@ public enum SubscriptionPolicy {
         /// When the app was first launched on this device, or nil if that has not been recorded yet
         /// (in which case the caller is expected to record `now` and re-ask).
         public var firstLaunch: Date?
-        /// Whether the store reports an active, unexpired entitlement to any tier.
+        /// Whether THIS DEVICE's store reports an active, unexpired entitlement to any tier.
         public var hasActiveEntitlement: Bool
         /// Whether the store could be reached. `false` does NOT revoke access — see `isUnlocked`.
         public var storeReachable: Bool
 
-        public init(firstLaunch: Date?, hasActiveEntitlement: Bool, storeReachable: Bool) {
+        /// The last account snapshot this device read, or `nil` when signed out (ADR-0014 / D-44).
+        ///
+        /// Defaulted, and deliberately so: every call site that predates accounts still compiles and
+        /// still means exactly what it meant, because a `nil` snapshot cannot change any answer.
+        /// `EntitlementMerge` can only ever widen access from here, never narrow it.
+        public var syncedSnapshot: EntitlementSnapshot?
+
+        public init(firstLaunch: Date?, hasActiveEntitlement: Bool, storeReachable: Bool,
+                    syncedSnapshot: EntitlementSnapshot? = nil) {
             self.firstLaunch = firstLaunch
             self.hasActiveEntitlement = hasActiveEntitlement
             self.storeReachable = storeReachable
+            self.syncedSnapshot = syncedSnapshot
+        }
+
+        /// Where entitlement is coming from right now, local store included.
+        public func entitlementSource(now: Date) -> EntitlementMerge.Source {
+            EntitlementMerge.resolve(localEntitlement: hasActiveEntitlement,
+                                     snapshot: syncedSnapshot, now: now)
         }
     }
 
@@ -63,7 +78,11 @@ public enum SubscriptionPolicy {
     /// by the cache too, so this costs nothing in enforcement.
     public static func access(_ state: State, now: Date,
                               trialDays: Int = trialDays) -> Access {
-        if state.hasActiveEntitlement { return .subscribed }
+        // Local first, then the account (ADR-0014). `EntitlementMerge` returns `.localStore`
+        // unconditionally when this device owns the product, so signing in can add access and can
+        // never take it away — including when the account surface is broken, unreachable, or
+        // returning nonsense.
+        if state.entitlementSource(now: now).grantsAccess { return .subscribed }
         guard let firstLaunch = state.firstLaunch else { return .notYetStarted }
 
         let elapsed = now.timeIntervalSince(firstLaunch)

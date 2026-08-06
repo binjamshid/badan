@@ -945,3 +945,54 @@ guardrails / Development priorities". That stopped being true when those section
 
 Still worth cross-linking from `CLAUDE.md` if its layout block ever expands:
 `packages/contracts/INVARIANTS.md` and `docs/MONETIZATION.md`, neither of which it names today.
+
+## D-44 — Sign in with Apple arrives; D-32 is reversed, and the no-accounts posture with it
+- **Context:** The founder asked for SIWA wired for cross-platform subscription sync and referrals.
+  This contradicts **D-32** (which dropped SIWA by name, 2026-07-28), **D-40** (which extended the
+  no-accounts posture to Android, 2026-07-30), and **ADR-0002/ADR-0010** (no accounts, no sync, no
+  server-side user state). The conflict was raised in full before any code was written — including
+  that StoreKit already syncs entitlements across a user's Apple devices for free, that referrals
+  could run on App Store Offer Codes with no backend at all, and that the only thing SIWA genuinely
+  buys is iOS↔Android. The founder confirmed the direction with that on the table.
+- **Choice:** BADAN gains an **optional** account, created with Sign in with Apple, whose only jobs
+  are carrying a subscription between platforms and running referrals. See **ADR-0014**.
+- **Rationale:** D-32's reasoning was correct and is not being repudiated — Guideline 4.8 still does
+  not require SIWA here, and StoreKit still binds a purchase to the Apple ID by itself. What D-32
+  did not have to answer, iOS being the only surface, is what happens when the same person pays on
+  iOS and installs on Android: StoreKit's binding stops at Apple's boundary and Play's stops at
+  Google's, and nothing either store offers spans them. Entitlement is the one piece of state that
+  genuinely has to outlive a single vendor's ecosystem. The account is added for that, not to
+  satisfy a guideline that does not exist — which was D-32's actual objection, and it still stands.
+- **What was NOT reversed, and this is the load-bearing half of the decision:**
+  - **"Send no health data off device."** Intact. What crosses the account wire is a statement about
+    a *purchase* — a store, a product id, an expiry. `AccountPayloadShapeTests` pins the encoded
+    shape of every request the client can build; `test_the_accounts_schema_holds_no_health_column`
+    pins the server's columns. Both fail loudly rather than quietly.
+  - **Signed out is a complete, permanent state.** Every reading, derivation, log and export within
+    the D-33 window works identically with no account. `AccountState` has no case that could express
+    "blocked until you sign in".
+  - **D-33 stays the only gate on a user's own records.** Referrals grant premium *time* and gate
+    nothing new.
+  - **The remote may grant access, never revoke it.** `EntitlementMerge.resolve` returns
+    `.localStore` first and unconditionally, so no server failure can lock out a paying user.
+- **Migration impact:**
+  - `SubscriptionPolicy.State` gains `syncedSnapshot`, **defaulted to nil** — every call site
+    predating this decision compiles unchanged and means exactly what it meant, because a nil
+    snapshot cannot change any answer.
+  - New server tables (`accounts`, `account_sessions`, `account_entitlements`) in their own
+    `accounts.db`. No change to any existing database, on device or on the server.
+  - `com.apple.developer.applesignin` added to `App/BADAN.entitlements`.
+  - CI's `NET_ALLOWLIST` grows to a third entry. A fourth still requires a new ADR.
+  - **In-app account deletion becomes mandatory** (App Review 5.1.1(v)) and is implemented.
+  - **The privacy nutrition label changes** — BADAN now collects a user identifier. ASC's privacy
+    answers and both hosted policies must say so before the next submission.
+- **Scope shipped:** **iOS only.** The founder scoped the build to iOS. The service speaks Android's
+  half of the wire already; the client does not exist, Android has no Play Billing integration
+  (D-40 specced the product ids, nothing was built), and the web SIWA flow Android would need is
+  blocked on an Apple Services ID and .p8 key that do not exist yet. Tracked in
+  `docs/android-parity-status.md`. **Do not describe this to users as working across platforms
+  until the Android client ships.**
+- **Supersession:** supersedes **D-32** in full. Narrows **ADR-0002** and **ADR-0010** from "no
+  accounts, no sync, no server-side state" to "accounts and entitlement state, and nothing else".
+  Leaves **D-33**, **D-37/ADR-0011** and **D-40**'s Play product-id shape untouched.
+- **Approval:** accepted — Founder, 2026-08-07, per ADR-0014.

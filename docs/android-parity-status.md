@@ -125,3 +125,26 @@ assertions, in-memory fakes) instead of the real Android runtime. The "DB-backed
 row in the table above is the tip of this: the debt is systemic across roughly a third of the JVM
 test suite, not confined to the database layer, and closing it means adding an actual
 `androidTest` source set (or Robolectric) — not just writing more JVM tests.
+
+## ADR-0014 / D-44 — accounts, cross-platform entitlement sync, referrals: **iOS only**
+
+Shipped on iOS in the 1.2 branch; **not started on Android**, and deliberately so — the founder
+scoped this build to iOS. Recorded here rather than left to be discovered, because the feature is
+*named* for crossing platforms and half of it does not exist yet.
+
+What iOS has: Sign in with Apple, `AccountClient` against `/v1/account/*`, `EntitlementMerge`
+(remote may grant, never revoke), referrals, in-app account deletion.
+
+What Android needs before the sync is real in both directions:
+
+| Piece | Status | Note |
+|---|---|---|
+| Play Billing integration | **absent** | D-40 specified the product-id space (`badan_pro` + base plans, `pro.lifetime` as a one-time product). Nothing is built against it. Until this exists Android has no `localEntitlement` to report, so the *sending* direction is impossible. |
+| Domain mirror (`EntitlementMerge`, `ReferralPolicy`, `SyncedEntitlement`) | **absent** | Kotlin port of `apps/ios/Sources/Domain/{Subscription,Referral}/`. Pure, no framework — the cheapest piece and the one to do first. Mirror the constants literally; the server (`backend/api/accounts.py`) is authoritative and a drift is a code one platform mints and another refuses. |
+| Account client | **absent** | Would be Android's **first** network client for a BADAN-owned service. `apps/android/.../export/destinations/RestDestination.kt` is currently the only networking file in the module, and CI's `AND_NET_API` scan is repo-wide — adding one means widening that allowlist, exactly as `.github/workflows/ci.yml` was widened for the iOS `AccountClient`. |
+| Sign in with Apple | **absent, and blocked on credentials** | Android has no native SIWA. It needs the **web** OAuth flow: an Apple **Services ID**, a **Key ID + .p8 private key** for the ES256 client-secret JWT, and a registered return URL on `badan.binjamshid.com` — none of which exist in the Apple Developer account yet, and none of which can be created from the repository. A backend callback route (`/v1/account/apple/web/*`) and a Custom Tabs launcher are the code half; the portal configuration is a prerequisite, not a follow-up. |
+
+The backend already speaks Android's half of the wire: `PLATFORMS` includes `"android"`,
+`account_entitlements` is keyed by `(account_id, platform)`, and `test_accounts.py` exercises an
+Android entitlement being pushed and read back. So an Android install that could sign in would work
+today — the gap is entirely client-side plus the Apple portal setup above.
