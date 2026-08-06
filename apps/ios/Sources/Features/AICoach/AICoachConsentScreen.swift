@@ -110,6 +110,23 @@ struct AICoachConsentScreen: View {
                 isWorking = false
                 errorNotice = AICoachConsentStrings.enableUnavailableNotice
                 Announce.failure(env.s(AICoachConsentStrings.enableUnavailableNotice))
+            } catch AICoachError.attestationFailedTransiently {
+                // The opposite remedy to the case above, which is why the two are separate cases
+                // at all: the verification round trip to Apple didn't complete (or the key id
+                // couldn't be saved), and another attempt genuinely can succeed. Say "try again"
+                // here — and do NOT say it above.
+                isWorking = false
+                errorNotice = AICoachConsentStrings.enableRetryableNotice
+                Announce.failure(env.s(AICoachConsentStrings.enableRetryableNotice))
+            } catch AICoachError.serverError(let status) where status == 429 {
+                // A single opt-in attempt spends TWO of the server's per-IP registration budget,
+                // because `/v1/attest/challenge` and `/v2/register` share `register_rate_limiter`
+                // (`backend/api/main.py`) — so a couple of failed attempts in an hour produce a
+                // 429 at the challenge stage, before anything has even been attested. That is a
+                // wait, not a wall, and the notice must not read like one.
+                isWorking = false
+                errorNotice = AICoachConsentStrings.enableRateLimitedNotice
+                Announce.failure(env.s(AICoachConsentStrings.enableRateLimitedNotice))
             } catch {
                 isWorking = false
                 errorNotice = AICoachConsentStrings.enableFailedNotice
@@ -258,6 +275,23 @@ private enum AICoachConsentStrings {
             + "here. Everything else in BADAN works as usual.",
         ar: "لا يستطيع هذا الجهاز التحقّق من التطبيق لدى Apple، لذا لا يمكن تفعيل المدرب الذكي "
             + "هنا. بقية أجزاء بدن تعمل كالمعتاد.")
+    /// The retryable twin of the notice above, and the reason `AICoachError` splits the two:
+    /// verification with Apple is a live round trip, so being offline or catching Apple's
+    /// service mid-outage looks nothing like an unsupported device — but it used to produce
+    /// that same dead-end sentence. Names the step that didn't finish, without the jargon
+    /// ("verify", not "attest"), and says plainly that trying again is worth doing.
+    static let enableRetryableNotice = LocalizedString(
+        en: "Couldn't finish verifying the app with Apple this time. This usually clears on its "
+            + "own — try again in a moment.",
+        ar: "تعذّر إكمال التحقّق من التطبيق لدى Apple هذه المرة. عادةً ما تُحلّ هذه المشكلة من "
+            + "تلقاء نفسها — حاول مرة أخرى بعد قليل.")
+    /// The server counts the challenge request and the registration request against one small
+    /// hourly budget, so two or three failed attempts in a row are enough to reach it. Wording
+    /// is deliberately about waiting rather than about anything being blocked or refused: the
+    /// budget resets on its own, and there is nothing for the user to fix.
+    static let enableRateLimitedNotice = LocalizedString(
+        en: "Too many attempts to turn this on in the last hour. Wait a while, then try again.",
+        ar: "جرى عدد كبير من محاولات التفعيل خلال الساعة الماضية. انتظر قليلاً ثم حاول مرة أخرى.")
 
     static let moduleSectionHeader = LocalizedString(en: "AI coach", ar: "المدرب الذكي")
     static let moduleToggleTitle = LocalizedString(en: "AI coach", ar: "المدرب الذكي")

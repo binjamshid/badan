@@ -12,6 +12,14 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 (full history + tags), not the default shallow/no-tags checkout —
+          # "Android port guard scripts are wired and self-test" below needs the
+          # `android-port-scaffold` tag to be resolvable once Batch 1 of the Android parity port
+          # cuts it (see scripts/check_frozen_files.sh). A shallow checkout would make that tag
+          # invisible to this job even after it exists, and the frozen-file gate would silently
+          # stay a no-op forever instead of starting to enforce.
+          fetch-depth: 0
       - name: JSON is valid and iOS/Android resource mirrors are in sync
         run: |
           python3 - <<'PY'
@@ -327,12 +335,51 @@ jobs:
           # The allowlist is the whole point — adding a file here should require saying why in a PR.
           #   Platform/AICoach/AICoachClient.swift        the AI coach (ADR-0010 / D-22)
           #   Platform/Telemetry/FootprintClient.swift    methodology telemetry (ADR-0011 / D-37)
+          #   Platform/Account/AccountClient.swift        accounts + entitlement sync (ADR-0014 / D-44)
           #   Export/Destinations/RESTDestination*.swift  the user's own configured export endpoint
-          NET_ALLOWLIST='Sources/Platform/AICoach/AICoachClient.swift|Sources/Platform/Telemetry/FootprintClient.swift|Sources/Export/Destinations/RESTDestination.swift|Sources/Export/Destinations/RESTDestinationAvailability.swift'
+          #
+          # 2026-08-07: the third entry is the one to read twice. ADR-0014 reversed D-32's
+          # no-accounts posture, so this list grew for the first time since ADR-0011 — and the
+          # reason it is a list rather than a "no network" rule is precisely so a reversal has to
+          # be written down here, in a diff, next to the ADR that authorised it. A FOURTH still
+          # requires a new decision. The Never that did NOT move is "send no health data off
+          # device": AccountPayloadShapeTests pins the encoded shape of every request this new
+          # client can build, and test_the_accounts_schema_holds_no_health_column pins the
+          # server's columns.
+          NET_ALLOWLIST='Sources/Platform/AICoach/AICoachClient.swift|Sources/Platform/Telemetry/FootprintClient.swift|Sources/Platform/Account/AccountClient.swift|Sources/Export/Destinations/RESTDestination.swift|Sources/Export/Destinations/RESTDestinationAvailability.swift'
           net_hits="$(grep -rnE "$IOS_NET_API" apps/ios/Sources/ | grep -vE "$NET_ALLOWLIST" || true)"
           if [ -n "$net_hits" ]; then
-            echo "::error::A file outside the network allowlist references a socket-opening API. BADAN reaches the network from exactly two of its own surfaces (AI coach, methodology telemetry) plus the user-configured REST export destination. A third requires an ADR — see ADR-0010 and ADR-0011."
+            echo "::error::A file outside the network allowlist references a socket-opening API. BADAN reaches the network from exactly three of its own surfaces (AI coach, methodology telemetry, the account service) plus the user-configured REST export destination. A fourth requires an ADR — see ADR-0010, ADR-0011 and ADR-0014."
             printf '%s\n' "$net_hits"
+            fail=1
+          fi
+
+          # Android repo-wide mirror of the widening directly above. Before this, $AND_NET_API was
+          # scanned only inside export/ (the two `scan` calls near the top of this step, both
+          # excluding /destinations/) — nothing checked the rest of
+          # apps/android/app/src/main/java/ at all, so a socket opened anywhere else in the app
+          # would have passed CI silently. Android has no AI-coach or telemetry client yet (both
+          # are iOS-only today — see ADR-0010/ADR-0011 and CLAUDE.md), so unlike the iOS
+          # allowlist above this one names a single surface.
+          #
+          # The allowlist below was derived by running this exact grep locally over
+          # apps/android/app/src/main/java/ (not just export/) and triaging every hit — see the
+          # B0-5 task report for the raw output. Today there is exactly one match, all inside one
+          # file:
+          #   export/destinations/RestDestination.kt   the user-configured REST export
+          #                                             destination's HttpURLConnection transport
+          #                                             (network by definition, same class as the
+          #                                             iOS RESTDestination.swift entry above) —
+          #                                             gated off by
+          #                                             RestDestinationAvailability.ENABLED
+          #                                             (false today; see that file's KDoc for the
+          #                                             four things that must move together before
+          #                                             this deliverer actually ships)
+          AND_NET_ALLOWLIST='net/albayyan/badan/export/destinations/RestDestination\.kt'
+          and_net_hits="$(grep -rnE "$AND_NET_API" apps/android/app/src/main/java/ | grep -vE "$AND_NET_ALLOWLIST" || true)"
+          if [ -n "$and_net_hits" ]; then
+            echo "::error::A file outside the Android network allowlist references a socket-opening API. Android reaches the network from exactly one surface today (the user-configured REST export destination). A second requires an ADR — see ADR-0010 and ADR-0011 — and an entry in AND_NET_ALLOWLIST with a citation, added in the same change."
+            printf '%s\n' "$and_net_hits"
             fail=1
           fi
 
@@ -621,6 +668,68 @@ jobs:
               fail = True
           sys.exit(1 if fail else 0)
           PY
+      # ADR-0012 / the Android parity port (docs/android-port-conventions.md). The port runs many
+      # agents concurrently against apps/android; the two failure modes that matter are a task
+      # editing a file outside its declared scope, and a task editing a magnet file nobody froze.
+      # scripts/check_task_ownership.sh is the PRIMARY guard (any out-of-scope diff fails, listed
+      # or not); scripts/check_frozen_files.sh is the backstop (only the files listed in
+      # scripts/frozen-files.txt). Both are meant to run locally in every task's self-verify loop
+      # (docs/android-port-conventions.md §9) — this step is what keeps them provably working, the
+      # same "prove the gate actually catches what it should" idiom as the network-free lint below
+      # (positive + negative control, synthetic probes, cleaned up after).
+      #
+      # Runnable locally exactly as written here: bash -n the scripts, then run each with a real
+      # and a synthetic-probe invocation from the repo root.
+      - name: Android port guard scripts are wired and prove they catch ownership violations
+        run: |
+          set -euo pipefail
+          bash -n scripts/check_task_ownership.sh
+          bash -n scripts/check_frozen_files.sh
+          test -x scripts/check_task_ownership.sh
+          test -x scripts/check_frozen_files.sh
+
+          # scripts/check_frozen_files.sh: runnable for real right now. Before Batch 1 cuts the
+          # `android-port-scaffold` tag it must degrade to a no-op (exit 0) rather than failing
+          # every push — this asserts that posture explicitly rather than trusting it silently.
+          if git rev-parse --verify --quiet android-port-scaffold >/dev/null 2>&1; then
+            echo "android-port-scaffold exists — frozen-file check is enforcing for real"
+            bash scripts/check_frozen_files.sh
+          else
+            echo "android-port-scaffold does not exist yet (expected pre-Batch-1) — asserting the no-op path"
+            out="$(bash scripts/check_frozen_files.sh)"
+            echo "$out"
+            if ! grep -q "does not exist yet" <<<"$out"; then
+              echo "::error::check_frozen_files.sh did not report its expected pre-Batch-1 no-op message — its graceful-degrade path may be broken"
+              exit 1
+            fi
+          fi
+
+          # scripts/check_task_ownership.sh: a clean CI checkout has no working-tree changes, so
+          # calling it as-is would trivially report success and prove nothing (the same reasoning
+          # as the tampered-chain / probe controls elsewhere in this file). Instead, dirty the
+          # checkout with one throwaway file and prove both directions: caught when out of a
+          # declared scope, ignored when inside one. Never part of the app; removed before exit.
+          probe_path="apps/android/app/src/main/java/net/albayyan/badan/CiOwnershipProbe.kt"
+          cleanup() { rm -f "$probe_path"; }
+          trap cleanup EXIT
+
+          echo "// CI ownership-guard probe — never committed" > "$probe_path"
+
+          scope_wrong="$(mktemp)"
+          echo "docs/android-port-conventions.md" > "$scope_wrong"
+          if bash scripts/check_task_ownership.sh "$scope_wrong"; then
+            echo "::error::check_task_ownership.sh accepted a change ($probe_path) outside its declared scope — the guard proves nothing"
+            exit 1
+          fi
+
+          scope_right="$(mktemp)"
+          echo "$probe_path" > "$scope_right"
+          if ! bash scripts/check_task_ownership.sh "$scope_right"; then
+            echo "::error::check_task_ownership.sh rejected a change ($probe_path) that WAS inside its declared scope — false positive, the guard would block legitimate work"
+            exit 1
+          fi
+
+          echo "ownership guard: caught its out-of-scope probe, accepted its in-scope probe"
 
   ios-build-test:
     name: iOS build + test
@@ -737,6 +846,63 @@ jobs:
       - name: Assemble debug
         working-directory: apps/android
         run: ./gradlew :app:assembleDebug --no-daemon
+      # ADR-0011 / D-37 boundary check. "BADAN has no INTERNET permission" has only ever been
+      # asserted by reading the SOURCE manifest (apps/android/app/src/main/AndroidManifest.xml,
+      # which carries a comment noting the permission is deliberately absent) — but GMS, Play
+      # Billing and Play Integrity all merge their OWN permissions into the final MERGED
+      # manifest, and nothing has ever checked that merged output. Meanwhile
+      # docs/PRIVACY_POLICY.md and docs/legal/privacy.html both state, in the present tense, that
+      # BADAN transmits nothing off-device. If a dependency silently merged in INTERNET, those
+      # documents would be false and nothing would say so.
+      #
+      # Android WILL legitimately gain INTERNET later — D-22 (AI coach), D-37 (telemetry), and
+      # the REST export destination all need it (see
+      # apps/android/app/src/main/java/net/albayyan/badan/export/destinations/
+      # RestDestinationAvailability.kt:14, which already names manifest INTERNET as one of four
+      # things that must move together before that deliverer ships). So this is an ALLOWLIST with
+      # a paper trail, not a permanent ban — it just starts empty, because none of those three
+      # things have landed on Android yet.
+      #
+      # :app:processReleaseMainManifest is the AGP 8.9.1 task that produces the merged manifest
+      # (confirmed via the AGP task graph naming — process<Variant>MainManifest — the modern
+      # replacement for the older process<Variant>Manifest task name; this could not be verified
+      # against a live `./gradlew :app:tasks --all` locally because sibling Android-port tasks
+      # held the Gradle config-cache lock at the time this step was written, so re-verify if this
+      # step ever reports "could not locate the merged manifest output" below). The exact output
+      # path under app/build/ has moved between AGP versions, so it is DISCOVERED with `find`
+      # rather than hardcoded.
+      #
+      # Runnable locally exactly as written: cd apps/android && ./gradlew :app:processReleaseMainManifest
+      # then grep the discovered merged_manifest/release/.../AndroidManifest.xml.
+      - name: Merged manifest carries no un-allowlisted android.permission.INTERNET (ADR-0011 / D-37)
+        working-directory: apps/android
+        run: |
+          set -euo pipefail
+          ./gradlew :app:processReleaseMainManifest --no-daemon
+          MERGED="$(find app/build -type f -path '*merged_manifest*release*AndroidManifest.xml' | head -n1)"
+          if [ -z "$MERGED" ]; then
+            echo "::error::could not locate a merged manifest under app/build after :app:processReleaseMainManifest — the task name or its output path may have moved with the AGP version. Re-verify against 'gradlew :app:tasks --all' and update this step."
+            exit 1
+          fi
+          echo "merged manifest: $MERGED"
+
+          # Reasons INTERNET is permitted in the merged manifest, one per array entry. EMPTY
+          # today. When D-22, D-37, or the REST export destination legitimately add it, add a
+          # citation here (e.g. "D-22 AI coach — ADR-0010") AND add the explicit
+          # <uses-permission android:name="android.permission.INTERNET" /> to the SOURCE manifest
+          # AND update docs/PRIVACY_POLICY.md / docs/legal/privacy.html in the same change — see
+          # RestDestinationAvailability.kt's own KDoc for why all of these move together.
+          INTERNET_ALLOWLIST=()
+
+          if grep -q 'android.permission.INTERNET' "$MERGED"; then
+            if [ "${#INTERNET_ALLOWLIST[@]}" -eq 0 ]; then
+              echo "::error::merged manifest ($MERGED) carries android.permission.INTERNET and the allowlist is empty. docs/PRIVACY_POLICY.md and docs/legal/privacy.html assert, in the present tense, that BADAN transmits nothing off-device — an un-allowlisted INTERNET permission in the merged manifest contradicts that claim. If this is a genuine, intended addition, add a justified entry to INTERNET_ALLOWLIST in this step AND update the privacy copy AND the source manifest in the same change."
+              exit 1
+            fi
+            echo "android.permission.INTERNET present in merged manifest, allowlisted: ${INTERNET_ALLOWLIST[*]}"
+          else
+            echo "merged manifest carries no android.permission.INTERNET (expected — source manifest deliberately omits it)"
+          fi
       - name: Lint (non-blocking)
         # Pre-existing lint errors in app resources are outside this job's scope to fix;
         # this step surfaces new issues without failing the build until they're cleaned up.

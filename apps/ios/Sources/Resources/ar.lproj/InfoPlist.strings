@@ -11,6 +11,10 @@
  * set is an App Store review problem as well as an honesty one (COMP-08).
  */
 
+/* LAB-06. The lab notebook's document camera. Phrased as scanning a report (مسح تقرير مختبر), not
+ * "using the camera", and keeps the same promise the rest of these sheets make. */
+"NSCameraUsageDescription" = "يفتح بدن الكاميرا فقط عندما تطلب منه مسح تقرير مختبر، لتُقرأ صفحاته على هذا الجهاز. لا يُرفع أي شيء، ولا يفتح بدن الكاميرا من تلقاء نفسه.";
+
 /* Widened for A2 (ADR-0009). Term choices follow Apple Health's own Arabic vocabulary so the
  * sheet reads as continuous with the Health app the user already knows: تغيّر معدل نبض القلب
  * (HRV), أكسجين الدم (blood oxygen), لياقة القلب والرئتين (cardio fitness / VO2 max). Routes are

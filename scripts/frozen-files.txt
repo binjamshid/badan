@@ -1,0 +1,75 @@
+# BADAN Android port — frozen files.
+#
+# Checked by: scripts/check_frozen_files.sh [baseline-ref]  (defaults to the tag
+# `android-port-scaffold`, which does not exist until Batch 1 of the port lands — see that
+# script's own header for the graceful no-op behaviour before then.)
+#
+# Every path below is a magnet file: a shared collision surface that Batch 1 of the Android
+# parity port (docs/adr/ADR-0012-android-parity-port.md) rewrites into its final, registry-based
+# shape before freezing it. After the `android-port-scaffold` tag is cut, no task may edit any of
+# these directly — extending them goes through a per-file/per-area registry entry instead (see
+# docs/android-port-conventions.md, sections 2-3). A task that genuinely must amend one becomes a
+# solo magnet-amendment task at a barrier, and the tag is re-cut afterwards.
+#
+# This list is the BACKSTOP, not the primary control (see scripts/check_task_ownership.sh and
+# docs/android-port-conventions.md section 2 for why).
+#
+# One path per line. No inline "# comment" trailing a path — `git diff --exit-code <ref> --
+# <pathspecs>` takes these lines literally, so a trailing comment would be read as (and fail to
+# match) part of the path. Comments live on their own line above the entry they explain.
+#
+# Paths marked "(Batch 1 — not yet created)" do not exist in this commit. They are listed in
+# advance, at the path the plan specifies or the natural Kotlin-convention path for the object
+# name the plan gives, so the location is reserved and reviewable now. Batch 1 must create them at
+# exactly these paths — or, if it genuinely can't, correct this file in the same change that
+# creates the file, before cutting the scaffold tag.
+
+# --- Storage / migrations -----------------------------------------------------------------
+# Schema.kt already carries its own "never edited directly" posture (each migration is a
+# byte-equivalent mirror of a specific iOS Schema version; see its own per-migration comments).
+apps/android/app/src/main/java/net/albayyan/badan/storage/Schema.kt
+# Database.forApp / Database.init / the migration predicate+sort fix / purgeIngestedData's
+# wipe-hook registry all live here.
+apps/android/app/src/main/java/net/albayyan/badan/storage/Database.kt
+# (Batch 1 — not yet created, B1-2.) The frozen aggregator that collects every area's
+# MigrationProvider into Schema's sorted migration list. File name inferred from the object name
+# ("Migrations") the plan specifies; correct this line if B1-2 names the file differently.
+apps/android/app/src/main/java/net/albayyan/badan/storage/migrations/Migrations.kt
+# (Batch 1 — not yet created, B1-2.) The pre-allocated migration-version -> area mapping. Exact
+# filename given directly in the plan.
+apps/android/app/src/main/java/net/albayyan/badan/storage/migrations/MigrationAllocation.kt
+
+# --- Navigation / composition --------------------------------------------------------------
+apps/android/app/src/main/java/net/albayyan/badan/app/AppEnvironment.kt
+apps/android/app/src/main/java/net/albayyan/badan/app/Navigation.kt
+apps/android/app/src/main/java/net/albayyan/badan/app/RootScreen.kt
+# (Batch 1 — not yet created, B1-4.) Holds DetailRegistry, replacing RootScreen.kt's exhaustive
+# `when`. Exact filename given directly in the plan.
+apps/android/app/src/main/java/net/albayyan/badan/app/RouteHost.kt
+
+# --- Strings ---------------------------------------------------------------------------------
+# The one shared strings object, `Loc`, is explicitly frozen — per-feature strings go in their
+# own `object <Feature>Strings` files instead (not frozen; owned per-feature).
+apps/android/app/src/main/java/net/albayyan/badan/core/Strings.kt
+# Pre-declared by B1-6 in both locales so no later task needs to touch either file.
+apps/android/app/src/main/res/values/strings.xml
+apps/android/app/src/main/res/values-ar/strings.xml
+
+# --- Data-shape magnets (screen registries) -------------------------------------------------
+apps/android/app/src/main/java/net/albayyan/badan/domain/Customization.kt
+apps/android/app/src/main/java/net/albayyan/badan/platform/notifications/NotificationDecisionEngine.kt
+apps/android/app/src/main/java/net/albayyan/badan/features/home/HomeScreen.kt
+apps/android/app/src/main/java/net/albayyan/badan/features/loghub/LogHubScreen.kt
+apps/android/app/src/main/java/net/albayyan/badan/features/body/BodyScreen.kt
+# homeModuleLabel / setModuleVisible live here; labels move onto the module descriptor under B1-5.
+apps/android/app/src/main/java/net/albayyan/badan/features/settings/SettingsScreen.kt
+
+# --- Export writer surface ------------------------------------------------------------------
+apps/android/app/src/main/java/net/albayyan/badan/domain/Export.kt
+apps/android/app/src/main/java/net/albayyan/badan/export/ExportRunner.kt
+apps/android/app/src/main/java/net/albayyan/badan/export/JsonBundleWriter.kt
+apps/android/app/src/main/java/net/albayyan/badan/export/BackupBundle.kt
+
+# --- Design system -----------------------------------------------------------------------
+# CI parses this against docs/design/design-tokens.json (ci.yml: "Design tokens stay in sync").
+apps/android/app/src/main/java/net/albayyan/badan/designsystem/Tokens.kt

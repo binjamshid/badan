@@ -23,6 +23,22 @@ struct RunExportTemplateIntent: AppIntent {
     /// completes without the user watching. The export path touches no UI.
     static var openAppWhenRun = false
 
+    /// The one intent in this bundle that hands FILES to whatever runs it — up to the user's whole
+    /// recorded history, in one bundle, with provenance. The default policy (`.alwaysAllowed`) let
+    /// that happen from a locked device via Siri, which contradicts BADAN's own threat model
+    /// everywhere else: `AmbientPrivacyConfig.neverOnLockScreen` bars a medication *name* from the
+    /// Lock Screen with no setting to turn it off, so a full export needing no unlock was the larger
+    /// hole by far. It also contradicts what the app already promises about this exact surface — the
+    /// setup guide's `guideUnlockRule` tells the user "iPhone must be unlocked" before they build the
+    /// automation, so requiring it here codifies the documented behavior rather than changing it.
+    ///
+    /// `.requiresAuthentication` (device passcode/biometric having been satisfied), not
+    /// `.requiresLocalDeviceAuthentication` (a fresh Face ID prompt per run): the latter would make
+    /// an unattended time-of-day automation impossible even on an unlocked phone, which is the whole
+    /// use case EPIC-19 exists for. Deliberately NOT applied to `LogWaterIntent` — a write-only
+    /// quick-log that discloses nothing and would be pointless if it demanded an unlock.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
+
     private static let table = "AppIntents"
 
     @Parameter(title: LocalizedStringResource("intent.run_export.param.template", table: Self.table))
@@ -51,8 +67,12 @@ struct RunExportTemplateIntent: AppIntent {
             if outcome.rowCount == 0 {
                 // Honest empty: the run happened, is in the ledger, and produced files that
                 // describe an empty range. Say so rather than returning silence that reads as a
-                // failure.
-                return .result(value: files, dialog: IntentDialog(appLanguage: env.s(IntentStrings.exportNothingInRange)))
+                // failure — and carry the notice, because "nothing in that window" means something
+                // different when the window was clipped to seven days than when it was the whole
+                // history the template asked for.
+                let empty = env.s(IntentStrings.exportNothingInRange)
+                let message = outcome.notice.map { "\(empty) \(env.s($0))" } ?? empty
+                return .result(value: files, dialog: IntentDialog(appLanguage: message))
             }
 
             let confirmation = env.s(IntentStrings.exportFinished.filling([

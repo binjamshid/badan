@@ -1,12 +1,15 @@
 import Foundation
 
-// LAB-11 — HealthKit Clinical Records import, parsing half.
+// LAB-11 — FHIR lab-observation parsing.
 //
-// A clinical record from HealthKit is not structured Swift data: `HKClinicalRecord.fhirResource`
-// hands back a `Data` blob of raw FHIR JSON that the provider's system authored. Everything
-// interesting therefore happens in parsing, which is why that half lives here as a pure function
-// over `Data` — testable against real FHIR shapes with no HealthKit, no entitlement, and no device.
-// `ClinicalRecordImporter` owns the HealthKit half and does no interpretation of its own.
+// NOT WIRED TO ANY INGESTION PATH TODAY, and that is deliberate rather than an oversight. This
+// parser and `ClinicalRecordImporter` were built as the pure half of a HealthKit Clinical Records
+// import; App Review rejected that API under Guideline 2.5.1 (submission d3fd0270, 1.1 build 5)
+// and it was removed — see ADR-0013. What is left here touches no HealthKit type and never did:
+// it is a pure function over a `Data` blob of FHIR JSON, which is also the shape a provider portal
+// hands you when it lets you download your own results. Kept for that path, not for the removed one.
+//
+// Do not reintroduce a HealthKit clinical read on top of it.
 //
 // **This parser is deliberately conservative and lossy in one direction only: it drops what it
 // cannot understand, and never guesses.** A provider's FHIR is not a contract BADAN controls —
@@ -41,6 +44,12 @@ public struct FHIRLabObservation: Hashable, Sendable {
     /// model, and a clinical import is exactly where the two are easiest to conflate.
     public var sourceRangeLow: Double?
     public var sourceRangeHigh: Double?
+    /// The unit the interval above was printed in, when the resource stated one. Captured
+    /// separately from `rawUnit` rather than assumed equal to it: a lab occasionally prints its
+    /// range in a different unit than the value, and `LabRangeEvaluation` refuses to compare a
+    /// value against an interval in a different unit. Inferring this field from `rawUnit` would
+    /// silently disarm that guard, so an unstated interval unit stays nil.
+    public var sourceRangeUnit: String?
     /// The provider's own abnormal flag text ("H", "L", "A"), when stated — the model's *source
     /// flag* (concept 2), preserved as the provider's words rather than re-derived by BADAN from
     /// the interval above. A lab that flags a value we would not have flagged is telling us
@@ -53,6 +62,7 @@ public struct FHIRLabObservation: Hashable, Sendable {
                 comparator: LabComparator? = nil, numericValue: Double? = nil, rawUnit: String? = nil,
                 resultType: LabResultType, effectiveAt: Date? = nil,
                 sourceRangeLow: Double? = nil, sourceRangeHigh: Double? = nil,
+                sourceRangeUnit: String? = nil,
                 interpretationCode: String? = nil, sourceIdentifier: String? = nil) {
         self.displayName = displayName
         self.loincCode = loincCode
@@ -64,6 +74,7 @@ public struct FHIRLabObservation: Hashable, Sendable {
         self.effectiveAt = effectiveAt
         self.sourceRangeLow = sourceRangeLow
         self.sourceRangeHigh = sourceRangeHigh
+        self.sourceRangeUnit = sourceRangeUnit
         self.interpretationCode = interpretationCode
         self.sourceIdentifier = sourceIdentifier
     }
@@ -172,8 +183,14 @@ public enum FHIRObservationParser {
 
     private static func applyReferenceRange(_ resource: [String: Any], to observation: inout FHIRLabObservation) {
         guard let range = (resource["referenceRange"] as? [[String: Any]])?.first else { return }
-        observation.sourceRangeLow = double(from: (range["low"] as? [String: Any])?["value"])
-        observation.sourceRangeHigh = double(from: (range["high"] as? [String: Any])?["value"])
+        let low = range["low"] as? [String: Any]
+        let high = range["high"] as? [String: Any]
+        observation.sourceRangeLow = double(from: low?["value"])
+        observation.sourceRangeHigh = double(from: high?["value"])
+        // Whichever bound stated a unit; nil when neither did. Never defaulted to the value's own
+        // unit — see `sourceRangeUnit`.
+        observation.sourceRangeUnit = (low?["unit"] as? String) ?? (high?["unit"] as? String)
+            ?? (low?["code"] as? String) ?? (high?["code"] as? String)
     }
 
     private static func interpretation(from resource: [String: Any]) -> String? {

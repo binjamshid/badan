@@ -5,16 +5,20 @@ your device, shows where each number came from, and says plainly when it doesn't
 
 ## Current state (2026-07-28, v1.1 build 4 on TestFlight)
 
-**iOS is the live surface. Android is paused** (founder, 2026-07-22) — `apps/android` still holds a
-real Kotlin mirror of the domain/ontology layer, but it is NOT kept in step and its notification
-registry, budget constant and metric set have already diverged. Do not read either platform as
-evidence of what the other does, and do not claim parity.
+**iOS is the live surface. Android has resumed, targeting full parity** (D-38 / ADR-0012) —
+`apps/android` holds a real Kotlin mirror of the domain/ontology layer.
+Before resumption its notification registry, budget constant and metric set had diverged from
+iOS; re-mirroring that drift is the first-order work of the resumed lane (see
+`docs/android-parity-status.md` for the current gap list). Until that re-mirror lands, do not
+assume either platform's present behavior matches the other's.
 
 Shipping today:
 
 - **Ingestion** — ~15 HealthKit types (sleep sessions + stages, HR, RHR, HRV, steps, energy,
   distance, floors, weight, body fat, lean mass, VO₂ max, SpO₂, respiratory rate, glucose).
-  Nutrition is still 0 of 7. Clinical records import via FHIR.
+  Nutrition is still 0 of 7. Lab reports enter the notebook by document camera, photos or a PDF
+  file, all read by on-device Vision OCR — **HealthKit Clinical Records was removed after App
+  Review refused it under Guideline 2.5.1 (D-43 / ADR-0013); do not add it back.**
 - **Derivation** — personal baselines, readiness, the sleep cluster (need/performance/debt/
   consistency/disturbances/**score**), day and workout effort, a density-gated daytime stress trend,
   and a multi-input mood estimate. Every derived row carries an input manifest, a confidence and a
@@ -25,16 +29,23 @@ Shipping today:
 - **Export** — CSV/JSON with checksums and a manifest, templates, destinations, automation.
 - **Logging** — medications and reminders, hydration, symptoms, journal, workouts, cycle, and the
   pregnancy module's P0 slice.
-- **Monetization** — StoreKit 2, no accounts. 7-day app-managed trial from first launch, then
-  monthly/yearly/lifetime. See D-32/D-33 and `docs/MONETIZATION.md`.
+- **Monetization** — StoreKit 2. 7-day app-managed trial from first launch, then
+  monthly/yearly/lifetime. See D-33 and `docs/MONETIZATION.md`.
+- **Accounts** — an **optional** Sign in with Apple account (D-44 / ADR-0014, replacing D-32's
+  no-accounts posture). Carries entitlement between platforms and runs referrals; holds no health
+  data; signed out is a complete state. **iOS only so far** — the service speaks Android's half of
+  the wire but no Android client exists (`docs/android-parity-status.md`), so do not describe this
+  to users as working across platforms yet.
 
 ## Working mode
 
 This repository is native-first.
 
 - iOS UI and app integration should be implemented in Swift/SwiftUI.
-- Android UI and app integration should be implemented in Kotlin/Jetpack Compose — **when that lane
-  resumes.** Until then, do not write Android code speculatively "for parity".
+- Android UI and app integration should be implemented in Kotlin/Jetpack Compose — **the lane has
+  resumed, targeting full parity with iOS** (D-38 / ADR-0012). Android code is no longer
+  speculative: build and re-mirror it deliberately against the shared contracts and the current
+  iOS implementation, not against a remembered or assumed state.
 - Shared logic should begin as shared contracts, schemas, and domain specs before introducing runtime sharing.
 - Contracts (`packages/metric-ontology/registry.json`, `packages/contracts/algorithms/`) are the
   canonical copies; `apps/*/…/Resources` hold build-time mirrors. A new derived metric needs a
@@ -75,17 +86,26 @@ disagreement, a bucketed event count, and whether a calibration was in force. No
 magnitude, no date or period key, no identifier, no region. The payload schema is closed
 (`additionalProperties: false`) and CI-gated so "footprint" cannot quietly widen into "reading".
 
-So there are exactly two files in `apps/ios/Sources/` allowed to open a socket for BADAN's own
-services — `Platform/AICoach/AICoachClient.swift` and `Platform/Telemetry/FootprintClient.swift`
-— plus the user-configured REST export destination, which is network by definition. CI enforces
-this list.
+A **third** is permitted by ADR-0014 / D-44: **optional accounts**, created with Sign in with
+Apple, on the SAME service. They carry two things and no more — which store product a user owns on
+which platform, and referrals. `POST /v1/account/apple`, `GET/DELETE /v1/account`,
+`PUT /v1/account/entitlement`, `POST /v1/account/referral/claim`. The server stores an account id,
+an HMAC of Apple's subject claim (never the claim), a referral code, and one product id per
+platform. No name, no email, no device list, **no health datum**.
 
-**Do not** widen this into accounts, sync, server-side history, or a second backend
+So there are exactly three files in `apps/ios/Sources/` allowed to open a socket for BADAN's own
+services — `Platform/AICoach/AICoachClient.swift`, `Platform/Telemetry/FootprintClient.swift` and
+`Platform/Account/AccountClient.swift` — plus the user-configured REST export destination, which is
+network by definition. CI enforces this list.
+
+**Do not** widen this into health-data sync, server-side history, backup, or a second backend
 surface without a new ADR. "The AI coach has a backend" is not a licence for the rest of
-the app to acquire one, and neither is "telemetry has a route."
+the app to acquire one; neither is "telemetry has a route"; and neither is "there are accounts now."
+Accounts authorise *entitlement* state and nothing else.
 
-BADAN is deliberately **not** on the platform-api identity/backup services the other apps
-in this portfolio share — it has no accounts to attach them to.
+BADAN is still **not** on the platform-api identity/backup services the other apps in this
+portfolio share. D-44 gave it an account of its own, scoped to entitlement; it did not join a shared
+identity system, and it has no health data server-side to back up.
 
 ## Product guardrails
 
@@ -119,7 +139,9 @@ logging shells) are all shipped. What replaces them:
    surface for Apple-Watch-only users, the mood estimate needs two of three terms, and the wake
    summary lands at first unlock on a locked device. These are correct; they should be *explained*
    in-app, not softened.
-5. **Android, when it resumes** — re-mirror the diverged registry, budget and metric set first.
+5. **Android — resumed to full parity** (D-38 / ADR-0012). Re-mirror the diverged registry,
+   budget constant and metric set first, then close the remaining gaps tracked in
+   `docs/android-parity-status.md`.
 
 ## Never
 
@@ -132,8 +154,18 @@ logging shells) are all shipped. What replaces them:
 - Paywall raw data — **except** the D-33 export cap above. Do not widen that exception: gating the
   metric browser, provenance, manual logging, deletion, or on-device viewing of any reading remains
   prohibited.
-- Add accounts or a login. BADAN has none, and IAP does not require one (D-32 — Apple's SIWA rule
-  applies only to apps offering third-party login).
+- Re-add the HealthKit Clinical Records API, the `health-records` entitlement value, or
+  `NSHealthClinicalHealthRecordsShareUsageDescription` — App Review has already refused them once
+  (D-43 / ADR-0013), and doing it again re-opens a rejection rather than a question.
+- ~~Add accounts or a login.~~ **Reversed by D-44 / ADR-0014 (2026-08-07).** BADAN now has an
+  **optional** Sign in with Apple account, and its scope is fixed: carrying a subscription between
+  platforms, and referrals. D-32's reasoning was not repudiated — SIWA is still not *required* by
+  Guideline 4.8, and StoreKit still binds a purchase to the Apple ID by itself. The account exists
+  because entitlement is the one piece of state that has to outlive a single vendor's ecosystem.
+  What survives as a hard rule: **signed out is a complete, permanent state** (nothing in the app
+  may ever require an account), the account holds **no health data**, and the remote may **grant**
+  access but never **revoke** it. Widening the account past entitlement and referrals needs a new
+  decision.
 - Use diagnostic or prescriptive framing in copy.
 - Break the offline path for ingestion, scores, or exports.
 

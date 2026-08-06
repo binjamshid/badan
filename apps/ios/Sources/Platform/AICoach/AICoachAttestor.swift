@@ -28,6 +28,11 @@ protocol AICoachAttesting {
 
     /// Attest `keyId` against a server-issued challenge. The returned blob is what
     /// `POST /v2/register` verifies.
+    ///
+    /// This makes a live round trip to Apple's attestation service, so it can fail for reasons
+    /// that say nothing about whether this device is *able* to attest — a dropped connection
+    /// arrives here as `DCError.serverUnavailable`. `AICoachClient` classifies that one as
+    /// retryable and everything else as not; see `attestationError(for:)`.
     func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data
 
     /// Sign a request body with the already-attested key (ADR-0011 / D-37).

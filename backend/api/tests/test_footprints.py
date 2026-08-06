@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import json
 import logging
 import sqlite3
 import sys
@@ -209,6 +210,91 @@ def test_an_unsupported_schema_version_is_rejected(api):
     assert client.post(
         "/v1/footprints", json=_payload(key_id, leaf_key, schemaVersion=99)
     ).status_code == 400
+
+
+# --- The size contract ------------------------------------------------------
+#
+# `clientData` is the batch JSON itself, byte for byte — `FootprintClient.submit` (iOS) signs
+# the exact bytes it encodes and sends those same bytes along — so its size cap and
+# MAX_FOOTPRINTS_PER_BATCH describe the same object and have to agree. They did not: the cap
+# sat at a flat 4 KB while the batch limit advertised 200, so anything past roughly 35
+# footprints was refused, and refused as a 401.
+
+
+def _worst_case_footprints(count: int) -> list[dict]:
+    """`count` footprints with every bounded field at its schema maximum — the batch that
+    actually has to fit, not a comfortable one."""
+    return [
+        {
+            "metricId": f"{'m' * 60}{index:04d}"[:64],
+            "algorithmId": "a" * 64,
+            "algorithmSemver": "100.200.300",
+            "direction": "matches",
+            "eventCountBucket": "10-19",
+            "calibrationApplied": False,
+        }
+        for index in range(count)
+    ]
+
+
+def test_a_full_size_batch_is_accepted(api):
+    """The contract's own maximum must be sendable. Two constants stating incompatible
+    limits is how this survived — MAX_CLIENT_DATA_BYTES is now derived from
+    MAX_FOOTPRINTS_PER_BATCH so they cannot drift apart again."""
+    client = TestClient(api.app)
+    key_id, leaf_key = _attested_key(api, client)
+
+    footprints = _worst_case_footprints(api.MAX_FOOTPRINTS_PER_BATCH)
+    # Compact separators because that is what a real client sends: Swift's `JSONEncoder`
+    # emits no whitespace, and `clientData` is those exact bytes.
+    client_data = json.dumps(
+        {"schemaVersion": 1, "appVersion": "1.1", "contractVersion": "0.2.0",
+         "footprints": footprints},
+        separators=(",", ":"),
+    ).encode()
+
+    response = client.post("/v1/footprints", json=_payload(
+        key_id, leaf_key, footprints=footprints, client_data=client_data))
+
+    assert response.status_code == 200, (
+        f"a batch of {api.MAX_FOOTPRINTS_PER_BATCH} footprints — the documented maximum — was "
+        f"rejected with {response.status_code}"
+    )
+    assert response.json()["accepted"] == api.MAX_FOOTPRINTS_PER_BATCH
+
+
+def test_the_client_data_cap_fits_the_batch_limit(api):
+    """Asserted on the constants as well as through the endpoint, so the arithmetic is
+    checked even if a future change stops the request above from reaching the decode."""
+    assert api.MAX_CLIENT_DATA_BYTES >= api.MAX_FOOTPRINTS_PER_BATCH * 274, (
+        "MAX_CLIENT_DATA_BYTES cannot hold MAX_FOOTPRINTS_PER_BATCH worst-case footprints"
+    )
+
+
+def test_an_oversized_blob_is_too_large_not_unauthorized(api):
+    """A size cap and an auth failure must not answer with the same status. The only sane
+    response to 401 is to re-register; the correct response to "too big" is to send less, and
+    a client told the first cannot arrive at the second."""
+    client = TestClient(api.app)
+    key_id, leaf_key = _attested_key(api, client)
+
+    body = _payload(key_id, leaf_key)
+    body["clientData"] = base64.b64encode(b"x" * (api.MAX_CLIENT_DATA_BYTES + 64)).decode()
+
+    assert client.post("/v1/footprints", json=body).status_code == 413
+
+
+def test_malformed_base64_is_still_unauthorized(api):
+    """The other half of the same change. A blob that is not base64 at all stays a flat 401,
+    indistinguishable from every other rejection here — a caller must not be able to read the
+    status to work out which check it tripped."""
+    client = TestClient(api.app)
+    key_id, leaf_key = _attested_key(api, client)
+
+    body = _payload(key_id, leaf_key)
+    body["clientData"] = "!!!not base64!!!"
+
+    assert client.post("/v1/footprints", json=body).status_code == 401
 
 
 # --- Attestation ------------------------------------------------------------

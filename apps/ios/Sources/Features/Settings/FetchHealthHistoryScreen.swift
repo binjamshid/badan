@@ -58,10 +58,44 @@ enum FetchHistoryCopy {
             + "gets a sleep score.",
         ar: "تحتفظ الليالي المستوردة بسجلات نومها، لكن درجة النوم تُمنح تقريباً لليالي الشهر الأخير فقط.")
 
-    static let noUndoNote = LocalizedString(
-        en: "This adds readings from Health; it never changes or removes what you already have. "
-            + "Running it again is safe.",
-        ar: "يضيف هذا قراءات من تطبيق الصحة؛ ولا يغيّر أو يحذف ما لديك. تكراره آمن.")
+    /// (AUDIT 2026-08-06) Replaces `noUndoNote`, which promised this "never changes or removes what
+    /// you already have". That was false when it was written and is deliberately false now.
+    ///
+    /// It was already false because the historical walk goes through the ordinary pipeline: it
+    /// re-runs sleep dedup and rewrites nightly rollups for every night it touches. INGESTION-01 is
+    /// precisely that — this screen silently flipping which source won a stored night, because the
+    /// walk resolved every source priority to 0.
+    ///
+    /// It is now deliberately false because correcting a stored value against Health is the whole
+    /// point: re-reading is how a user repairs the daily totals INGESTION-02 truncated, and those
+    /// rows can only be repaired by overwriting them (`interval_records` is a true in-place upsert
+    /// with no revision chain, so the correct total survives nowhere on the device).
+    ///
+    /// What IS still true, and is what the copy now promises instead: manual entries are untouched.
+    /// The upsert key is `(metric_id, external_id, source_id)` and a hand-logged row carries
+    /// neither a HealthKit external id nor the HealthKit source, so no re-read can address it.
+    static let correctsExistingNote = LocalizedString(
+        en: "This re-reads from Health. Missing readings are added, and stored readings that "
+            + "disagree with Health are corrected to match it. Anything you logged by hand in "
+            + "BADAN is never touched, and running it again is safe.",
+        ar: "يعيد هذا القراءة من تطبيق الصحة. تُضاف القراءات الناقصة، وتُصحَّح القراءات المخزّنة "
+            + "التي تخالف ما لدى الصحة لتطابقه. أمّا ما سجّلته بنفسك في بادن فلا يُمَسّ، وتكراره آمن.")
+
+    /// Why a user who never wanted older history might still want to run this. Names the two
+    /// defects plainly and says what re-reading fixes, without dressing either up as a feature.
+    ///
+    /// Deliberately not a dismissible one-time banner keyed to a version flag: BADAN cannot tell
+    /// which installs were affected (a truncated daily total is indistinguishable from a genuinely
+    /// quiet day — that is the whole reason the repair has to be a blind re-read), so an alert
+    /// claiming "your data is wrong" would be a guess presented as a fact. This states the
+    /// condition and lets the user decide, the same posture `nothingReturned` takes.
+    static let repairNote = LocalizedString(
+        en: "Worth running once: a fault fixed in this version could leave some daily totals "
+            + "older than 90 days lower than they should be, and could score a night from the "
+            + "wrong source. Re-reading the affected period corrects both.",
+        ar: "يُستحسن تشغيله مرّة: خلل عولج في هذا الإصدار قد يترك بعض المجاميع اليومية الأقدم من "
+            + "٩٠ يوماً أقل مما ينبغي، وقد يحتسب ليلة من المصدر الخطأ. إعادة قراءة الفترة المتأثرة "
+            + "تصحّح الأمرين.")
 }
 
 /// Settings → Backup & restore → Fetch Health history (D-35 item 2b).
@@ -106,6 +140,8 @@ struct FetchHealthHistoryScreen: View {
                     .foregroundStyle(BadanColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                repairCard
+
                 if env.isHistoricalImportRunning {
                     runningCard
                 } else {
@@ -117,7 +153,7 @@ struct FetchHealthHistoryScreen: View {
 
                 VStack(alignment: .leading, spacing: BadanSpace.space2) {
                     LText(FetchHistoryCopy.sleepCaveat)
-                    LText(FetchHistoryCopy.noUndoNote)
+                    LText(FetchHistoryCopy.correctsExistingNote)
                 }
                 .font(BadanFont.caption)
                 .foregroundStyle(BadanColor.textSecondary)
@@ -128,6 +164,18 @@ struct FetchHealthHistoryScreen: View {
         .background(BadanColor.background.ignoresSafeArea())
         .navigationTitle(env.s(FetchHistoryCopy.title))
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// (AUDIT 2026-08-06) The repair prompt. Shown unconditionally rather than gated on a
+    /// "was this install affected" flag, because that flag cannot honestly be computed — see
+    /// `FetchHistoryCopy.repairNote`.
+    private var repairCard: some View {
+        BadanCard {
+            LText(FetchHistoryCopy.repairNote)
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var presetCard: some View {

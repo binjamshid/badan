@@ -243,11 +243,29 @@ private struct LabResultRow: View {
     let range: ReferenceRange?
     let language: AppLanguage
 
+    /// What to call this marker, in descending order of who said it.
+    ///
+    /// A RECOGNIZED marker resolves through `AnalyteCatalog` to its bilingual display name. Without
+    /// that lookup the row falls back to `analyteId` and renders the internal id verbatim —
+    /// "glucose_fasting", "total_cholesterol", "ldl" — which is the notebook talking to itself in
+    /// front of the user, and in Arabic isn't even the right script.
+    ///
+    /// The fallbacks are ordered so an UNRECOGNIZED marker keeps the provider's own printed
+    /// wording, which was already correct and must stay that way: the catalog never gets to
+    /// rename a marker it didn't recognize.
+    private static func label(for result: LabResult, language: AppLanguage) -> String {
+        if let analyteId = result.analyteId,
+           let definition = AnalyteCatalog.shared.definition(id: analyteId) {
+            return definition.displayName.resolved(language)
+        }
+        return result.customLabel ?? result.analyteId ?? result.analyteKey
+    }
+
     var body: some View {
         BadanCard {
             HStack(spacing: BadanSpace.space3) {
                 VStack(alignment: .leading, spacing: BadanSpace.space1) {
-                    Text(result.customLabel ?? result.analyteId ?? result.analyteKey)
+                    Text(Self.label(for: result, language: language))
                         .font(BadanFont.body.weight(.semibold))
                         .foregroundStyle(BadanColor.textPrimary)
                     if let range, let text = SourceIntervalFormat.text(range, language: language) {

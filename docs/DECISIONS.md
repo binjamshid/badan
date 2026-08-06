@@ -729,6 +729,210 @@ of writing), `packages/contracts/INVARIANTS.md` (I1–I8), and `docs/MONETIZATIO
 
 ---
 
+## D-38 — The Android lane resumes to full parity (ADR-0012)
+- **Context:** Android was paused 2026-07-22 ("skip all android for now" — `CLAUDE.md`,
+  `docs/HANDOFF.md` §1) mid-Phase-3C, and `docs/adr/ADR-0006-ios-first-runnable-flagship.md`
+  still frames iOS as "the deeply-built flagship" with Android trailing. The founder has decided
+  to resume Android and take it to full feature parity with iOS.
+- **Choice:** Android resumes now. The target is **feature parity with iOS, not a subset**. Where
+  a specific iOS feature is platform-impossible on Android (no direct API/OS equivalent), the
+  nearest real Android surface is built and the gap is recorded as a declared, reasoned variance
+  under release gate **G6**, which already permits "feature-list parity **or labeled variance**" —
+  never "coming soon," never a silent omission. Two explicit exceptions to the parity target:
+  alternate app icons are **dropped**, because `setAlternateIconName` has no Android analogue and
+  there is no substitute surface worth inventing one for; and nutrition ingestion stays **0 of 7**
+  metrics on both platforms — that is parity, not a gap, stated explicitly so the parity mandate is
+  not misread as licence to widen ingestion on Android beyond where iOS currently stands.
+- **Rationale:** Per ADR-0012 (superseding ADR-0006's flagship/trailing framing), parity is
+  established as a build target with a named completion gate (G6), not asserted by a document.
+  `packages/contracts/INVARIANTS.md:7` already commits every domain entity's "future Android
+  equivalent" to the same eight invariants iOS upholds — this decision is what actually schedules
+  that equivalent to be built, seven months after ADR-0006 first named it as a milestone.
+- **Migration impact:** Note the **ADR-0001 KMP re-evaluation gate** explicitly, because a
+  build-out of this size is exactly where its own counters accumulate: adopt KMP only if ≥3
+  fixture-divergence incidents occur between the platforms, or duplicated domain code exceeds
+  ~2k LOC/platform (ADR-0001, M4; restated at D-1 above). A parity port this large should track
+  divergence incidents as they happen — in `docs/variance/` and area task reports — rather than
+  have the gate's own counters discovered retroactively once the port is already done.
+- **Supersession:** **supersedes** `docs/adr/ADR-0006-ios-first-runnable-flagship.md`'s "iOS is
+  the flagship this pass; Android mirrors via shared contracts and trails" framing, per
+  `docs/adr/ADR-0012-android-parity-port.md`. Does not touch ADR-0007 (framework SQLite, not
+  Room), which ADR-0012 explicitly reaffirms as unchanged.
+- **Approval:** accepted — Founder, 2026-07-30, per ADR-0012.
+
+## D-39 — SQLCipher artifact substitution for Android: `sqlcipher-android`, not `android-database-sqlcipher` (amends ADR-0010, approval A16)
+- **Context:** ADR-0010's A16 (`docs/adr/ADR-0010-approvals-a9-a16-a17-a18-a21-a22-a24-a25.md:61`)
+  names `net.zetetic:android-database-sqlcipher` as the Android SQLCipher dependency for
+  `badan_sensitive.db`. That artifact is archived upstream and its last release predates published
+  OpenSSL CVE fixes SQLCipher's underlying crypto depends on.
+- **Choice:** Substitute `net.zetetic:sqlcipher-android` — Zetetic's maintained successor
+  artifact — as the concrete Android SQLCipher dependency wherever ADR-0010 §A16 names the old one.
+- **Rationale:** Shipping code against an archived, CVE-predating dependency while the ADR of
+  record still names it would leave the ADR contradicted by the actual build; recording the
+  substitution here keeps the decision log and the dependency in agreement, per this file's own
+  rule that a superseding choice gets written down rather than drifted into silently.
+- **Migration impact:** `sqlcipher-android` ships native `.so` binaries per ABI — roughly 10 MB
+  across the four ABIs BADAN's `minSdk`/`targetSdk` range supports, requiring either `ndk {
+  abiFilters }` scoping to the ABIs actually shipped or an APK ABI split; either choice is an
+  app-size trade-off to make explicitly, not a default to inherit silently. Per ADR-0010 §A16's
+  own text, the key remains Android-Keystore-derived, never user-typed — this substitution changes
+  only the artifact, not the key-derivation posture A16 already set.
+- **Supersession:** narrows ADR-0010 §A16 for the **artifact name only** on Android; A16's decision
+  to adopt SQLCipher scoped to `badan_sensitive.db`, and D-23's restatement of it, are otherwise
+  unchanged.
+- **Approval:** accepted — Founder, 2026-07-30, per ADR-0012.
+
+## D-40 — Play Billing product-id space: one `badan_pro` subscription with monthly/yearly base plans, `pro.lifetime` stays a separate one-time product
+- **Context:** iOS ships three App Store product ids —
+  `apps/ios/Sources/Domain/Subscription/SubscriptionProduct.swift:9-11` —
+  `net.binjamshid.badan.pro.monthly`, `.pro.yearly`, `.pro.lifetime`. Google Play does not model
+  subscription durations the same way: Play groups **base plans** (e.g. monthly, yearly) under
+  **one** subscription product id, rather than issuing a separate top-level product id per
+  duration. Play product ids, once created, are **permanently unreusable** even if deleted, so this
+  shape has to be decided deliberately before any id is created in the Play Console, not
+  improvised per-task.
+- **Choice:** The two renewable iOS products collapse into a single Play subscription product,
+  `badan_pro`, with two base plans (monthly, yearly). `pro.lifetime` becomes a separate Play
+  **one-time (non-consumable) product**, since Play subscriptions have no "lifetime" duration
+  concept.
+- **Rationale:** This is the direct consequence of Play's subscription model, not a judgment call
+  BADAN is free to make differently — matching Play's own base-plan structure is the only way to
+  get one renewable product with two durations without inventing a second top-level subscription
+  id that Play's own billing library doesn't expect.
+- **Migration impact / notes recorded now rather than discovered later:**
+  - Purchases must be **acknowledged within 3 days** or Play auto-refunds them — StoreKit has no
+    equivalent time-boxed acknowledgment requirement, so this is a genuinely new operational
+    constraint for the Android build, not a port of an existing iOS rule.
+  - Play's local entitlement cache is weaker than StoreKit's cryptographically signed local
+    receipt cache. This **must not become a lock**: per this repo's existing local-first posture
+    (D-2/D-3), offline on Android must read as "BADAN hasn't learned anything new since it last
+    reached Play," never as "your subscription stopped."
+  - Per **D-32** (SIWA dropped, IAP ships with no accounts), Android ships with **no account**
+    either — Play Billing binds a purchase to the signed-in Google account by itself, and "Restore
+    purchases" is Play Billing's own `queryPurchasesAsync`, the direct Android analogue of
+    StoreKit's restore flow. No new account surface is introduced to support this.
+  - Per **I6** (`packages/contracts/INVARIANTS.md`), entitlement/subscription state stays a
+    presentation-layer gate on Android exactly as it does on iOS — it never reaches a domain
+    entity, regardless of how Play structures the underlying product.
+- **Supersession:** none. Extends D-32's no-accounts posture to Android without narrowing it;
+  D-32 did not need to specify a Play-specific product-id shape when it was written iOS-only, and
+  this decision is what fills that gap now that Android resumes.
+- **Approval:** accepted — Founder, 2026-07-30, per ADR-0012.
+
+## D-41 — Play Integrity in place of App Attest for Android's attested surfaces (Android counterpart to ADR-0011)
+- **Context:** ADR-0011 (`docs/adr/ADR-0011-opt-in-methodology-telemetry.md:49-58`) uses Apple's
+  App Attest for flood control on the AI coach and the opt-in methodology-telemetry route, and is
+  explicit that the key id is discarded after verification so no identifier is retained beside a
+  submitted payload. App Attest itself is an iOS/Apple-platform API with **no Android equivalent**
+  — there is nothing to port, only something to decide separately.
+- **Choice:** Android's equivalent attested surfaces (the AI coach client and the footprint
+  telemetry client, once both are ported) use **Play Integrity** for the same flood-control role.
+- **Rationale, stated honestly rather than papered over as a like-for-like swap:** Play Integrity
+  is not App Attest under a different name. It is a different attestation shape with different
+  privacy properties, and — unlike App Attest's on-device key generation and assertion — obtaining
+  a Play Integrity verdict classically requires a **network round trip to Google's servers**. That
+  is a real, new network dependency at the attestation layer itself, layered on top of the
+  AI-coach/telemetry calls that already reach BADAN's own backend under ADR-0010 §A9 and
+  ADR-0011. Calling this "the same decision, different platform" would be an overclaim; it is
+  recorded here as its own decision precisely because it is not equivalent to what ADR-0011
+  approved for iOS.
+- **What would make this a *deferred* variance instead of a substituted decision:** if, once
+  implemented, Play Integrity's verdict payload or Google's own handling of the request is found
+  to retain more than App Attest's "key id discarded, never written beside the payload" posture —
+  i.e. if Android's attested telemetry path cannot honestly claim the same no-identifier property
+  ADR-0011 states for iOS — then this stops being a substitution and must be recorded instead as a
+  **declared variance under G6** (Android's telemetry carries a materially different privacy
+  property than iOS's), not shipped as a silent downgrade of ADR-0011's guarantee for Android
+  users only.
+- **Migration impact:** `apps/android/app/src/main/AndroidManifest.xml:106-107` currently states
+  `android.permission.INTERNET is DELIBERATELY ABSENT`, specifically because no Android code path
+  can currently reach the network. Adding the AI coach, telemetry, and Play Integrity changes that
+  premise on Android exactly as ADR-0011 changed it on iOS — the merged-manifest CI gate and the
+  corresponding Play Data Safety / privacy-policy copy must be updated in the same change that
+  first adds `INTERNET`, not after.
+- **Supersession:** none to ADR-0011's iOS mechanism, which is unchanged. This is Android's own
+  attestation decision, recorded on its own terms because ADR-0011 named App Attest specifically
+  by name and Android needs an explicit memo rather than silently inheriting an iOS-specific
+  mechanism it cannot actually use.
+- **Approval:** accepted — Founder, 2026-07-30, per ADR-0012.
+
+## D-42 — Android background substrate: WorkManager + boot receiver, as the counterpart to ADR-0009 approval A2
+- **Context:** ADR-0009's A2 (`docs/adr/ADR-0009-approvals-a1-a2-a3.md:22-49`; restated as **D-10**
+  above) approved HealthKit background delivery + BGTaskScheduler for iOS and set five binding
+  build rules. Android has no HealthKit and no BGTaskScheduler; Health Connect's data-change model
+  and Android's process-lifecycle model are different enough that this needs its own decision
+  rather than a one-line "same thing, different API" note.
+- **Choice:** Android's background substrate is **WorkManager periodic work (~1 hour floor) + an
+  expedited one-off worker (fired on foreground and on the Watch→phone refresh nudge, D-34) + a
+  boot-completed receiver**. A2's five binding rules translate as follows:
+  1. *Completion handler returns within seconds on every wake, budget never spent* → the periodic
+     worker's `doWork()` must return promptly and never block on full inline re-derivation; unlike
+     HealthKit's 3-missed-handlers penalty, WorkManager has no equivalent "you lose the capability"
+     penalty, but the discipline of "wake, kick off work, return" carries over as good practice
+     regardless.
+  2. *A wake means "something changed," never a payload, always followed by an anchored re-query*
+     → Health Connect's `getChangesToken`/`getChanges` is the Android anchored-query analogue,
+     polled on the WorkManager schedule rather than pushed by the OS.
+  3. *`enableBackgroundDelivery` re-registered defensively on every app open* → the periodic
+     WorkManager request is re-enqueued with `ExistingPeriodicWorkPolicy.KEEP` on every app open,
+     so a request cleared by the OS or an update self-heals without user action.
+  4. *A locked store is logged `skippedLocked`, never a user-facing error* → the Android analogue
+     (device locked / Health Connect temporarily unavailable) is logged the same way, never
+     surfaced as an error.
+  5. *No UI copy ever promises a wall-clock time* → Android copy commits to "usually within the
+     hour," never a promise — see the genuinely-different OEM behavior below, which makes this
+     rule *more* load-bearing on Android than it already is on iOS.
+- **What is genuinely different, not just translated:** Health Connect has **no push-observer
+  equivalent at all** — there is nothing on Android that wakes the app the way a HealthKit observer
+  query does; `getChangesToken`/`getChanges` must be polled on the WorkManager schedule from the
+  start. Change tokens also **expire after roughly 30 days of non-use**; on expiry the adapter must
+  fall back to a full-window re-read and record an honestly **degraded `BackfillWindow`**, so the
+  UI can say plainly that some history may be missing rather than silently presenting a gap as
+  complete data. Separately, **OEM background-process throttling** on Xiaomi, Huawei, Oppo, Vivo
+  and Samsung devices is materially more aggressive than iOS's background-execution model; copy
+  says "usually within the hour," never a promise, precisely because these OEMs can and do delay
+  or skip scheduled work in ways stock Android (and iOS) do not.
+- **Migration impact:** WorkManager is a standard AndroidX library already implied by the rest of
+  the Android stack — no new third-party dependency. A `BootReceiver` already exists in the Android
+  source tree but is currently unregistered/dead; this decision is what makes it live, via a
+  manifest `<receiver>` registration for `ACTION_BOOT_COMPLETED`.
+- **Supersession:** none — this is Android's first substrate-level counterpart to A2/D-10, not an
+  amendment to either.
+- **Approval:** accepted — Founder, 2026-07-30, per ADR-0012.
+
+## D-43 — Clinical Health Records is dropped; the lab notebook's third ingestion path is the camera (ADR-0013)
+
+- **Context:** App Review rejected 1.1 (5) under Guideline 2.5.1 (submission
+  `d3fd0270-abbc-448f-925f-0909044d9585`, reviewed 2026-08-01): BADAN uses the Clinical Health
+  Records API but "does not appear to include any primary features that require" it. This was the
+  second round — a 2.1 information request on the same submission had already been answered in full
+  with screenshots (`docs/app-review/chr-1.1.5/`) and was not accepted as establishing a primary
+  feature.
+- **Choice:** **Comply, do not appeal.** The API, the entitlement value, the usage-description key,
+  the import screen and its route are removed (see ADR-0013 for the file-by-file disposition). The
+  founder unchecks "Health Records" in App Store Connect; that step is outside the repo and the
+  submission fails identically if it is skipped.
+- **Why not appeal:** the lab notebook already had two other ingestion paths, so on Apple's own
+  test the feature does not *require* the API. Arguing a point already ruled on costs review cycles
+  BADAN would pay for with weeks, not paragraphs.
+- **What replaces it:** the third way in is now **the document camera**, joining photos and PDF
+  files — all three on-device Vision OCR through the existing LAB-07 confirm-every-field review
+  screen. The port was not cosmetic: PDFs previously read **page 1 only** and said nothing about
+  the rest, the photo picker took a single image, and there was no camera path at all. All three
+  are fixed, with a stated 25-page ceiling that is reported to the user rather than silently
+  applied.
+- **Guardrail impact:** none loosened. No new network surface (Vision is on-device; the two-file
+  socket allowlist is untouched), the offline path is intact, results still land in
+  `badan_sensitive.db` under the same gating, and the four-concept law still holds — the lab's own
+  interval and flag are preserved verbatim.
+- **Cost, stated:** a user whose clinic shares into Apple Health loses a one-tap import and must
+  export or photograph the report. Health Records was region- and institution-gated, so most users
+  never had that affordance to lose.
+- **Supersession:** removes the Clinical Records half of LAB-11 (EPIC-41). The pure FHIR parser and
+  importer survive, unwired, for a possible file-based FHIR import; reintroducing a HealthKit
+  clinical read on top of them needs a new ADR.
+- **Approval:** accepted — Founder, 2026-08-01, per ADR-0013.
+
 ## Doc map cross-link
 
 `CLAUDE.md` now carries both a **Repo layout** section naming `docs/adr/` and `docs/DECISIONS.md`,
@@ -741,3 +945,54 @@ guardrails / Development priorities". That stopped being true when those section
 
 Still worth cross-linking from `CLAUDE.md` if its layout block ever expands:
 `packages/contracts/INVARIANTS.md` and `docs/MONETIZATION.md`, neither of which it names today.
+
+## D-44 — Sign in with Apple arrives; D-32 is reversed, and the no-accounts posture with it
+- **Context:** The founder asked for SIWA wired for cross-platform subscription sync and referrals.
+  This contradicts **D-32** (which dropped SIWA by name, 2026-07-28), **D-40** (which extended the
+  no-accounts posture to Android, 2026-07-30), and **ADR-0002/ADR-0010** (no accounts, no sync, no
+  server-side user state). The conflict was raised in full before any code was written — including
+  that StoreKit already syncs entitlements across a user's Apple devices for free, that referrals
+  could run on App Store Offer Codes with no backend at all, and that the only thing SIWA genuinely
+  buys is iOS↔Android. The founder confirmed the direction with that on the table.
+- **Choice:** BADAN gains an **optional** account, created with Sign in with Apple, whose only jobs
+  are carrying a subscription between platforms and running referrals. See **ADR-0014**.
+- **Rationale:** D-32's reasoning was correct and is not being repudiated — Guideline 4.8 still does
+  not require SIWA here, and StoreKit still binds a purchase to the Apple ID by itself. What D-32
+  did not have to answer, iOS being the only surface, is what happens when the same person pays on
+  iOS and installs on Android: StoreKit's binding stops at Apple's boundary and Play's stops at
+  Google's, and nothing either store offers spans them. Entitlement is the one piece of state that
+  genuinely has to outlive a single vendor's ecosystem. The account is added for that, not to
+  satisfy a guideline that does not exist — which was D-32's actual objection, and it still stands.
+- **What was NOT reversed, and this is the load-bearing half of the decision:**
+  - **"Send no health data off device."** Intact. What crosses the account wire is a statement about
+    a *purchase* — a store, a product id, an expiry. `AccountPayloadShapeTests` pins the encoded
+    shape of every request the client can build; `test_the_accounts_schema_holds_no_health_column`
+    pins the server's columns. Both fail loudly rather than quietly.
+  - **Signed out is a complete, permanent state.** Every reading, derivation, log and export within
+    the D-33 window works identically with no account. `AccountState` has no case that could express
+    "blocked until you sign in".
+  - **D-33 stays the only gate on a user's own records.** Referrals grant premium *time* and gate
+    nothing new.
+  - **The remote may grant access, never revoke it.** `EntitlementMerge.resolve` returns
+    `.localStore` first and unconditionally, so no server failure can lock out a paying user.
+- **Migration impact:**
+  - `SubscriptionPolicy.State` gains `syncedSnapshot`, **defaulted to nil** — every call site
+    predating this decision compiles unchanged and means exactly what it meant, because a nil
+    snapshot cannot change any answer.
+  - New server tables (`accounts`, `account_sessions`, `account_entitlements`) in their own
+    `accounts.db`. No change to any existing database, on device or on the server.
+  - `com.apple.developer.applesignin` added to `App/BADAN.entitlements`.
+  - CI's `NET_ALLOWLIST` grows to a third entry. A fourth still requires a new ADR.
+  - **In-app account deletion becomes mandatory** (App Review 5.1.1(v)) and is implemented.
+  - **The privacy nutrition label changes** — BADAN now collects a user identifier. ASC's privacy
+    answers and both hosted policies must say so before the next submission.
+- **Scope shipped:** **iOS only.** The founder scoped the build to iOS. The service speaks Android's
+  half of the wire already; the client does not exist, Android has no Play Billing integration
+  (D-40 specced the product ids, nothing was built), and the web SIWA flow Android would need is
+  blocked on an Apple Services ID and .p8 key that do not exist yet. Tracked in
+  `docs/android-parity-status.md`. **Do not describe this to users as working across platforms
+  until the Android client ships.**
+- **Supersession:** supersedes **D-32** in full. Narrows **ADR-0002** and **ADR-0010** from "no
+  accounts, no sync, no server-side state" to "accounts and entitlement state, and nothing else".
+  Leaves **D-33**, **D-37/ADR-0011** and **D-40**'s Play product-id shape untouched.
+- **Approval:** accepted — Founder, 2026-08-07, per ADR-0014.

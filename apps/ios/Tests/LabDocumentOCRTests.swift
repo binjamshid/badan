@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 import CoreGraphics
+import PDFKit
 import UIKit
 @testable import BADAN
 
@@ -180,5 +181,250 @@ final class LabDocumentOCRTests: XCTestCase {
         let match = LabOCRNumberParser.firstNumber(in: "5.2")
         XCTAssertEqual(match?.value, 5.2)
         XCTAssertFalse(match?.wasAmbiguousDecimal ?? true)
+    }
+
+    // MARK: - Row assembly (pipeline step 1b)
+    //
+    // Exercised against synthetic `OCRTextLine` fragments rather than through Vision on purpose:
+    // WHETHER a given rendered image gets split into columns is Vision's decision and varies with
+    // font, spacing and revision, so a test that depended on provoking a split would be flaky in
+    // the one direction that matters. What is pinned here is the assembler's own contract given
+    // fragments that ARE split — which is exactly the shape a real column-aligned lab PDF produced
+    // on 2026-08-01. The end-to-end case below covers the whole chain.
+
+    private func fragment(_ text: String, x: Double, y: Double,
+                          width: Double = 0.2, height: Double = 0.03,
+                          confidence: OCRConfidence = 0.9) -> OCRTextLine {
+        OCRTextLine(pageIndex: 0, text: text,
+                    boundingBox: OCRBoundingBox(x: x, y: y, width: width, height: height),
+                    confidence: confidence)
+    }
+
+    func testColumnFragmentsSharingABandBecomeOneRowInPrintedOrder() {
+        // The exact failure this whole mechanism exists for: Vision hands back the label, value and
+        // interval of ONE printed row as three separate observations at the same height.
+        let rows = LabOCRRowAssembler.rows(from: [
+            fragment("Ferritin", x: 0.05, y: 0.80),
+            fragment("32 ng/mL", x: 0.40, y: 0.80),
+            fragment("(30-400)", x: 0.70, y: 0.80),
+        ])
+
+        XCTAssertEqual(rows.count, 1, "three fragments on one printed line are one row, not three")
+        XCTAssertEqual(rows.first?.text, "Ferritin 32 ng/mL (30-400)",
+                       "joined left-to-right, in the order they were printed")
+    }
+
+    func testFragmentsOnDifferentBandsStayDifferentRows() {
+        let rows = LabOCRRowAssembler.rows(from: [
+            fragment("Ferritin", x: 0.05, y: 0.80),
+            fragment("32 ng/mL", x: 0.40, y: 0.80),
+            fragment("Vitamin D", x: 0.05, y: 0.70),
+            fragment("21 ng/mL", x: 0.40, y: 0.70),
+        ])
+
+        XCTAssertEqual(rows.map(\.text), ["Ferritin 32 ng/mL", "Vitamin D 21 ng/mL"],
+                       "rows come back top-to-bottom, and two printed rows never merge into one")
+    }
+
+    func testAssemblyLosesNoFragment() {
+        // The assembler reorders and joins; it must never drop. A fragment that vanished here would
+        // be a lab value silently missing from the review screen with nothing to indicate it.
+        let inputs = [
+            fragment("Sodium", x: 0.05, y: 0.90),
+            fragment("140 mmol/L", x: 0.40, y: 0.90),
+            fragment("stray", x: 0.05, y: 0.50, height: 0.02),
+            fragment("Potassium", x: 0.05, y: 0.10),
+            fragment("4.2 mmol/L", x: 0.40, y: 0.10),
+        ]
+
+        let joined = LabOCRRowAssembler.rows(from: inputs).map(\.text).joined(separator: " ")
+
+        for input in inputs {
+            XCTAssertTrue(joined.contains(input.text), "\(input.text) was dropped during row assembly")
+        }
+    }
+
+    func testArabicRowIsJoinedRightToLeft() {
+        // On an Arabic report the marker sits at the right edge with its value to the left. Joined
+        // by ascending x it would read "٩٥ الجلوكوز" — a number with no label before it, which
+        // `extractField` correctly refuses, losing a row that was recognized perfectly well.
+        let rows = LabOCRRowAssembler.rows(from: [
+            fragment("95 mg/dL", x: 0.10, y: 0.80),
+            fragment("الجلوكوز", x: 0.70, y: 0.80),
+        ])
+
+        XCTAssertEqual(rows.first?.text, "الجلوكوز 95 mg/dL",
+                       "an Arabic row reads right-to-left, so its label comes first")
+    }
+
+    func testALatinRowWithArabicIndicDigitsStaysLeftToRight() {
+        // Digits are excluded from the direction vote deliberately: Arabic-Indic numerals turn up
+        // in otherwise-Latin reports, and a numeric column must not flip a row's reading order.
+        let rows = LabOCRRowAssembler.rows(from: [
+            fragment("Glucose", x: 0.05, y: 0.80),
+            fragment("٩٥ mg/dL", x: 0.40, y: 0.80),
+        ])
+
+        XCTAssertEqual(rows.first?.text, "Glucose ٩٥ mg/dL")
+    }
+
+    func testRowConfidenceIsItsWeakestFragment() {
+        let rows = LabOCRRowAssembler.rows(from: [
+            fragment("Ferritin", x: 0.05, y: 0.80, confidence: 0.99),
+            fragment("32 ng/mL", x: 0.40, y: 0.80, confidence: 0.31),
+        ])
+
+        XCTAssertEqual(rows.first?.confidence, 0.31,
+                       "a confidently-read label must not hide a doubtful value — the flag is what tells the reviewer where to look")
+    }
+
+    func testSingleFragmentPageIsUntouched() {
+        let only = [fragment("Glucose 95 mg/dL", x: 0.05, y: 0.80)]
+        XCTAssertEqual(LabOCRRowAssembler.rows(from: only).map(\.text), ["Glucose 95 mg/dL"])
+    }
+
+    // MARK: - Non-marker row suppression (pipeline step 1c)
+
+    func testPageMarkersAreNotMarkerCandidates() {
+        XCTAssertFalse(LabOCRRowFilter.isMarkerCandidate("Report page 2 of 3"))
+        XCTAssertFalse(LabOCRRowFilter.isMarkerCandidate("Page 1 / 4"))
+        XCTAssertFalse(LabOCRRowFilter.isMarkerCandidate("صفحة ٢ من ٣"))
+    }
+
+    func testBareDateLinesAreNotMarkerCandidates() {
+        XCTAssertFalse(LabOCRRowFilter.isMarkerCandidate("Collected 2026-03-14"))
+        XCTAssertFalse(LabOCRRowFilter.isMarkerCandidate("Reported 14/03/2026 09:30"))
+    }
+
+    func testAResultPrintedAlongsideItsDateSurvives() {
+        // The suppression must be narrow enough that a date sitting on the same row as a value
+        // never costs the user the value.
+        XCTAssertTrue(LabOCRRowFilter.isMarkerCandidate("Glucose 2026-03-14 5.4 mmol/L"))
+    }
+
+    func testMarkerNamesContainingDigitsAndDashesSurvive() {
+        // "25-OH" is not a date and must never be read as one.
+        XCTAssertTrue(LabOCRRowFilter.isMarkerCandidate("Vitamin D3 25-OH 32 ng/mL"))
+        XCTAssertTrue(LabOCRRowFilter.isMarkerCandidate("Hemoglobin A1c 5.4 %"))
+    }
+
+    // MARK: - Page rasterization
+
+    /// A one-page PDF built the way a sheet-fed scanner actually builds one: the bitmap is stored
+    /// SIDEWAYS, and a `/Rotate` on the page is what makes it display upright. Reading `/Rotate` is
+    /// therefore not a nicety — it is the difference between the page a reader sees and a bitmap
+    /// lying on its side.
+    private func scannerStylePDF(_ line: String) throws -> PDFDocument {
+        let upright = UIImage(cgImage: renderTextImage([line]))
+        // `.right` + baking = the bitmap turned a quarter turn clockwise, exactly what the scanner
+        // stored; /Rotate 270 turns it back counter-clockwise for display.
+        let sideways = UIImage(cgImage: try XCTUnwrap(upright.cgImage), scale: 1, orientation: .right)
+            .uprightedForRecognition()
+        let data = try XCTUnwrap(LabPDFRendering.pdfData(from: [sideways]))
+        let document = try XCTUnwrap(PDFDocument(data: data))
+        try XCTUnwrap(document.page(at: 0)).rotation = 270
+        return document
+    }
+
+    func testAScannerRotatedPDFPageRasterizesAsTheReaderSeesIt() throws {
+        // The previous implementation sized every canvas from `bounds(for:)`, which reports the box
+        // BEFORE /Rotate — so rotated content was drawn into a canvas of the wrong aspect and part
+        // of it fell outside. Measured on the first fixture written for this: zero lines recognized
+        // on a page that opens perfectly straight in Preview, which the app could only report as
+        // "no results on this report."
+        let document = try scannerStylePDF("Glucose 95 mg/dL")
+        let rendered = LabPDFRendering.pageImages(document: document)
+        let page = try XCTUnwrap(rendered.images.first)
+
+        let extraction = LabDocumentOCR(analyteDictionary: nil).run(sourceDocumentId: "doc-rot", pages: [page])
+
+        XCTAssertEqual(extraction.fields.first?.parsedValue, 95,
+                       "a scanner-rotated page must rasterize the way it displays — got \(extraction.rawLines.map(\.text))")
+    }
+
+    func testAQuarterTurnedPageRasterizesAtItsDisplayedAspect() throws {
+        // The geometric half of the same rule, pinned separately because it holds whatever Vision
+        // makes of the pixels: a page displayed landscape must not be rendered into a portrait
+        // canvas, which is what silently cropped the content.
+        let document = try scannerStylePDF("Glucose 95 mg/dL")
+        let page = try XCTUnwrap(LabPDFRendering.pageImages(document: document).images.first)
+        let bounds = try XCTUnwrap(document.page(at: 0)).bounds(for: .mediaBox)
+
+        XCTAssertEqual(page.width > page.height, bounds.height > bounds.width,
+                       "a quarter-turned page swaps the canvas's aspect; it does not keep the pre-rotation box")
+    }
+
+    func testPageImagesReportsTheDocumentsOwnPageCount() throws {
+        let image = try XCTUnwrap(UIImage(cgImage: renderTextImage(["Glucose 95 mg/dL"])))
+        let data = try XCTUnwrap(LabPDFRendering.pdfData(from: Array(repeating: image, count: 3)))
+        let document = try XCTUnwrap(PDFDocument(data: data))
+
+        let rendered = LabPDFRendering.pageImages(document: document, limit: 2)
+
+        XCTAssertEqual(rendered.images.count, 2, "the limit bounds how much is READ")
+        XCTAssertEqual(rendered.totalPages, 3, "the count is the DOCUMENT's, so the user can be told what was skipped")
+    }
+
+    // MARK: - Unit capture must survive the lab's own flag
+
+    func testAFlagLetterIsNotStrippedFromInsideTheUnit() {
+        // Observed on a real report on 2026-08-01: "21 ng/mL (30-100) L" recorded its unit as
+        // "ng/m", because the flag "L" was removed from the first place an L occurs. Every unit a
+        // lab prints for a flagged result is exposed to this — mL, mmol/L, mIU/L, µg/L.
+        XCTAssertEqual(LabOCRRemainderParser.unit(in: "ng/mL (30-100) L"), "ng/mL")
+        XCTAssertEqual(LabOCRRemainderParser.flag(in: "ng/mL (30-100) L"), "L")
+        XCTAssertEqual(LabOCRRemainderParser.unit(in: "mmol/L (135-145) H"), "mmol/L")
+        XCTAssertEqual(LabOCRRemainderParser.unit(in: "mIU/L (0.4-4.0)"), "mIU/L")
+    }
+
+    func testUnflaggedRowsStillReadTheirUnitAndInterval() {
+        XCTAssertEqual(LabOCRRemainderParser.unit(in: "% (4.0-5.6)"), "%")
+        XCTAssertEqual(LabOCRRemainderParser.interval(in: "% (4.0-5.6)"), "4.0-5.6")
+        XCTAssertEqual(LabOCRRemainderParser.unit(in: "mg/dL"), "mg/dL")
+    }
+
+    // MARK: - End to end: a column-aligned row yields one clean field, not junk
+
+    func testWidelySpacedColumnsProduceOneFieldWithItsRealMarkerName() throws {
+        // Column spacing wide enough that Vision may return each column separately — the layout
+        // that produced "marker name = (, value = 30, unit = -400" before row assembly existed.
+        let image = renderTextImage(["Ferritin          32 ng/mL          (30-400)"],
+                                    size: CGSize(width: 1800, height: 90))
+        let pipeline = LabDocumentOCR(analyteDictionary: nil)
+
+        let extraction = pipeline.run(sourceDocumentId: "doc-rows", pages: [image])
+
+        XCTAssertEqual(extraction.fields.count, 1,
+                       "one printed row is one candidate field, however many fragments Vision split it into")
+        let field = try XCTUnwrap(extraction.fields.first)
+        XCTAssertTrue(field.analyteLabelRaw.contains("Ferritin"),
+                      "the marker name must be the printed label, not a stray bracket — got \(field.analyteLabelRaw)")
+        XCTAssertEqual(field.parsedValue, 32)
+        XCTAssertEqual(field.reviewState, .needsReview)
+    }
+
+    func testAnIntervalColumnAloneProducesNoField() {
+        // Whatever else happens, a fragment with no letters in it is not a marker.
+        let image = renderTextImage(["(30-400)"])
+        let pipeline = LabDocumentOCR(analyteDictionary: nil)
+
+        let extraction = pipeline.run(sourceDocumentId: "doc-bracket", pages: [image])
+
+        XCTAssertTrue(extraction.fields.isEmpty,
+                      "punctuation is not a marker name — got \(extraction.fields.map(\.analyteLabelRaw))")
+    }
+
+    func testAPageHeaderProducesNoField() {
+        let image = renderTextImage(["Report page 2 of 3", "Collected 2026-03-14", "Glucose 95 mg/dL"],
+                                    lineSpacing: 100)
+        let pipeline = LabDocumentOCR(analyteDictionary: nil)
+
+        let extraction = pipeline.run(sourceDocumentId: "doc-header", pages: [image])
+
+        XCTAssertEqual(extraction.fields.count, 1,
+                       "page furniture is not offered as a marker to confirm — got \(extraction.fields.map(\.analyteLabelRaw))")
+        XCTAssertEqual(extraction.fields.first?.parsedValue, 95)
+        XCTAssertEqual(extraction.rawLines.count, 3,
+                       "suppression is an extraction decision only — the raw recognized lines are still the stored artifact")
     }
 }

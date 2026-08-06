@@ -34,6 +34,14 @@ final class AppEnvironment {
     /// object, so "what is gated?" is answerable by finding its call sites rather than by grepping
     /// for scattered boolean checks.
     let subscription: StoreKitEntitlementStore
+    /// The optional Sign in with Apple account (ADR-0014 / D-44). Its only jobs are carrying a
+    /// subscription between iOS and Android and running referrals.
+    ///
+    /// Signed out is a fully-functional state, and every surface in the app must keep working in
+    /// it. Nothing here may become a precondition for reading, deriving, logging or exporting —
+    /// `AccountState` has no case that could express that, and the D-33 export cap remains the only
+    /// gate on a user's own records.
+    let account: AccountController
     let backgroundRuns: BackgroundRunRepository
     /// EPIC-03. Workout GPS traces. Wired here like every other repository so the workout detail
     /// screen reads routes through the composition root rather than constructing its own
@@ -270,7 +278,11 @@ final class AppEnvironment {
         let journal = JournalRepository(sensitive: sensitive)
         self.journal = journal
         self.correlations = CorrelationRepository(sensitive: sensitive)
-        self.importBatches = ImportBatchRepository(main)
+        // STORAGE-2: `sensitive:` for the same reason `measurements` above takes it. An import's
+        // rows go wherever `MeasurementRepository` routed them, so an undo wired with `main` alone
+        // cannot reach the glucose an Apple Health archive wrote into `badan_sensitive.db` — it
+        // would report the batch undone while every one of those readings stayed live.
+        self.importBatches = ImportBatchRepository(main, sensitive: sensitive)
         self.notificationDeliveries = NotificationDeliveryRepository(main)
         let reportRepo = ReportRepository(main)
         self.reports = reportRepo
@@ -346,7 +358,24 @@ final class AppEnvironment {
                                   clock: clock, deviceId: deviceId,
                                   contextAnnotations: contextAnnotations)
         self.stress = stress
-        self.subscription = StoreKitEntitlementStore(clock: clock)
+        // ADR-0014 / D-44. Built as locals and wired to each other BEFORE either is stored, so the
+        // dependency stays one-directional in the types themselves: `StoreKitEntitlementStore` holds
+        // two closures and no reference to an account, and `AccountController` knows nothing about
+        // StoreKit. Neither can grow a reference to the other without someone changing this.
+        //
+        // Both captures are weak. `AppEnvironment` owns both objects for the process lifetime, so a
+        // cycle here would never be collected and would keep a `Transaction.updates` listener alive
+        // across a hypothetical environment rebuild.
+        let subscriptionStore = StoreKitEntitlementStore(clock: clock)
+        let accountController = AccountController(clock: clock)
+        subscriptionStore.syncedSnapshotSource = { [weak accountController] in
+            accountController?.snapshot
+        }
+        subscriptionStore.entitlementSyncHook = { [weak accountController] entitlements in
+            await accountController?.pushLocalEntitlement(entitlements)
+        }
+        self.subscription = subscriptionStore
+        self.account = accountController
         let mood = MoodEstimateWriter(derivation: derivation, measurements: measurements,
                                       registry: registry, clock: clock, deviceId: deviceId)
         self.derivationCoordinator = DerivationCoordinator(baselines: baselines, sleep: sleepIntelligence,

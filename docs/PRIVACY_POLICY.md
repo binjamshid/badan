@@ -1,5 +1,15 @@
 # BADAN — Privacy Policy
 
+> **STALE — do not ship or link this file.** It describes version 0.1.0 as of 2026-07-21 and
+> predates the AI coach (ADR-0010 / D-22), methodology telemetry (ADR-0011 / D-37) and accounts
+> (ADR-0014 / D-44). Its claims that BADAN "makes no network calls" and "has no accounts" are all
+> false today.
+>
+> The **live** policy is `docs/legal/privacy.html`, served at
+> https://badan.binjamshid.com/privacy.html and referenced by App Store Connect. The in-app copy is
+> `apps/ios/Sources/Features/Settings/PrivacyPolicyScreen.swift`. Those two are the ones to keep in
+> sync; this file is kept only as the historical record of what 0.1.0 claimed.
+
 **Last updated: 2026-07-21**
 **Applies to: BADAN for iOS, version 0.1.0**
 

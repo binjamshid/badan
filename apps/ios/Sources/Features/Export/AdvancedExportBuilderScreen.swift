@@ -167,6 +167,7 @@ struct AdvancedExportBuilderScreen: View {
                 if !isEditing {
                     trustReminder
                     runButton
+                    clampNotice
                     ForEach(vm.lastResults) { item in
                         ExportSuccessCard(result: item.result, sortedMetricIds: item.sortedMetricIds) {
                             shareURLs = item.result.fileURLs
@@ -640,6 +641,34 @@ struct AdvancedExportBuilderScreen: View {
             s.endDate = nil
         }
         return s
+    }
+
+    /// D-33. Shown when the run that just finished had its window clipped to the free export
+    /// period. It sits above the success card on purpose: "here is your file" and "your file is
+    /// only the last seven days" are one message, and the second half arriving underneath the
+    /// checksums would be discovered too late. Same sentence as Quick Export and the Shortcut reply
+    /// (`ExportCopy.clampedToFreeWindow`) — one limit, one wording.
+    @ViewBuilder
+    private var clampNotice: some View {
+        if let notice = vm.notice {
+            HStack(alignment: .top, spacing: BadanSpace.space2) {
+                Image(systemName: "info.circle.fill")
+                    .imageScale(.small)
+                    .foregroundStyle(BadanColor.info)
+                    .accessibilityHidden(true)
+                Text(notice, language: env.language)
+                    .font(BadanFont.caption)
+                    .foregroundStyle(BadanColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(BadanSpace.space3)
+            .background(BadanColor.surfaceElevated,
+                        in: RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: BadanRadius.card, style: .continuous)
+                .strokeBorder(BadanColor.separator, lineWidth: 1))
+            .accessibilityElement(children: .combine)
+        }
     }
 
     private func errorCard(_ message: String) -> some View {

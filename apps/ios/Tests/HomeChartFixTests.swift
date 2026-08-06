@@ -7,6 +7,11 @@ import XCTest
 /// tokens, module visibility, the tappable DepthBadge) aren't exercised here since they need a
 /// rendered hierarchy — see `ViewModelPerformanceTests`/`PipelineTests` for this repo's existing
 /// pattern of testing the pure query/format cores rather than SwiftUI bodies directly.
+///
+/// It also covers `MetricChartAccessibility`, the chart's spoken layer, for the same reason: the
+/// `AXChartDescriptor` it feeds cannot be built headlessly, but the strings it announces can be
+/// asserted on their own — and an English literal or an Eastern-digit numeral in that layer is
+/// invisible to everyone who reads the screen with their eyes, so nothing else would catch it.
 final class HomeChartFixTests: XCTestCase {
     private func env(language: AppLanguage) -> (format: ValueFormatter, language: AppLanguage) {
         let profile = CustomizationProfile(language: language)
@@ -97,5 +102,62 @@ final class HomeChartFixTests: XCTestCase {
         ]
         let chart = MetricChart(series: series, language: .en)
         XCTAssertEqual(chart.points.count, 2)
+    }
+
+    // MARK: - The chart's spoken layer
+
+    private func containsEasternArabicDigits(_ text: String) -> Bool {
+        text.unicodeScalars.contains { (0x0660...0x0669).contains($0.value) }
+    }
+
+    /// Everything the audio graph announces is bilingual. The axis titles and the series name were
+    /// English literals inside the accessibility layer, so every chart announced "Date" and "Value"
+    /// in English to an Arabic VoiceOver reader.
+    func testAudioGraphAxisTitlesAndSeriesNameCarryBothLanguages() {
+        let strings: [(String, LocalizedString)] = [
+            ("dateAxisTitle", MetricChartAccessibility.dateAxisTitle),
+            ("valueAxisTitle", MetricChartAccessibility.valueAxisTitle),
+            ("namedSeries", MetricChartAccessibility.namedSeries),
+            ("unnamedSeries", MetricChartAccessibility.unnamedSeries),
+        ]
+        for (name, text) in strings {
+            XCTAssertFalse(text.en.isEmpty, "\(name) has no English")
+            XCTAssertFalse(text.ar.isEmpty, "\(name) has no Arabic")
+            XCTAssertNotEqual(text.en, text.ar, "\(name) is untranslated")
+            XCTAssertTrue(text.ar.unicodeScalars.contains { (0x0600...0x06FF).contains($0.value) },
+                          "\(name)'s Arabic is not in Arabic script")
+        }
+    }
+
+    /// The series is named after the unit the chart was given, and is never left empty: an unnamed
+    /// series is announced as a bare ordinal, which tells a listener nothing about what they hear.
+    func testAudioGraphSeriesIsNamedAfterTheUnitInScope() {
+        for language in [AppLanguage.en, .ar] {
+            XCTAssertTrue(MetricChartAccessibility.seriesName(unit: "bpm", language: language).contains("bpm"),
+                          "the series name states the unit it is plotting")
+            XCTAssertFalse(MetricChartAccessibility.seriesName(unit: nil, language: language).isEmpty,
+                           "a chart with no unit still names its series")
+            XCTAssertFalse(MetricChartAccessibility.seriesName(unit: "", language: language).isEmpty)
+        }
+        XCTAssertNotEqual(MetricChartAccessibility.seriesName(unit: "bpm", language: .en),
+                          MetricChartAccessibility.seriesName(unit: "bpm", language: .ar),
+                          "the name is translated, not one string shown twice")
+    }
+
+    /// FEAT-244's contract, at the call site that was breaking it: the y values the audio graph
+    /// speaks are Latin-numeral whatever the user's Arabic-Indic DISPLAY preference says, because
+    /// they are spoken and never drawn. The old code called
+    /// `Numerals.format(value, language:arabicDigits:)` here, feeding Eastern Arabic-Indic glyphs
+    /// into VoiceOver — the digit form `accessibleSpokenForm` exists to keep out of speech.
+    func testAudioGraphValuesAreSpokenInLatinNumerals() {
+        XCTAssertEqual(MetricChartAccessibility.spokenValue(72, unit: "bpm"), "72 bpm")
+        XCTAssertEqual(MetricChartAccessibility.spokenValue(72, unit: nil), "72")
+        for value in [0.0, 7.0, 72.0, 1_234.0] {
+            let spoken = MetricChartAccessibility.spokenValue(value, unit: "bpm")
+            XCTAssertFalse(containsEasternArabicDigits(spoken),
+                           "Eastern Arabic-Indic glyphs reached a spoken string: \(spoken)")
+            XCTAssertEqual(spoken, Numerals.accessibleSpokenForm(value) + " bpm",
+                           "the spoken value is the spoken form, not the display form")
+        }
     }
 }

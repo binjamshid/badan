@@ -18,7 +18,7 @@ import HealthKit
 /// error all resolve to an empty result rather than throwing or crashing — HealthKit's read
 /// authorization is deliberately opaque (apps are never told whether a *read* grant was denied,
 /// only whether the request sheet completed), so "empty" is the only honest signal available.
-final class HealthKitAdapter: HealthStorePort {
+final class HealthKitAdapter: HealthStorePort, SleepNightRebuilding {
     private let store = HKHealthStore()
     private let anchors: ReadAnchorRepository
     /// Consulted at the instant a route would be read (plan §4.11). Fail-closed by default —
@@ -43,6 +43,12 @@ final class HealthKitAdapter: HealthStorePort {
     /// shared a transaction with the ingest write, which stopped being true once HealthKit reads
     /// moved outside `IngestionPipeline`'s write transaction (see `runAnchoredQuery`'s doc).
     private var pendingAnchors: [String: HKQueryAnchor] = [:]
+
+    /// Nights the most recent `readSessions` call re-clustered from HealthKit's COMPLETE current
+    /// sample set, drained by `rebuiltSleepNights(_:)` (SLEEP-H2). Same in-process buffer
+    /// discipline as `pendingDeletions` above, and correct for the same reason: the pipeline drains
+    /// it inside the one ingest pass that produced it.
+    private var pendingRebuiltNights: Set<String> = []
 
     /// The single `store` key under which every HealthKit anchor/permission-state row is filed
     /// (matches `SourcesScreen`'s `"healthkit"` permission-store label) and the sourceId used
@@ -377,11 +383,14 @@ final class HealthKitAdapter: HealthStorePort {
     ///
     /// Known limitation: if EVERY sample for a night is deleted (none remain), that night never
     /// appears in `deltaSamples` (deletions carry no date — see `HealthStoreDeletions`'s doc —
-    /// so there is nothing to derive an affected night from), and its stale session row is not
-    /// rebuilt or removed by this path. Out of scope for BUG-11/BUG-10 as specified: the
-    /// tractable, testable fix here is night-keyed identity + full-night rebuild + the
-    /// conflict-target migration; a fully-wiped night needs a different signal HealthKit's
+    /// so there is nothing to derive an affected night from). The F4 branch below recovers the
+    /// common case of this by rebuilding the recent nights whenever ANY sleep deletion is
+    /// reported; a wipe older than `deletionRebuildNights` still needs a signal HealthKit's
     /// anchored-query API doesn't provide.
+    ///
+    /// (AUDIT 2026-08-06, SLEEP-H2) Each night this actually rebuilds is recorded in
+    /// `pendingRebuiltNights`, so `IngestionPipeline` can hold the stored night to the set this
+    /// returns instead of merely upserting into it — see `rebuiltSleepNights(_:)`.
     func readSessions(_ range: HealthDateRange) -> [SessionDTO] {
         guard HKHealthStore.isHealthDataAvailable(),
               let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
@@ -412,9 +421,36 @@ final class HealthKitAdapter: HealthStorePort {
 
         var sessions: [SessionDTO] = []
         for night in affectedNights.sorted() {
-            sessions += sessionsForNight(night, categoryType: type)
+            // (SLEEP-H2) A night counts as rebuilt only when HealthKit actually answered for it.
+            // `nil` is a query failure, and reporting that night as rebuilt would let the
+            // pipeline's prune tombstone real sleep on a transient error.
+            guard let forNight = sessionsForNight(night, categoryType: type) else { continue }
+            sessions += forNight
+            pendingRebuiltNights.insert(night)
         }
         return sessions
+    }
+
+    /// (AUDIT 2026-08-06, SLEEP-H2) The local nights the most recent `readSessions` call rebuilt
+    /// in FULL — drained, like `deletions(_:)`, and for the same reason: it reports what that read
+    /// just did rather than re-querying HealthKit to find out.
+    ///
+    /// This closes the gap between what the full-night rebuild promises and what the pipeline
+    /// could enforce. `disambiguateWithinNight` numbers a night's clusters by POSITION
+    /// (`base`, `base-1`, `base-2`), so a night that drops from three clusters to two stops
+    /// emitting `base-2` entirely. `IngestionPipeline.writeSessions` only ever upserts, no
+    /// deletion signal exists for sleep (`HealthStoreDeletions.sessions` is populated exclusively
+    /// by `readWorkouts`), and `DedupLite` cannot suppress a cluster with nothing to overlap — so
+    /// the orphaned row stayed live and unsuppressed forever, feeding `SleepIntelligenceEngine`
+    /// nap credit or asleep seconds for sleep the user had already deleted from Health. That is
+    /// exactly the failure F4's own comment above says it exists to prevent.
+    ///
+    /// A night appears here ONLY if this adapter re-queried HealthKit's complete current sample
+    /// set for it and got an answer, which is what makes "the stored set for this night must equal
+    /// the set I just emitted" a safe thing for the pipeline to act on.
+    func rebuiltSleepNights(_ range: HealthDateRange) -> Set<String> {
+        defer { pendingRebuiltNights = [] }
+        return pendingRebuiltNights
     }
 
     /// How many recent nights a deletion-only sleep sync rebuilds (F4). Sleep is edited close to
@@ -440,7 +476,7 @@ final class HealthKitAdapter: HealthStorePort {
     /// evening before its attributed day and, rarely, run past the day boundary the next
     /// morning); results are then filtered back down to clusters actually attributed to THIS
     /// night, since a wide window can also catch the tail of an adjacent night.
-    private func sessionsForNight(_ night: String, categoryType: HKCategoryType) -> [SessionDTO] {
+    private func sessionsForNight(_ night: String, categoryType: HKCategoryType) -> [SessionDTO]? {
         Self.sessionsForNight(night, categoryType: categoryType, store: store, tz: tz)
     }
 
@@ -451,15 +487,28 @@ final class HealthKitAdapter: HealthStorePort {
     /// is night-keyed plus a within-night ordinal (`disambiguateWithinNight`), and any second
     /// clustering path would have to reproduce both exactly or silently double every night it
     /// touched.
+    ///
+    /// (AUDIT 2026-08-06, SLEEP-H2) Returns `nil` when the night could not actually be read —
+    /// an unparseable night key, or a HealthKit query error — as opposed to `[]`, which now means
+    /// "HealthKit answered, and this night holds no sleep". The distinction did not matter while
+    /// the result was only ever upserted, and matters a great deal now that
+    /// `IngestionPipeline` PRUNES a rebuilt night down to the set this returns: a transient query
+    /// error resolving to `[]` would tombstone a real night's sleep. Both callers must therefore
+    /// report a night as rebuilt only on a non-`nil` result.
+    ///
+    /// A denied READ still resolves to `[]` rather than `nil`, because HealthKit never reveals a
+    /// read denial (see this type's doc) — which is why only the anchored path, where a delta
+    /// sample or a deletion has already proved HealthKit is answering, is allowed to drive a
+    /// prune. `HistoricalHealthKitReader` deliberately does not.
     static func sessionsForNight(_ night: String, categoryType: HKCategoryType,
-                                 store: HKHealthStore, tz: String) -> [SessionDTO] {
-        guard let dayStart = DayAttribution.date(fromDayKey: night, tz: tz) else { return [] }
+                                 store: HKHealthStore, tz: String) -> [SessionDTO]? {
+        guard let dayStart = DayAttribution.date(fromDayKey: night, tz: tz) else { return nil }
         let dayEnd = DayAttribution.addingDays(1, to: dayStart, tz: tz)
         let windowStart = dayStart.addingTimeInterval(-Self.sleepClusterGapSeconds - 12 * 3600)
         let windowEnd = dayEnd.addingTimeInterval(Self.sleepClusterGapSeconds)
         let predicate = HKQuery.predicateForSamples(withStart: windowStart, end: windowEnd, options: .strictStartDate)
         let semaphore = DispatchSemaphore(value: 0)
-        var samples: [HKCategorySample] = []
+        var samples: [HKCategorySample]?
         let query = HKSampleQuery(sampleType: categoryType, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samplesOrNil, error in
             defer { semaphore.signal() }
             guard error == nil else { return }
@@ -467,6 +516,7 @@ final class HealthKitAdapter: HealthStorePort {
         }
         store.execute(query)
         semaphore.wait()
+        guard let samples else { return nil }
         let forThisNight = groupIntoSessions(samples, tz: tz)
             .filter { DayAttribution.localNight(sessionEnd: $0.end, tz: $0.tz) == night }
         return Self.disambiguateWithinNight(forThisNight)
@@ -551,24 +601,33 @@ final class HealthKitAdapter: HealthStorePort {
     /// Safe to share precisely because this read is already anchor-free and idempotent — it
     /// recomputes any window from day-keyed external ids, so running it over an overlapping range
     /// upserts in place rather than doubling.
+    ///
+    /// (AUDIT 2026-08-06, INGESTION-02) Its window comes from `dayAlignedWindow` rather than
+    /// straight from `range` — see that function for the truncation that cost users the oldest
+    /// day of every cumulative family.
     static func readDailySum(_ entry: HKTypeMap.Entry, range: HealthDateRange,
                              store: HKHealthStore, tz: String) -> [IntervalDTO] {
         guard let metricId = entry.metricId, let type = entry.quantityType else { return [] }
-        let predicate = HKQuery.predicateForSamples(withStart: range.start, end: range.end, options: .strictStartDate)
-        let cal = DayAttribution.calendar(tz: tz)
+        let window = Self.dayAlignedWindow(range, tz: tz)
+        let predicate = HKQuery.predicateForSamples(withStart: window.start, end: window.end,
+                                                    options: .strictStartDate)
         var interval = DateComponents()
         interval.day = 1
-        let anchorDate = cal.startOfDay(for: range.start)
 
         let query = HKStatisticsCollectionQuery(quantityType: type, quantitySamplePredicate: predicate,
-                                                options: .cumulativeSum, anchorDate: anchorDate,
+                                                options: .cumulativeSum, anchorDate: window.anchor,
                                                 intervalComponents: interval)
         let semaphore = DispatchSemaphore(value: 0)
         var out: [IntervalDTO] = []
         query.initialResultsHandler = { [tz] _, results, error in
             defer { semaphore.signal() }
             guard error == nil, let results else { return }
-            results.enumerateStatistics(from: range.start, to: range.end) { stats, _ in
+            results.enumerateStatistics(from: window.start, to: window.end) { stats, _ in
+                // (INGESTION-02) Belt and braces: never emit a bucket the predicate could only
+                // partially cover, whatever a future caller passes as `range.start`. After the
+                // day-alignment above this can only fire if HealthKit hands back a bucket that
+                // starts before the enumeration does, which it should not.
+                guard stats.startDate >= window.start else { return }
                 let value = stats.sumQuantity()?.doubleValue(for: entry.hkUnit) ?? 0
                 let dayKey = DayAttribution.localDayKey(stats.startDate, tz: tz)
                 // (BUG-10b) Always emit one interval per day in range, INCLUDING zero-sum days
@@ -605,6 +664,46 @@ final class HealthKitAdapter: HealthStorePort {
         store.execute(query)
         semaphore.wait()
         return out
+    }
+
+    /// (AUDIT 2026-08-06, INGESTION-02) The day-aligned read window one `readDailySum` call uses:
+    /// the predicate span, the statistics anchor, and the enumeration bounds, all agreeing.
+    ///
+    /// `HKStatisticsCollectionQuery` buckets a day at a time from `anchorDate`, and every caller
+    /// hands this a `range.start` carrying a wall-clock time of day: `SeedController` builds it as
+    /// `DayAttribution.addingDays(-historyDays, to: now, tz:)`, which preserves HH:MM by
+    /// construction (that is the difference between `addingDays` and `startOfDay`, and it is
+    /// deliberate there). The anchor was already local midnight while the PREDICATE started at
+    /// HH:MM, so bucket 0 was a full local day whose sum only counted the samples after HH:MM.
+    ///
+    /// That partial was then emitted, not dropped. Apple documents `enumerateStatistics(from:to:)`
+    /// as yielding "the time interval that contains the start date", `DayAttribution.localDayKey`
+    /// resolves the bucket to day D−90 either way, and the external id is the stable
+    /// `healthkit-<slug>-<D−90>` under the fixed `fallbackSourceId` — so
+    /// `MeasurementRepository.upsertIntervalRecord`'s unconditional `DO UPDATE SET value=` replaced
+    /// the correct total the previous ~89 syncs had stored. Near local midnight it is worse: the
+    /// partial rounds to ~0, `IngestionPipeline.writeIntervals`'s BUG-10b guard finds the good row
+    /// already there and treats the zero as a correction, and the day is zeroed. The damage is
+    /// permanent because tomorrow the window's oldest bucket is D−89 and nothing re-reads D−90.
+    ///
+    /// Expanding the predicate back to the start of the containing local day is what fixes it, and
+    /// it fixes it under EITHER reading of Apple's semantics — if the containing bucket is yielded
+    /// it now carries the whole day, and if it were skipped nothing is lost that was not already
+    /// being skipped. It cannot double-count: these rows are whole-day recomputes upserted
+    /// idempotently by (metric_id, day-keyed external_id, source_id), so re-reading a day rewrites
+    /// it with the same number. The extra span read is at most the hours before HH:MM on the
+    /// oldest day — precisely the data that was being lost.
+    ///
+    /// The `to` end is deliberately left as the caller gave it. On the live path the last bucket is
+    /// today, legitimately partial-so-far, and the next sync corrects it. The import path's outer
+    /// days are in the past and never revisited, but that end is `HistoricalImportCoordinator`'s
+    /// chunking to align, not this function's — see the note there.
+    ///
+    /// Pure and `static` because it is the only part of `readDailySum` reachable without a live
+    /// `HKHealthStore`, and it is exactly the part that was wrong.
+    static func dayAlignedWindow(_ range: HealthDateRange, tz: String) -> (anchor: Date, start: Date, end: Date) {
+        let start = DayAttribution.startOfDay(range.start, tz: tz)
+        return (anchor: start, start: start, end: range.end)
     }
 
     // MARK: - Workouts (EPIC-03)
@@ -900,6 +999,15 @@ final class HealthKitAdapter: HealthStorePort {
         return out
     }
 
+    /// The `external_id` namespace every sleep session this adapter (and, through
+    /// `sessionsForNight`, `HistoricalHealthKitReader`) mints lives in.
+    ///
+    /// (SLEEP-H2) `internal` and named because `IngestionPipeline`'s rebuilt-night prune uses it
+    /// to scope itself: a stored sleep row is only a candidate for tombstoning if it was minted
+    /// by this path in the first place. A literal at both ends would be a silent correctness
+    /// dependency between two files; a shared constant is at least a visible one.
+    static let sleepExternalIdPrefix = "healthkit-sleep-"
+
     private static func makeSession(from samples: [HKCategorySample], start: Date, end: Date, tz: String) -> SessionDTO {
         let (sourceId, deviceId) = HKSampleMapping.provenanceIds(for: samples[0])
         let (tzId, tzAssumed) = HKSampleMapping.measuredTimeZone(for: samples[0], fallbackTz: tz)
@@ -931,7 +1039,7 @@ final class HealthKitAdapter: HealthStorePort {
         let night = DayAttribution.localNight(sessionEnd: end, tz: tzId)
         return SessionDTO(kind: kind, start: start, end: end, tz: tzId,
                           sourceId: sourceId, deviceId: deviceId,
-                          externalId: "healthkit-sleep-\(sourceId)-\(night)",
+                          externalId: "\(Self.sleepExternalIdPrefix)\(sourceId)-\(night)",
                           stages: stages, timeAsleepSeconds: asleep, timeInBedSeconds: inBedSeconds,
                           qualityFlags: tzAssumed ? [.tzAssumed] : [])
     }

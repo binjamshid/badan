@@ -70,6 +70,11 @@ struct SleepCardWidgetView: View {
             if let sleep {
                 Text(durationText(sleep.durationMinutes))
                     .font(.headline)
+                    // S-5: iOS does NOT redact accessory-family content by itself — without this
+                    // last night's sleep duration renders in full on a LOCKED Lock Screen. Only
+                    // the value is marked; the "Last night" label above stays visible, so the
+                    // complication still reads as a BADAN sleep tile rather than an empty box.
+                    .privacySensitive()
             } else {
                 Text(SleepCopy.noData.resolved(isArabic: isArabic))
                     .font(.caption2)
@@ -94,7 +99,11 @@ struct SleepCardWidgetView: View {
                     Text(durationText(sleep.durationMinutes))
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(WidgetColor.textPrimary)
+                        // S-5: `.systemMedium` is a StandBy surface too, and StandBy redacts
+                        // privacy-sensitive content while the device is locked.
+                        .privacySensitive()
                     scoreLine(sleep)
+                        .privacySensitive()
                 } else {
                     Text(SleepCopy.noData.resolved(isArabic: isArabic))
                         .font(.footnote)

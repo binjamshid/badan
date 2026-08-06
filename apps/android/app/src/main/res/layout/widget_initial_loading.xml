@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The initial layout every one of BADAN's app widgets points at.
+
+  `android:initialLayout` is a REQUIRED attribute on `appwidget-provider`, and it is not a
+  placeholder the system is free to skip: it is the RemoteViews the host draws in the moment
+  between the user dropping the widget on the home screen and the provider's first update
+  arriving. A widget with no initialLayout draws nothing at all in that window, which reads as a
+  broken drop rather than a loading one.
+
+  Deliberately empty rather than a spinner or a "Loading..." label:
+
+    * it is on screen for a fraction of a second in the normal case, and a spinner that flashes is
+      noisier than a blank that fills in;
+    * a text label here would need its own bilingual string pair for something the user is not
+      meant to read;
+    * RemoteViews supports only a fixed set of view classes, and an empty FrameLayout is the one
+      shape that is guaranteed inflatable on every API level from 26 up with no theming or
+      density assumptions behind it.
+
+  When Glance lands as a dependency it ships its own equivalent
+  (`@layout/glance_default_loading_layout`) and the `initialLayout` attributes can point there
+  instead; nothing else about the widget declarations changes.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />

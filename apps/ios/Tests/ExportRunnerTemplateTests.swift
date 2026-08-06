@@ -51,6 +51,18 @@ final class ExportRunnerTemplateTests: XCTestCase {
 
     private var now: Date { clock.now() }
 
+    /// D-33 entitlement inputs. `trialExpired` is the only state that clamps anything — first launch
+    /// far enough back that the 7-day trial is over, and nothing bought since.
+    private var trialExpired: SubscriptionPolicy.State {
+        .init(firstLaunch: now.addingTimeInterval(-Double(SubscriptionPolicy.trialDays + 30) * 86_400),
+              hasActiveEntitlement: false, storeReachable: true)
+    }
+
+    private var subscribed: SubscriptionPolicy.State {
+        .init(firstLaunch: now.addingTimeInterval(-365 * 86_400),
+              hasActiveEntitlement: true, storeReachable: true)
+    }
+
     /// A folder destination whose delivery is handled by whatever `StubDeliverer` the test registers.
     private let folderDestId = "0000000000DESTFOLDER000001"
 
@@ -134,10 +146,16 @@ final class ExportRunnerTemplateTests: XCTestCase {
         return try XCTUnwrap(formatter.date(from: string), "unparseable timestamp: \(string)")
     }
 
-    /// Seed a delta checkpoint. A `sinceLastRun` template deliberately never creates its own first
-    /// cursor (the no-cursor run falls back WITH a notice and establishes nothing — see
-    /// `resolveRange`), so every delta test starts from an explicit checkpoint, exactly as the
-    /// pre-existing cursor tests do.
+    /// Seed a delta checkpoint directly, so a test that is about the SECOND run's behaviour does not
+    /// have to perform the first one.
+    ///
+    /// It used to be the only way a cursor could exist at all: the no-cursor fallback run
+    /// established nothing, both cursor-writing call sites refused to write on it, and so every
+    /// delta test seeded by hand — which is exactly what hid the fact that the shipped app could
+    /// never produce a first checkpoint (a `sinceLastRun` template fell back forever). The bootstrap
+    /// is now covered end-to-end by
+    /// `testAFirstDeltaRunBootstrapsTheCursorAndTheSecondRunIsARealDelta`, which deliberately does
+    /// NOT use this helper.
     @discardableResult
     private func seedCursor(at watermark: Date, sha: ManifestDigest? = nil,
                             destinationId: String? = nil) throws -> Date {
@@ -299,7 +317,8 @@ final class ExportRunnerTemplateTests: XCTestCase {
         try insertSample(ingestedAt: now.addingTimeInterval(-3_600))
         let runner = makeRunner()
 
-        let result = try runner.runAdHoc(scope: .everything, format: .csv, trigger: .manual)
+        let result = try runner.runAdHoc(scope: .everything, format: .csv, trigger: .manual,
+                                         entitlement: subscribed)
 
         let recorded = try XCTUnwrap(runsRepo.recent().first, "an ad-hoc export must write a run")
         XCTAssertEqual(recorded.outcome, .success)
@@ -307,6 +326,119 @@ final class ExportRunnerTemplateTests: XCTestCase {
         XCTAssertEqual(recorded.jobId, result.job.id, "the run links the job it produced")
         // The exact defect: no job may be left without a ledger row, or Export Health slanders it.
         XCTAssertEqual(try runsRepo.jobIdsWithoutRun(), [], "a recorded export leaves no orphan job")
+    }
+
+    // MARK: - 6b. D-33: the Advanced Export Builder is capped like every other user-facing export
+
+    /// The third surface found running unclamped (EXPORT-1). `ExportRunner.run` applies the D-33
+    /// window only for a caller that names an `entitlement:`, and `runAdHoc` — the builder's Run
+    /// button — passed none, so a trial-expired user tapping "All time" in the Advanced Export
+    /// Builder received their full history while the identical request through the hub returned
+    /// seven days. The builder honours the user's range verbatim and the NavigationLink to it is
+    /// unconditional, so nothing upstream was narrowing anything either.
+    ///
+    /// CLAMPED, never refused: the run succeeds, the file exists, and it covers the free window.
+    /// D-33 caps *bulk export beyond the last 7 days* and nothing else — the next test pins that.
+    func testAdHocBuilderExportIsClampedToTheFreeWindow() throws {
+        try seedShareSheet()
+        let old = try insertSample(ingestedAt: now.addingTimeInterval(-3_600),
+                                   measuredAt: now.addingTimeInterval(-60 * 86_400))
+        let recent = try insertSample(ingestedAt: now.addingTimeInterval(-3_600),
+                                      measuredAt: now.addingTimeInterval(-86_400))
+        let runner = makeRunner()
+
+        // Scope asks for all of history (startDate nil) — exactly what the builder's "All time"
+        // segment produces.
+        let result = try runner.runAdHoc(scope: .everything, format: .json, entitlement: trialExpired)
+
+        let expectedEarliest = now.addingTimeInterval(-Double(SubscriptionPolicy.freeExportDays) * 86_400)
+        XCTAssertEqual(try XCTUnwrap(result.job.scope.startDate).timeIntervalSince1970,
+                       expectedEarliest.timeIntervalSince1970, accuracy: 1,
+                       "the recorded job must describe the CLAMPED window, not the requested one")
+        let ids = (try bundleObject(result)["raw_samples"] as? [[String: Any]] ?? [])
+            .compactMap { $0["record_id"] as? String }
+        XCTAssertTrue(ids.contains(recent.id), "the free window is still exported in full")
+        XCTAssertFalse(ids.contains(old.id),
+                       "a row measured outside the free window must not ride an unclamped builder export")
+    }
+
+    /// The other half of D-33, which matters just as much: a subscriber's builder export is NOT
+    /// narrowed. A clamp that fired for everyone would be a paywall on raw data, which D-33
+    /// forbids outright.
+    func testASubscribersAdHocBuilderExportIsNotNarrowed() throws {
+        try seedShareSheet()
+        let old = try insertSample(ingestedAt: now.addingTimeInterval(-3_600),
+                                   measuredAt: now.addingTimeInterval(-60 * 86_400))
+        let runner = makeRunner()
+
+        let result = try runner.runAdHoc(scope: .everything, format: .json, entitlement: subscribed)
+
+        XCTAssertNil(result.job.scope.startDate, "an unlocked export keeps the window it asked for")
+        let ids = (try bundleObject(result)["raw_samples"] as? [[String: Any]] ?? [])
+            .compactMap { $0["record_id"] as? String }
+        XCTAssertTrue(ids.contains(old.id), "history is not withheld from someone entitled to it")
+    }
+
+    /// The ratchet, and the reason EXPORT-1 was invisible for three surfaces running: a defaulted
+    /// `entitlement:` lets a call site opt out of the app's only paywall by saying nothing at all.
+    /// `runAdHoc` now requires the argument, so this scan is a belt to the compiler's braces — it
+    /// fails loudly if someone re-adds a default and a new surface then omits it.
+    ///
+    /// The twin scan for `exporter.run(` lives in
+    /// `IntentsTests.testEveryExporterRunCallSitePassesAnEntitlement`; that one documented
+    /// `runAdHoc` as an exclusion because `runAdHoc` had no entitlement to pass. It has one now, and
+    /// this is the assertion that exclusion was waiting for.
+    func testEveryRunAdHocCallSitePassesAnEntitlement() throws {
+        let sources = repoRoot.appendingPathComponent("apps/ios/Sources")
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sources,
+                                                                 includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" }
+
+        var callSites = 0
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            var searchFrom = text.startIndex
+            while let match = text.range(of: ".runAdHoc(", range: searchFrom..<text.endIndex) {
+                callSites += 1
+                let args = Self.balancedArguments(of: text,
+                                                  openParen: text.index(before: match.upperBound))
+                XCTAssertTrue(args.contains("entitlement:"),
+                              "\(file.lastPathComponent): a runAdHoc call site with no entitlement: "
+                                  + "silently exports past the D-33 window")
+                searchFrom = match.upperBound
+            }
+        }
+        XCTAssertGreaterThanOrEqual(callSites, 1,
+                                    "expected the Advanced Export Builder's call site — if the "
+                                        + "spelling changed, this test stopped checking anything")
+    }
+
+    /// The text between one call's parentheses, matched by depth so a nested call or a ternary does
+    /// not truncate the argument list. Mirrors `IntentsTests`' helper of the same name deliberately:
+    /// two independent scans over the same source tree, neither depending on the other's file.
+    private static func balancedArguments(of text: String, openParen: String.Index) -> String {
+        var depth = 0
+        var i = openParen
+        while i < text.endIndex {
+            if text[i] == "(" { depth += 1 }
+            if text[i] == ")" {
+                depth -= 1
+                if depth == 0 { return String(text[text.index(after: openParen)..<i]) }
+            }
+            i = text.index(after: i)
+        }
+        return String(text[openParen...])
+    }
+
+    /// Repo root from `#filePath` — the point of the scan above is the source as written, not what
+    /// the test bundle happens to contain.
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // apps/ios/Tests
+            .deletingLastPathComponent()   // apps/ios
+            .deletingLastPathComponent()   // apps
+            .deletingLastPathComponent()   // <repo root>
     }
 
     func testSinceLastRunWithNoCursorFallsBackWithNotice() async throws {
@@ -321,10 +453,95 @@ final class ExportRunnerTemplateTests: XCTestCase {
         XCTAssertEqual(outcome.run.outcome, .success)
         // The notice is durable on the (successful) row, machine-readable, never free text.
         XCTAssertEqual(outcome.run.errorCode, .cursorMissing)
-        // The bounded, measured-axis fallback must NOT establish an ingested-axis checkpoint — doing
-        // so could skip a historical row ingested recently but measured outside the window.
-        XCTAssertNil(try cursorsRepo.cursor(templateId: "T1", destinationId: folderDestId),
-                     "the fallback run must not silently create a delta cursor")
+        // The fallback BOOTSTRAPS the checkpoint (EXPORT-2) — and at the fallback window's start,
+        // never at the file's max `ingested_at`. The file is bounded on the measured axis, so a row
+        // measured before the window but ingested inside it is absent from it while sitting below
+        // that max; checkpointing there would skip such a row forever. The window's start is the
+        // newest watermark that cannot.
+        let bootstrapped = try XCTUnwrap(cursorsRepo.cursor(templateId: "T1", destinationId: folderDestId),
+                                         "a delivered fallback run must leave a checkpoint, or no "
+                                             + "sinceLastRun template can ever take a first delta")
+        let expectedStart = now.addingTimeInterval(-Double(ExportRunner.cursorMissingFallbackDays) * 86_400)
+        XCTAssertEqual(bootstrapped.highWatermark.timeIntervalSince1970,
+                       expectedStart.timeIntervalSince1970, accuracy: 1,
+                       "the bootstrap watermark is the fallback window's start")
+        XCTAssertEqual(outcome.run.cursorAfter?.timeIntervalSince1970,
+                       expectedStart.timeIntervalSince1970,
+                       "the ledger row must say where it left the checkpoint")
+    }
+
+    /// The deadlock EXPORT-2 names, driven end to end: run a delta template TWICE from a clean
+    /// cursor state and require the second run to be a REAL delta.
+    ///
+    /// Before the fix this was impossible in the shipped app. `resolveRange` flagged every no-cursor
+    /// run `fellBackFromSinceLastRun`, and both cursor-writing call sites refused to write when that
+    /// flag was set — so the first run created no checkpoint, the second found none and fell back
+    /// too, and so on forever. `ExportCursorRepository.write` is private and `rewind` has no caller,
+    /// so there was no other way for a first cursor to come into existence: the entire EPIC-17 delta
+    /// chain (the artifacts `scripts/verify_export_chain.py` walks) could not be produced by any
+    /// sequence of user actions. Every other delta test in this file seeded the cursor by hand and
+    /// so could not see it.
+    func testAFirstDeltaRunBootstrapsTheCursorAndTheSecondRunIsARealDelta() async throws {
+        try seedFolderDestination()
+        // Measured and ingested inside the fallback window, so run 1 genuinely carries it.
+        try insertSample(ingestedAt: now.addingTimeInterval(-5_000))
+        let runner = makeRunner(deliverers: [StubDeliverer(kind: .fileFolder, receipt: .success(now))])
+        let jsonTemplate = template(rangeRule: .sinceLastRun, format: .json, destinationId: folderDestId)
+
+        // Run 1 — no checkpoint exists, so this is the disclosed bounded fallback, not a delta.
+        let run1 = await runner.runTemplate(jsonTemplate, trigger: .scheduledWork)
+        XCTAssertEqual(run1.run.outcome, .success)
+        XCTAssertTrue(run1.cursorFallbackNotice, "the first run still discloses that it had no cursor")
+        let manifest1 = try manifestObject(run1.result)
+        XCTAssertEqual(manifest1["is_delta"] as? Bool, false,
+                       "a bounded fallback is not a delta and must not claim to be one")
+        let run1Sha = try bundleFileSha(run1.result)
+        let bootstrapped = try XCTUnwrap(cursorsRepo.cursor(templateId: "T1", destinationId: folderDestId),
+                                         "run 1 must bootstrap the checkpoint run 2 reads")
+        XCTAssertEqual(bootstrapped.lastManifestSha?.hex, run1Sha,
+                       "the bootstrap stores the chain root's bundle sha, or run 2 has nothing to link to")
+
+        // Run 2 — a row that arrived after run 1, and a checkpoint that now exists.
+        let second = try insertSample(ingestedAt: now.addingTimeInterval(-1_000))
+        let run2 = await runner.runTemplate(jsonTemplate, trigger: .scheduledWork)
+
+        XCTAssertEqual(run2.run.outcome, .success)
+        XCTAssertFalse(run2.cursorFallbackNotice, "run 2 has a checkpoint — it must not fall back again")
+        XCTAssertNotNil(run2.run.cursorBefore, "run 2 opened from a real watermark (ingestedSince)")
+        let manifest2 = try manifestObject(run2.result)
+        XCTAssertEqual(manifest2["is_delta"] as? Bool, true, "run 2 must be a real delta")
+        XCTAssertEqual(manifest2["previous_manifest_sha"] as? String, run1Sha,
+                       "run 2 links to run 1 — the chain verify_export_chain.py walks")
+        XCTAssertEqual(try parseISO(manifest2["cursor_after"]), second.provenance.ingestedAt,
+                       "run 2 closes at the newest row it actually wrote")
+        // And it moved: the third run would open where this one closed, not at the bootstrap.
+        XCTAssertEqual(try cursorsRepo.cursor(templateId: "T1", destinationId: folderDestId)?.highWatermark,
+                       second.provenance.ingestedAt)
+    }
+
+    /// The bootstrap must be subject to the same two-phase commit as every other cursor write: a run
+    /// whose artifacts nobody received closes no window.
+    ///
+    /// The share sheet is the case that can go wrong. Its "delivery" is the UI presenting a sheet
+    /// over the runner's temp folder, so an unattended automation gets a `.success` receipt with a
+    /// byte count for files no human will ever see (EXPORT-4) — and that same `.success` is the
+    /// predicate the cursor writes on. If the bootstrap trusted it, the checkpoint would open the
+    /// next run's window past rows that were generated, never handed over, and then deleted with the
+    /// temp folder.
+    func testAnUnattendedShareSheetRunBootstrapsNothing() async throws {
+        try seedShareSheet()
+        try insertSample(ingestedAt: now.addingTimeInterval(-5_000))
+        let runner = makeRunner()
+
+        let outcome = await runner.runTemplate(
+            template(rangeRule: .sinceLastRun, format: .json,
+                     destinationId: ExportDestination.shareSheetId),
+            trigger: .scheduledOpportunistic)
+
+        XCTAssertEqual(outcome.run.outcome, .success, "the artifacts were still generated")
+        XCTAssertNil(try cursorsRepo.cursor(templateId: "T1",
+                                            destinationId: ExportDestination.shareSheetId),
+                     "nobody received these files, so no window may close over them")
     }
 
     // MARK: - 7. EPIC-17: the delta manifest (§22.5/§22.6)

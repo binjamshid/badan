@@ -1,3 +1,4 @@
+import AppIntents
 import XCTest
 @testable import BADAN
 
@@ -13,6 +14,9 @@ import XCTest
 ///    than fabricated values" rule from the task in test form.
 ///  - `testRunWritesAShortcutTriggeredLedgerRow` is the anti-HAE thesis: every run, including a
 ///    zero-row one, leaves a row tagged as Shortcuts-triggered, never as BADAN's own background.
+///  - `testAllTimeTemplateFromAShortcutIsClampedToTheFreeWindowAfterTheTrial` and its call-site
+///    ratchet are the D-33 half: the export cap is the app's only paywall, and it lived at one of
+///    two exporter call sites.
 @MainActor
 final class IntentsTests: XCTestCase {
     private var tempDir: URL!
@@ -79,8 +83,10 @@ final class IntentsTests: XCTestCase {
                               createdAt: clock.now(), updatedAt: clock.now(), originDeviceId: deviceId)
     }
 
-    /// One real raw sample inside the last-7-days window so a run has something to export.
-    private func seedOneSample() throws {
+    /// One real raw sample inside the last-7-days window so a run has something to export. Returned
+    /// (discardably) so a D-33 test can name the row that must survive the clamp.
+    @discardableResult
+    private func seedOneSample() throws -> RawSample {
         let now = clock.now()
         let sample = RawSample(
             id: ULID.newID(), metricId: MetricID.steps, value: 4200, unit: "steps",
@@ -91,6 +97,25 @@ final class IntentsTests: XCTestCase {
                                    recordedAt: now, ingestedAt: now),
             updatedAt: now, originDeviceId: deviceId)
         _ = try MeasurementRepository(env.database.main).upsertRawSample(sample)
+        return sample
+    }
+
+    /// Run `body` with the trial clock pinned, then put it back exactly as it was.
+    ///
+    /// `AppEnvironment` builds its own `StoreKitEntitlementStore` over `UserDefaults.standard`, so
+    /// there is no seam to inject an entitlement state — the real key is the only lever. Restored in
+    /// the same test (including the absent case) so nothing else in the suite inherits an expired
+    /// trial, and set explicitly rather than relied upon, so neither of these tests depends on what
+    /// the test host's defaults happened to hold.
+    private func withFirstLaunch(_ date: Date, _ body: () throws -> Void) rethrows {
+        let key = "badan.subscription.firstLaunch"
+        let previous = UserDefaults.standard.object(forKey: key)
+        UserDefaults.standard.set(date, forKey: key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        try body()
     }
 
     // MARK: - Template name resolution (ExportTemplateQuery / IntentExportService)
@@ -262,6 +287,155 @@ final class IntentsTests: XCTestCase {
         XCTAssertEqual(try cursors.cursor(templateId: t.id,
                                           destinationId: ExportDestination.shareSheetId)?.highWatermark,
                        watermark, "an empty delta closes no window")
+    }
+
+    // MARK: - D-33: the export cap is not a button-only paywall
+
+    /// The behavioural half of H2. `IntentExportService.run` called the exporter with no
+    /// `entitlement:` at all, and `ExportRunner.run` clamps ONLY when it gets one — so an "All time"
+    /// template run from Shortcuts or Siri handed a trial-expired user their entire history, while
+    /// the identical template run from the Export Center returned seven days. That made the app's
+    /// only paywall a paywall on the button rather than on the export.
+    func testAllTimeTemplateFromAShortcutIsClampedToTheFreeWindowAfterTheTrial() throws {
+        let t = makeTemplate(name: "Everything", rangeRule: .allTime)
+        try templates.insert(t)
+        let recent = try seedOneSample()                        // measured an hour ago
+        let old = try seedSample(ingestedAt: clock.now())       // measured 45 days ago
+
+        try withFirstLaunch(clock.now().addingTimeInterval(-30 * 86_400)) {
+            XCTAssertEqual(SubscriptionPolicy.access(env.subscription.policyState, now: clock.now()),
+                           .trialExpired, "the fixture must actually be a locked user")
+
+            let outcome = try service.run(template: t)
+            let ids = try exportedRecordIds(outcome)
+            XCTAssertTrue(ids.contains(recent.id), "the free window itself is never withheld")
+            XCTAssertFalse(ids.contains(old.id),
+                           "a locked user's Shortcut export must not reach past the D-33 window")
+            // Clamped, not refused, and never silently: the file is narrower than the template
+            // asked for, so the reply says which window it covers.
+            XCTAssertEqual(outcome.notice, ExportCopy.clampedToFreeWindow,
+                           "a clipped export must say so — an unattended run has no screen to show it on")
+        }
+    }
+
+    /// The other side of the same rule: D-33 gates bulk export beyond seven days and nothing else,
+    /// so a user still inside the trial gets the whole history their template asked for, with no
+    /// notice claiming otherwise. Guards against the fix above being applied as a blanket clamp.
+    func testAllTimeTemplateIsNotClampedDuringTheTrial() throws {
+        let t = makeTemplate(name: "Everything", rangeRule: .allTime)
+        try templates.insert(t)
+        let old = try seedSample(ingestedAt: clock.now())       // measured 45 days ago
+
+        try withFirstLaunch(clock.now()) {
+            let outcome = try service.run(template: t)
+            XCTAssertTrue(try exportedRecordIds(outcome).contains(old.id),
+                          "an unlocked user's all-time export is all time")
+            XCTAssertNil(outcome.notice)
+        }
+    }
+
+    /// A clamped delta must not close a window it did not deliver. The clamp narrows the MEASURED
+    /// axis while the delta advances on the INGESTED one, so a checkpoint moved after a clipped run
+    /// would step past rows that were filtered out for being older than seven days — and no later
+    /// run would ever return to them. The user's files are still produced; only the watermark waits.
+    func testAClampedDeltaLeavesTheCheckpointWhereItWas() throws {
+        let t = makeTemplate(name: "Since last", rangeRule: .sinceLastRun)
+        try templates.insert(t)
+        let now = clock.now()
+        let watermark = now.addingTimeInterval(-10_000)
+        try cursors.advance(templateId: t.id, destinationId: ExportDestination.shareSheetId,
+                            to: watermark, lastRunId: "seed", manifestSha: nil, now: now)
+        try seedOneSample()   // measured inside the free window, ingested after the checkpoint
+
+        try withFirstLaunch(now.addingTimeInterval(-30 * 86_400)) {
+            let outcome = try service.run(template: t)
+            XCTAssertGreaterThan(outcome.rowCount, 0, "the run still delivers what it may")
+            XCTAssertEqual(try cursors.cursor(templateId: t.id,
+                                              destinationId: ExportDestination.shareSheetId)?.highWatermark,
+                           watermark, "a clipped delta closes no window")
+        }
+    }
+
+    /// The ratchet H2 asks for, and the reason the bug was invisible: the D-33 clamp lives in
+    /// `ExportRunner.run` and applies only to callers that pass an `entitlement:`, so a surface that
+    /// omits the argument opts itself out of the app's only paywall by saying nothing at all.
+    ///
+    /// Every call THROUGH the environment's exporter is a surface handing artifacts to someone, so
+    /// each must name the argument. `entitlement: nil` still satisfies this — an internal caller
+    /// that genuinely must stay unclamped (the coach context assembler, diagnostics) is free to say
+    /// so out loud; what is no longer possible is doing it by omission.
+    ///
+    /// Scoped to `exporter.run(` deliberately. `ExportRunner.runAdHoc` wraps `run` and takes no
+    /// entitlement of its own, so its callers cannot pass one and this scan would only report a
+    /// hole it cannot describe; whoever gives `runAdHoc` a pass-through should extend the needles
+    /// below at the same time.
+    func testEveryExporterRunCallSitePassesAnEntitlement() throws {
+        let sources = repoRoot.appendingPathComponent("apps/ios/Sources")
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sources,
+                                                                 includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" }
+
+        var callSites = 0
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            var searchFrom = text.startIndex
+            while let match = text.range(of: "exporter.run(", range: searchFrom..<text.endIndex) {
+                callSites += 1
+                let args = Self.balancedArguments(of: text,
+                                                  openParen: text.index(before: match.upperBound))
+                XCTAssertTrue(args.contains("entitlement:"),
+                              "\(file.lastPathComponent): an exporter.run( call site with no "
+                                  + "entitlement: silently exports past the D-33 window")
+                searchFrom = match.upperBound
+            }
+        }
+        XCTAssertGreaterThanOrEqual(callSites, 2,
+                                    "expected at least the in-app and the Shortcut export paths — "
+                                        + "if the call spelling changed, this test stopped checking anything")
+    }
+
+    /// The text between one call's parentheses, matched by depth so a nested call or a ternary does
+    /// not truncate the argument list. Parentheses inside a comment or a string literal would fool
+    /// it; none of the call sites has either, and a false failure here is a readable one.
+    private static func balancedArguments(of text: String, openParen: String.Index) -> String {
+        var depth = 0
+        var i = openParen
+        while i < text.endIndex {
+            if text[i] == "(" { depth += 1 }
+            if text[i] == ")" {
+                depth -= 1
+                if depth == 0 { return String(text[text.index(after: openParen)..<i]) }
+            }
+            i = text.index(after: i)
+        }
+        return String(text[openParen...])
+    }
+
+    /// Repo root from `#filePath`, the technique `TelemetryPayloadSchemaTests` already uses — the
+    /// point of this scan is the source as written, not what the test bundle happens to contain.
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // apps/ios/Tests
+            .deletingLastPathComponent()   // apps/ios
+            .deletingLastPathComponent()   // apps
+            .deletingLastPathComponent()   // <repo root>
+    }
+
+    // MARK: - M2: what an intent may do from a locked device
+
+    /// The export intent hands FILES to whoever ran it, so it may not run unauthenticated. Nothing
+    /// in `Sources/` declared an `authenticationPolicy` before this, which meant the default
+    /// (`.alwaysAllowed`) governed a full-history export while `AmbientPrivacyConfig` was
+    /// non-overridably refusing to put a medication NAME on the Lock Screen.
+    func testExportIntentCannotRunFromALockedDevice() {
+        XCTAssertEqual(RunExportTemplateIntent.authenticationPolicy, .requiresAuthentication)
+    }
+
+    /// Deliberately the opposite assertion: a quick-log that demanded an unlock would be pointless,
+    /// and it discloses nothing — it writes one number the user just said out loud.
+    func testWaterQuickLogStaysUnauthenticated() {
+        XCTAssertEqual(LogWaterIntent.authenticationPolicy, .alwaysAllowed)
     }
 
     // MARK: - Artifact naming (house scheme)

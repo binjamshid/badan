@@ -279,6 +279,11 @@ final class ReadinessEngine {
     /// Every gate is fail-closed: no feedback repository wired, the user switched calibration off,
     /// no contract entry, or too little feedback all resolve to "apply nothing" rather than to a
     /// default offset.
+    ///
+    /// This is the ONLY place in the app where a stored calibration reaches a computed value, which
+    /// is why `readiness.score` is the only member of `CalibrationConsumers`. The hardcoded metric
+    /// id below is not an oversight to be generalised in passing: an engine that wants a
+    /// calibration has to read one here-shaped way and then be added to that list, in that order.
     private func activeCalibration() throws -> MetricCalibration? {
         guard let feedbackRepo, calibrationEnabled() else { return nil }
         return try feedbackRepo.latestCalibration(metricId: MetricID.readinessScore,

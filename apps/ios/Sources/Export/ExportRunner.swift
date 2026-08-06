@@ -133,16 +133,27 @@ final class ExportRunner {
     /// or non-delta run ignores it and the manifest's `is_delta` stays false with null cursors.
     /// - Parameter entitlement: the caller's access state, or `nil` to run unclamped.
     ///
-    ///   `nil` is what every internal caller passes — automations, the AI-coach context assembler,
-    ///   diagnostics. The D-33 window is a rule about what a USER may export out of the app, not a
-    ///   rule about what the app may read from its own database, and applying it internally would
-    ///   silently truncate features that have nothing to do with the subscription.
+    ///   `nil` means "this is not a user-facing export" — the AI-coach context assembler,
+    ///   diagnostics, the backup bundle. The D-33 window is a rule about what a USER may export out
+    ///   of the app, not a rule about what the app may read from its own database, and applying it
+    ///   internally would silently truncate features that have nothing to do with the subscription.
+    ///
+    ///   It is deliberately NOT a safe default, and this doc used to claim it was ("nil is what
+    ///   every internal caller passes"). It wasn't: three user-facing surfaces reached this function
+    ///   without an entitlement and shipped an unclamped export — Quick Export, the Shortcut path,
+    ///   and the Advanced Export Builder's Run button (BUG-EXPORT-P1a's neighbour, found by the
+    ///   same audit). A surface opts out of the app's only paywall by saying nothing at all, which
+    ///   is why two ratchet tests now scan `Sources/` for call sites that omit the argument —
+    ///   `IntentsTests.testEveryExporterRunCallSitePassesAnEntitlement` for `run`, and
+    ///   `ExportRunnerTemplateTests.testEveryRunAdHocCallSitePassesAnEntitlement` for `runAdHoc`.
     func run(scope requestedScope: ExportScope, format: ExportFormat, passphrase: String? = nil,
              ingestedSince: Date? = nil, previousManifestSha: String? = nil,
              entitlement: SubscriptionPolicy.State? = nil) throws -> ExportResult {
-        // D-33: the ONE place the export cap is applied. Narrowing the scope here rather than at
-        // each call site means a future export surface cannot forget it, and cannot apply a
-        // different version of it.
+        // D-33: the one place the cap is *implemented*. Narrowing the scope here rather than at each
+        // call site means every surface applies the same version of the rule — but it does NOT mean
+        // a surface cannot forget it, and the comment that used to say so was false. The clamp only
+        // fires for a caller that names an `entitlement:`; what keeps the call sites honest is the
+        // pair of ratchet tests named in this function's doc, not this branch.
         let scope: ExportScope
         if let entitlement {
             scope = SubscriptionPolicy.clampExportScope(requestedScope, state: entitlement,
@@ -1414,13 +1425,21 @@ final class ExportRunner {
 //     single byte was generated. A run that leaves no ledger row is the precise HAE failure this
 //     subsystem exists to make impossible — "it just never happened and nothing said so."
 //
-//  2. The cursor advances ONLY after a delta run has both succeeded AND been delivered, and only
-//     to the max `ingested_at` this run actually wrote. This is the same two-phase-commit
-//     discipline as Phase 0's HealthKit anchors (DATA-08) and Health Connect change tokens: never
-//     move a watermark past data you have not durably handed off. Phase 0's audit found a
-//     HIGH-severity bug where Android advanced a cursor past records it had dropped; the guard
-//     here — advance to `result.maxIngestedAt`, which is computed over the rows the file contains,
-//     never over the rows the query could have returned — is what keeps that from recurring.
+//  2. The cursor moves ONLY after a run has both succeeded AND been handed off, and only to a
+//     watermark every unexported row sits above. This is the same two-phase-commit discipline as
+//     Phase 0's HealthKit anchors (DATA-08) and Health Connect change tokens: never move a
+//     watermark past data you have not durably handed off. Phase 0's audit found a HIGH-severity
+//     bug where Android advanced a cursor past records it had dropped; the guard here — advance to
+//     `result.maxIngestedAt`, computed over the rows the file contains and never over the rows the
+//     query could have returned — is what keeps that from recurring.
+//
+//     There are exactly two writes, and they differ because the runs differ. A real delta closes at
+//     `result.maxIngestedAt`. The no-cursor FALLBACK run — bounded on the measured axis, so no max
+//     `ingested_at` describes it safely — instead BOOTSTRAPS the checkpoint at the fallback
+//     window's start, which is the newest watermark that still cannot skip a row that arrived
+//     during the window. Without that second write the first delta run could never create a
+//     checkpoint and every run after it fell back forever; see the bootstrap comment in
+//     `runTemplate` for the full argument.
 extension ExportRunner {
 
     /// The outcome of one template run.
@@ -1445,6 +1464,10 @@ extension ExportRunner {
     /// How many days a `sinceLastRun` template falls back to when it has no cursor yet. Matches the
     /// Last-30 Quick Export preset (and `ExportManageService`'s own fallback) so a first delta run
     /// produces a familiar-sized file rather than all of history — a safety net, not a full backfill.
+    ///
+    /// It is also where the resulting chain BEGINS: a delivered fallback run checkpoints at the
+    /// start of this window, so anything ingested before it is outside the chain as well as outside
+    /// the file. That is the bound the fallback notice is disclosing, said once in both directions.
     static let cursorMissingFallbackDays = 30
 
     /// Run one template end to end: resolve → deliver → record. Never throws — every failure mode
@@ -1581,20 +1604,59 @@ extension ExportRunner {
         let effectiveOutcome: ExportOutcome =
             (receipt.outcome == .success && result.rowCount == 0) ? .skippedNoData : receipt.outcome
 
+        // A `.success` receipt is not by itself proof that anybody received anything. Every
+        // destination kind copies or uploads the artifacts somewhere durable EXCEPT the share
+        // sheet, whose "delivery" is the UI presenting a sheet over the runner's temp folder — real
+        // when a person is there, and nobody at all when an unattended automation fires it. The
+        // receipt reports `.success` with a byte count either way (see `deliver`), so a checkpoint
+        // that trusted that word would close a window over files that were then deleted with the
+        // temp folder. The cursor asks the harder question instead.
+        let handedOff = destination.kind != .shareSheet || trigger.isAttended
         var cursorAfter: Date?
-        let advanced = effectiveOutcome == .success
-            && template.rangeRule == .sinceLastRun
-            && !plan.fellBackFromSinceLastRun
-        if advanced, let watermark = result.maxIngestedAt {
-            // TWO-PHASE COMMIT (the DATA-08 parallel): the watermark moves only now, after a
-            // delivery that fully succeeded, and only to a value computed over the rows the file
-            // actually contains (`result.maxIngestedAt`). `advance` is itself forward-only, so an
-            // out-of-order retry reporting an older watermark is refused, not obeyed. Nothing here
-            // can move the cursor past a row this run dropped.
-            _ = try? cursors.advance(templateId: template.id, destinationId: destinationId,
-                                     to: watermark, lastRunId: runId, manifestSha: manifestSha,
-                                     now: clock.now())
-            cursorAfter = watermark
+        if effectiveOutcome == .success, template.rangeRule == .sinceLastRun, handedOff {
+            if !plan.fellBackFromSinceLastRun, let watermark = result.maxIngestedAt {
+                // TWO-PHASE COMMIT (the DATA-08 parallel): the watermark moves only now, after a
+                // delivery that fully succeeded, and only to a value computed over the rows the file
+                // actually contains (`result.maxIngestedAt`). `advance` is itself forward-only, so an
+                // out-of-order retry reporting an older watermark is refused, not obeyed. Nothing here
+                // can move the cursor past a row this run dropped.
+                _ = try? cursors.advance(templateId: template.id, destinationId: destinationId,
+                                         to: watermark, lastRunId: runId, manifestSha: manifestSha,
+                                         now: clock.now())
+                cursorAfter = watermark
+            } else if plan.fellBackFromSinceLastRun, let bootstrap = plan.scope.startDate {
+                // BOOTSTRAP (EPIC-17's missing first step). The no-cursor fallback used to establish
+                // nothing, and both cursor-writing call sites refused to write on it — so the FIRST
+                // delta run could not create a checkpoint, every later run therefore found none and
+                // fell back too, and the delta chain `scripts/verify_export_chain.py` exists to walk
+                // could never be produced by the shipped app at all. A permanent deadlock, disclosed
+                // each time as a one-off notice.
+                //
+                // The watermark is the fallback WINDOW'S START, not `result.maxIngestedAt`, and the
+                // difference is the whole correctness argument. The fallback file is bounded on the
+                // MEASURED axis (the last `cursorMissingFallbackDays` days), while a cursor is a
+                // point on the INGESTED axis; a row measured before the window but ingested during it
+                // is absent from this file yet sits below its max `ingested_at`, so checkpointing
+                // there would skip it on this run and on every run after it — exactly the permanent
+                // silent loss DATA-08 and `run`'s `ingestedSince` doc are written against. Starting
+                // at the window's start instead yields an invariant that can be stated plainly:
+                // nothing that ARRIVED during or after the fallback window can be skipped. The next
+                // run re-reads that overlap once (rows this file already carried), which a consumer
+                // keyed by `record_id` absorbs and which is merely wasteful — the tradeoff
+                // `ExportCursorRepository.advance` already names as the acceptable side of this
+                // choice. Data ingested BEFORE the window is outside the bounded safety net the
+                // notice already told the user about; a full backfill is `resetCursor` plus a wider
+                // rule, not something a checkpoint should quietly invent.
+                //
+                // The chain link is stored too, so the next run's `previous_manifest_sha` points at
+                // this bundle: the fallback file is the chain's ROOT (it declares `is_delta: false`
+                // and no cursors of its own, because it is not a delta), and the first real delta
+                // links to it. That is the same shape `resetCursor`'s doc describes for a re-export.
+                _ = try? cursors.advance(templateId: template.id, destinationId: destinationId,
+                                         to: bootstrap, lastRunId: runId, manifestSha: manifestSha,
+                                         now: clock.now())
+                cursorAfter = bootstrap
+            }
         }
 
         // A `sinceLastRun` fallback rides a SUCCESS row as `.cursorMissing` — a note, not a
@@ -1650,7 +1712,10 @@ extension ExportRunner {
         var ingestedSince: Date?
         /// The watermark the run started from, recorded on the ledger row for reconstruction.
         var cursorBefore: Date?
-        /// True when `sinceLastRun` had no cursor and fell back to `lastNDays`.
+        /// True when `sinceLastRun` had no cursor and fell back to `lastNDays`. Such a run is NOT a
+        /// delta (`ingestedSince` is nil, the manifest declares `is_delta: false`), but when it is
+        /// delivered it does bootstrap the checkpoint the next run reads — so this flag means "the
+        /// chain starts here", not "the chain cannot start".
         var fellBackFromSinceLastRun: Bool
     }
 
@@ -1692,6 +1757,14 @@ extension ExportRunner {
                 // and flag it so the caller surfaces a notice. This is the one place the plan
                 // singles out — a silent fallback here is the HAE failure the whole subsystem
                 // exists to avoid.
+                //
+                // The window is still MEASURED-axis and this function still establishes no
+                // checkpoint of its own — it is pure, and it does not know whether the run it is
+                // planning will be delivered. What changed is that a delivered fallback run is no
+                // longer a dead end: `runTemplate` bootstraps the checkpoint afterwards, at exactly
+                // this `startDate`. A caller that resolves a fallback and never writes a cursor
+                // leaves the template unable to ever take a delta (`IntentExportService` is still
+                // in that state — see its `advanceCursorIfDelta`).
                 scope.startDate = now.addingTimeInterval(-Double(Self.cursorMissingFallbackDays) * 86_400)
                 scope.endDate = now
                 return ResolvedRun(scope: scope, ingestedSince: nil, cursorBefore: nil,
@@ -2028,13 +2101,29 @@ extension ExportRunner {
     /// A ledger-write failure is swallowed (`try?`): the artifact is already on disk, so raising a
     /// scary error after the export plainly worked would be its own small dishonesty. The run just
     /// won't appear in Export Health — the same tradeoff `runRouteExport` and Android's helper make.
+    ///
+    /// - Parameter entitlement: required, and deliberately without a default. This is the builder's
+    ///   Run button: a USER-facing export, so the D-33 window applies exactly as it does to Quick
+    ///   Export and to a Shortcut. It used to call `run` with no entitlement at all, which made the
+    ///   Advanced Export Builder the third surface to hand a trial-expired user their full history
+    ///   while the same request through the hub returned seven days — the same defect twice fixed
+    ///   elsewhere, surviving here because a defaulted parameter lets a call site opt out in
+    ///   silence. No default means the compiler asks the question. `nil` is still expressible for a
+    ///   genuinely internal caller; what is no longer possible is omitting it by accident.
+    ///
+    ///   The clamp itself stays in `run` — one implementation of the gate — so this method does not
+    ///   compute the narrowed window and cannot disagree with it. The caller that must TELL the user
+    ///   the file was clipped recomputes `wasNarrowed` for the notice, exactly as
+    ///   `ExportManageService.runResolved` and `IntentExportService.run` do.
     @discardableResult
     func runAdHoc(scope: ExportScope, format: ExportFormat, passphrase: String? = nil,
-                  trigger: ExportTrigger = .manual) throws -> ExportResult {
+                  trigger: ExportTrigger = .manual,
+                  entitlement: SubscriptionPolicy.State?) throws -> ExportResult {
         let startedAt = clock.now()
         let runId = ULID.newID()
         do {
-            let result = try run(scope: scope, format: format, passphrase: passphrase)
+            let result = try run(scope: scope, format: format, passphrase: passphrase,
+                                 entitlement: entitlement)
             var bytes = 0
             for url in result.fileURLs {
                 if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int {

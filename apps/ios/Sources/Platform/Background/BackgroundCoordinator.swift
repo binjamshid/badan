@@ -660,9 +660,11 @@ final class BackgroundCoordinator {
                 case .prune:
                     counts.pruned += try runs.prune(now: clock.now())
                 case .telemetrySubmission:
-                    // Fire-and-forget: a failed submission clears nothing, so the next wake
-                    // retries. Telemetry must never be able to fail a processing run that did
-                    // real work for the user.
+                    // Runs to completion inside the wake rather than outliving it (see
+                    // `BackgroundIngestBridge.submitDueTelemetry`), and swallows its own failures:
+                    // a failed submission clears nothing, backs off, and is retried later.
+                    // Telemetry must never be able to fail a processing run that did real work for
+                    // the user, which is also why it is the last step.
                     try ingest.submitDueTelemetry(now: clock.now())
                 }
             } catch {
@@ -969,24 +971,22 @@ final class BackgroundIngestBridge: BackgroundIngestPerforming {
     /// (a randomised 24-72h after eligibility), a collector is wired, and something clears the
     /// 10-event floor. The default install fails the first and does nothing forever.
     ///
-    /// The schedule is cleared only on success, so a failed send retries on a later wake rather
-    /// than being dropped — and a submission that never clears never blocks anything else, because
-    /// this step runs last.
+    /// The schedule is cleared only on success. A failure does not drop the batch, but it does push
+    /// the due date out by an exponential backoff — this used to retry on every single wake, which
+    /// under a permanent rejection meant a submission that could never succeed hammering a route
+    /// nginx rate-limits to 2r/h. See `FootprintScheduler.recordFailure`.
+    ///
+    /// **Blocking, deliberately.** This waits for the submission to finish rather than launching it
+    /// into a detached `Task`: the previous version could be killed by process suspension after the
+    /// log had recorded the attempt and before anything reconciled the answer, which is how a
+    /// refusal came to be reported to the user as a delivery. The reasoning for blocking a
+    /// background-task body is the same as `BackgroundCoordinator.evaluateAutomationsBlocking`'s,
+    /// and it costs the run at most `TelemetrySubmissionRunner.attemptTimeout` — spent by the step
+    /// that runs last of all, precisely so it can be the one that yields.
     func submitDueTelemetry(now: Date) throws {
         guard let makeBatch = makeTelemetryBatch, let client = telemetryClient else { return }
-        let scheduler = FootprintScheduler()
-        guard scheduler.isDue(now: now), let batch = makeBatch() else { return }
-        Task {
-            do {
-                try await client.submit(batch)
-                scheduler.clear()
-            } catch {
-                // Never logged with a payload, and never escalated: telemetry failing must not
-                // fail a run that did real work for the user.
-                Logger(subsystem: "net.binjamshid.badan", category: "Telemetry")
-                    .warning("Telemetry submission failed")
-            }
-        }
+        TelemetrySubmissionRunner(client: client, scheduler: FootprintScheduler(),
+                                  makeBatch: makeBatch).runBlocking(now: now)
     }
 
     /// The one ingest path. `ingestHealthData` runs HealthKit's anchored queries, so a repeat call

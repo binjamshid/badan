@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        The declaration that makes this APK a Wear OS APK rather than a phone one. `required="true"`
+        is deliberate: Play uses it to decide the artifact is watch-only, and a watch-only APK that
+        is merely "watch-preferred" gets offered to phones.
+    -->
+    <uses-feature
+        android:name="android.hardware.type.watch"
+        android:required="true" />
+
+    <!--
+        INTERNET is DELIBERATELY ABSENT here, and should stay absent for longer than it stays
+        absent on the phone. :app will eventually acquire it (D-41: the AI coach, opt-in
+        methodology telemetry, and Play Integrity's verdict round trip). None of those three
+        surfaces belongs on the watch: the watch renders a snapshot the phone already computed and
+        pushed over the DataClient. If a Wear change ever seems to need INTERNET, that is the
+        signal that computation has migrated to the watch — which is exactly what
+        `:wear:checkWearDependencyBoundary` and ADR-0012 exist to prevent.
+    -->
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/wear_app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault">
+
+        <!--
+            Standalone: the watch app runs without the phone app installed. It still has nothing
+            useful to show until a snapshot arrives, and the Wear surfaces are expected to say so
+            plainly rather than render a zero — honest degradation, same rule as every other BADAN
+            surface.
+        -->
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
+
+    </application>
+
+</manifest>

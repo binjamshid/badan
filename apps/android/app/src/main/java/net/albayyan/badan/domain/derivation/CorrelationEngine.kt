@@ -867,6 +867,41 @@ object CorrelationRenderer {
             }
     }
 
+    /**
+     * Arabic count-noun agreement for the correlation copy's day-count phrases (1 singular · 2 dual ·
+     * 3–10 plural · 11+ indeclinable). Mirror of iOS `CorrelationRenderer.CorrelationDayCount` —
+     * `apps/ios/Sources/Domain/Derivation/CorrelationEngine.swift:834-846` — ported verbatim rather
+     * than reinvented, because Arabic pluralization brackets are a correctness question, not a style
+     * one: `{nPhrase}`/`{nWithPhrase}` in the contract templates are pre-agreed phrases exactly
+     * because a bare digit substituted into the sentence is grammatically wrong in Arabic (`nWith`
+     * only has to clear `minDaysPerArm` (5), so it lands in the 3–10 plural bracket at least as often
+     * as the 11+ bracket).
+     *
+     * One parameterized function rather than one per call site, matching iOS: the singular/dual/
+     * plural/many arguments are the FULL phrase per bracket (not just the bare noun), because the
+     * Arabic adjective itself inflects with the noun.
+     */
+    object CorrelationDayCount {
+        fun phrase(
+            n: Int,
+            enSingular: String,
+            enPlural: String,
+            arSingular: String,
+            arDual: String,
+            arPlural: String,
+            arMany: String,
+        ): LocalizedString {
+            val en = if (n == 1) enSingular else "$n $enPlural"
+            val ar = when {
+                n == 1 -> arSingular
+                n == 2 -> arDual
+                n in 3..10 -> "$n $arPlural"
+                else -> "$n $arMany"
+            }
+            return LocalizedString(en = en, ar = ar)
+        }
+    }
+
     const val LOCKED_TEMPLATE_ID = "journal_correlation_not_cause"
 
     /**
@@ -925,6 +960,23 @@ object CorrelationRenderer {
                     "n" to plain(f.nObserved.toString()),
                     "nWith" to plain(f.nWith.toString()),
                     "nWithout" to plain(f.nWithout.toString()),
+                    // Distinct from the bare "nWith"/"n" above, which journal_correlation_power_detail
+                    // still reads as plain stats ("n = 14 (7 with / 9 without)" — a data readout that
+                    // must never grow a noun). The casual higher/lower/none templates read these
+                    // instead — see CorrelationDayCount's doc comment. finding.nObserved can never
+                    // actually fall below minObservedDays (14) today, so nPhrase always resolves
+                    // through the 11+ branch in practice, but that safety depends entirely on
+                    // minObservedDays staying >= 11, a spec constant this file does not own — so both
+                    // counts run through the same bracket-aware helper rather than leaving nPhrase's
+                    // correctness resting on a number defined elsewhere never dropping.
+                    "nWithPhrase" to CorrelationDayCount.phrase(
+                        f.nWith, enSingular = "1 day", enPlural = "days",
+                        arSingular = "يوم واحد", arDual = "يومان", arPlural = "أيام", arMany = "يومًا",
+                    ),
+                    "nPhrase" to CorrelationDayCount.phrase(
+                        f.nObserved, enSingular = "1 day", enPlural = "days",
+                        arSingular = "يوم واحد", arDual = "يومان", arPlural = "أيام", arMany = "يومًا",
+                    ),
                 )
                 Card(
                     metricId = f.metricId,

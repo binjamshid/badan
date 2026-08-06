@@ -42,6 +42,12 @@ genuine, unmodified BADAN install on real hardware, carrying no user identity an
 health data. `POST /v2/register` issues a token only against a valid attestation over a
 server-issued single-use challenge (`POST /v1/attest/challenge`). See `appattest.py`.
 
+A route defined here is NOT a route that exists in production. `infra/nginx/badan-api.conf`
+is an allowlist ending in `location / { return 404; }`, so an endpoint added here and not
+there 404s at the edge and never reaches this process — which is how `/v2/register`, the iOS
+client's only registration path, shipped unreachable while this file looked correct. Add
+both, or neither; `tests/test_nginx_routes.py` checks the two agree.
+
 `/v1/register` stays alive and unattested behind `BADAN_LEGACY_REGISTER_ENABLED`
 (default on) ON PURPOSE: BADAN is live on the App Store, and installs already out there
 call `/v1/register` when a user first enables the coach. Making attestation mandatory
@@ -61,7 +67,7 @@ import datetime
 import sqlite3
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from threading import Lock
 
@@ -71,6 +77,19 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from appattest import AttestationError, verify_assertion, verify_attestation
+from accounts import (
+    MAX_ENTITLEMENTS_PER_PUSH,
+    MAX_PRODUCT_ID_LENGTH,
+    PLATFORMS,
+    REFERRAL_ALPHABET,
+    REFERRAL_CODE_LENGTH,
+    AccountRecord,
+    AccountStore,
+    Entitlement,
+    ReferralRefused,
+    load_subject_salt,
+)
+from apple_identity import APPLE_JWKS_URL, AppleIdentityError, verify_identity_token
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("badan-api")
@@ -194,29 +213,103 @@ token_store = DeviceTokenStore(TOKENS_DB_PATH)
 
 # --- Per-token rate limiting -------------------------------------------------
 
+# How many distinct keys ONE limiter will track at a time. `_hits` is process-lifetime state
+# in a service deliberately run as a single long-lived uvicorn process (`infra/badan-api.service`,
+# which sets no `MemoryMax=`), so before this bound every key ever seen was a permanent
+# allocation: every caller IP that ever touched `/v1/register`, `/v1/attest/challenge` or
+# `/v1/footprints`, and every token hash that ever touched `/v1/chat`, stayed in memory until
+# the next deploy — the limiter that exists to bound abuse was itself the thing an abuser grew.
+# 10k keys is orders of magnitude above this service's real concurrency and still only a few
+# megabytes at worst.
+RATE_LIMITER_MAX_KEYS = int(os.environ.get("BADAN_RATE_LIMITER_MAX_KEYS", "10000"))
+
+
 class SlidingWindowRateLimiter:
     """A minimal in-memory sliding-window limiter — sufficient for this single-process
     deployment (one `uvicorn` process, no `--workers`; see `infra/badan-api.service`). Keyed
     by the device token's hash rather than the raw token, so this limiter's own in-memory
-    state is never a second place a usable bearer token sits in process memory."""
+    state is never a second place a usable bearer token sits in process memory.
 
-    def __init__(self, max_requests: int, window_seconds: float):
+    Keys are evicted, not accumulated. A key whose window has fully expired carries no
+    information — it is indistinguishable from a caller that has never been seen — so keeping
+    it is pure cost, and `max_keys` is a hard ceiling for the case where callers arrive faster
+    than they expire.
+
+    Eviction is least-recently-active rather than "refuse the new key". Refusing would let
+    anyone with a spread of source addresses fill the table and lock every other caller out,
+    turning a cost control into a denial-of-service lever; evicting the coldest key only
+    forgives the caller that was already closest to falling out of its own window.
+    """
+
+    def __init__(self, max_requests: int, window_seconds: float,
+                 max_keys: int = RATE_LIMITER_MAX_KEYS):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self._hits: dict[str, deque] = defaultdict(deque)
+        self.max_keys = max_keys
+        # Ordered, so `popitem(last=False)` is the least-recently-active key. Not a
+        # `defaultdict` any more: lookups must be able to MISS, because a miss is what tells
+        # `allow` a key is new and room may have to be made for it.
+        self._hits: OrderedDict[str, deque] = OrderedDict()
+        # -inf, not 0.0: `time.monotonic()` counts from an arbitrary origin (uptime on Linux),
+        # so 0.0 would mean "a sweep already happened" on a machine booted less than one
+        # window ago and silently skip the first one.
+        self._last_sweep = float("-inf")
         self._lock = Lock()
 
     def allow(self, key: str) -> bool:
         now = time.monotonic()
         with self._lock:
-            hits = self._hits[key]
+            hits = self._hits.get(key)
+            if hits is None:
+                self._make_room_locked(now)
+                hits = self._hits[key] = deque()
+            else:
+                self._hits.move_to_end(key)
             while hits and now - hits[0] > self.window_seconds:
                 hits.popleft()
             if len(hits) >= self.max_requests:
+                # An empty deque here means `max_requests` is 0 (nothing is ever allowed);
+                # drop the key rather than leave a permanently empty entry behind.
+                if not hits:
+                    del self._hits[key]
                 return False
             hits.append(now)
             return True
 
+    def _make_room_locked(self, now: float) -> None:
+        """Make space for one new key. Caller must hold `_lock`.
+
+        Runs only on a key that is not already tracked, so a returning caller — the common
+        case — pays nothing for it.
+        """
+        if len(self._hits) < self.max_keys:
+            return
+        # The full sweep is O(tracked keys), so it is itself rate limited to once per window.
+        # Without that, a flood of distinct keys against a full table would walk the whole
+        # table per request and make this limiter the cost it exists to prevent; between
+        # sweeps the O(1) eviction below holds the bound on its own.
+        if now - self._last_sweep > self.window_seconds:
+            self._last_sweep = now
+            for stale in [k for k, hits in self._hits.items()
+                          if not hits or now - hits[-1] > self.window_seconds]:
+                del self._hits[stale]
+        while len(self._hits) >= self.max_keys:
+            self._hits.popitem(last=False)
+
+    def tracked_keys(self) -> int:
+        """Size of the in-memory table. Exists for the test that asserts the bound holds —
+        there is no other way to observe it, and an unobservable bound is a comment."""
+        with self._lock:
+            return len(self._hits)
+
+
+# The output side of the same bound `ChatMessage.content` puts on the input side. Without it
+# the model decides how long to run, so one request sitting comfortably inside the per-token
+# rate-limit budget can still bill for the provider's maximum completion — the cost control
+# was only ever half-installed. 800 tokens is a generous coaching reply (the chat screen
+# renders a few short paragraphs) and is deliberately overridable, because the ceiling that
+# suits a cheap model is not the one that suits an expensive one.
+CHAT_MAX_TOKENS = int(os.environ.get("BADAN_CHAT_MAX_TOKENS", "800"))
 
 CHAT_RATE_LIMIT_MAX = int(os.environ.get("BADAN_CHAT_RATE_LIMIT_MAX", "20"))
 CHAT_RATE_LIMIT_WINDOW_SECONDS = float(os.environ.get("BADAN_CHAT_RATE_LIMIT_WINDOW_SECONDS", "60"))
@@ -426,11 +519,27 @@ attested_key_store = AttestedKeyStore(TOKENS_DB_PATH)
 
 
 def _decode_base64(value: str, *, max_bytes: int) -> bytes:
-    """Strict base64 decode with a size cap, for caller-supplied blobs. Anything
-    malformed or oversized is an unauthorized request, not a 500 — this runs before any
-    verification on input from an unauthenticated endpoint."""
-    if len(value) > max_bytes * 2:
-        raise HTTPException(status_code=401, detail="unauthorized")
+    """Strict base64 decode with a size cap, for caller-supplied blobs. Never a 500 — this
+    runs before any verification, on input from an unauthenticated endpoint.
+
+    The two failure modes get DIFFERENT statuses, on purpose.
+
+    Malformed base64 is 401, indistinguishable from every other rejection on these
+    endpoints: a caller must not be able to read the status to work out which check it
+    tripped (the same reasoning as `/v2/register`'s flat 401).
+
+    Merely being too big is 413, and used to be 401 — which was actively misleading rather
+    than merely conservative. Size is a fact the caller already knows (it counted the bytes
+    it sent) so answering with it reveals nothing about any credential, while answering 401
+    told a genuine, correctly-attested client that its identity had failed. A client's only
+    sane response to 401 is to re-register; the correct response to "too big" is to send
+    less. `/v1/footprints` spent its whole life giving the first answer to the second
+    problem.
+    """
+    # base64 of N bytes is ceil(N/3)*4 characters. Bounding the ENCODED length rejects an
+    # oversized blob before `b64decode` allocates a decoded copy of it.
+    if len(value) > ((max_bytes + 2) // 3) * 4:
+        raise HTTPException(status_code=413, detail="payload too large")
     try:
         return base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -610,6 +719,7 @@ async def chat(body: ChatRequest, authorization: str = Header(default="")):
     payload = {
         "model": OPENROUTER_MODEL,
         "messages": [m.model_dump() for m in body.messages],
+        "max_tokens": CHAT_MAX_TOKENS,
     }
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -628,8 +738,23 @@ async def chat(body: ChatRequest, authorization: str = Header(default="")):
         log.warning("upstream_status=%s", r.status_code)
         raise HTTPException(status_code=502, detail="upstream error")
 
-    data = r.json()
-    return JSONResponse({"reply": data["choices"][0]["message"]["content"]})
+    # A 200 is not a promise of the shape we asked for. Indexing straight into the body used
+    # to turn a truncated, empty-`choices` or non-JSON upstream response into a KeyError /
+    # IndexError, i.e. a 500 — this service blaming itself for the provider's fault, and
+    # handing the client the one status that means "retrying will not help" for a condition
+    # where retrying is exactly right. 502 says what is actually true.
+    #
+    # G8: the body is model output and must never be logged, not even while debugging this.
+    # The status line below is the whole diagnostic, and that is the intended trade.
+    try:
+        reply = r.json()["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        log.warning("upstream_malformed_response=true")
+        raise HTTPException(status_code=502, detail="upstream error") from None
+    if not isinstance(reply, str):
+        log.warning("upstream_malformed_response=true")
+        raise HTTPException(status_code=502, detail="upstream error")
+    return JSONResponse({"reply": reply})
 
 
 # --- Methodology telemetry (ADR-0011 / D-37) --------------------------------
@@ -651,6 +776,29 @@ FOOTPRINT_DIRECTIONS = frozenset({"matches", "over", "under"})
 FOOTPRINT_BUCKETS = frozenset({"10-19", "20-49", "50+"})
 FOOTPRINT_SCHEMA_VERSION = 1
 MAX_FOOTPRINTS_PER_BATCH = 200
+
+# `clientData` is the batch JSON itself, byte for byte: `FootprintClient.submit` (iOS) signs
+# the exact bytes it encodes and sends those same bytes along, which is what binds the
+# assertion to this batch and not another. So its size cap has to fit a FULL batch — and it
+# did not. A flat 4 KB meant anything past roughly 35 footprints was refused while
+# `MAX_FOOTPRINTS_PER_BATCH` advertised 200, and refused as a 401 (see `_decode_base64`),
+# which a client cannot tell apart from its attestation being rejected. Two constants stating
+# incompatible limits is how that survived, so this one is DERIVED from the other rather than
+# written as a second independent number.
+#
+# Worst case for one serialised footprint: every bounded field at its schema maximum
+# (metricId 64 + algorithmId 64 + algorithmSemver 16 + the closed-enum values) plus JSON key
+# names, quoting and separators — under 300 bytes. The envelope is schemaVersion, appVersion
+# and contractVersion, all short and bounded.
+MAX_FOOTPRINT_JSON_BYTES = 300
+FOOTPRINT_ENVELOPE_JSON_BYTES = 256
+MAX_CLIENT_DATA_BYTES = (
+    MAX_FOOTPRINTS_PER_BATCH * MAX_FOOTPRINT_JSON_BYTES + FOOTPRINT_ENVELOPE_JSON_BYTES
+)
+# A worst-case batch carries the footprints twice — once as the parsed array and once as
+# `clientData`'s base64 of the same bytes — which lands around 130 KB total, inside the
+# vhost's `client_max_body_size 256k` (`infra/nginx/badan-api.conf`). Raising either of the
+# two constants above past that would need the vhost raised with it.
 
 
 class FootprintStore:
@@ -756,6 +904,12 @@ class FootprintBatchRequest(BaseModel):
     footprints: list[FootprintItem] = Field(min_length=1, max_length=MAX_FOOTPRINTS_PER_BATCH)
     # The attestation proving this is a genuine app instance. Not part of the stored
     # payload and never written beside it — see `/v1/footprints`.
+    #
+    # `clientData` is the signed bytes of the batch above, not a nonce: it has to fit a full
+    # `MAX_FOOTPRINTS_PER_BATCH` batch, and `MAX_CLIENT_DATA_BYTES` is what sizes it. The
+    # size gate lives in `_decode_base64` at the handler rather than as a `Field(max_length=)`
+    # here so that an over-sized blob answers 413 and not pydantic's 422 — a caller sending a
+    # legitimate-but-large batch should be told it was large, and only that.
     keyId: str
     assertion: str
     clientData: str
@@ -795,7 +949,7 @@ async def submit_footprints(body: FootprintBatchRequest, request: Request):
 
     key_id = _decode_base64(body.keyId, max_bytes=64)
     assertion = _decode_base64(body.assertion, max_bytes=8_000)
-    client_data = _decode_base64(body.clientData, max_bytes=4_000)
+    client_data = _decode_base64(body.clientData, max_bytes=MAX_CLIENT_DATA_BYTES)
 
     public_key = attested_key_store.public_key(key_id)
     if public_key is None:
@@ -829,3 +983,326 @@ async def submit_footprints(body: FootprintBatchRequest, request: Request):
     )
     log.info("footprints_accepted=%s", written)
     return JSONResponse({"accepted": written})
+
+
+# --- Accounts, cross-platform entitlements and referrals (ADR-0014 / D-44) -----
+#
+# The reversal. Until D-44 this service held no accounts and no per-user state, and three
+# separate places in the repository said so. It now holds an account id, a salted hash of
+# Apple's subject claim, a referral code, and one store product id per platform — and
+# nothing else. In particular it still holds NO health data, which is the Never that
+# survived D-44 completely intact; `tests/test_accounts.py` pins the column list so a later
+# migration cannot quietly widen it.
+#
+# Everything below is gated behind an Apple-signed identity token on the way in and an
+# opaque bearer session thereafter. See `accounts.py` and `apple_identity.py`.
+
+ACCOUNTS_DB_PATH = DATA_DIR / "accounts.db"
+
+# The bundle id Apple sets as `aud` in the identity token. Checking it is what stops a token
+# minted for some OTHER app — including one an attacker controls and can mint from freely —
+# being presented here to create an account.
+APPLE_AUDIENCE = os.environ.get("BADAN_APPLE_AUDIENCE", "net.binjamshid.badan")
+
+# How long Apple's published signing keys are cached. Apple rotates them without notice, so
+# a miss triggers exactly one forced refetch (see `_apple_jwks`) before the request is
+# refused — the alternative, refetching per sign-in, would put a third-party network call on
+# BADAN's authentication path and make Apple's availability our availability.
+APPLE_JWKS_TTL_SECONDS = float(os.environ.get("BADAN_APPLE_JWKS_TTL_SECONDS", "3600"))
+APPLE_JWKS_TIMEOUT_SECONDS = float(os.environ.get("BADAN_APPLE_JWKS_TIMEOUT_SECONDS", "10"))
+
+# Sign-in is the expensive, account-creating route, so it is limited like `/v1/register` and
+# for the same reason: nothing authenticates the caller before the token is verified, and an
+# unbounded account-creation endpoint is an unbounded referral-code printer.
+ACCOUNT_SIGNIN_RATE_LIMIT_MAX = int(os.environ.get("BADAN_ACCOUNT_SIGNIN_RATE_LIMIT_MAX", "10"))
+ACCOUNT_SIGNIN_RATE_LIMIT_WINDOW_SECONDS = float(
+    os.environ.get("BADAN_ACCOUNT_SIGNIN_RATE_LIMIT_WINDOW_SECONDS", "3600")
+)
+account_signin_rate_limiter = SlidingWindowRateLimiter(
+    ACCOUNT_SIGNIN_RATE_LIMIT_MAX, ACCOUNT_SIGNIN_RATE_LIMIT_WINDOW_SECONDS
+)
+
+# Referral claims are limited per session, not per IP: the abuse being bounded is one account
+# guessing codes, and the code space (29^8) is large enough that a low ceiling makes brute
+# force pointless while never inconveniencing a user who mistypes a friend's code twice.
+ACCOUNT_CLAIM_RATE_LIMIT_MAX = int(os.environ.get("BADAN_ACCOUNT_CLAIM_RATE_LIMIT_MAX", "5"))
+ACCOUNT_CLAIM_RATE_LIMIT_WINDOW_SECONDS = float(
+    os.environ.get("BADAN_ACCOUNT_CLAIM_RATE_LIMIT_WINDOW_SECONDS", "3600")
+)
+account_claim_rate_limiter = SlidingWindowRateLimiter(
+    ACCOUNT_CLAIM_RATE_LIMIT_MAX, ACCOUNT_CLAIM_RATE_LIMIT_WINDOW_SECONDS
+)
+
+account_store = AccountStore(ACCOUNTS_DB_PATH, salt=load_subject_salt(DATA_DIR))
+
+_jwks_cache: dict[str, object] = {"keys": [], "fetched_at": 0.0}
+_jwks_lock = Lock()
+
+
+async def _apple_jwks(*, force_refresh: bool = False) -> list[dict]:
+    """Apple's current identity-token signing keys, cached.
+
+    Not a `SlidingWindowRateLimiter`-style structure because it holds exactly one entry; a
+    plain dict under a lock is the whole requirement. The lock guards the write, not the
+    fetch: two concurrent sign-ins during a rotation may both fetch, and that is fine and
+    cheaper than serialising every sign-in behind one HTTP call.
+    """
+    now = time.time()
+    if not force_refresh:
+        with _jwks_lock:
+            keys = _jwks_cache["keys"]
+            age = now - float(_jwks_cache["fetched_at"])
+        if keys and age < APPLE_JWKS_TTL_SECONDS:
+            return list(keys)  # type: ignore[arg-type]
+
+    try:
+        async with httpx.AsyncClient(timeout=APPLE_JWKS_TIMEOUT_SECONDS) as client:
+            response = await client.get(APPLE_JWKS_URL)
+            response.raise_for_status()
+            keys = response.json().get("keys", [])
+    except (httpx.HTTPError, ValueError):
+        # Serve a stale cache rather than failing sign-in over Apple being briefly
+        # unreachable. Verification itself is unaffected: a stale key either verifies the
+        # signature or it does not, and a rotated-away key simply produces a kid miss.
+        with _jwks_lock:
+            stale = list(_jwks_cache["keys"])  # type: ignore[arg-type]
+        if stale:
+            log.warning("apple_jwks_fetch_failed=true served=stale")
+            return stale
+        log.warning("apple_jwks_fetch_failed=true served=none")
+        raise HTTPException(status_code=503, detail="identity provider unavailable") from None
+
+    if not isinstance(keys, list) or not keys:
+        raise HTTPException(status_code=503, detail="identity provider unavailable")
+    with _jwks_lock:
+        _jwks_cache["keys"] = keys
+        _jwks_cache["fetched_at"] = now
+    return keys
+
+
+def _bearer(authorization: str) -> str:
+    scheme, _, value = authorization.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" else ""
+
+
+def _require_account(authorization: str) -> str:
+    account_id = account_store.account_for_session(_bearer(authorization))
+    if account_id is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return account_id
+
+
+def _iso(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return (
+        datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _account_response(record: AccountRecord, *, token: str | None = None) -> dict:
+    """The one response shape every account route returns.
+
+    Deliberately assembled field by field rather than by dumping the dataclass: a new column
+    on `accounts` cannot reach a client without someone adding a line here, which is the
+    point of the closed-shape test on the iOS side.
+    """
+    body: dict = {
+        "accountId": record.account_id,
+        "createdAt": _iso(record.created_at),
+        "referralCode": record.referral_code,
+        "successfulReferrals": record.successful_referrals,
+        "hasClaimedReferral": record.has_claimed_referral,
+        "referralGrantExpiresAt": _iso(record.referral_grant_expires_at),
+        "entitlements": [
+            {
+                "platform": e.platform,
+                "productId": e.product_id,
+                "isLifetime": e.is_lifetime,
+                "expiresAt": _iso(e.expires_at),
+                "observedAt": _iso(e.observed_at),
+            }
+            for e in record.entitlements
+        ],
+    }
+    if token is not None:
+        body["accountToken"] = token
+    return body
+
+
+class AppleSignInRequest(BaseModel):
+    identityToken: str = Field(max_length=8192)
+    nonce: str = Field(max_length=256)
+
+
+@app.post("/v1/account/apple")
+async def account_sign_in(body: AppleSignInRequest, request: Request):
+    """Exchange an Apple identity token for a BADAN session.
+
+    Creates the account on first sign-in and resolves to the existing one afterwards — the
+    client cannot tell which happened and does not need to, because the response is the same
+    shape either way.
+    """
+    client_ip = _client_ip(request)
+    if not account_signin_rate_limiter.allow(client_ip):
+        log.warning("account_signin_rate_limited=true scope=ip")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    now = time.time()
+    keys = await _apple_jwks()
+    try:
+        identity = verify_identity_token(
+            body.identityToken,
+            jwks=keys,
+            audience=APPLE_AUDIENCE,
+            expected_nonce=body.nonce,
+            now=now,
+        )
+    except AppleIdentityError:
+        # One forced refetch, then give up. Apple rotates signing keys without warning, and
+        # a stale cache is by far the most likely cause of a first failure on an otherwise
+        # healthy install — but retrying forever on a genuinely bad token would turn a
+        # forgery attempt into unbounded outbound requests to Apple.
+        keys = await _apple_jwks(force_refresh=True)
+        try:
+            identity = verify_identity_token(
+                body.identityToken,
+                jwks=keys,
+                audience=APPLE_AUDIENCE,
+                expected_nonce=body.nonce,
+                now=now,
+            )
+        except AppleIdentityError:
+            # G8, and more: the token and the reason are both withheld. Telling a caller
+            # WHICH check failed would let a forgery be tuned against the checks one by one.
+            log.warning("account_signin_rejected=true")
+            raise HTTPException(status_code=401, detail="unauthorized") from None
+
+    token, record = account_store.sign_in(identity.subject, now=now)
+    log.info("account_signin_accepted=true")
+    return JSONResponse(_account_response(record, token=token))
+
+
+@app.get("/v1/account")
+async def account_read(authorization: str = Header(default="")):
+    account_id = _require_account(authorization)
+    record = account_store.read(account_id)
+    if record is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return JSONResponse(_account_response(record))
+
+
+class EntitlementItem(BaseModel):
+    platform: str = Field(max_length=16)
+    productId: str = Field(max_length=MAX_PRODUCT_ID_LENGTH)
+    isLifetime: bool
+    expiresAt: datetime.datetime | None = None
+    observedAt: datetime.datetime
+
+
+class EntitlementPushRequest(BaseModel):
+    entitlements: list[EntitlementItem] = Field(max_length=MAX_ENTITLEMENTS_PER_PUSH)
+
+
+@app.put("/v1/account/entitlement")
+async def account_push_entitlement(
+    body: EntitlementPushRequest, authorization: str = Header(default="")
+):
+    """Record what the calling platform's store says it owns.
+
+    An empty list is a meaningful, expected body — "I looked and there is nothing" — and is
+    what lets a cancellation on one platform stop granting on the other. It cannot be
+    inferred from silence, because silence is also what an offline device produces.
+    """
+    account_id = _require_account(authorization)
+    now = time.time()
+
+    platforms = {item.platform for item in body.entitlements}
+    if not platforms.issubset(PLATFORMS):
+        raise HTTPException(status_code=400, detail="unknown platform")
+    if len(platforms) > 1:
+        # A device may only ever speak for its own platform. Accepting a mixed push would
+        # let any signed-in client grant itself a subscription by asserting the other side.
+        raise HTTPException(status_code=400, detail="a push may only describe one platform")
+
+    if not body.entitlements:
+        # With nothing in the body there is no platform to clear. The client sends the header
+        # so an empty push is still unambiguous; a missing header clears nothing rather than
+        # guessing, since guessing wrong would revoke the other platform's entitlement.
+        raise HTTPException(status_code=400, detail="platform required for an empty push")
+
+    entitlements = [
+        Entitlement(
+            platform=item.platform,
+            product_id=item.productId,
+            is_lifetime=item.isLifetime,
+            expires_at=item.expiresAt.timestamp() if item.expiresAt else None,
+            observed_at=now,
+        )
+        for item in body.entitlements
+    ]
+    record = account_store.replace_entitlements(account_id, entitlements, now=now)
+    return JSONResponse(_account_response(record))
+
+
+@app.delete("/v1/account/entitlement/{platform}")
+async def account_clear_entitlement(platform: str, authorization: str = Header(default="")):
+    """The empty push, as its own route.
+
+    A DELETE with the platform in the path rather than a PUT with an empty body: it makes the
+    platform being cleared explicit and un-guessable, which matters because the wrong guess
+    here revokes the entitlement the whole feature exists to carry.
+    """
+    account_id = _require_account(authorization)
+    if platform not in PLATFORMS:
+        raise HTTPException(status_code=400, detail="unknown platform")
+    record = account_store.clear_platform(account_id, platform)
+    return JSONResponse(_account_response(record))
+
+
+class ReferralClaimRequest(BaseModel):
+    code: str = Field(max_length=32)
+
+
+@app.post("/v1/account/referral/claim")
+async def account_claim_referral(
+    body: ReferralClaimRequest, authorization: str = Header(default="")
+):
+    account_id = _require_account(authorization)
+    if not account_claim_rate_limiter.allow(account_id):
+        log.warning("account_claim_rate_limited=true")
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    code = "".join(c for c in body.code.upper() if c in REFERRAL_ALPHABET)
+    if len(code) != REFERRAL_CODE_LENGTH:
+        raise HTTPException(status_code=422, detail={"reason": "unknown_code"})
+
+    try:
+        record = account_store.claim_referral(account_id, code, now=time.time())
+    except ReferralRefused as refusal:
+        # 409, with the reason code and nothing else. No account id, no referral count, no
+        # hint about whether the code exists — a claimer is not entitled to learn anything
+        # about the account behind a code they do not hold.
+        raise HTTPException(status_code=409, detail={"reason": refusal.reason}) from None
+    except LookupError:
+        raise HTTPException(status_code=401, detail="unauthorized") from None
+    return JSONResponse(_account_response(record))
+
+
+@app.delete("/v1/account")
+async def account_delete(authorization: str = Header(default="")):
+    """Delete the account and everything attached to it.
+
+    Required by App Review guideline 5.1.1(v) for any app offering account creation, and
+    required by this repository's posture regardless: ADR-0014 reversed "no accounts", and an
+    account that cannot be removed would be a far larger reversal than one that can.
+
+    Idempotent by construction — an already-deleted account presents a session that no longer
+    resolves, which `_require_account` answers 401 to, and the client treats that as done.
+    """
+    account_id = _require_account(authorization)
+    account_store.delete_account(account_id)
+    log.info("account_deleted=true")
+    return JSONResponse({"deleted": True})

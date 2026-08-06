@@ -674,6 +674,21 @@ public enum ExportTrigger: String, Codable, Hashable, Sendable, CaseIterable {
     case scheduledWork
     /// An automatic retry of a previously failed run.
     case retry
+
+    /// Whether somebody was in front of the app when this run happened.
+    ///
+    /// It exists for exactly one question, and only the share sheet has to ask it: a share-sheet
+    /// "delivery" is the UI presenting a sheet over the runner's temp folder, not a copy any layer
+    /// performs, so the files reach a person only if a person was there. Every other destination
+    /// kind writes or uploads somewhere durable and is delivered regardless of who is watching.
+    ///
+    /// Deliberately narrow — `manual` alone. `shortcut` looks attended, and on the path where
+    /// Shortcuts itself receives the files it genuinely is; but that path is `IntentExportService`,
+    /// which hands the artifacts back to the intent and never relies on this flag. A `shortcut`
+    /// trigger arriving on the *template* path would mean a template ran with nothing presenting a
+    /// sheet, which is the unattended case wearing an attended label. `retry` is likewise a
+    /// background retry by construction (`AutomationEngine`), not a person tapping again.
+    public var isAttended: Bool { self == .manual }
 }
 
 /// §9.5 `outcome`. Every case is **terminal** — there is no `running`, which is why a run row is

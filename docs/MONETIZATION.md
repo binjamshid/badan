@@ -199,6 +199,34 @@ concrete requirement demands it (cross-platform entitlement, or sync). That gets
 without betting the privacy posture on it. If you want the backend regardless, say so and I will
 write the superseding ADR and scope it properly rather than bolt it on.
 
+### RESOLVED — 2026-08-07 (ADR-0014 / D-44)
+
+Both halves of the recommendation above happened, in order. StoreKit-only shipped first (D-32/D-33,
+2026-07-28). Accounts followed on 2026-08-07 for the concrete requirement this section names:
+**cross-platform entitlement**. The founder confirmed the direction after the reversal was stated
+in full, and ADR-0014 is the superseding ADR this section asked for.
+
+Three corrections to the table above, now that it is built rather than proposed:
+
+- **"Entitlement source: App Store Server Notifications v2 → your DB" — not what shipped.** There
+  is no server-side receipt validation and no webhook. Each platform reports what its *own signed
+  local cache* says and the service relays it; the server never talks to Apple's or Google's
+  billing APIs. That deliberately keeps purchase *history* off the server — the account holds one
+  current product id per platform, not a ledger.
+- **"Fraud/refund handling: you handle webhooks" — no.** Refunds and revocations are still
+  Apple-managed and still arrive through `Transaction.currentEntitlements`, which excludes them
+  automatically. The account learns about a lapse on the next push from the device that owns it.
+- **"Privacy posture: materially changes" — correct, and it did.** BADAN now declares a collected
+  `UserID` in `PrivacyInfo.xcprivacy`, both hosted and in-app policies were rewritten, and in-app
+  account deletion became mandatory under App Review 5.1.1(v). What did *not* change is the thing
+  this document exists to protect: no health datum reaches the account, and D-33 is still the only
+  gate on a user's own records.
+
+**Referrals** ride the same account (`ReferralPolicy`): a code grants both sides 30 days of
+premium, one claim per account within 30 days of signup, referrer rewards capped at 10. Worth
+stating against §1's line: a referral grants premium **time** and gates nothing new, so a user who
+never refers anyone loses nothing they would otherwise have had.
+
 ---
 
 ## 6. Suggested sequence

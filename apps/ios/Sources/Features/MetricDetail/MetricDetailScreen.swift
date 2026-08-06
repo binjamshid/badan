@@ -369,8 +369,13 @@ struct MetricDetailScreen: View {
             // Only for derived values: asking whether a directly-measured reading matches how you
             // felt would be incoherent, since a recorded heart rate is not BADAN's opinion to
             // adjust. Placed under the value at both depths — the question is casual-safe by
-            // construction, and hiding it in power would mean only power users could correct a
-            // number all users see.
+            // construction, and hiding it in power would mean only power users could answer a
+            // question about a number all users see.
+            //
+            // The card renders for every derived metric, but only `CalibrationConsumers` metrics
+            // are told their feedback adjusts anything: readiness is the one engine that reads a
+            // calibration back, so for every other metric the card states what actually happens
+            // (the answer is recorded) rather than an adjustment nothing performs.
             if env.profile.calibrationEnabled, let latest = data.latestDerivedValue {
                 DerivedFeedbackCard(metricId: data.def.metricId, value: latest)
             }
