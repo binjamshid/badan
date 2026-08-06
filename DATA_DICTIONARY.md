@@ -566,7 +566,7 @@ Embedded on the row itself, never a join (I1/D-3). A record without provenance i
 
 ## 4. Metrics
 
-74 metrics across 16 families, from
+75 metrics across 16 families, from
 `packages/metric-ontology/registry.json`. `metric_id` is the language-stable join key in
 every export; `canonical_unit` is what `canonical_value` is always expressed in,
 regardless of the unit profile applied to the `value` column. Both display names are
@@ -705,6 +705,7 @@ consumer holding an Arabic export needs the Arabic column to map back to a metri
 |---|---|---|---|---|---|---|
 | `subjective.energy` | `scale_1_5` | `level` | event | Energy level | مستوى الطاقة | normal |
 | `subjective.mood` | `scale_1_5` | `level` | event | Mood | الحالة المزاجية | sensitivePlus |
+| `subjective.mood_estimate` | `scale_1_5` | `scale_1_5` | derived | Mood estimate | تقدير المزاج | normal |
 | `subjective.perceived_stress` | `scale_1_5` | `level` | event | Perceived stress | مستوى التوتر | sensitivePlus |
 | `subjective.soreness` | `scale_0_10` | `level` | event | Muscle soreness | وجع العضلات | normal |
 

@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import PDFKit
+import VisionKit
 
 // ============================================================================
 // MARK: - EPIC-41 (Phase 3E) — lab notebook MVP. Scope note.
@@ -136,9 +137,15 @@ final class UserThresholdStore {
 @MainActor
 final class PendingScanStore {
     struct Pending {
-        var image: UIImage?
+        /// The captured/picked pages, in page order. Empty when the source was a PDF file, whose
+        /// own bytes are kept verbatim in `pdfData` instead of the rasterizations OCR ran on.
+        var images: [UIImage]
         var pdfData: Data?
         var fields: [OCRFieldExtraction]
+        /// Pages in the SOURCE document, which is not always `images.count`: a PDF longer than
+        /// `LabScanLimits.maxPages` had only its first pages read, and the review screen says so.
+        var pageCount: Int
+        var pagesRead: Int
     }
 
     var byDocumentId: [String: Pending] = [:]
@@ -160,6 +167,14 @@ struct LabNotebookServices {
     let documents: SourceDocumentRepository
     /// `nil` only if `DocumentVault`'s own directory/Keychain setup throws — degrades to "no
     /// document preview available" rather than crashing the notebook.
+    ///
+    /// STORAGE-1: this is a READ/WRITE handle and nothing more. It used to be load-bearing for a
+    /// guarantee it had no business carrying — `DocumentVault.init(database:)` registered the
+    /// sensitive-purge wipe callback, and this lazily-constructed, screen-scoped `@State` was the
+    /// app's only call site, so "turn off sensitive records" wiped vaulted lab documents only for
+    /// someone who had opened this screen in the same process. The purge now finds those files by
+    /// path (`DocumentVault.wipeAll(inDatabaseDirectory:)`, called unconditionally from
+    /// `Database.purgeSensitiveNamespace()`); do not reintroduce a registration here.
     let vault: DocumentVault?
     let ocr = LabDocumentOCR()
     let thresholds: UserThresholdStore
@@ -202,8 +217,11 @@ enum LabHomeStrings {
         ar: "نتائج مختبرك الخاصة، محفوظة كما هي بالضبط — مع إضافة تنظيم حيث يكون ذلك آمناً.")
     static let addResult = LocalizedString(en: "Add a result", ar: "إضافة نتيجة")
     static let scanReport = LocalizedString(en: "Scan or import a report", ar: "مسح أو استيراد تقرير")
-    static let choosePhoto = LocalizedString(en: "Photo of a report", ar: "صورة تقرير")
+    static let useCamera = LocalizedString(en: "Scan with the camera", ar: "المسح بالكاميرا")
+    static let choosePhoto = LocalizedString(en: "Photos of a report", ar: "صور تقرير")
     static let choosePDF = LocalizedString(en: "PDF file", ar: "ملف PDF")
+    static let reading = LocalizedString(en: "Reading the pages on this device…",
+                                         ar: "جارٍ قراءة الصفحات على هذا الجهاز…")
     static let recentReports = LocalizedString(en: "Recent reports", ar: "التقارير الأخيرة")
     static let changesSince = LocalizedString(en: "{n} new since your last visit", ar: "{n} جديدة منذ آخر زيارة")
     static let outOfIntervalCount = LocalizedString(
@@ -256,10 +274,6 @@ enum LabRoute: Hashable, Identifiable {
     case ocrReview(String)
     case manualEntry(prefill: [OCRFieldExtraction], sourceDocumentId: String?)
     case export
-    /// LAB-11. Its own route rather than a sheet on the scan dialog: importing from Apple Health is
-    /// a different ingestion path from scanning a document, with its own consent and its own
-    /// honesty copy, and burying it under "scan or import a report" would misdescribe it.
-    case clinicalImport
 
     var id: String {
         switch self {
@@ -268,7 +282,6 @@ enum LabRoute: Hashable, Identifiable {
         case .ocrReview(let id): return "ocr:\(id)"
         case .manualEntry(_, let docId): return "manualEntry:\(docId ?? "blank")"
         case .export: return "export"
-        case .clinicalImport: return "clinicalImport"
         }
     }
 
@@ -281,7 +294,6 @@ enum LabRoute: Hashable, Identifiable {
         case .manualEntry(let prefill, let sourceDocumentId):
             ManualEntryScreen(services: services, prefill: prefill, sourceDocumentId: sourceDocumentId)
         case .export: LabExportScreen(services: services)
-        case .clinicalImport: ClinicalRecordsImportScreen(store: HealthKitClinicalStore())
         }
     }
 }
@@ -308,8 +320,10 @@ struct LabNotebookHomeScreen: View {
     @State private var state: LoadState<LabHomeData> = .loading
     @State private var route: LabRoute?
     @State private var showScanOptions = false
+    @State private var cameraScanner = false
     @State private var photoImporter = false
     @State private var pdfImporter = false
+    @State private var scanning = false
     @State private var ocrErrorText: LocalizedString?
 
     var body: some View {
@@ -321,6 +335,15 @@ struct LabNotebookHomeScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 actionsRow
+
+                if scanning {
+                    HStack(spacing: BadanSpace.space2) {
+                        ProgressView().controlSize(.small)
+                        Text(env.s(LabHomeStrings.reading))
+                            .font(BadanFont.caption)
+                            .foregroundStyle(BadanColor.textSecondary)
+                    }
+                }
 
                 if let ocrErrorText {
                     HStack(spacing: BadanSpace.space2) {
@@ -351,12 +374,24 @@ struct LabNotebookHomeScreen: View {
             if let services { destination.makeView(services: services) }
         }
         .confirmationDialog(env.s(LabHomeStrings.scanReport), isPresented: $showScanOptions, titleVisibility: .visible) {
+            // The camera is offered first because it is the path with no prerequisites — a person
+            // holding a printed report can use it now, where the other two need the report to
+            // already be a file on the phone. Hidden entirely where there is no document camera
+            // (the Simulator, and any device without a supported one) rather than shown and then
+            // failing: `VNDocumentCameraViewController` presented unsupported is a dead end.
+            if VNDocumentCameraViewController.isSupported {
+                Button(env.s(LabHomeStrings.useCamera)) { cameraScanner = true }
+            }
             Button(env.s(LabHomeStrings.choosePhoto)) { photoImporter = true }
             Button(env.s(LabHomeStrings.choosePDF)) { pdfImporter = true }
             Button(env.s(Loc.cancel), role: .cancel) {}
         }
+        .fullScreenCover(isPresented: $cameraScanner) {
+            LabDocumentScanner { pages in handleScannedPages(pages) }
+                .ignoresSafeArea()
+        }
         .sheet(isPresented: $photoImporter) {
-            LabImagePicker { image in handlePickedImage(image) }
+            LabImagePicker { images in handlePickedImages(images) }
         }
         .fileImporter(isPresented: $pdfImporter, allowedContentTypes: [.pdf]) { result in
             handlePickedPDF(result)
@@ -402,12 +437,7 @@ struct LabNotebookHomeScreen: View {
                 LabActionTile(title: env.s(LabHomeStrings.scanReport), systemImage: "doc.viewfinder")
             }
             .buttonStyle(.plain)
-
-            // LAB-11. A third way data enters the notebook, alongside manual entry and scanning.
-            Button { route = .clinicalImport } label: {
-                LabActionTile(title: env.s(ClinicalImportStrings.openImport), systemImage: "heart.text.square")
-            }
-            .buttonStyle(.plain)
+            .disabled(scanning)
         }
     }
 
@@ -455,13 +485,29 @@ struct LabNotebookHomeScreen: View {
     }
 
     // MARK: OCR entry points (on-device only — LabDocumentOCR, Vision framework, zero network calls)
+    //
+    // Three ways a report gets in, and all three converge on `importAndScan`: the document camera,
+    // photos from the library, and a PDF file. They differ only in how pages are obtained —
+    // everything after rasterization is one path, so a camera scan and a PDF land in the notebook
+    // as the same kind of object.
 
-    private func handlePickedImage(_ image: UIImage?) {
-        guard let services, let image, let cgImage = image.cgImage else {
-            ocrErrorText = LabHomeStrings.ocrFailed
-            return
-        }
-        importAndScan(cgImages: [cgImage], image: image, pdfData: nil, services: services)
+    private func handleScannedPages(_ pages: [UIImage]) {
+        cameraScanner = false
+        // An empty result is a cancel as often as it is a failure (see `LabDocumentScanner`), so it
+        // is silent. Saying "couldn't read that" to someone who tapped Cancel is a lie.
+        guard let services, !pages.isEmpty else { return }
+        // Capped like every other path. The document camera will happily take more pages than this
+        // in one session, and a cap that applied to two of the three ways in would be the kind of
+        // inconsistency that only shows up on someone's longest report.
+        importAndScan(pages: Array(pages.prefix(LabScanLimits.maxPages)), pdfData: nil,
+                      sourcePageCount: pages.count, services: services)
+    }
+
+    private func handlePickedImages(_ images: [UIImage]) {
+        photoImporter = false
+        guard let services, !images.isEmpty else { return }
+        importAndScan(pages: Array(images.prefix(LabScanLimits.maxPages)), pdfData: nil,
+                      sourcePageCount: images.count, services: services)
     }
 
     private func handlePickedPDF(_ result: Result<URL, Error>) {
@@ -471,18 +517,37 @@ struct LabNotebookHomeScreen: View {
         }
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url), let document = PDFDocument(data: data),
-              let firstPage = LabPDFRendering.pageImage(document: document, pageIndex: 0) else {
+        guard let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) else {
             ocrErrorText = LabHomeStrings.ocrFailed
             return
         }
-        importAndScan(cgImages: [firstPage], image: nil, pdfData: data, services: services)
+        let rendered = LabPDFRendering.pageImages(document: document)
+        // A PDF whose every page failed to rasterize still proceeds: LAB-06 stores the document and
+        // offers hand entry rather than refusing it. `importAndScan` handles the empty-page case.
+        importAndScan(cgPages: rendered.images, images: [], pdfData: data,
+                      sourcePageCount: rendered.totalPages, services: services)
+    }
+
+    /// Orientation is baked in HERE, once, before anything downstream reads `cgImage` — Vision for
+    /// recognition and the vault's PDF composition for the stored original. Doing it at the seam
+    /// means neither consumer has to remember, and the review screen shows the same upright page
+    /// the recognizer saw. See `UIImage.uprightedForRecognition()`.
+    private func importAndScan(pages: [UIImage], pdfData: Data?, sourcePageCount: Int,
+                               services: LabNotebookServices) {
+        let upright = pages.map { $0.uprightedForRecognition() }
+        importAndScan(cgPages: upright.compactMap(\.cgImage), images: upright, pdfData: pdfData,
+                      sourcePageCount: sourcePageCount, services: services)
     }
 
     /// Runs the real on-device `LabDocumentOCR` pipeline (Vision framework, zero network calls),
-    /// stashes the source bytes + candidate fields in `PendingScanStore`, and routes to
+    /// stashes the source pages + candidate fields in `PendingScanStore`, and routes to
     /// `OCRReviewScreen` — the side-by-side correction UI (LAB-07) — rather than committing
     /// anything directly.
+    ///
+    /// Recognition runs off the main actor. At `.accurate` with two languages, one page is tens of
+    /// milliseconds to a second; a 25-page report on the main thread would freeze the notebook for
+    /// long enough to read as a hang, and multi-page is now the ordinary case rather than the
+    /// exception. The screen shows `scanning` meanwhile.
     ///
     /// Routes to `OCRReviewScreen` regardless of `extraction.status`, including `.failed`: LAB-06
     /// requires the scanned document to be stored and browsable even when nothing could be read
@@ -490,13 +555,22 @@ struct LabNotebookHomeScreen: View {
     /// A failed run always carries `fields == []` by construction, which lands cleanly on
     /// `OCRReviewScreen`'s existing empty-fields state ("enter by hand") — there is no separate
     /// failure UI to maintain.
-    private func importAndScan(cgImages: [CGImage], image: UIImage?, pdfData: Data?, services: LabNotebookServices) {
+    private func importAndScan(cgPages: [CGImage], images: [UIImage], pdfData: Data?,
+                               sourcePageCount: Int, services: LabNotebookServices) {
         let documentId = ULID.newID()
-        let extraction = services.ocr.run(sourceDocumentId: documentId, pages: cgImages)
-        services.pendingScans.byDocumentId[documentId] = PendingScanStore.Pending(
-            image: image, pdfData: pdfData, fields: extraction.fields)
+        let ocr = services.ocr
         ocrErrorText = nil
-        route = .ocrReview(documentId)
+        scanning = true
+        Task {
+            let extraction = await Task.detached(priority: .userInitiated) {
+                ocr.run(sourceDocumentId: documentId, pages: cgPages)
+            }.value
+            services.pendingScans.byDocumentId[documentId] = PendingScanStore.Pending(
+                images: images, pdfData: pdfData, fields: extraction.fields,
+                pageCount: sourcePageCount, pagesRead: cgPages.count)
+            scanning = false
+            route = .ocrReview(documentId)
+        }
     }
 }
 

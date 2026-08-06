@@ -27,6 +27,14 @@ object MetricId {
     const val sleepConsistency = "sleep.consistency"
     const val sleepDisturbances = "sleep.disturbances"
 
+    /**
+     * BADAN's 1-5 read of how the body is trending, on the SAME scale as the manually logged
+     * `subjective.mood`. Deliberately a separate id: the self-report is the record and this is an
+     * estimate beside it — a derived value must never be written into the metric the user fills in
+     * themselves. Mirror of iOS `MetricID.moodEstimate`.
+     */
+    const val moodEstimate = "subjective.mood_estimate"
+
     // Heart
     const val heartRate = "heart.hr"
     const val restingHeartRate = "heart.rhr"
@@ -54,6 +62,14 @@ object MetricId {
      * simplification, it is what the sensor reports.
      */
     const val wristTempDeviation = "body.wrist_temp_deviation"
+
+    /**
+     * A blood glucose reading from Health Connect — platform-written only (A21/ADR-0010, D-26):
+     * the reading came from a connected sensor/meter/CGM app that already wrote it to Health
+     * Connect, never a BADAN-owned vendor integration. `sensitiveClass: sensitivePlus` in the
+     * registry (excluded from a default export). Mirror of iOS `MetricID.glucose`.
+     */
+    const val glucose = "body.glucose"
 
     // Respiratory
     const val respiratoryRate = "respiratory.rate"

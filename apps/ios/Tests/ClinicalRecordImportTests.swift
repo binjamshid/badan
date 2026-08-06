@@ -65,6 +65,29 @@ final class FHIRObservationParserTests: XCTestCase {
         XCTAssertNil(observation.numericValue, "a qualitative result carries no magnitude")
     }
 
+    /// The interval's own unit, kept apart from the value's. A lab occasionally prints the two
+    /// differently, and `LabRangeEvaluation` refuses to compare across units — a unit inferred from
+    /// the value would disarm that guard exactly when it matters.
+    func testTheReferenceIntervalsOwnUnitIsCaptured() throws {
+        let observation = try XCTUnwrap(parse("""
+        {"resourceType":"Observation","status":"final","code":{"text":"Glucose"},
+         "valueQuantity":{"value":5.3,"unit":"mmol/L"},"effectiveDateTime":"2026-03-14",
+         "referenceRange":[{"low":{"value":70,"unit":"mg/dL"},"high":{"value":99,"unit":"mg/dL"}}]}
+        """).first)
+        XCTAssertEqual(observation.sourceRangeUnit, "mg/dL")
+        XCTAssertEqual(observation.rawUnit, "mmol/L", "the value's unit is untouched by the range's")
+    }
+
+    /// Not defaulted to the value's unit when the resource stayed silent.
+    func testAnIntervalWithNoStatedUnitStaysNil() throws {
+        let observation = try XCTUnwrap(parse("""
+        {"resourceType":"Observation","status":"final","code":{"text":"Glucose"},
+         "valueQuantity":{"value":5.3,"unit":"mmol/L"},"effectiveDateTime":"2026-03-14",
+         "referenceRange":[{"low":{"value":3.9},"high":{"value":5.5}}]}
+        """).first)
+        XCTAssertNil(observation.sourceRangeUnit)
+    }
+
     // MARK: - Refusals
 
     /// A retracted result must never enter the notebook. The lab has explicitly withdrawn it.
@@ -166,6 +189,19 @@ final class ClinicalRecordImporterTests: XCTestCase {
 
     private var reports: LabReportRepository { LabReportRepository(sensitive: db.sensitive) }
     private var results: LabResultRepository { LabResultRepository(sensitive: db.sensitive) }
+    private var ranges: ReferenceRangeRepository { ReferenceRangeRepository(sensitive: db.sensitive) }
+
+    /// A stand-in for the two `analytes.json` entries whose names overlap — the pair that used to
+    /// mis-file HbA1c. Ordered as the real file orders them (`hemoglobin` first), because that
+    /// order is precisely what the old first-hit-wins matcher got wrong.
+    private var matcher: AnalyteNameMatcher {
+        AnalyteNameMatcher(entries: [
+            (id: "hemoglobin", loincCode: "718-7", names: ["Hemoglobin", "الهيموغلوبين"]),
+            (id: "hba1c", loincCode: "4548-4", names: ["Hemoglobin A1c", "الهيموغلوبين السكري"]),
+            (id: "ldl", loincCode: "13457-7", names: ["LDL cholesterol"]),
+            (id: "ldl_calculated", loincCode: nil, names: ["LDL cholesterol (calculated)"]),
+        ])
+    }
 
     private func observation(_ name: String, value: Double, at day: String,
                              identifier: String? = nil) -> FHIRLabObservation {
@@ -177,10 +213,11 @@ final class ClinicalRecordImporterTests: XCTestCase {
 
     @discardableResult
     private func runImport(_ observations: [FHIRLabObservation],
-                           source: String = "Muscat Labs") throws -> ClinicalRecordImporter.Outcome {
+                           source: String = "Muscat Labs",
+                           analyteMatcher: AnalyteNameMatcher? = nil) throws -> ClinicalRecordImporter.Outcome {
         try ClinicalRecordImporter.import(
             ClinicalRecordImporter.Batch(sourceName: source, observations: observations),
-            reports: reports, results: results, analyteMatcher: nil,
+            reports: reports, results: results, ranges: ranges, analyteMatcher: analyteMatcher,
             clock: clock, deviceId: "dev")
     }
 
@@ -327,5 +364,118 @@ final class ClinicalRecordImporterTests: XCTestCase {
 
         XCTAssertTrue(try results.allLiveResults().isEmpty,
                       "erase sensitive records must remove imported clinical results too")
+    }
+
+    // MARK: - Concepts 1 and 2 — the provider's own interval and flag
+    //
+    // These were parsed correctly and then dropped on the floor: the importer wrote no
+    // `ReferenceRange` row at all, so the marker screen said "not printed on this report" about an
+    // interval the provider had printed, and the notebook summary counted a provider-flagged result
+    // as inside its range. The import screen promises the opposite in as many words.
+
+    private func ranged(_ name: String, value: Double, low: Double?, high: Double?,
+                        unit: String? = "mmol/L", flag: String? = nil,
+                        at day: String = "2026-03-14") -> FHIRLabObservation {
+        FHIRLabObservation(displayName: name, rawValueText: String(value), numericValue: value,
+                           rawUnit: "mmol/L", resultType: .numeric,
+                           effectiveAt: FHIRObservationParser.date(from: day),
+                           sourceRangeLow: low, sourceRangeHigh: high, sourceRangeUnit: unit,
+                           interpretationCode: flag)
+    }
+
+    func testTheProvidersPrintedIntervalIsPersisted() throws {
+        try runImport([ranged("LDL cholesterol", value: 3.4, low: 0, high: 3.0)])
+
+        let result = try XCTUnwrap(results.allLiveResults().first)
+        let range = try XCTUnwrap(ranges.range(resultId: result.id),
+                                  "the interval the provider printed must survive the import")
+        XCTAssertEqual(range.sourceIntervalLow, 0)
+        XCTAssertEqual(range.sourceIntervalHigh, 3.0)
+        XCTAssertEqual(range.sourceIntervalUnit, "mmol/L")
+    }
+
+    /// Concept 2 is the lab's own words, never BADAN's arithmetic. A lab that flags a value we
+    /// would not have flagged is telling us something.
+    func testTheProvidersOwnFlagIsPersistedVerbatim() throws {
+        try runImport([ranged("LDL cholesterol", value: 3.4, low: 0, high: 3.0, flag: "H")])
+
+        let result = try XCTUnwrap(results.allLiveResults().first)
+        XCTAssertEqual(try ranges.range(resultId: result.id)?.sourceFlag, "H")
+    }
+
+    /// The inverse, and the more important direction: a value OUTSIDE the printed interval that the
+    /// lab chose not to flag must not acquire a flag on the way in.
+    func testAnUnflaggedOutOfIntervalResultIsNotGivenAFlag() throws {
+        try runImport([ranged("LDL cholesterol", value: 9.9, low: 0, high: 3.0)])
+
+        let result = try XCTUnwrap(results.allLiveResults().first)
+        XCTAssertNil(try ranges.range(resultId: result.id)?.sourceFlag,
+                     "the flag is the lab's to give, never derived from the interval")
+    }
+
+    /// No row at all, rather than a row of nulls — `range(resultId:)` returning nil is how the rest
+    /// of the app asks "did the source print anything for this result?"
+    func testAResultWithNeitherIntervalNorFlagGetsNoRangeRow() throws {
+        try runImport([ranged("Sodium", value: 140, low: nil, high: nil, unit: nil)])
+
+        let result = try XCTUnwrap(results.allLiveResults().first)
+        XCTAssertNil(try ranges.range(resultId: result.id))
+    }
+
+    /// The whole reason the interval's unit is carried separately from the value's: without it,
+    /// `LabRangeEvaluation` cannot tell a comparable interval from an incomparable one, and its
+    /// unit guard silently passes.
+    func testAnIntervalPrintedInADifferentUnitKeepsThatUnit() throws {
+        try runImport([ranged("Glucose", value: 95, low: 70, high: 99, unit: "mg/dL")])
+
+        let result = try XCTUnwrap(results.allLiveResults().first)
+        XCTAssertEqual(try ranges.range(resultId: result.id)?.sourceIntervalUnit, "mg/dL",
+                       "not overwritten with the value's own mmol/L")
+    }
+
+    // MARK: - Marker identity
+
+    /// The defect this pair was written for: "Hemoglobin A1c" contains "Hemoglobin", and
+    /// `hemoglobin` sorts first in `analytes.json`, so first-substring-hit filed an HbA1c result
+    /// under Hemoglobin — a wrong marker on a medical record, and one that then pollutes that
+    /// marker's whole trend.
+    func testHbA1cIsNotFiledUnderHemoglobin() throws {
+        try runImport([observation("Hemoglobin A1c", value: 5.4, at: "2026-03-14")],
+                      analyteMatcher: matcher)
+
+        XCTAssertEqual(try results.allLiveResults().first?.analyteId, "hba1c")
+    }
+
+    /// A LOINC code outranks the name entirely — it is the provider's own identifier for the
+    /// marker, and it cannot be confused by wording.
+    func testALoincCodeDecidesTheMarkerEvenWhenTheNameIsAmbiguous() throws {
+        let observation = FHIRLabObservation(
+            displayName: "Hemoglobin", loincCode: "4548-4", rawValueText: "5.4",
+            numericValue: 5.4, rawUnit: "%", resultType: .numeric,
+            effectiveAt: FHIRObservationParser.date(from: "2026-03-14"))
+
+        try runImport([observation], analyteMatcher: matcher)
+
+        XCTAssertEqual(try results.allLiveResults().first?.analyteId, "hba1c",
+                       "the code says HbA1c even though the printed name says Hemoglobin")
+    }
+
+    /// The mirror case, and the reason the ranking is closest-length rather than longest-name: a
+    /// bare "LDL" must not be captured by the longer `ldl_calculated` entry.
+    func testABareMarkerNameResolvesToTheClosestEntryNotTheLongestOne() throws {
+        try runImport([observation("LDL", value: 3.4, at: "2026-03-14")], analyteMatcher: matcher)
+
+        XCTAssertEqual(try results.allLiveResults().first?.analyteId, "ldl")
+    }
+
+    /// LAB-06 unchanged: an unknown marker is still a first-class free-text row, and the catalog
+    /// never renames what it didn't recognize.
+    func testAnUnknownMarkerStillImportsUnderTheProvidersOwnName() throws {
+        try runImport([observation("Serum unobtainium", value: 1.2, at: "2026-03-14")],
+                      analyteMatcher: matcher)
+
+        let result = try XCTUnwrap(results.allLiveResults().first)
+        XCTAssertNil(result.analyteId)
+        XCTAssertEqual(result.customLabel, "Serum unobtainium")
     }
 }

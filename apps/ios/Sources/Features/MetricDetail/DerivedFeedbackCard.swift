@@ -14,11 +14,38 @@ enum FeedbackCopy {
     static let change = LocalizedString(en: "Change", ar: "تغيير")
 
     /// No advice, no interpretation, no encouragement — it states the mechanism and stops.
-    static let whatThisDoes = LocalizedString(
+    ///
+    /// Only true where an engine actually reads the calibration back. Use `whatThisDoes(for:)`,
+    /// never this constant directly.
+    static let whatThisDoesAdjusts = LocalizedString(
         en: "BADAN uses this to adjust future values of this metric on this device. It is never "
             + "sent anywhere, and it never changes readings already calculated.",
         ar: "يستخدم بادن هذا لتعديل القيم المستقبلية لهذا المؤشر على هذا الجهاز. لا يُرسل إلى أي "
             + "مكان، ولا يغيّر القراءات المحسوبة سابقاً.")
+
+    /// The same paragraph for every metric no engine calibrates — which, today, is every derived
+    /// metric except readiness (see `CalibrationConsumers`).
+    ///
+    /// The card used to say "BADAN uses this to adjust future values of this metric" under ANY
+    /// derived value, and for sleep, effort, stress and mood that was a promise nothing in the app
+    /// kept: the row was written and never read. Saying less is not a downgrade of the feature —
+    /// the feedback is still recorded, still deletable, and still what a future calibration would
+    /// be learned from. It is the sentence that has to match the code, per this repository's
+    /// "says plainly when it doesn't know".
+    static let whatThisDoesRecordOnly = LocalizedString(
+        en: "BADAN records this on this device and never sends it anywhere. It does not change "
+            + "this metric's values — BADAN does not adjust this one from feedback yet. Your "
+            + "answers are kept as a record of where the calculation missed.",
+        ar: "يسجّل بادن هذا على هذا الجهاز ولا يرسله إلى أي مكان. لا يغيّر قيم هذا المؤشر — لا "
+            + "يعدّل بادن هذا المؤشر بناءً على الملاحظات بعد. تُحفظ إجاباتك كسجل للمواضع التي "
+            + "أخطأ فيها الحساب.")
+
+    /// The mechanism paragraph for one metric: the adjustment promise only where an adjustment is
+    /// consumed.
+    static func whatThisDoes(for metricId: String) -> LocalizedString {
+        CalibrationConsumers.adjustsFutureValues(of: metricId) ? whatThisDoesAdjusts
+                                                               : whatThisDoesRecordOnly
+    }
 
     static func progress(_ have: String, _ need: String) -> LocalizedString {
         LocalizedString(en: "\(have) of \(need) before BADAN adjusts anything.",
@@ -75,13 +102,14 @@ struct DerivedFeedbackCard: View {
                     }
                 }
 
-                LText(FeedbackCopy.whatThisDoes)
+                LText(FeedbackCopy.whatThisDoes(for: metricId))
                     .font(BadanFont.caption)
                     .foregroundStyle(BadanColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 // Says how far off the threshold is, so ten taps that appear to do nothing read as
-                // progress rather than as a broken control.
+                // progress rather than as a broken control. Renders only for a metric that has a
+                // threshold to reach — see `adjustmentProgress`.
                 if let remaining = remainingBeforeAdjustment {
                     LText(FeedbackCopy.progress(env.format.integer(remaining.have),
                                                 env.format.integer(remaining.need)))
@@ -127,11 +155,24 @@ struct DerivedFeedbackCard: View {
     }
 
     private var remainingBeforeAdjustment: (have: Int, need: Int)? {
-        let spec = CalibrationSpec.defaultShared
-        guard spec.isLoaded, env.profile.calibrationEnabled else { return nil }
         let have = (try? env.feedback.feedback(metricId: metricId,
                                                algorithmId: value.algorithmId).count) ?? 0
-        guard have < spec.minFeedbackEvents else { return nil }
+        return Self.adjustmentProgress(metricId: metricId, have: have,
+                                       spec: .defaultShared,
+                                       calibrationEnabled: env.profile.calibrationEnabled)
+    }
+
+    /// "N of M before BADAN adjusts anything", or `nil` when there is nothing to count down TO.
+    ///
+    /// Pure and static so a test can hold it to `CalibrationConsumers` alongside the paragraph
+    /// above it: a counter that fills up toward an adjustment no engine performs is the same false
+    /// promise as the sentence, just told in numbers, and it was the more convincing half of it —
+    /// "10 of 10" reads as a thing having happened.
+    static func adjustmentProgress(metricId: String, have: Int, spec: CalibrationSpec,
+                                   calibrationEnabled: Bool) -> (have: Int, need: Int)? {
+        guard spec.isLoaded, calibrationEnabled,
+              CalibrationConsumers.adjustsFutureValues(of: metricId),
+              have < spec.minFeedbackEvents else { return nil }
         return (have, spec.minFeedbackEvents)
     }
 }

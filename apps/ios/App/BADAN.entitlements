@@ -43,36 +43,6 @@
 	     widgets. Both BADAN.entitlements and BadanWidgets.entitlements must declare the identical
 	     group id or the extension silently reads an empty/nonexistent container instead of failing
 	     loudly — there is no runtime error for a mismatched group id, only missing data. -->
-	<!-- LAB-11 (EPIC-41). Read-only access to HealthKit Clinical Records so the lab notebook can
-	     import lab results a provider has already shared into Apple Health.
-
-	     KEY NAME MATTERS, and an earlier attempt got it wrong: the entitlement is
-	     `com.apple.developer.healthkit.access`, an ARRAY containing `health-records`. There is no
-	     `com.apple.developer.healthkit.access-health-records` key — using that name failed the
-	     archive with "not found and could not be included in profile. This likely is not a valid
-	     entitlement", which is Xcode correctly saying the KEY is wrong, not that a capability is
-	     missing. Ground truth is Xcode's own capability database, which lists this exact
-	     key/value pair under the HealthKit capability:
-	       /Applications/Xcode.app/Contents/SharedFrameworks/DVTPortal.framework/Versions/A/
-	       Resources/DVTPortalCachedPortalCapabilities.json
-
-	     That same record says `canRequestFromPortal: false` and `distributionApprovalRequired:
-	     false` — so this needs NO separate toggle in Certificates/Identifiers (there is none to
-	     find; the App Store Connect API's capability enum contains only HEALTHKIT) and NO
-	     pre-approval from Apple. It rides the HealthKit capability already enabled on the App ID.
-	     The real gate is ordinary App Review at submission, which is why
-	     NSHealthClinicalHealthRecordsShareUsageDescription in project.yml states the read-only
-	     posture plainly.
-
-	     What BADAN does with it: reads lab results only, writes nothing back (`toShare: []` in
-	     HealthKitClinicalStore), stores them in badan_sensitive.db under the lab notebook's
-	     existing encryption/purge/export gating, and sends nothing off the device — the AI coach
-	     reads only non-sensitive derived scores (NonSensitiveDerivation), which structurally
-	     cannot resolve this namespace. -->
-	<key>com.apple.developer.healthkit.access</key>
-	<array>
-		<string>health-records</string>
-	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.net.binjamshid.badan</string>

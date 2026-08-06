@@ -5,16 +5,20 @@ your device, shows where each number came from, and says plainly when it doesn't
 
 ## Current state (2026-07-28, v1.1 build 4 on TestFlight)
 
-**iOS is the live surface. Android is paused** (founder, 2026-07-22) — `apps/android` still holds a
-real Kotlin mirror of the domain/ontology layer, but it is NOT kept in step and its notification
-registry, budget constant and metric set have already diverged. Do not read either platform as
-evidence of what the other does, and do not claim parity.
+**iOS is the live surface. Android has resumed, targeting full parity** (D-38 / ADR-0012) —
+`apps/android` holds a real Kotlin mirror of the domain/ontology layer.
+Before resumption its notification registry, budget constant and metric set had diverged from
+iOS; re-mirroring that drift is the first-order work of the resumed lane (see
+`docs/android-parity-status.md` for the current gap list). Until that re-mirror lands, do not
+assume either platform's present behavior matches the other's.
 
 Shipping today:
 
 - **Ingestion** — ~15 HealthKit types (sleep sessions + stages, HR, RHR, HRV, steps, energy,
   distance, floors, weight, body fat, lean mass, VO₂ max, SpO₂, respiratory rate, glucose).
-  Nutrition is still 0 of 7. Clinical records import via FHIR.
+  Nutrition is still 0 of 7. Lab reports enter the notebook by document camera, photos or a PDF
+  file, all read by on-device Vision OCR — **HealthKit Clinical Records was removed after App
+  Review refused it under Guideline 2.5.1 (D-43 / ADR-0013); do not add it back.**
 - **Derivation** — personal baselines, readiness, the sleep cluster (need/performance/debt/
   consistency/disturbances/**score**), day and workout effort, a density-gated daytime stress trend,
   and a multi-input mood estimate. Every derived row carries an input manifest, a confidence and a
@@ -33,8 +37,10 @@ Shipping today:
 This repository is native-first.
 
 - iOS UI and app integration should be implemented in Swift/SwiftUI.
-- Android UI and app integration should be implemented in Kotlin/Jetpack Compose — **when that lane
-  resumes.** Until then, do not write Android code speculatively "for parity".
+- Android UI and app integration should be implemented in Kotlin/Jetpack Compose — **the lane has
+  resumed, targeting full parity with iOS** (D-38 / ADR-0012). Android code is no longer
+  speculative: build and re-mirror it deliberately against the shared contracts and the current
+  iOS implementation, not against a remembered or assumed state.
 - Shared logic should begin as shared contracts, schemas, and domain specs before introducing runtime sharing.
 - Contracts (`packages/metric-ontology/registry.json`, `packages/contracts/algorithms/`) are the
   canonical copies; `apps/*/…/Resources` hold build-time mirrors. A new derived metric needs a
@@ -119,7 +125,9 @@ logging shells) are all shipped. What replaces them:
    surface for Apple-Watch-only users, the mood estimate needs two of three terms, and the wake
    summary lands at first unlock on a locked device. These are correct; they should be *explained*
    in-app, not softened.
-5. **Android, when it resumes** — re-mirror the diverged registry, budget and metric set first.
+5. **Android — resumed to full parity** (D-38 / ADR-0012). Re-mirror the diverged registry,
+   budget constant and metric set first, then close the remaining gaps tracked in
+   `docs/android-parity-status.md`.
 
 ## Never
 
@@ -132,6 +140,9 @@ logging shells) are all shipped. What replaces them:
 - Paywall raw data — **except** the D-33 export cap above. Do not widen that exception: gating the
   metric browser, provenance, manual logging, deletion, or on-device viewing of any reading remains
   prohibited.
+- Re-add the HealthKit Clinical Records API, the `health-records` entitlement value, or
+  `NSHealthClinicalHealthRecordsShareUsageDescription` — App Review has already refused them once
+  (D-43 / ADR-0013), and doing it again re-opens a rejection rather than a question.
 - Add accounts or a login. BADAN has none, and IAP does not require one (D-32 — Apple's SIWA rule
   applies only to apps offering third-party login).
 - Use diagnostic or prescriptive framing in copy.

@@ -10,15 +10,25 @@ import Foundation
 // decoding whatever `WatchSnapshotSync` (`apps/ios/Sources/Platform/Ambient/WatchSnapshotSync.swift`)
 // last pushed via `WCSession.updateApplicationContext`.
 //
-// The struct shapes below are a byte-for-byte duplicate of BOTH other copies —
+// The struct shapes below duplicate BOTH other copies —
 // `apps/ios/Sources/Platform/Ambient/AmbientSnapshotDto.swift` (the writer's own copy) and
 // `apps/ios/BadanWidgets/AmbientSnapshotDto.swift` (the widget extension's copy) — same field
 // names, same order, same optionality, same `Date` handling (plain, unconfigured
 // `JSONEncoder`/`JSONDecoder`, deliberately NOT `.iso8601` — see the main-app copy's header for
-// why). This is now a deliberate THREE-way duplication across the app/extension/watch boundary, not
-// a mistake to unify — and none of the three copies are ever type-checked against each other: a
+// why). This is a deliberate THREE-way duplication across the app/extension/watch boundary, not a
+// mistake to unify — and none of the three copies are ever type-checked against each other: a
 // rename or shape change on any one side without the other two is a SILENT decode failure, never a
 // compiler error. Change this file only in lockstep with the other two.
+//
+// ONE field is deliberately absent here, and this file used to claim otherwise ("byte-for-byte
+// duplicate of BOTH other copies", which was not true): the W-11 `privacy` flags
+// (`AmbientPrivacySnapshot`). They are dropped at decode because nothing in this target would read
+// them — an extra key a `Codable` decoder ignores costs nothing. That absence is precisely why the
+// watch is NOT protected by flags the way `BadanWidgets` is: `WatchSnapshotSync.watchPayload(for:)`
+// on the phone side strips the values OUT of the payload whenever the user's ambient privacy mode
+// forbids them, so this target renders shapes-free honest empty states without ever having to know
+// a mode exists. Do not "fix" this by adding the field and a render-time check — the withholding is
+// the guarantee; a check here would be a second, weaker one that a new watch surface could forget.
 struct AmbientSnapshotDto: Codable, Hashable, Sendable {
     static let currentSchemaVersion = 1
     let schemaVersion: Int

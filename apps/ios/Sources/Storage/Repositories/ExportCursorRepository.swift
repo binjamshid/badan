@@ -26,8 +26,16 @@ final class ExportCursorRepository {
 
     // MARK: - Writes
 
-    /// Move a cursor forward after a successful delta run. Returns false — and writes nothing —
-    /// if `watermark` is not ahead of the stored one.
+    /// Move a cursor forward after a successful, delivered run — or create the first one. Returns
+    /// false — and writes nothing — if `watermark` is not ahead of the stored one.
+    ///
+    /// "Or create the first one" is not an afterthought: this is the ONLY write reachable from a
+    /// run (`write` is private, and `rewind`/`reset` are explicit user actions), so a checkpoint
+    /// that is never created here is a checkpoint that never exists. It used to be exactly that —
+    /// both callers refused to write on the no-cursor fallback run, so a `sinceLastRun` template
+    /// could never take a first delta and fell back forever. `ExportRunner.runTemplate` now
+    /// bootstraps here; what watermark is safe for a fallback run is argued there, not in this
+    /// repository, because it depends on which axis that run's file was bounded on.
     ///
     /// Forward-only on purpose. A cursor that can move backwards silently re-exports a window the
     /// user already has, which is merely wasteful; but the same unguarded write is how a cursor

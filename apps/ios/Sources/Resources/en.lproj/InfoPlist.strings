@@ -10,6 +10,10 @@
  * English and shows up as a stale Arabic prompt (COMP-08).
  */
 
+/* LAB-06. The lab notebook's document camera — the only capture session in the app. Names the
+ * scan, not "the camera", and states where the pages go (nowhere). */
+"NSCameraUsageDescription" = "BADAN opens the camera only when you ask it to scan a lab report, so the pages can be read on this device. Nothing is uploaded, and BADAN never opens the camera on its own.";
+
 /* Widened for A2 (ADR-0009) to name the full read set: the original four types plus HRV,
  * breathing rate, blood oxygen, wrist temperature, distance, flights, energy, cardio fitness,
  * body measurements and workouts. Must match `HealthKitAdapter.readTypes` — overstating the ask

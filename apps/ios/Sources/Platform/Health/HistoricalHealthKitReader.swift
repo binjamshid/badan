@@ -57,6 +57,15 @@ final class HistoricalHealthKitReader: HealthStorePort {
     /// Historical import never introduces a source the live path has not already discovered — it
     /// reads the same types from the same store. Returning nothing lets `IngestionPipeline` keep
     /// using the source rows live sync already wrote, rather than this path racing to author them.
+    ///
+    /// (AUDIT 2026-08-06, INGESTION-01) That was true of the source CATALOG and false of the dedup
+    /// PRIORITY MAP, which `IngestionPipeline.upsertSourcesAndDevices` used to build from the
+    /// current run's descriptors alone. Returning `[]` therefore handed `dedup(night:)` an empty
+    /// map, every source resolved to 0, and `DedupLite` fell through to "longest duration wins" —
+    /// silently re-deciding every night in the import window, live-synced nights included, in
+    /// favour of whichever source recorded the longest span. The pipeline now seeds that map from
+    /// the stored catalog, so this method's contract finally holds for both meanings of "keep
+    /// using the source rows live sync already wrote".
     func sourceDescriptors() -> [SourceDescriptor] { [] }
 
     func readSamples(_ range: HealthDateRange) -> [SampleDTO] {
@@ -95,6 +104,16 @@ final class HistoricalHealthKitReader: HealthStorePort {
     /// a multi-year import does not drift a night at every clock change. The window is widened by
     /// one day at each end because a night is named for the day it ends on, and sleep that begins
     /// before `range.start` still belongs to a night inside it.
+    ///
+    /// (AUDIT 2026-08-06, SLEEP-H2) This type deliberately does NOT conform to
+    /// `SleepNightRebuilding`, even though it rebuilds nights in exactly the same way and mints
+    /// exactly the same ids. The pipeline's prune deletes whatever a rebuilt night no longer
+    /// claims, and HealthKit never reveals a denied READ — an unauthorized sleep type answers with
+    /// an empty sample set, not an error (see `fetch` below). On the anchored path a delta sample
+    /// or a reported deletion has already proved HealthKit is answering before any night is
+    /// rebuilt; here nothing has, so a user who runs "Fetch Health history" without sleep
+    /// permission would have every night in the window tombstoned. Upsert-only is the safe
+    /// behaviour for a path that cannot tell "no sleep" from "no permission".
     func readSessions(_ range: HealthDateRange) -> [SessionDTO] {
         guard HKHealthStore.isHealthDataAvailable(),
               let type = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
@@ -102,8 +121,10 @@ final class HistoricalHealthKitReader: HealthStorePort {
         var day = DayAttribution.addingDays(-1, to: DayAttribution.startOfDay(range.start, tz: tz), tz: tz)
         let last = DayAttribution.addingDays(1, to: DayAttribution.startOfDay(range.end, tz: tz), tz: tz)
         while day <= last {
+            // `nil` means the night could not be read at all; skipping it leaves whatever is
+            // already stored for that night untouched, which is the only safe reading here.
             out += HealthKitAdapter.sessionsForNight(DayAttribution.localDayKey(day, tz: tz),
-                                                     categoryType: type, store: store, tz: tz)
+                                                     categoryType: type, store: store, tz: tz) ?? []
             day = DayAttribution.addingDays(1, to: day, tz: tz)
         }
         return out

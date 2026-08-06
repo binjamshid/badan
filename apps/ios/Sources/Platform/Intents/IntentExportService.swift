@@ -78,7 +78,9 @@ struct IntentExportService {
     // MARK: - Running
 
     /// What one intent-triggered run produced. `notice` is non-nil when the run happened but the
-    /// user should be told something about *how* — today only the `sinceLastRun` fallback below.
+    /// user should be told something about *how* — the `sinceLastRun` fallback below, or the D-33
+    /// free-window clamp. Both describe a file that is narrower than the template asked for, which
+    /// is the only kind of surprise an unattended run can hand someone.
     struct RunOutcome {
         let template: ExportTemplate
         let files: [IntentExportFile]
@@ -99,6 +101,10 @@ struct IntentExportService {
     /// Throws before generating anything for a sensitive template; every other outcome
     /// (success, nothing-in-range, a generation failure) produces both a return value or a thrown
     /// error *and* an `ExportRun` row.
+    ///
+    /// Subject to the D-33 export window like every other user-facing export path — clamped, never
+    /// refused, and never silently: a clipped run returns files, a `RunOutcome.notice` saying what
+    /// the file covers, and (unlike a full one) leaves any delta checkpoint untouched.
     func run(template: ExportTemplate) throws -> RunOutcome {
         let startedAt = env.now()
         // Minted up front so the cursor this run may advance can name the ledger row that moved it
@@ -117,28 +123,54 @@ struct IntentExportService {
         let plan = ExportRunner.resolveRange(template.rangeRule, scope: template.scope,
                                              cursor: cursor, now: startedAt)
 
+        // D-33 applies here. This is a USER-facing export — the artifacts leave BADAN into a
+        // Shortcut's hands exactly as they leave it through the share sheet — so the free-window cap
+        // is the same one `ExportManageService.runResolved` applies to the button, and passing no
+        // entitlement (which is what this call site did) meant a trial-expired user got their full
+        // history from Siri while the same template inside the app returned seven days. The clamp
+        // itself is the runner's, so there is still exactly one implementation of the gate; this
+        // computes it a second time only to learn `wasNarrowed`, which is what lets the reply say
+        // so. Unattended is the worst place to clip a file silently: nobody is looking at the screen
+        // that would otherwise carry the notice.
+        let entitlement = env.subscription.policyState
+        let clamp = SubscriptionPolicy.clampExportScope(plan.scope, state: entitlement, now: startedAt)
+
         do {
             // A delta passes the ingested watermark (and the prior link) straight through to the
             // runner, exactly as `runTemplate` does — same function, same arguments, same file.
             let result = try env.exporter.run(
                 scope: plan.scope, format: template.format,
                 ingestedSince: plan.ingestedSince,
-                previousManifestSha: plan.ingestedSince == nil ? nil : cursor?.lastManifestSha?.hex)
+                previousManifestSha: plan.ingestedSince == nil ? nil : cursor?.lastManifestSha?.hex,
+                entitlement: entitlement)
+            // Named from the CLAMPED window, so a locked user's "all time" template produces a file
+            // named for the week it actually contains rather than for the history it asked for — the
+            // same reason the range token refuses to invent dates below.
             let files = Self.namedFiles(result.fileURLs, template: template,
-                                        start: plan.ingestedSince ?? plan.scope.startDate,
-                                        end: plan.scope.endDate, now: startedAt)
+                                        start: plan.ingestedSince ?? clamp.scope.startDate,
+                                        end: clamp.scope.endDate, now: startedAt)
             // Zero rows is a successful answer to "is there anything to export", not a failure —
             // and it is recorded rather than skipped so an automation that legitimately had nothing
             // to do stays distinguishable from one that never ran.
             let outcome: ExportOutcome = result.rowCount == 0 ? .skippedNoData : .success
             let cursorAfter = advanceCursorIfDelta(template: template, plan: plan, result: result,
-                                                   outcome: outcome, runId: runId)
+                                                   outcome: outcome, narrowed: clamp.wasNarrowed,
+                                                   runId: runId)
+            // The D-33 notice outranks the `sinceLastRun` note, exactly as it does in
+            // `ExportManageService.runResolved`: "this file is only the last seven days" is the more
+            // consequential thing to say about the artifact the Shortcut just received, and a clamped
+            // fallback run would otherwise report the 30-day window it did not get either.
+            let notice: LocalizedString? = clamp.wasNarrowed
+                ? ExportCopy.clampedToFreeWindow
+                : (plan.fellBackFromSinceLastRun ? IntentStrings.sinceLastRunFallbackNotice : nil)
             record(id: runId, templateId: template.id, startedAt: startedAt,
                    outcome: outcome,
                    // A `sinceLastRun` fallback rides a SUCCESS row as `.cursorMissing` — a note,
-                   // not a failure (`ExportOutcome.isFailure` excludes it) — so the notice below
-                   // is durable in Export Health rather than living only in the Shortcut's reply.
-                   // Mirrors `runTemplate`'s `noticeCode`.
+                   // not a failure (`ExportOutcome.isFailure` excludes it) — so the fallback is
+                   // durable in Export Health rather than living only in the Shortcut's reply.
+                   // Recorded even when the D-33 clamp took over the spoken notice above: the
+                   // ledger's job is what happened, not what got said. Mirrors `runTemplate`'s
+                   // `noticeCode`.
                    errorCode: plan.fellBackFromSinceLastRun ? .cursorMissing : nil,
                    jobId: result.job.id,
                    bytesWritten: Self.totalBytes(result.fileURLs),
@@ -146,8 +178,7 @@ struct IntentExportService {
                    destinationId: template.destinationId,
                    cursorBefore: plan.cursorBefore, cursorAfter: cursorAfter)
             return RunOutcome(template: template, files: files, rowCount: result.rowCount,
-                              notice: plan.fellBackFromSinceLastRun
-                                  ? IntentStrings.sinceLastRunFallbackNotice : nil)
+                              notice: notice)
         } catch {
             record(id: runId, templateId: template.id, startedAt: startedAt, outcome: .failedGeneration,
                    errorCode: Self.errorCode(for: error), stage: .writing,
@@ -179,10 +210,18 @@ struct IntentExportService {
     /// after the artifacts exist, and only to a value computed over the rows the file actually
     /// contains (`result.maxIngestedAt`), never over the rows the query could have returned.
     ///
-    /// The gates match `runTemplate`'s exactly, deliberately: a real delta (not the disclosed
-    /// no-cursor fallback), a `success` outcome (`skippedNoData` moves nothing, so a run with
-    /// nothing to send cannot close a window), and a non-nil watermark. `advance` is itself
-    /// forward-only, so a Shortcut firing out of order cannot walk the checkpoint backwards.
+    /// The gates match `runTemplate`'s deliberately: a real delta (not the disclosed no-cursor
+    /// fallback), a `success` outcome (`skippedNoData` moves nothing, so a run with nothing to send
+    /// cannot close a window), and a non-nil watermark. `advance` is itself forward-only, so a
+    /// Shortcut firing out of order cannot walk the checkpoint backwards.
+    ///
+    /// `narrowed` is the ONE gate `runTemplate` does not have, and it is not a divergence:
+    /// `runTemplate` never clamps, and this path now does (D-33). A clamped delta wrote only the
+    /// rows measured inside the free window, so its `maxIngestedAt` sits *above* rows that were
+    /// filtered out on the measured axis — moving the checkpoint there would skip them forever, on
+    /// the next run and every run after it. That is exactly the permanent silent loss `run`'s
+    /// `ingestedSince` doc and DATA-08 are written against, so a clipped run delivers its files and
+    /// leaves the checkpoint where it found it.
     ///
     /// Handing files to Shortcuts is treated as a completed delivery for the same reason
     /// `runTemplate` treats a share-sheet delivery as one: BADAN's side of the handoff is done and
@@ -190,9 +229,11 @@ struct IntentExportService {
     /// handoff for a destination that never received anything — see `cursor(for:)`.
     private func advanceCursorIfDelta(template: ExportTemplate, plan: ExportRunner.ResolvedRun,
                                       result: ExportRunner.ExportResult,
-                                      outcome: ExportOutcome, runId: String) -> Date? {
+                                      outcome: ExportOutcome, narrowed: Bool,
+                                      runId: String) -> Date? {
         guard outcome == .success, template.rangeRule == .sinceLastRun,
-              !plan.fellBackFromSinceLastRun, let watermark = result.maxIngestedAt else { return nil }
+              !plan.fellBackFromSinceLastRun, !narrowed,
+              let watermark = result.maxIngestedAt else { return nil }
         let sha = result.job.manifest?.checksums["bundle.json"].flatMap { ManifestDigest(hex: $0) }
         _ = try? cursors.advance(templateId: template.id,
                                  destinationId: ExportDestination.shareSheetId,

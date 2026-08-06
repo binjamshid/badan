@@ -257,6 +257,23 @@ final class GattServiceAdaptersTests: XCTestCase {
         XCTAssertNil(GattParsers.parseWeightMeasurement(Data([0x00, 0x00])))
     }
 
+    func testWeight_MeasurementUnsuccessfulSentinel_ReturnsNilNotA327KgReading() {
+        // GSS reserves 0xFFFF in the Weight field for "Measurement Unsuccessful". Decoded
+        // arithmetically it is 65535 * 0.005 = 327.675 kg, which is indistinguishable from a real
+        // reading once it reaches storage — so the sentinel must be rejected at the parser.
+        XCTAssertNil(GattParsers.parseWeightMeasurement(Data([0x00, 0xFF, 0xFF])))
+        // Same sentinel with the Imperial bit set, and with optional fields trailing it: the
+        // rejection is on the raw uint16, not on the converted magnitude or the packet's shape.
+        XCTAssertNil(GattParsers.parseWeightMeasurement(Data([0x05, 0xFF, 0xFF, 0x03])))
+    }
+
+    func testWeight_HighestValidRawWeight_StillDecodes() {
+        // 0xFFFE is the largest non-sentinel raw value; rejecting 0xFFFF must not turn into
+        // rejecting the top of the legal range.
+        let w = try? XCTUnwrap(GattParsers.parseWeightMeasurement(Data([0x00, 0xFE, 0xFF])))
+        XCTAssertEqual(w?.weightKg ?? -1, 65534.0 * 0.005, accuracy: 0.0001)
+    }
+
     // MARK: - Body Composition Measurement (0x2A9C)
 
     func testBodyComposition_MandatoryOnly() {
@@ -400,15 +417,53 @@ final class GattServiceAdaptersTests: XCTestCase {
 
     // MARK: - Treadmill Data (0x2ACD)
 
-    func testTreadmillData_InstantaneousSpeedDecodesWithNoRelevantFlagBitSet() {
-        // flags=0x0000 — Instantaneous Speed is unconditional for Treadmill Data (unlike Indoor
-        // Bike Data's own flag-gated field), so it must decode here with every optional bit clear.
+    func testTreadmillData_MoreDataClear_InstantaneousSpeedPresent() {
+        // flags=0x0000 — More Data clear, so Instantaneous Speed IS present, and no other bit set.
         // speed raw 800 -> 8.00 km/h.
         let data = Data([0x00, 0x00, 0x20, 0x03])
         let treadmill = try? XCTUnwrap(GattParsers.parseTreadmillDataMeasurement(data))
         XCTAssertEqual(treadmill?.instantaneousSpeedKmh ?? -1, 8.0, accuracy: 0.0001)
         XCTAssertNil(treadmill?.instantaneousPowerWatts)
         XCTAssertNil(treadmill?.heartRateBPM)
+    }
+
+    func testTreadmillData_MoreDataFlagSet_SpeedAbsentButValidReading() {
+        // flags = bit0 (More Data) set -> Instantaneous Speed is NOT present in this packet (FTMS
+        // v1.0 §4.7), and no other bits set. Exactly the Indoor Bike Data case above, and exactly
+        // as valid: a minimal reading, not malformed input.
+        let treadmill = GattParsers.parseTreadmillDataMeasurement(Data([0x01, 0x00]))
+        XCTAssertNotNil(treadmill, "More Data set with no other flags is a valid reading with no fields")
+        XCTAssertNil(treadmill?.instantaneousSpeedKmh)
+        XCTAssertNil(treadmill?.instantaneousPowerWatts)
+        XCTAssertNil(treadmill?.heartRateBPM)
+    }
+
+    func testTreadmillData_MoreDataFlagSet_SubsequentFieldsAreNotShiftedByAPhantomSpeed() {
+        // The regression this test exists for: with More Data set, Instantaneous Speed is absent,
+        // so Heart Rate starts immediately after the Flags. A parser that reads speed
+        // unconditionally consumes Heart Rate's byte plus one Force-on-Belt byte as a speed, and
+        // every field after that lands two bytes early. On this tightly-packed fixture that overrun
+        // trips the Force-and-Power length guard and the whole reading is dropped as nil; a
+        // notification with any trailing bytes the flags do not account for instead trips no guard
+        // and yields a fabricated speed beside a wrong heart rate. Assert the fields land where the
+        // spec puts them, which rules out both.
+        // flags = bit0(More Data) | bit8(heart rate) | bit12(force on belt & power) = 0x1101.
+        let data = Data([
+            0x01, 0x11,             // flags = 0x1101
+            150,                    // heart rate
+            0x50, 0x00,             // force on belt raw = 80 N (skipped)
+            0xE2, 0xFF,             // power output = -30 W (sint16 0xFFE2 LE)
+        ])
+        let treadmill = try? XCTUnwrap(GattParsers.parseTreadmillDataMeasurement(data))
+        XCTAssertNil(treadmill?.instantaneousSpeedKmh, "bit0 set — no speed in this packet")
+        XCTAssertEqual(treadmill?.heartRateBPM, 150)
+        XCTAssertEqual(treadmill?.instantaneousPowerWatts, -30)
+    }
+
+    func testTreadmillData_MoreDataFlagSet_TruncatedHeartRate_ReturnsNil() {
+        // flags = bit0(More Data) | bit8(heart rate) = 0x0101, but the Heart Rate byte is missing.
+        // Dropping the mandatory-speed read must not also drop the length guards behind it.
+        XCTAssertNil(GattParsers.parseTreadmillDataMeasurement(Data([0x01, 0x01])))
     }
 
     func testTreadmillData_HeartRateAndForceAndPowerPresent() {
@@ -435,8 +490,14 @@ final class GattServiceAdaptersTests: XCTestCase {
         XCTAssertNil(GattParsers.parseTreadmillDataMeasurement(data))
     }
 
-    func testTreadmillData_TooShortForMandatorySpeed_ReturnsNil() {
+    func testTreadmillData_TooShortForAnExpectedSpeed_ReturnsNil() {
+        // More Data clear says Instantaneous Speed IS present, but only one of its two bytes is.
         XCTAssertNil(GattParsers.parseTreadmillDataMeasurement(Data([0x00, 0x00, 0x00])))
+    }
+
+    func testTreadmillData_EmptyData_ReturnsNil() {
+        XCTAssertNil(GattParsers.parseTreadmillDataMeasurement(Data()))
+        XCTAssertNil(GattParsers.parseTreadmillDataMeasurement(Data([0x00])))
     }
 }
 

@@ -1,17 +1,15 @@
 import Foundation
 
-/// LAB-11 — turns parsed clinical records into lab-notebook rows.
+/// LAB-11 — turns parsed FHIR observations into lab-notebook rows.
 ///
-/// Split from `FHIRObservationParser` (pure, over `Data`) and from `HealthKitClinicalStore` (the
-/// HealthKit call) so the mapping — which is where a clinical record becomes part of someone's
-/// medical record — is testable end to end without an entitlement or a device. Given that no
-/// physical device with real clinical records was available while this was built, making the
-/// verifiable part as large as possible is the honest response, the same reasoning the GATT parsing
-/// layer used when no BLE accessory was available.
+/// NOT WIRED TO ANY INGESTION PATH TODAY. The HealthKit Clinical Records reader this was written
+/// for was removed after App Review rejected that API under Guideline 2.5.1 (ADR-0013); this half
+/// never touched HealthKit and survives for a possible file-based FHIR import. Read
+/// `FHIRObservationParser`'s header before building on it.
 ///
 /// **Placement:** everything written here lands in `badan_sensitive.db` through the existing
-/// `LabReportRepository`/`LabResultRepository`, which are already sensitive-bound. Clinical records
-/// are the most sensitive data BADAN ingests; they inherit the lab notebook's existing encryption,
+/// `LabReportRepository`/`LabResultRepository`, which are already sensitive-bound. Lab results are
+/// among the most sensitive data BADAN holds; they inherit the lab notebook's existing encryption,
 /// purge, and export-gating behaviour rather than getting a parallel path.
 public enum ClinicalRecordImporter {
     /// One provider's records, grouped as they will be filed.
@@ -44,6 +42,7 @@ public enum ClinicalRecordImporter {
     /// or OCR'd report already looks in the notebook — so an imported report and a scanned one are
     /// the same kind of object rather than two shapes the UI has to distinguish.
     static func `import`(_ batch: Batch, reports: LabReportRepository, results: LabResultRepository,
+                                ranges: ReferenceRangeRepository,
                                 analyteMatcher: AnalyteNameMatcher?, clock: Clock, deviceId: String) throws -> Outcome {
         var outcome = Outcome()
         let tz = TimeZone.current.identifier
@@ -85,10 +84,19 @@ public enum ClinicalRecordImporter {
                     }
 
                     guard let reportId else { continue }
-                    try results.insertResult(makeResult(observation, reportId: reportId, day: day,
-                                                        sourceName: batch.sourceName,
-                                                        analyteMatcher: analyteMatcher,
-                                                        now: now, tz: tz, deviceId: deviceId))
+                    let result = makeResult(observation, reportId: reportId, day: day,
+                                            sourceName: batch.sourceName,
+                                            analyteMatcher: analyteMatcher,
+                                            now: now, tz: tz, deviceId: deviceId)
+                    try results.insertResult(result)
+                    // Concepts 1 and 2 — the provider's own printed interval and its own flag.
+                    // `ReferenceRangeRepository` holds the same sensitive connection this
+                    // transaction is open on, so the range lands atomically with its result: a
+                    // result can never be committed with its interval silently missing.
+                    if let range = makeRange(observation, resultId: result.id, now: now,
+                                             deviceId: deviceId) {
+                        try ranges.insertRange(range)
+                    }
                     outcome.resultsImported += 1
                 }
             }
@@ -116,16 +124,47 @@ public enum ClinicalRecordImporter {
             updatedAt: now, originDeviceId: deviceId)
     }
 
+    /// The provider's interval and flag, or nil when they stated neither.
+    ///
+    /// Returns nil rather than an empty row so `ReferenceRangeRepository.range(resultId:)` keeps
+    /// its documented meaning — "the source printed nothing for this result" — instead of every
+    /// imported result acquiring a row full of nulls that reads, downstream, as an interval that
+    /// exists but is blank.
+    ///
+    /// Nothing here is derived. The flag is the provider's own text, NOT recomputed from the
+    /// interval: a lab that flags a value we would not have flagged is telling us something, and a
+    /// lab that declines to flag one we would have is also telling us something. Both survive.
+    private static func makeRange(_ observation: FHIRLabObservation, resultId: String, now: Date,
+                                  deviceId: String) -> ReferenceRange? {
+        let flag = observation.interpretationCode?.trimmingCharacters(in: .whitespaces)
+        let statedFlag = (flag?.isEmpty == false) ? flag : nil
+        guard observation.sourceRangeLow != nil || observation.sourceRangeHigh != nil
+                || statedFlag != nil else { return nil }
+        return ReferenceRange(
+            id: ULID.newID(), resultId: resultId,
+            sourceIntervalLow: observation.sourceRangeLow,
+            sourceIntervalHigh: observation.sourceRangeHigh,
+            // FHIR carries its interval as numeric bounds, so there is no verbatim printed string
+            // to preserve the way an OCR'd or hand-entered report has. Left nil rather than
+            // rendered into one — a reconstructed "4.0–5.6" would be BADAN's phrasing presented as
+            // the lab's.
+            sourceIntervalText: nil,
+            sourceIntervalUnit: observation.sourceRangeUnit,
+            sourceFlag: statedFlag,
+            updatedAt: now, originDeviceId: deviceId)
+    }
+
     private static func makeResult(_ observation: FHIRLabObservation, reportId: String, day: Date,
                                    sourceName: String, analyteMatcher: AnalyteNameMatcher?,
                                    now: Date, tz: String, deviceId: String) -> LabResult {
         let id = ULID.newID()
-        // Dictionary match by NAME only. A LOINC-code match would be better and the code is carried
-        // on the observation for exactly that, but `analytes.json` has no LOINC index today and
-        // building one from guessed codes is the failure `AnalyteDefinition.loincCode`'s own doc
-        // warns against. An unmatched marker becomes a first-class free-text row (LAB-06), never a
-        // blocked import.
-        let match = analyteMatcher?.match(observation.displayName)
+        // LOINC first, name second — `AnalyteNameMatcher` owns that precedence. A code is the
+        // provider's own machine-readable identity for the marker and cannot be confused by
+        // wording, which name matching demonstrably can be (an "Hemoglobin A1c" filed under
+        // Hemoglobin). `analytes.json` carries real LOINC codes for the entries that have them;
+        // the ones that don't simply fall through to the name path. An unmatched marker becomes a
+        // first-class free-text row (LAB-06), never a blocked import.
+        let match = analyteMatcher?.match(observation.displayName, loincCode: observation.loincCode)
         var analyteId: String?
         if case .dictionary(let matched)? = match { analyteId = matched }
 

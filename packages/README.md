@@ -5,10 +5,10 @@ symptom, insight, or export column is authored **once** here and mirrored into e
 
 | File | Purpose | Consumed as |
 |---|---|---|
-| `metric-ontology/registry.json` | 44 metrics: dot-namespaced id, family, kind, canonical + display units, en/ar names, casual/precise labels, chart hint, baseline eligibility, sensitivity, explainer | iOS `MetricRegistry`; Android `MetricRegistry` (Room seed / asset) |
+| `metric-ontology/registry.json` | 75 metrics: dot-namespaced id, family, kind, canonical + display units, en/ar names, casual/precise labels, chart hint, baseline eligibility, sensitivity, explainer | iOS `MetricRegistry`; Android `MetricRegistry` (asset, loaded via framework SQLite — **not Room**, see ADR-0007) |
 | `contracts/insights/templates.json` | 13 deterministic, wellness-safe insight templates (en/ar) + wellness-language rules | iOS `InsightTemplateStore`; Android equivalent |
 | `contracts/dictionaries/symptoms.json` | 47-symptom localized dictionary (id, en/ar, category) | iOS `SymptomDictionary`; Android equivalent |
-| `export-schemas/csv_columns.json` | The frozen 24-column export contract (name, type, description) + manifest fields + separation policy notes | iOS `CSVWriter`; Android writer |
+| `export-schemas/csv_columns.json` | The frozen 26-column export contract (name, type, description) + 23 manifest fields + separation policy notes | iOS `CSVWriter`; Android writer |
 | `metric-ontology/src/metric_families.md` | Human notes on families | reference |
 | `contracts/src/health_contracts.md` | Original entity seed (superseded; see EXECUTION_PLAN §3 rename map) | historical |
 | `export-schemas/src/export_bundle.md` | Original export notes | reference |

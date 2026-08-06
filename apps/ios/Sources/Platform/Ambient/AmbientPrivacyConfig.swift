@@ -18,9 +18,16 @@ import Foundation
 
 /// How much an ambient surface may show.
 public enum AmbientPrivacyMode: String, Codable, Hashable, Sendable, CaseIterable {
-    /// Scores and sentences appear on ambient surfaces. iOS still redacts Lock Screen content while
-    /// the device is locked (widgets mark values `.privacySensitive()`), so this is "normal", not
-    /// "everything, always".
+    /// Scores and sentences appear on ambient surfaces. Every value-bearing view in the four
+    /// Lock-Screen-capable widgets is marked `.privacySensitive()`, so iOS redacts those values
+    /// while the device is locked and this stays "normal", not "everything, always".
+    ///
+    /// That sentence used to be written here as a description of behaviour that did not exist:
+    /// `.privacySensitive()` appeared nowhere in the repository, iOS does NOT auto-redact
+    /// accessory-family content, and so readiness, effort, sleep and the day's sentence rendered in
+    /// full on a locked Lock Screen. The modifier is real now (see `RingSingleWidget`,
+    /// `EffortRingWidget`, `SleepCardWidget`, `SentenceWidget`, and the ratchet test in
+    /// `AmbientPrivacyTests` that fails if a widget registers an accessory family without it).
     case standard
     /// Labels and shapes only — no numbers, no sentences. A ring still shows it exists and is
     /// filled; it does not say 74. For someone whose phone sits face-up on a shared desk.
@@ -36,6 +43,14 @@ public enum AmbientPrivacyMode: String, Codable, Hashable, Sendable, CaseIterabl
 /// The user's ambient-privacy settings.
 public struct AmbientPrivacyConfig: Codable, Hashable, Sendable {
     /// Applies to Home Screen widgets, StandBy, and the watch glance.
+    ///
+    /// The three surfaces reach that outcome by two different mechanisms, which is worth knowing
+    /// before changing either: widgets and StandBy read the `AmbientSnapshotDto.privacy` flags this
+    /// config stamps and obey them at render time (`BadanWidgets/WidgetPrivacy.swift`), while the
+    /// watch — whose copy of the DTO has no privacy field, and whose complications are a third
+    /// process again — is served by `WatchSnapshotSync.watchPayload(for:)` removing the values from
+    /// the payload before it is ever encoded. See that method for why enforcement there rather than
+    /// a flag the watch would have to remember to honour.
     public var mode: AmbientPrivacyMode
 
     public init(mode: AmbientPrivacyMode = .standard) {
@@ -70,7 +85,9 @@ public struct AmbientPrivacyConfig: Codable, Hashable, Sendable {
     ///
     /// `isLockScreen` is supplied by the caller because the main app writes ONE snapshot read by
     /// several surfaces; the Lock Screen decision is applied at render time by the widget from the
-    /// flags this config stamps into the DTO. See `AmbientSnapshotDto.privacy`.
+    /// flags this config stamps into the DTO. See `AmbientSnapshotDto.privacy` — and
+    /// `WatchSnapshotSync.watchPayload(for:)` for the watch, which is served by withholding the
+    /// values rather than by a flag it would have to honour.
     public func allowsValues(for family: Family, isLockScreen: Bool) -> Bool {
         if isLockScreen && Self.neverOnLockScreen.contains(family) { return false }
         return mode.showsValues

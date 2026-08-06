@@ -81,7 +81,67 @@ struct ImportBatch: Equatable {
 /// logic — it is purely the lineage/undo layer the importer and Settings surface consult.
 final class ImportBatchRepository {
     private let db: SQLiteConnection
-    init(_ db: SQLiteConnection) { self.db = db }
+    /// The sensitive connection, when this repository is routing (A21/D-26). `nil` means
+    /// single-connection mode: undo looks only at `db`, exactly as before routing existed — which
+    /// is what the ~20 test call sites constructing `ImportBatchRepository(db.main)` and
+    /// `Database.inMemoryFallback()`'s degraded path get. Mirrors `MeasurementRepository`'s own
+    /// optional-`sensitive` seam deliberately: undo has to reach wherever that repository put the
+    /// rows, so the two must be wired from the same pair of connections.
+    private let sensitiveDb: SQLiteConnection?
+
+    /// - Parameter sensitive: the `badan_sensitive.db` connection. Supply it (as `AppEnvironment`
+    ///   does) and `undo(id:now:)` spans both files.
+    ///
+    /// STORAGE-2: this parameter did not exist, and its absence made undo silently partial. Since
+    /// A21/D-26, `MeasurementRepository` routes any metric whose registry `sensitiveClass` is
+    /// `sensitivePlus` — today `body.glucose` — into `badan_sensitive.db`, and the Apple Health
+    /// archive importer writes its DTOs through that same repository. So a CGM user's imported
+    /// glucose landed in `raw_samples` in the SENSITIVE file, carrying the batch id, while every
+    /// statement in `undo` ran against `main` alone: `liveIds` found none of it, `removedSamples`
+    /// under-reported, `measuredRange` returned a window that excluded the glucose span (so the
+    /// caller re-derived the wrong range), and `softDeleteBatch` tombstoned nothing — yet the batch
+    /// was still marked `undone`, which `ImportBatch.isUndone` treats as "nothing left to take
+    /// back" and so permanently blocked a second attempt. The user was told the import was reversed
+    /// while forty thousand glucose readings stayed live in the app and in every export.
+    init(_ db: SQLiteConnection, sensitive: SQLiteConnection? = nil) {
+        self.db = db
+        self.sensitiveDb = sensitive
+    }
+
+    /// The tables sensitive migration 9 actually mirrors — the same set, for the same reason, as
+    /// `MeasurementRepository.sensitiveMirroredTables`: aiming a statement at a file where the
+    /// table does not exist throws "no such table" rather than harmlessly matching zero rows.
+    /// `sessions`, `session_stages` and `workout_routes` exist only in `badan.db` (no session or
+    /// route is a sensitive-plus metric), and `import_batches` itself is main-only — the lineage
+    /// row is bookkeeping about a file the user picked, not a health datum.
+    private static let sensitiveMirroredTables: Set<String> = ["raw_samples", "interval_records"]
+
+    /// The connections a statement naming `table` must run against, main first. Row ids are unique
+    /// across the pair and `batch_id` is stamped identically in both files, so running the same
+    /// statement on both is correct rather than merely convenient: it matches nothing on whichever
+    /// file does not hold the rows.
+    private func connections(forTable table: String) -> [SQLiteConnection] {
+        guard let sensitiveDb, Self.sensitiveMirroredTables.contains(table) else { return [db] }
+        return [db, sensitiveDb]
+    }
+
+    /// Bracket `body` in a transaction on every connection undo can write to.
+    ///
+    /// Mirrors `MeasurementRepository.transaction` exactly — same nesting, same lock order (main
+    /// then sensitive, so the two types can never deadlock against each other) — including what it
+    /// refuses to claim: two separate SQLite files cannot two-phase-commit.
+    ///
+    /// The nesting decides which way a torn commit can fall, and it falls the safe way. Sensitive
+    /// COMMITs first, so the only interruption window leaves the sensitive tombstones durable while
+    /// main rolls back — the batch row is still `completed` (it is `setState`d inside the same
+    /// body), so the user can undo again, and re-running finishes the main half while
+    /// `softDeleteBatch`'s `deleted_at IS NULL` guard makes the already-tombstoned sensitive half a
+    /// no-op rather than a second `deleted_at` pushed past an export cursor. An undo that reported
+    /// itself complete with half the rows still live is exactly the failure STORAGE-2 was.
+    private func bothConnections<T>(_ body: () throws -> T) throws -> T {
+        guard let sensitiveDb else { return try db.transaction(body) }
+        return try db.transaction { try sensitiveDb.transaction(body) }
+    }
 
     // MARK: - Lifecycle
 
@@ -198,9 +258,13 @@ final class ImportBatchRepository {
     ///
     /// Derived values are append-only (I2) and are NOT touched here; the caller recomputes over
     /// `affectedRange` so the latest-wins read model reflects the removal.
+    ///
+    /// Every statement below spans both physical databases where the table it names exists in both
+    /// — see `connections(forTable:)` and STORAGE-2 on `init`. Undo has to reach wherever
+    /// `MeasurementRepository` put the rows, and since A21/D-26 that is not always `badan.db`.
     @discardableResult
     func undo(id: String, now: Date) throws -> UndoResult {
-        try db.transaction {
+        try bothConnections {
             // LIVE rows only: a second undo of the same batch must tombstone nothing, report zeros,
             // and above all must not re-stamp `deleted_at` — that would push an already-reported
             // removal past the cursor again on every call.
@@ -239,12 +303,14 @@ final class ImportBatchRepository {
 
     // MARK: - Helpers
 
-    /// The ids of this batch's rows that are still LIVE. Everything undo does — counting, tombstoning,
-    /// un-suppressing what they beat — is about rows that currently exist, so a repeat undo is a
-    /// no-op rather than a second round of writes.
+    /// The ids of this batch's rows that are still LIVE, across every file that holds `table`.
+    /// Everything undo does — counting, tombstoning, un-suppressing what they beat — is about rows
+    /// that currently exist, so a repeat undo is a no-op rather than a second round of writes.
     private func liveIds(in table: String, batchId: String) throws -> [String] {
-        try db.query("SELECT id FROM \(table) WHERE batch_id = ? AND deleted_at IS NULL;", [.text(batchId)])
-            .compactMap { $0.string("id") }
+        try connections(forTable: table).flatMap { connection in
+            try connection.query("SELECT id FROM \(table) WHERE batch_id = ? AND deleted_at IS NULL;", [.text(batchId)])
+                .compactMap { $0.string("id") }
+        }
     }
 
     /// The earliest/latest `measured_at` across the LIVE rows this batch wrote — the span derivations
@@ -255,12 +321,17 @@ final class ImportBatchRepository {
         var earliest: Date?
         var latest: Date?
         for table in ["raw_samples", "interval_records", "sessions"] {
-            let row = try db.query("""
-                SELECT MIN(measured_at) AS lo, MAX(measured_at) AS hi FROM \(table)
-                WHERE batch_id = ? AND deleted_at IS NULL;
-                """, [.text(batchId)]).first
-            if let lo = row?.date("lo") { earliest = earliest.map { min($0, lo) } ?? lo }
-            if let hi = row?.date("hi") { latest = latest.map { max($0, hi) } ?? hi }
+            // Both files, min/max folded across them: a range computed from `main` alone would end
+            // where the non-sensitive rows end, and the caller would re-derive over a window that
+            // excludes the glucose span it was called precisely to un-feed (STORAGE-2).
+            for connection in connections(forTable: table) {
+                let row = try connection.query("""
+                    SELECT MIN(measured_at) AS lo, MAX(measured_at) AS hi FROM \(table)
+                    WHERE batch_id = ? AND deleted_at IS NULL;
+                    """, [.text(batchId)]).first
+                if let lo = row?.date("lo") { earliest = earliest.map { min($0, lo) } ?? lo }
+                if let hi = row?.date("hi") { latest = latest.map { max($0, hi) } ?? hi }
+            }
         }
         guard let from = earliest, let to = latest else { return nil }
         return (from, to)
@@ -271,9 +342,11 @@ final class ImportBatchRepository {
     /// an undo cannot re-stamp `deleted_at` and push an already-exported removal past the cursor a
     /// second time.
     private func softDeleteBatch(table: String, batchId: String, now: Date) throws {
-        try db.run("""
-            UPDATE \(table) SET deleted_at = ?, updated_at = ? WHERE batch_id = ? AND deleted_at IS NULL;
-            """, [.date(now), .date(now), .text(batchId)])
+        for connection in connections(forTable: table) {
+            try connection.run("""
+                UPDATE \(table) SET deleted_at = ?, updated_at = ? WHERE batch_id = ? AND deleted_at IS NULL;
+                """, [.date(now), .date(now), .text(batchId)])
+        }
     }
 
     /// Clear `suppressed_by` on every row whose dedup winner was one of `winnerIds`, and JOURNAL each
@@ -296,34 +369,43 @@ final class ImportBatchRepository {
     ///    row's own `updated_at`, which is the instant `setSuppressed` last stamped it: a grounded
     ///    best effort, not an invented one, and it is never later than `reversed_at`.
     ///
-    /// The journal shares this repository's `SQLiteConnection`, so it joins the caller's transaction
-    /// rather than opening a second one — the same-thread nesting `MeasurementRepository.transaction`
-    /// documents.
+    /// The journal shares this repository's MAIN `SQLiteConnection`, so it joins the caller's
+    /// transaction rather than opening a second one — the same-thread nesting
+    /// `MeasurementRepository.transaction` documents. It stays on `main` even when the suppressed
+    /// row being cleared lives in `badan_sensitive.db`: `dedup_decisions` exists only in `badan.db`
+    /// (main migration v1; sensitive migration 9 mirrors the two measurement tables and nothing
+    /// else), and a decision row names two record ids and a rule — no metric, no value — so it
+    /// discloses nothing a sensitive purge is meant to take with it.
     private func unsuppress(table: String, byWinners winnerIds: [String], now: Date) throws {
         guard !winnerIds.isEmpty else { return }
         let journal = ReconciliationRepository(db)
-        // Chunk the IN list so a very large batch can't build an oversized statement.
-        for chunk in winnerIds.badanChunked(500) {
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
-            let params = chunk.map { SQLValue.text($0) }
-            let losers = try db.query("""
-                SELECT id, suppressed_by, updated_at FROM \(table) WHERE suppressed_by IN (\(placeholders));
-                """, params)
-            for row in losers {
-                guard let recordId = row.string("id"), let winnerId = row.string("suppressed_by") else { continue }
-                if let decision = try journal.forSuppressed(recordId) {
-                    try journal.markReversed(id: decision.id, at: now)
-                } else {
-                    try journal.insert(ReconciliationDecision(
-                        id: ULID.newID(), rule: Self.undoUnsuppressRule, ruleVersion: "1.0.0",
-                        keptRecordId: winnerId, suppressedRecordId: recordId,
-                        reversible: true, reversedAt: now,
-                        decidedAt: row.date("updated_at") ?? now,
-                        detail: ["reason": "import_undo", "table": table]))
+        // Both files (STORAGE-2): an imported glucose row that out-ranked a live CGM reading did
+        // the suppressing inside `badan_sensitive.db`, so an un-suppression aimed only at `main`
+        // would leave that night's own reading hidden behind a winner that no longer exists.
+        for connection in connections(forTable: table) {
+            // Chunk the IN list so a very large batch can't build an oversized statement.
+            for chunk in winnerIds.badanChunked(500) {
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ", ")
+                let params = chunk.map { SQLValue.text($0) }
+                let losers = try connection.query("""
+                    SELECT id, suppressed_by, updated_at FROM \(table) WHERE suppressed_by IN (\(placeholders));
+                    """, params)
+                for row in losers {
+                    guard let recordId = row.string("id"), let winnerId = row.string("suppressed_by") else { continue }
+                    if let decision = try journal.forSuppressed(recordId) {
+                        try journal.markReversed(id: decision.id, at: now)
+                    } else {
+                        try journal.insert(ReconciliationDecision(
+                            id: ULID.newID(), rule: Self.undoUnsuppressRule, ruleVersion: "1.0.0",
+                            keptRecordId: winnerId, suppressedRecordId: recordId,
+                            reversible: true, reversedAt: now,
+                            decidedAt: row.date("updated_at") ?? now,
+                            detail: ["reason": "import_undo", "table": table]))
+                    }
                 }
+                try connection.run("UPDATE \(table) SET suppressed_by = NULL, updated_at = ? WHERE suppressed_by IN (\(placeholders));",
+                                   [.date(now)] + params)
             }
-            try db.run("UPDATE \(table) SET suppressed_by = NULL, updated_at = ? WHERE suppressed_by IN (\(placeholders));",
-                       [.date(now)] + params)
         }
     }
 

@@ -284,12 +284,13 @@ struct AICoachChatScreen: View {
             return AICoachChatStrings.rateLimitedNotice
         case .serverError:
             return AICoachChatStrings.serverErrorNotice
-        case .attestationUnavailable:
-            // Unreachable in practice from this screen — attestation happens once, at opt-in
-            // (`AICoachConsentScreen`), and the chat screen is only reachable with a token
-            // already stored. Mapped to the generic notice rather than left to the exhaustive-
-            // switch error, because a device that somehow arrives here should still see a
-            // sentence, not nothing.
+        case .attestationUnavailable, .attestationFailedTransiently:
+            // Both unreachable in practice from this screen — attestation happens once, at
+            // opt-in (`AICoachConsentScreen`), and the chat screen is only reachable with a
+            // token already stored. Mapped to the generic notice rather than left to the
+            // exhaustive-switch error, because a device that somehow arrives here should still
+            // see a sentence, not nothing. The retryable/not-retryable distinction the consent
+            // screen draws between them has nothing to act on here.
             return AICoachChatStrings.genericErrorNotice
         }
     }

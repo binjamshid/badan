@@ -270,10 +270,10 @@ public struct IndoorBikeDataMeasurement: Equatable, Sendable {
 }
 
 /// Treadmill Data (0x2ACD) decoded per GSS §3.203 (`org.bluetooth.characteristic.treadmill_data`),
-/// part of the Fitness Machine Service. An analogous but NOT identical flag layout to Indoor Bike
-/// Data's own: Instantaneous Speed here is MANDATORY and unconditional (Flags bit 0, "More Data",
-/// does not gate it the way Indoor Bike Data's own bit 0 gates its Instantaneous Speed field), and
-/// there is no cadence field at all in this characteristic (a treadmill reports pace over FTMS, not
+/// part of the Fitness Machine Service. An analogous but not identical flag layout to Indoor Bike
+/// Data's own: Instantaneous Speed here obeys the SAME inverted "More Data" rule as Indoor Bike
+/// Data's (FTMS v1.0 §4.7 — the field shall be included only when Flags bit 0 is 0), but there is
+/// no cadence field at all in this characteristic (a treadmill reports pace over FTMS, not
 /// crank/step cadence) — BADAN has no consumer for a cadence value here because the spec provides
 /// none. Every field in the spec's fixed order IS decoded (so offset math never drifts for a
 /// treadmill that sets many optional flags at once); Average Speed, Total Distance, Inclination/
@@ -281,10 +281,23 @@ public struct IndoorBikeDataMeasurement: Equatable, Sendable {
 /// Elapsed/Remaining Time, and Force on Belt are all consumed for correct downstream offsets but
 /// intentionally not decoded into named properties — mirroring Cycling Power Measurement's own
 /// Accumulated Torque precedent.
+///
+/// This type's doc, and the parser's byte-layout comment below, previously asserted that
+/// Instantaneous Speed was mandatory and unconditional here "unlike Indoor Bike Data's". That was
+/// simply wrong about the spec, and the parser had been written to match the wrong comment: for a
+/// treadmill that splits one record across notifications (More Data = 1) it consumed the FIRST
+/// optional field's bytes as a speed, shifting every later field two bytes early. On a
+/// tightly-packed notification the resulting two-byte overrun tripped the next length guard and the
+/// whole valid reading was silently dropped; on one carrying any trailing bytes the flags do not
+/// account for, no guard tripped and BADAN ingested a fabricated speed with a wrong heart rate and
+/// power output beside it. Neither outcome is acceptable for untrusted peripheral input. Nothing
+/// outside this file consumed the property yet, so widening it to optional was free.
 public struct TreadmillDataMeasurement: Equatable, Sendable {
-    /// km/h, resolution 0.01. Always present — see this type's own doc for why, unlike every other
-    /// speed-like field in this file, this one is never flag-gated.
-    public let instantaneousSpeedKmh: Double
+    /// km/h, resolution 0.01 — present only when Flags bit 0 ("More Data") is CLEAR, exactly as in
+    /// `IndoorBikeDataMeasurement.instantaneousSpeedKmh`. NOTE the inverted polarity versus every
+    /// other optional field in this file: bit 0 SET means this notification omits Instantaneous
+    /// Speed (it will arrive in a later packet), not that the field is present.
+    public let instantaneousSpeedKmh: Double?
     /// Watts, signed — decoded from the "Force on Belt and Power Output" field's second (Power
     /// Output) sub-field; present only when Flags bit 12 is set. Force on Belt itself (newtons) is
     /// consumed for offset only, not exposed — no BADAN consumer yet.
@@ -537,7 +550,12 @@ public enum GattParsers {
     /// - Byte 0: Flags — bit0 Measurement Units (0=SI kg/m, 1=Imperial lb/in), bit1 Time Stamp
     ///   present, bit2 User ID present, bit3 BMI & Height present (gated together).
     /// - Bytes 1–2: Weight, uint16 LE — 0.005 kg resolution (SI) or 0.01 lb resolution (Imperial).
-    ///   MANDATORY.
+    ///   MANDATORY. GSS reserves 0xFFFF for this field as "Measurement Unsuccessful": a scale that
+    ///   could not weigh (user stepped off early, unstable load) still indicates a notification and
+    ///   fills the field with the sentinel. Decoded arithmetically that is 327.675 kg — a value
+    ///   BADAN would happily store as a real reading — so this parser rejects the whole
+    ///   measurement, per the file-header contract that a malformed notification yields `nil`
+    ///   rather than an invented number.
     /// - Next 7 bytes, only if bit1 set: Time Stamp (`org.bluetooth.characteristic.date_time`):
     ///   uint16 year, uint8 month, day, hours, minutes, seconds.
     /// - Next 1 byte, only if bit2 set: User ID, uint8.
@@ -556,6 +574,10 @@ public enum GattParsers {
         var offset = 1
         let rawWeight = u16(b, offset)
         offset += 2
+        // 0xFFFF is the GSS "Measurement Unsuccessful" sentinel, not a weight — see the byte-layout
+        // note above. Rejecting it here is the only place it can be caught: downstream every value
+        // is just a Double, and 327.675 kg looks like data rather than a failure signal.
+        guard rawWeight != 0xFFFF else { return nil }
         let weightKg = imperial ? Double(rawWeight) * 0.01 * kgPerLb : Double(rawWeight) * 0.005
 
         var timestamp: GattDateTime? = nil
@@ -845,15 +867,16 @@ public enum GattParsers {
     /// Byte layout (all multi-byte fields little-endian; every field below IS consumed in the
     /// spec's fixed order so a treadmill that sets many flags at once still decodes correctly —
     /// see the type's own doc for exactly which fields are exposed vs. consumed-for-offset-only):
-    /// - Bytes 0–1: Flags (uint16) — bit0 More Data (does NOT gate Instantaneous Speed for this
-    ///   characteristic — see the type's own doc for why that differs from Indoor Bike Data), bit1
-    ///   Average Speed present, bit2 Total Distance present, bit3 Inclination and Ramp Angle
+    /// - Bytes 0–1: Flags (uint16) — bit0 More Data (INVERTED, exactly as in Indoor Bike Data:
+    ///   CLEAR means Instantaneous Speed IS present, SET means it is NOT — see the type's own doc),
+    ///   bit1 Average Speed present, bit2 Total Distance present, bit3 Inclination and Ramp Angle
     ///   Setting present, bit4 Elevation Gain present, bit5 Instantaneous Pace present, bit6
     ///   Average Pace present, bit7 Expended Energy present, bit8 Heart Rate present, bit9
     ///   Metabolic Equivalent present, bit10 Elapsed Time present, bit11 Remaining Time present,
     ///   bit12 Force on Belt and Power Output present.
-    /// - Bytes 2–3: Instantaneous Speed, uint16 LE, 0.01 km/h resolution. MANDATORY — always
-    ///   present, unconditionally (no flag bit gates it, unlike Indoor Bike Data's own field).
+    /// - +2 bytes if bit0 CLEAR: Instantaneous Speed, uint16 LE, 0.01 km/h resolution. FTMS v1.0
+    ///   §4.7 makes this conditional, not mandatory: the field shall be included only when the More
+    ///   Data bit is 0.
     /// - +2 bytes if bit1: Average Speed, uint16 LE, 0.01 km/h resolution (offset-only — no BADAN
     ///   consumer yet).
     /// - +3 bytes if bit2: Total Distance, uint24 LE, 1 m resolution (offset-only).
@@ -873,9 +896,13 @@ public enum GattParsers {
     ///   (sint16, 1 W).
     public static func parseTreadmillDataMeasurement(_ data: Data) -> TreadmillDataMeasurement? {
         let b = [UInt8](data)
-        guard b.count >= 4 else { return nil }
+        // Only the two Flags bytes are unconditionally present. Instantaneous Speed is gated on the
+        // More Data bit below, so a flags-only notification (More Data set, nothing else) is a
+        // valid — if minimal — reading, not truncated input. Mirrors the Indoor Bike Data guard.
+        guard b.count >= 2 else { return nil }
 
         let flags = UInt16(b[0]) | (UInt16(b[1]) << 8)
+        let moreData = flags & 0x0001 != 0
         let avgSpeedPresent = flags & 0x0002 != 0
         let totalDistancePresent = flags & 0x0004 != 0
         let inclinationPresent = flags & 0x0008 != 0
@@ -890,8 +917,13 @@ public enum GattParsers {
         let forceAndPowerPresent = flags & 0x1000 != 0
 
         var offset = 2
-        let speed = Double(u16(b, offset)) * 0.01
-        offset += 2
+
+        var speed: Double? = nil
+        if !moreData {
+            guard b.count >= offset + 2 else { return nil }
+            speed = Double(u16(b, offset)) * 0.01
+            offset += 2
+        }
 
         if avgSpeedPresent {
             guard b.count >= offset + 2 else { return nil }

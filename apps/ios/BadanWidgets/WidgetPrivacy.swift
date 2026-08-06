@@ -13,6 +13,14 @@ import SwiftUI
 /// standing between sensitive content and a stranger holding the phone, so the rule that matters
 /// most is enforced by what the app writes and by which families a widget registers — neither of
 /// which this file can weaken.
+///
+/// A third, OS-level one sits underneath both and is not expressed here at all (S-5): every
+/// value-bearing view in the Lock-Screen-capable widgets is marked `.privacySensitive()`, so iOS
+/// itself redacts those values while the device is locked, in EVERY mode including `.standard`.
+/// The flags below are about who may see a value when the owner is looking at the screen;
+/// `.privacySensitive()` is about who may see it when they are not. iOS does not apply that
+/// redaction to accessory families on its own — the modifier has to be written at each value, and
+/// `AmbientPrivacyTests` fails if a widget registers an accessory family without one.
 enum WidgetPrivacy {
     /// Whether this widget may draw numbers and sentences.
     ///

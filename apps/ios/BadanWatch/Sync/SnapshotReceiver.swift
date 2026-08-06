@@ -1,6 +1,7 @@
 import Foundation
 import WatchConnectivity
 import Observation
+import WidgetKit
 
 /// blueprint §24.4's named receiver for the phone's `WatchSnapshotSync.updateApplicationContext`
 /// pushes (`apps/ios/Sources/Platform/Ambient/WatchSnapshotSync.swift`). This is the ONLY inbound
@@ -25,12 +26,18 @@ final class SnapshotReceiver: NSObject {
     private let session: WCSession?
     private let store: WatchSnapshotStore
 
+    /// Test seam, mirroring `AmbientSnapshotWriter.reloadWidgets` on the phone side exactly:
+    /// production always nudges the real WidgetKit runtime, a test injects a counting/no-op closure
+    /// instead, since a plain unit-test bundle has no installed complication to observe reloading.
+    private let reloadComplications: () -> Void
+
     /// Real production wiring: `WCSession.isSupported()` is false on devices with no companion-app
     /// pairing capability at all — `session` stays `nil` and this app falls back to whatever
     /// `store` has cached (or an honest `.neverSynced` state) rather than crashing.
     private override init() {
         self.session = WCSession.isSupported() ? WCSession.default : nil
         self.store = WatchSnapshotStore()
+        self.reloadComplications = SnapshotReceiver.reloadRealComplications
         super.init()
         restoreFromCache()
         activateAndCheckPendingContext()
@@ -41,9 +48,11 @@ final class SnapshotReceiver: NSObject {
     /// in a plain unit-test bundle anyway) or the real on-disk Application Support directory. (A
     /// plain designated initializer, not `convenience`, so it stays independent of the no-arg
     /// initializer's own `override` obligation to `NSObject.init()`.)
-    init(session: WCSession?, store: WatchSnapshotStore) {
+    init(session: WCSession?, store: WatchSnapshotStore,
+         reloadComplications: @escaping () -> Void = SnapshotReceiver.reloadRealComplications) {
         self.session = session
         self.store = store
+        self.reloadComplications = reloadComplications
         super.init()
         restoreFromCache()
         activateAndCheckPendingContext()
@@ -58,13 +67,35 @@ final class SnapshotReceiver: NSObject {
     private func activateAndCheckPendingContext() {
         session?.delegate = self
         session?.activate()
-        // `receivedApplicationContext` is available synchronously the moment the session object
-        // exists, even before `activate()`'s completion or any delegate callback fires — covers
-        // the case where the phone pushed a context while this watch app was not running at all.
-        if let context = session?.receivedApplicationContext,
-           let data = context[WatchSnapshotSyncKeys.applicationContextKey] as? Data {
-            apply(data: data, receivedAt: .now)
-        }
+        // An opportunistic first look, NOT a guarantee. `receivedApplicationContext` is only
+        // reliable once activation has completed, and `activate()` is asynchronous — reading the
+        // property on the very next line can (and on a first launch after reinstall routinely
+        // does) come back empty while a delivered context sits in the daemon, which is how the
+        // watch ended up showing "Not synced with your phone yet" with real data already waiting.
+        // The authoritative check is the one in `activationDidCompleteWith` below; this one just
+        // saves a frame in the common case where the session was already activated.
+        //
+        // (This comment previously asserted the opposite — that the property "is available
+        // synchronously the moment the session object exists, even before activate()'s completion".
+        // It is not, and nothing re-checked afterwards, so the claim was the bug's cover story.)
+        applyPendingContextIfAny()
+    }
+
+    /// Apply whatever context the WatchConnectivity daemon is currently holding for this app, if it
+    /// is newer than what is already on screen.
+    ///
+    /// The freshness guard matters because this runs twice (once opportunistically before
+    /// activation completes, once from the completion callback) and can also race a live
+    /// `didReceiveApplicationContext` for the very same payload. `receivedApplicationContext` is
+    /// the last context received, so re-applying it is at best a no-op — but re-applying it over a
+    /// snapshot the phone generated LATER would walk the display backwards, and this app's whole
+    /// contract is that it never shows an older number as the current one.
+    private func applyPendingContextIfAny() {
+        guard let context = session?.receivedApplicationContext,
+              let data = context[WatchSnapshotSyncKeys.applicationContextKey] as? Data,
+              let pending = try? Self.decoder.decode(AmbientSnapshotDto.self, from: data) else { return }
+        if let current = snapshot, current.generatedAt >= pending.generatedAt { return }
+        apply(pending, receivedAt: .now)
     }
 
     /// Ask the phone to sync now (D-34).
@@ -106,17 +137,54 @@ final class SnapshotReceiver: NSObject {
     /// decode path `didReceiveApplicationContext` uses, without needing a real `WCSession` push.
     func apply(data: Data, receivedAt: Date) {
         guard let dto = try? Self.decoder.decode(AmbientSnapshotDto.self, from: data) else { return }
+        apply(dto, receivedAt: receivedAt)
+    }
+
+    /// The single place a newly-known snapshot is committed — held, cached, and announced. Split
+    /// out of `apply(data:receivedAt:)` so `applyPendingContextIfAny` can reuse it after its own
+    /// decode rather than decoding the same bytes twice.
+    private func apply(_ dto: AmbientSnapshotDto, receivedAt: Date) {
         self.snapshot = dto
         self.receivedAt = receivedAt
         store.write(snapshot: dto, receivedAt: receivedAt)
+        // The complications are a SEPARATE process reading the cache this line above just rewrote
+        // (`BadanWatchWidgets`, see that bundle's header) — writing the file tells them nothing.
+        // Without this nudge their only refresh is the provider's own `.after(15 * 60)` policy,
+        // which watchOS budgets and throttles, so a freshly-synced number could sit invisible on
+        // the watch face for far longer than the snapshot it replaced was ever fresh. Announcing
+        // it here — at the one moment new data actually exists — is the same discipline
+        // `AmbientSnapshotWriter` follows on the phone, where every successful write reloads the
+        // widget timelines rather than waiting for WidgetKit to come asking.
+        reloadComplications()
     }
 
     private static let decoder = JSONDecoder()
+
+    /// `reloadAllTimelines()` rather than three `reloadTimelines(ofKind:)` calls: all three
+    /// complications read the SAME snapshot and every one of them is stale the instant a new one
+    /// lands, so naming the kinds would only add a list to keep in sync with
+    /// `BadanWatchWidgetsBundle` — and a kind renamed on one side without the other is a silent
+    /// no-op, exactly the failure `AmbientSnapshotWriter.widgetKinds` documents living with.
+    static func reloadRealComplications() {
+        WidgetCenter.shared.reloadAllTimelines()
+    }
 }
 
 extension SnapshotReceiver: WCSessionDelegate {
+    /// Activation is asynchronous, and `receivedApplicationContext` is only dependable once it has
+    /// completed — so this is where the pending-context check actually earns its keep. This
+    /// callback used to be empty, which is why a first launch after a reinstall showed "Not synced
+    /// with your phone yet" while a delivered context sat in the daemon, waiting for a push that
+    /// had already happened and would not happen again.
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState,
-                 error: Error?) {}
+                 error: Error?) {
+        guard error == nil, activationState == .activated else { return }
+        // Same reason `didReceiveApplicationContext` hops: this callback lands on a background
+        // queue, and every reader of `snapshot`/`receivedAt` is watch-side SwiftUI.
+        DispatchQueue.main.async { [weak self] in
+            self?.applyPendingContextIfAny()
+        }
+    }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         guard let data = applicationContext[WatchSnapshotSyncKeys.applicationContextKey] as? Data else { return }

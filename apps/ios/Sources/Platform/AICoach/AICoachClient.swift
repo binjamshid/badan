@@ -1,5 +1,8 @@
 import CryptoKit
 import Foundation
+#if canImport(DeviceCheck)
+import DeviceCheck
+#endif
 
 /// A single chat turn, mirroring `backend/api/main.py`'s `ChatMessage` contract exactly: `role`
 /// is one of `system`/`user`/`assistant`, `content` is plain text. Codable so it can be sent as
@@ -39,7 +42,36 @@ enum AICoachError: Error, Equatable {
     /// a device where the platform declines to vend `DCAppAttestService`; it is a distinct
     /// case from `serverError` because it is not a failure the user can retry their way out
     /// of, and the consent screen should say so rather than offering "try again".
+    ///
+    /// Narrowed 2026-08-05: this used to swallow EVERY error out of `generateKey`/`attestKey`,
+    /// including the retryable ones below, which made the consent screen tell a user with a
+    /// flaky connection that their device can never verify the app. See
+    /// `attestationError(for:)`.
     case attestationUnavailable
+    /// App Attest works on this device, but this attempt did not complete — and another one
+    /// can. `DCAppAttestService.attestKey` performs a live round trip to Apple's attestation
+    /// service and reports a failed one as `DCError.serverUnavailable`, which is the offline /
+    /// Apple-having-a-bad-ten-minutes case, not the unsupported-device case. Distinct from
+    /// `transportError` because the failing hop is Apple's, not BADAN's server, and the
+    /// consent screen should offer "try again" for it.
+    case attestationFailedTransiently
+}
+
+/// Classify an error thrown by an `AICoachAttesting` call into one of the two attestation cases
+/// above.
+///
+/// Only `DCError.serverUnavailable` is retryable: the rest of what DeviceCheck reports
+/// (`featureUnsupported`, `invalidInput`, `invalidKey`, `unknownSystemFailure`) fails the same
+/// way on the next attempt, so pushing the user round a retry loop for those would be the same
+/// dishonesty in the opposite direction. Anything that is not a `DCError` at all — including a
+/// test double's own error — keeps the conservative non-retryable case.
+private func attestationError(for error: Error) -> AICoachError {
+    #if canImport(DeviceCheck)
+    if let dcError = error as? DCError, dcError.code == .serverUnavailable {
+        return .attestationFailedTransiently
+    }
+    #endif
+    return .attestationUnavailable
 }
 
 /// Transport seam for `AICoachClient` — a protocol so tests can mock the network layer without a
@@ -123,16 +155,16 @@ struct AICoachClient {
         // Reuse this install's existing key when there is one. A fresh key per opt-in would
         // turn the server's per-key token budget into no budget at all (see
         // `AICoachAttestKeyStoring`).
+        let existingKeyId = attestKeyStore.keyId()
         let keyId: String
-        if let existing = attestKeyStore.keyId() {
-            keyId = existing
+        if let existingKeyId {
+            keyId = existingKeyId
         } else {
             do {
                 keyId = try await attestor.generateKey()
             } catch {
-                throw AICoachError.attestationUnavailable
+                throw attestationError(for: error)
             }
-            attestKeyStore.store(keyId)
         }
 
         // The server hashes the challenge the same way (`clientDataHash = SHA256(challenge)`)
@@ -146,7 +178,30 @@ struct AICoachClient {
                 keyId, clientDataHash: Data(SHA256.hash(data: challengeData))
             )
         } catch {
-            throw AICoachError.attestationUnavailable
+            throw attestationError(for: error)
+        }
+
+        // Persist a freshly generated key id only HERE — after it has actually attested, and
+        // only if the Keychain took it (review finding, 2026-08-05). Storing it right after
+        // `generateKey()` and discarding the `Bool` was wrong twice over:
+        //   * a key id that never attested was pinned for the life of the install, because
+        //     `disable()` deliberately never clears this store (see `AICoachAttestKeyStoring`)
+        //     — and a key is meant to be attested once, so every later opt-in reused a handle
+        //     that had already spent its one attempt;
+        //   * a silently failing write meant the NEXT `register()` found nothing stored and
+        //     generated ANOTHER key, each carrying its own server-side `MAX_TOKENS_PER_KEY`
+        //     allowance — quietly re-opening the multi-key minting that per-key budget exists
+        //     to bound.
+        // Throwing before `/v2/register` rather than after is deliberate: a token minted
+        // against a key this device cannot remember is the expensive half of that same
+        // loophole, so it is better not to spend the budget at all. The case is
+        // `.attestationFailedTransiently` because a Keychain write is exactly the kind of thing
+        // that can succeed next time, and nothing about this device's ability to attest is in
+        // question.
+        if existingKeyId == nil {
+            guard attestKeyStore.store(keyId) else {
+                throw AICoachError.attestationFailedTransiently
+            }
         }
 
         var request = URLRequest(url: baseURL.appendingPathComponent("v2/register"))

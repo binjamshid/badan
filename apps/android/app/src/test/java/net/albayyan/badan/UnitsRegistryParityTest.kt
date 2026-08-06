@@ -46,7 +46,7 @@ class UnitsRegistryParityTest {
 
     @Test fun everyRegistryUnitResolves() {
         val missing = registryUnits().filter { unit ->
-            runCatching { Units.toCanonical(1.0, unit, unit) }.isFailure
+            runCatching { Units.convert(1.0, unit, unit) }.isFailure
         }.sorted()
 
         assertEquals(

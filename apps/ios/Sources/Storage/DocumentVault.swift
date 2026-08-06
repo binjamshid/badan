@@ -119,29 +119,34 @@ final class DocumentVault {
     private let keyStore: VaultKeyStoring
 
     /// The name every `DocumentVault` uses under a `Database`'s own directory — a single constant
-    /// so the purge test and any future diagnostics agree on where these files live without
-    /// duplicating the literal.
+    /// so the purge, the purge test and any future diagnostics agree on where these files live
+    /// without duplicating the literal.
     static let directoryName = "SensitiveDocumentVault"
 
+    /// The vault directory belonging to a `Database` whose own directory is `databaseDirectory`.
+    /// The ONE place that path is composed: `init(database:)` and
+    /// `Database.purgeSensitiveNamespace()` both go through it, so the purge cannot end up aiming
+    /// at a directory the vault does not actually write to.
+    static func directory(inDatabaseDirectory databaseDirectory: URL) -> URL {
+        databaseDirectory.appendingPathComponent(directoryName, isDirectory: true)
+    }
+
     /// Wires this vault's directory under `database`'s own `Application Support/BADAN/…`
-    /// directory and registers its wipe with `database.registerSensitiveWipeHook` — constructing a
-    /// `DocumentVault` this way is the ENTIRE integration point purging needs; no composition-root
-    /// file has to remember to wire the two together separately. This is the "vault registers a
-    /// wipe callback with `Database`" alternative this slice's own brief calls out explicitly,
-    /// chosen over `Database` reaching into vault internals because `Database` has no legitimate
-    /// reason to know this vault's directory name, key-storage mechanism, or file-naming scheme.
+    /// directory. Constructing a vault registers NOTHING — the sensitive purge finds these files
+    /// by path (`wipeAll(inDatabaseDirectory:)`), not by a callback this initializer left behind.
+    /// See that method for why the callback had to go.
     init(database: Database, keyStore: VaultKeyStoring = KeychainVaultKeyStore()) throws {
-        self.directory = database.directory.appendingPathComponent(Self.directoryName, isDirectory: true)
+        self.directory = Self.directory(inDatabaseDirectory: database.directory)
         self.keyStore = keyStore
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        database.registerSensitiveWipeHook { [weak self] in try self?.wipeAll() }
     }
 
     /// Directory-only entry point that skips the `Database` wiring — for tests/callers that only
-    /// care about read/write/hash behavior in isolation. The purge INTEGRATION itself is exercised
-    /// only through the initializer above (`DocumentVaultTests
-    /// .testPurgeSensitiveNamespaceDeletesVaultedFiles`), since that is the one guarantee that
-    /// actually depends on a real `Database`.
+    /// care about read/write/hash behavior in isolation. Pointed at
+    /// `DocumentVault.directory(inDatabaseDirectory:)` it also models the shipped app state a
+    /// purge has to survive: files on disk from an earlier launch with no `DocumentVault(database:)`
+    /// ever constructed in THIS process (`DocumentVaultTests
+    /// .testPurgeWipesVaultedFilesWhenNoVaultWasEverConstructedAgainstTheDatabase`).
     init(directory: URL, keyStore: VaultKeyStoring = InMemoryVaultKeyStore()) throws {
         self.directory = directory
         self.keyStore = keyStore
@@ -161,6 +166,12 @@ final class DocumentVault {
             files: [ExportContainerFile(name: "document", data: data)],
             passphrase: try passphrase())
         let url = directory.appendingPathComponent(vaultFileRef)
+        // Re-created rather than assumed to exist from `init`: a sensitive purge deletes this
+        // directory outright (it does NOT recreate it — see `wipeAll(inDatabaseDirectory:)`, which
+        // runs with no live vault to recreate anything for), and a `DocumentVault` that happened to
+        // be alive across that purge would otherwise fail every subsequent write. One idempotent
+        // syscall on a path that is already writing a file.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // `.completeFileProtectionUntilFirstUserAuthentication` is set explicitly at write time
         // rather than relied upon via `Database.applyHardening`: that pass only walks its OWN
         // directory's TOP-LEVEL entries, so it would set protection on `SensitiveDocumentVault`
@@ -192,14 +203,47 @@ final class DocumentVault {
 
     // MARK: - Purge integration
 
-    /// Deletes every vaulted file and recreates an empty directory. Registered with `Database
-    /// .purgeSensitiveNamespace()` via the `init(database:)` above — "turn off sensitive records"
-    /// must delete every vaulted lab-report file, not just the `source_documents` metadata rows
-    /// that reference them, or a purge would leave PDFs/photos that can contain a name, date of
-    /// birth, or diagnoses sitting on disk with nothing in the sensitive DB even admitting they
-    /// exist. Proven directly by `DocumentVaultTests
-    /// .testPurgeSensitiveNamespaceDeletesVaultedFiles`: vault a document, purge, confirm the file
-    /// is actually gone from disk — not just that the metadata row disappeared.
+    /// Delete every vaulted file under a database directory, needing NO live `DocumentVault`.
+    /// Called unconditionally by `Database.purgeSensitiveNamespace()`.
+    ///
+    /// "Turn off sensitive records" must delete every vaulted lab-report file, not just the
+    /// `source_documents` metadata rows that reference them, or a purge leaves PDFs/photos that can
+    /// carry a name, a date of birth or diagnoses sitting on disk with nothing in the sensitive DB
+    /// even admitting they exist.
+    ///
+    /// **Why this is a static path operation and not the registered callback it used to be
+    /// (STORAGE-1).** The wipe was previously a closure `init(database:)` handed to
+    /// `Database.registerSensitiveWipeHook`, and the app's only call site for that initializer was
+    /// `LabNotebookServices` — built lazily into a `@State` the first time someone opens the Lab
+    /// Notebook screen. So in any process where the Labs tab was never visited, nothing had
+    /// registered: the purge deleted `badan_sensitive.db` and left every `.bdnx` file exactly where
+    /// it was, still openable by the Keychain key, while the rows that even NAME those files were
+    /// gone. The closure additionally captured `[weak self]`, so it silently degraded back to a
+    /// no-op once the screen's `@State` was torn down. The old comment here claimed the outcome
+    /// this method now actually delivers.
+    ///
+    /// Depending on nothing but the directory `Database` already owns removes that whole class of
+    /// failure: no registration to miss, no object lifetime for the guarantee to ride on, and no
+    /// ordering between "the user opened a screen" and "the user erased their sensitive records".
+    /// `Database` still learns nothing about this type's key storage, file naming or encryption —
+    /// only the directory name that was already published as `DocumentVault.directoryName`.
+    ///
+    /// The directory is removed, not emptied-and-recreated: there is no live vault here to keep
+    /// usable, and `store` recreates the directory on demand for any vault that outlives a purge.
+    /// The Keychain key is deliberately left alone. It opens nothing once the sealed files are
+    /// gone, `Database` has no business reaching into this type's key store, and if a removal ever
+    /// does fail (which this method reports by throwing) the survivors stay readable — a file the
+    /// user can still see and delete beats undecryptable ciphertext BADAN can no longer name.
+    static func wipeAll(inDatabaseDirectory databaseDirectory: URL) throws {
+        let directory = Self.directory(inDatabaseDirectory: databaseDirectory)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    /// Instance-scoped wipe of THIS vault's directory — used by the directory-only construction
+    /// path and by any caller holding a vault it wants emptied. The sensitive purge does not go
+    /// through here (see the static above); an empty directory is left behind so a vault that is
+    /// still in use keeps working exactly as it did before the wipe.
     func wipeAll() throws {
         if FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)

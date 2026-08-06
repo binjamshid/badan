@@ -69,6 +69,14 @@ struct RingSingleWidgetView: View {
             } currentValueLabel: {
                 if showsValue {
                     Text("\(Int(readiness.score.rounded()))")
+                        // S-5: iOS does NOT redact accessory-family content on its own — without
+                        // this the number renders in full on a LOCKED Lock Screen, to whoever
+                        // picked the phone up. The mode above is the user's choice about who may
+                        // see this while they are looking at it; this is the floor that applies
+                        // when they are not. The gauge's arc is deliberately left unmarked: a
+                        // shape is not a disclosure (same reasoning `.discreet` uses), so the ring
+                        // still says "there is a reading here" once the number is hidden.
+                        .privacySensitive()
                 } else {
                     Image(systemName: "eye.slash")
                 }
@@ -102,6 +110,11 @@ struct RingSingleWidgetView: View {
                             Text("\(Int(readiness.score.rounded()))")
                                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                                 .foregroundStyle(WidgetColor.textPrimary)
+                                // S-5, and not redundant with the accessory branch: this same
+                                // `.systemSmall` body is what StandBy renders, and StandBy redacts
+                                // privacy-sensitive content while the device is locked. On the
+                                // Home Screen (behind a passcode already) the modifier is inert.
+                                .privacySensitive()
                         } else {
                             Image(systemName: "eye.slash")
                                 .font(.system(size: 18))

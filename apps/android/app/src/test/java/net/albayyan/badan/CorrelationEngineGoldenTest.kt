@@ -577,7 +577,7 @@ class CorrelationEngineGoldenTest {
         val correlationTemplates = templates.templates.filter { it.templateId.startsWith("journal_correlation_") }
         assertEquals("the nine EPIC-29 templates", 9, correlationTemplates.size)
         val known = setOf("behavior", "score", "n", "nWith", "nWithout", "days",
-                          "delta", "ciLow", "ciHigh", "confidence", "iterations")
+                          "nPhrase", "nWithPhrase", "delta", "ciLow", "ciHigh", "confidence", "iterations")
         for (template in correlationTemplates) {
             assertEquals("journal", template.metricFamily)
             assertTrue("${template.templateId} has no English", template.textEn.isNotBlank())

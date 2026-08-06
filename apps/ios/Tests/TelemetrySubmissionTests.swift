@@ -1,12 +1,14 @@
+import CryptoKit
 import XCTest
 @testable import BADAN
 
-/// ADR-0011 / D-37 — consent, timing, collection and the local record.
+/// ADR-0011 / D-37 — consent, timing, collection, the wire, and the local record.
 ///
 /// The payload boundary itself is `TelemetryPayloadSchemaTests`. What is covered HERE is everything
 /// around it: that nothing sends without an explicit opt-in, that the moment of transmission cannot
 /// be read back to the moment of disagreement, that the floor holds at collection as well as at
-/// serialisation, and that the user's own record of what left is written before it leaves.
+/// serialisation, that the bytes a real client puts on the wire are the bytes the server decodes,
+/// and that the user's own record says what actually happened to each submission.
 final class TelemetrySubmissionTests: XCTestCase {
     var tempDir: URL!
     var db: Database!
@@ -169,10 +171,72 @@ final class TelemetrySubmissionTests: XCTestCase {
         XCTAssertEqual(sources.filter { $0.algorithmId == "composite.readiness_score" }.first?.eventCount, 12)
     }
 
+    // MARK: - The wire
+    //
+    // Everything below this line exists because nothing above it did. The key id shipped
+    // double-base64-encoded — `Data(keyId.utf8).base64EncodedString()`, base64 of the 44 ASCII
+    // characters of a base64 string — so the server decoded 44 bytes, hexed them, and the
+    // `attested_keys` primary-key lookup could never hit. EVERY submission from EVERY install 401'd
+    // for the life of the feature, and no test on either side ever exercised the encoding a real
+    // client produces. These do.
+
+    /// The one that would have caught it: base64-decode the wire field the way the server does and
+    /// assert the raw 32 bytes come back.
+    func testTheWireKeyIdIsWhatTheServerLooksUp() async throws {
+        let transport = MockFootprintTransport(responses: [.status(200)])
+        try await makeClient(transport: transport).submit(sampleBatch())
+
+        let wire = try wireObject(from: transport)
+        let keyIdField = try XCTUnwrap(wire["keyId"] as? String)
+
+        // `_decode_base64(body.keyId)` on the server, then `raw.hex()` as the primary key.
+        XCTAssertEqual(Data(base64Encoded: keyIdField), Self.rawKeyId, """
+            The wire key id does not decode to the raw App Attest key id, so the server's \
+            attested_keys lookup cannot hit and every submission answers 401. \
+            DCAppAttestService vends the key id already base64-encoded — it goes out unchanged, \
+            exactly as AICoachClient sends it to /v2/register.
+            """)
+        XCTAssertEqual(keyIdField, Self.sampleKeyId, "the key id must go out verbatim")
+        XCTAssertNotEqual(keyIdField, Data(Self.sampleKeyId.utf8).base64EncodedString(),
+                          "this is the shipped bug: base64 of the base64 string")
+    }
+
+    /// The assertion is over the exact bytes of `clientData`, and `clientData` is the batch itself
+    /// — that binding is what stops a captured assertion vouching for different content, and the
+    /// server re-derives it, so both halves have to be on the wire in the form it expects.
+    func testTheAssertionAndClientDataAreBase64OfTheExactBatchBytes() async throws {
+        let transport = MockFootprintTransport(responses: [.status(200)])
+        let attestor = MockAICoachAttestor(keyId: Self.sampleKeyId)
+        let batch = sampleBatch()
+        try await makeClient(transport: transport, attestor: attestor).submit(batch)
+
+        let wire = try wireObject(from: transport)
+        let clientData = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(wire["clientData"] as? String)))
+        XCTAssertEqual(try JSONDecoder().decode(FootprintBatch.self, from: clientData), batch,
+                       "clientData must be the batch's own bytes, not a nonce")
+        XCTAssertEqual(attestor.capturedClientDataHash, Data(SHA256.hash(data: clientData)),
+                       "the assertion must be over the bytes actually sent")
+        XCTAssertEqual(Data(base64Encoded: try XCTUnwrap(wire["assertion"] as? String)),
+                       attestor.stubAssertion)
+    }
+
+    /// `FootprintBatchRequest` on the server is `extra="forbid"`, so an extra field is a rejected
+    /// request rather than an ignored one — and a missing one is a 422. Pin the set.
+    func testTheWireObjectCarriesExactlyTheFieldsTheServerAccepts() async throws {
+        let transport = MockFootprintTransport(responses: [.status(200)])
+        try await makeClient(transport: transport).submit(sampleBatch())
+
+        XCTAssertEqual(Set(try wireObject(from: transport).keys),
+                       ["schemaVersion", "appVersion", "contractVersion", "footprints",
+                        "keyId", "assertion", "clientData"],
+                       "backend/api's FootprintBatchRequest forbids extra fields and requires "
+                       + "all of these")
+    }
+
     // MARK: - The local record
 
     /// The "What has been sent" screen can never be less complete than what actually left, which is
-    /// why the log is written BEFORE the request rather than after a success.
+    /// why the attempt is written BEFORE the request rather than after a success.
     func testTheSubmissionLogRecordsTheBatchVerbatim() throws {
         let log = SubmissionLog(defaults: defaults)
         let batch = FootprintBatch(appVersion: "1.1", contractVersion: "0.2.0", footprints: [
@@ -180,7 +244,7 @@ final class TelemetrySubmissionTests: XCTestCase {
                       algorithmSemver: "2.0.0", direction: .under,
                       eventCountBucket: .twentyToFortyNine, calibrationApplied: false),
         ])
-        log.record(batch)
+        log.recordAttempt(batch)
 
         let entries = log.all()
         XCTAssertEqual(entries.count, 1)
@@ -192,8 +256,8 @@ final class TelemetrySubmissionTests: XCTestCase {
     func testTheSubmissionLogIsNewestFirstAndBounded() {
         let log = SubmissionLog(defaults: defaults)
         for index in 0..<(SubmissionLog.maxEntries + 25) {
-            log.record(FootprintBatch(appVersion: "1.\(index)", contractVersion: "0.2.0",
-                                      footprints: [sampleFootprint()]))
+            log.recordAttempt(FootprintBatch(appVersion: "1.\(index)", contractVersion: "0.2.0",
+                                             footprints: [sampleFootprint()]))
         }
         let entries = log.all()
         XCTAssertEqual(entries.count, SubmissionLog.maxEntries, "the log must be bounded")
@@ -203,14 +267,220 @@ final class TelemetrySubmissionTests: XCTestCase {
 
     func testClearingTheLogEmptiesIt() {
         let log = SubmissionLog(defaults: defaults)
-        log.record(FootprintBatch(appVersion: "1.1", contractVersion: "0.2.0",
-                                  footprints: [sampleFootprint()]))
+        log.recordAttempt(FootprintBatch(appVersion: "1.1", contractVersion: "0.2.0",
+                                         footprints: [sampleFootprint()]))
         XCTAssertFalse(log.all().isEmpty)
         log.clear()
         XCTAssertTrue(log.all().isEmpty)
     }
 
+    /// A submission the server answered 2xx to is the only one that may be called sent.
+    func testAnAcceptedSubmissionIsRecordedAsConfirmed() async throws {
+        let log = SubmissionLog(defaults: defaults)
+        try await makeClient(transport: MockFootprintTransport(responses: [.status(200)])).submit(sampleBatch())
+
+        XCTAssertEqual(log.all().count, 1)
+        XCTAssertEqual(log.all().first?.state, .confirmed)
+        XCTAssertEqual(log.all().first?.attempts, 1)
+    }
+
+    /// The transparency bug: the log was written before the send and never corrected, so a batch
+    /// the server refused was listed on "What has been sent" as though it had been.
+    func testASubmissionTheServerRefusedIsNotReportedAsSent() async {
+        let log = SubmissionLog(defaults: defaults)
+        let client = makeClient(transport: MockFootprintTransport(responses: [.status(401)]))
+
+        do {
+            try await client.submit(sampleBatch())
+            XCTFail("expected .serverError(401)")
+        } catch FootprintClientError.serverError(let status) {
+            XCTAssertEqual(status, 401)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        XCTAssertTrue(log.all().isEmpty, """
+            A batch the server refused was listed under "What has been sent". Nothing was stored on \
+            the other end, so claiming it as sent is the same class of untruth as omitting one that \
+            was — see ADR-0011.
+            """)
+        // Not deleted, though: the attempt happened and the device's own record keeps it.
+        XCTAssertEqual(log.allIncludingRejected().first?.state, .rejected)
+    }
+
+    /// Without a response there is no way to know whether the bytes arrived, so the entry stays
+    /// `pending` and is still shown — guessing "rejected" would understate what left the device.
+    func testATransportFailureLeavesTheRecordPendingRatherThanGuessing() async {
+        let log = SubmissionLog(defaults: defaults)
+        let client = makeClient(transport: MockFootprintTransport(responses: [.throwing]))
+
+        do {
+            try await client.submit(sampleBatch())
+            XCTFail("expected the transport error to propagate")
+        } catch {
+            // expected
+        }
+        XCTAssertEqual(log.all().first?.state, .pending)
+    }
+
+    /// The unbounded half of the same defect: under a permanent rejection the identical batch was
+    /// re-submitted on every background wake and wrote a fresh phantom record each time.
+    func testRetryingTheSameBatchUpdatesOneRecordRatherThanAppendingOnePerWake() async {
+        let log = SubmissionLog(defaults: defaults)
+        let client = makeClient(transport: MockFootprintTransport(responses: [], fallback: .status(401)))
+
+        for _ in 0..<5 { _ = try? await client.submit(sampleBatch()) }
+
+        XCTAssertEqual(log.allIncludingRejected().count, 1,
+                       "five attempts at one batch are one submission, retried — not five")
+        XCTAssertEqual(log.allIncludingRejected().first?.attempts, 5)
+        XCTAssertTrue(log.all().isEmpty, "and none of them may be reported as sent")
+    }
+
+    /// Builds up to v1.1(5) wrote entries with no `state` and no `attempts`. `all()` decodes the
+    /// whole array or nothing, so a strict decoder would have emptied the user's record of every
+    /// submission the moment they updated.
+    func testALegacyLogEntryWrittenBeforeStateExistedStillReads() throws {
+        let legacy: [[String: Any]] = [[
+            "id": "legacy-1",
+            "sentAt": 700_000_000.0,
+            "batch": try JSONSerialization.jsonObject(with: JSONEncoder().encode(sampleBatch())),
+        ]]
+        defaults.set(try JSONSerialization.data(withJSONObject: legacy),
+                     forKey: "badan.telemetry.submissionLog")
+
+        let entries = SubmissionLog(defaults: defaults).all()
+        XCTAssertEqual(entries.count, 1, "an older log must survive the upgrade")
+        XCTAssertEqual(entries.first?.state, .pending,
+                       "nothing ever reconciled it, so 'we do not know' is what is true of it")
+        XCTAssertEqual(entries.first?.batch, sampleBatch())
+    }
+
+    // MARK: - Retry backoff
+
+    /// A failure used to leave the due date in the past, so the next wake — and every wake after it
+    /// — re-sent immediately. nginx allows `/v1/footprints` 2r/h.
+    func testAFailedSubmissionIsNotDueAgainOnTheVeryNextWake() {
+        let scheduler = FootprintScheduler(defaults: defaults)
+        scheduler.scheduleIfNeeded(now: clock.now(), randomIn: { $0.lowerBound })
+        let due = clock.now().addingTimeInterval(FootprintScheduler.minimumDelay)
+        XCTAssertTrue(scheduler.isDue(now: due))
+
+        scheduler.recordFailure(now: due)
+        XCTAssertFalse(scheduler.isDue(now: due.addingTimeInterval(60)),
+                       "a wake a minute later must not re-send")
+        XCTAssertTrue(scheduler.isDue(now: due.addingTimeInterval(FootprintScheduler.minimumRetryDelay + 1)))
+        XCTAssertNotNil(scheduler.dueAt(), "backing off must not drop the batch")
+    }
+
+    func testTheRetryBackoffDoublesAndIsCappedAtADay() {
+        XCTAssertEqual(FootprintScheduler.retryDelay(afterFailures: 1), 3600)
+        XCTAssertEqual(FootprintScheduler.retryDelay(afterFailures: 2), 2 * 3600)
+        XCTAssertEqual(FootprintScheduler.retryDelay(afterFailures: 3), 4 * 3600)
+        XCTAssertEqual(FootprintScheduler.retryDelay(afterFailures: 6), 24 * 3600)
+        XCTAssertEqual(FootprintScheduler.retryDelay(afterFailures: 500),
+                       FootprintScheduler.maximumRetryDelay,
+                       "an unbounded exponent reaches infinity, which would be written as a date")
+    }
+
+    func testASuccessfulSubmissionResetsTheBackoffRatherThanInheritingIt() {
+        let scheduler = FootprintScheduler(defaults: defaults)
+        scheduler.recordFailure(now: clock.now())
+        scheduler.recordFailure(now: clock.now())
+        XCTAssertEqual(scheduler.consecutiveFailures(), 2)
+
+        scheduler.clear()
+        XCTAssertEqual(scheduler.consecutiveFailures(), 0)
+        XCTAssertNil(scheduler.dueAt())
+    }
+
+    // MARK: - The background wake's step
+
+    /// End to end for the wake: a batch the server will never accept must be tried once, then left
+    /// alone until the backoff elapses.
+    func testAPermanentlyRejectedBatchIsNotResubmittedOnEveryWake() async {
+        let transport = MockFootprintTransport(responses: [], fallback: .status(401))
+        let scheduler = FootprintScheduler(defaults: defaults)
+        scheduler.scheduleIfNeeded(now: clock.now(), randomIn: { $0.lowerBound })
+        let runner = TelemetrySubmissionRunner(client: makeClient(transport: transport),
+                                               scheduler: scheduler, makeBatch: { self.sampleBatch() })
+
+        var now = clock.now().addingTimeInterval(FootprintScheduler.minimumDelay)
+        var outcomes: [TelemetrySubmissionRunner.Outcome] = []
+        // Ten wakes over the next five hours, which is roughly what an active device gets.
+        for _ in 0..<10 {
+            outcomes.append(await runner.run(now: now))
+            now = now.addingTimeInterval(30 * 60)
+        }
+
+        XCTAssertEqual(outcomes.first, .failed)
+        XCTAssertEqual(transport.captured.count, 3, """
+            A permanently failing submission must not re-send on every wake: nginx rate-limits \
+            /v1/footprints to 2r/h, and this batch is never going to be accepted. Expected the \
+            1h/2h/4h backoff to allow three attempts in five hours.
+            """)
+    }
+
+    /// N-5: the send used to be an unawaited `Task` fired from a `BGTask` body, so suspension could
+    /// kill it after the log had recorded the attempt and before anything reconciled the answer.
+    /// A delayed transport is what makes "did the caller actually wait" observable.
+    func testRunBlockingDoesNotReturnBeforeTheSubmissionIsReconciled() {
+        let transport = MockFootprintTransport(responses: [.status(200)], delayMilliseconds: 80)
+        let scheduler = FootprintScheduler(defaults: defaults)
+        scheduler.scheduleIfNeeded(now: clock.now(), randomIn: { $0.lowerBound })
+        let log = SubmissionLog(defaults: defaults)
+        let runner = TelemetrySubmissionRunner(client: makeClient(transport: transport),
+                                               scheduler: scheduler, makeBatch: { self.sampleBatch() })
+
+        let outcome = runner.runBlocking(now: clock.now().addingTimeInterval(FootprintScheduler.minimumDelay))
+
+        XCTAssertEqual(outcome, .sent)
+        XCTAssertNil(scheduler.dueAt(), "the schedule must be cleared before the wake returns")
+        XCTAssertEqual(log.all().first?.state, .confirmed,
+                       "the record must be reconciled before the wake returns — after it, iOS may "
+                       + "have suspended the process")
+    }
+
+    func testTheWakeSendsNothingBeforeTheBatchIsDue() async {
+        let transport = MockFootprintTransport(responses: [.status(200)])
+        let scheduler = FootprintScheduler(defaults: defaults)
+        scheduler.scheduleIfNeeded(now: clock.now(), randomIn: { $0.lowerBound })
+        let runner = TelemetrySubmissionRunner(client: makeClient(transport: transport),
+                                               scheduler: scheduler, makeBatch: { self.sampleBatch() })
+
+        let outcome = await runner.run(now: clock.now())
+        XCTAssertEqual(outcome, .notDue)
+        XCTAssertTrue(transport.captured.isEmpty)
+    }
+
     // MARK: - Helpers
+
+    /// The raw 32-byte App Attest key id, and the base64 string `DCAppAttestService.generateKey`
+    /// vends for it. The server decodes the wire field and looks up `raw.hex()`, so these two are
+    /// the whole of what `testTheWireKeyIdIsWhatTheServerLooksUp` is about.
+    private static let rawKeyId = Data((0..<32).map { UInt8(($0 &* 7 &+ 3) % 251) })
+    private static let sampleKeyId = rawKeyId.base64EncodedString()
+
+    private func makeClient(transport: FootprintTransporting,
+                            attestor: MockAICoachAttestor? = nil) -> FootprintClient {
+        FootprintClient(transport: transport,
+                        attestor: attestor ?? MockAICoachAttestor(keyId: Self.sampleKeyId),
+                        attestKeys: InMemoryAICoachAttestKeyStore(Self.sampleKeyId),
+                        baseURL: URL(string: "https://telemetry.test")!,
+                        log: SubmissionLog(defaults: defaults))
+    }
+
+    private func wireObject(from transport: MockFootprintTransport) throws -> [String: Any] {
+        let request = try XCTUnwrap(transport.captured.first)
+        XCTAssertEqual(request.url?.absoluteString, "https://telemetry.test/v1/footprints")
+        XCTAssertEqual(request.httpMethod, "POST")
+        return try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
+    }
+
+    private func sampleBatch() -> FootprintBatch {
+        FootprintBatch(appVersion: "1.1", contractVersion: "0.2.0", footprints: [sampleFootprint()])
+    }
 
     private func sampleFootprint() -> Footprint {
         Footprint(metricId: "readiness.score", algorithmId: "composite.readiness_score",
@@ -227,6 +497,55 @@ final class TelemetrySubmissionTests: XCTestCase {
                 periodKey: "day:offset-\(dayOffset + index)", derivedValueId: "dv-\(index)",
                 algorithmId: algorithmId, algorithmVersion: "2.0.0",
                 direction: direction, createdAt: clock.now()))
+        }
+    }
+}
+
+/// Scripted `FootprintTransporting`, the telemetry twin of `MockAICoachTransport`.
+///
+/// Two differences earn their keep. `fallback` repeats after the script runs out, because "the
+/// server refuses this forever" is exactly the condition the retry path exists for and a script
+/// that ends can't express it. `delayMilliseconds` makes "did the caller actually wait for the
+/// answer" observable, which is the whole of the N-5 fix.
+final class MockFootprintTransport: FootprintTransporting, @unchecked Sendable {
+    enum Response {
+        case status(Int)
+        case throwing
+    }
+
+    private let lock = NSLock()
+    private var responses: [Response]
+    private let fallback: Response
+    private let delayMilliseconds: Int
+    private var requests: [URLRequest] = []
+
+    var captured: [URLRequest] {
+        lock.lock(); defer { lock.unlock() }
+        return requests
+    }
+
+    init(responses: [Response], fallback: Response = .throwing, delayMilliseconds: Int = 0) {
+        self.responses = responses
+        self.fallback = fallback
+        self.delayMilliseconds = delayMilliseconds
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if delayMilliseconds > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
+        }
+        lock.lock()
+        requests.append(request)
+        let response = responses.isEmpty ? fallback : responses.removeFirst()
+        lock.unlock()
+
+        switch response {
+        case .status(let status):
+            let http = HTTPURLResponse(url: request.url!, statusCode: status,
+                                       httpVersion: nil, headerFields: nil)!
+            return (Data("{\"accepted\":1}".utf8), http)
+        case .throwing:
+            throw URLError(.notConnectedToInternet)
         }
     }
 }

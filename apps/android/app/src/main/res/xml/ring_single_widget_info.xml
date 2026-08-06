@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EPIC-33 — `ring_single`: the Readiness ring. Mirrors iOS's RingSingleWidget, which ships as a
+  `.systemSmall` Home Screen widget, so the Android target is the 2x2 cell that is the closest
+  equivalent the launcher grid offers.
+
+  See ring_single's <receiver> in AndroidManifest.xml for why these five providers exist now, ahead
+  of the Glance dependency, and why swapping the receiver's superclass later leaves this file
+  untouched.
+
+  `updatePeriodMillis="0"` disables the platform's own alarm-driven refresh. It is not "never
+  update": the floor the platform enforces is 30 minutes regardless of what is asked for, and it
+  wakes the app on a schedule BADAN does not control. Widgets are refreshed instead from the same
+  places the data actually changes — the ingestion pipeline and the WorkManager sync — which is
+  both cheaper and the only way a widget can be correct within seconds of a new reading rather than
+  within half an hour of one.
+
+  `widgetCategory` is `home_screen` alone. iOS's Lock Screen / StandBy accessory families have no
+  Android counterpart — keyguard widgets left the platform after API 21 — and the honest Android
+  surface for the same need is the Wear tile set (see wear_tile_* in strings.xml).
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:resizeMode="none"
+    android:widgetCategory="home_screen"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_initial_loading"
+    android:description="@string/widget_ring_single_description"
+    tools:targetApi="31" />

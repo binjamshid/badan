@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EPIC-33 — `meds_due`: medications due soon. iOS restricts this one to `.systemSmall` ONLY, and
+  the restriction is deliberate rather than a layout limit — a bigger surface invites listing more
+  of a user's medication schedule on an unlocked-but-unattended home screen than the glance is
+  worth. Android matches it: 2x2, not resizable.
+
+  See ring_single_widget_info.xml for the reasoning shared by all five providers.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:resizeMode="none"
+    android:widgetCategory="home_screen"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_initial_loading"
+    android:description="@string/widget_meds_due_description"
+    tools:targetApi="31" />

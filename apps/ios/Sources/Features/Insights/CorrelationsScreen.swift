@@ -33,6 +33,12 @@ struct CorrelationsReadModel: Hashable {
     var minDaysPerArm: Int
 
     var isEmpty: Bool { findings.isEmpty && notYet.isEmpty }
+
+    /// The denominator behind the list. `CorrelationEngine.recompute` emits exactly one outcome per
+    /// (behaviour, score) pair it evaluates — every behaviour the journal names against every score
+    /// in `MetricID.correlatedScores` — so these two counts ARE the run, not an estimate of it.
+    var comparisonsRun: Int { findings.count + notYet.count }
+    var comparisonsCleared: Int { findings.count }
 }
 
 // MARK: - Presentation (pure, testable)
@@ -233,7 +239,7 @@ final class CorrelationsViewModel {
 
 /// EPIC-29 — the correlations list. **The refusal is the product.**
 ///
-/// Three things are on this screen that a "what affects my sleep" feature usually leaves off:
+/// Four things are on this screen that a "what affects my sleep" feature usually leaves off:
 ///
 /// * **Below-gate pairs are shown as shortfalls, not teasers.** A behaviour with nine logged days
 ///   gets "about five more days would let this be looked at" and no number, no bar, no direction.
@@ -242,6 +248,10 @@ final class CorrelationsViewModel {
 /// * **"Association, not cause" is on every card**, in both languages, including the shortfall
 ///   cards — `CorrelationRenderer` attaches it to every outcome it can produce, so no caller can
 ///   forget it.
+/// * **The denominator is on screen.** One run evaluates every journaled behaviour against every
+///   correlated score, and no familywise or false-discovery adjustment is applied to any of them —
+///   so how many comparisons were made is part of reading any single one, and a screen that lists
+///   only the survivors without saying how many were tried overstates each of them.
 ///
 /// Casual is one sentence plus a confidence word. Power adds n, the effect size and the interval as
 /// numbers. Both read the same `CorrelationFinding` (D-5) — there is no second computation for the
@@ -286,6 +296,11 @@ struct CorrelationsScreen: View {
                 .foregroundStyle(BadanColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Text(denominatorText(model))
+                .font(BadanFont.caption)
+                .foregroundStyle(BadanColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             if !model.findings.isEmpty {
                 VStack(alignment: .leading, spacing: BadanSpace.space3) {
                     SectionHeader(CorrelationsStrings.findingsHeader, language: env.language)
@@ -308,6 +323,21 @@ struct CorrelationsScreen: View {
                 }
             }
         }
+    }
+
+    /// How many comparisons this run made, and how many of them cleared the gates.
+    ///
+    /// The engine is scrupulous internally — `CorrelationMath.confidence` is documented as not a
+    /// p-value and never to be rendered as one — and this line is that same scruple carried into
+    /// the presentation layer, which is where the reader actually needs it. Nothing here corrects
+    /// for the number of comparisons, so the number of comparisons is disclosed instead: it is
+    /// stated as two plain counts, never as a threshold or an adjusted figure, because no
+    /// adjustment was applied and implying one would be the same overreach in the other direction.
+    private func denominatorText(_ model: CorrelationsReadModel) -> String {
+        env.s(CorrelationsStrings.denominatorNote.filling([
+            "total": env.format.integer(model.comparisonsRun),
+            "cleared": env.format.integer(model.comparisonsCleared),
+        ]))
     }
 
     /// The published gates, stated as numbers. Plan §16's mitigation for overtrust is "minimum-n
@@ -504,6 +534,12 @@ enum CorrelationsStrings {
     static let gateNote = LocalizedString(
         en: "A comparison needs at least {n} logged days and at least {arm} days on each side — with the behaviour and without it. Below that, nothing is shown at all.",
         ar: "تحتاج المقارنة إلى {n} يوماً مسجّلاً على الأقل و{arm} أيام على الأقل في كل جهة — مع السلوك وبدونه. ودون ذلك لا يُعرض شيء إطلاقاً.")
+    /// The denominator line. Said in counts and in the screen's own voice — no "multiple
+    /// comparisons", no corrected threshold, because none was computed and naming a correction the
+    /// app did not perform would be its own overstatement.
+    static let denominatorNote = LocalizedString(
+        en: "Each time this screen opens it checks every behaviour you tag against every score — {total} pairs this time, and {cleared} of them had enough days to be compared. With that many looked at side by side, a few will line up by coincidence, so any one of them is somewhere to keep watching rather than a settled answer.",
+        ar: "في كل مرة تُفتح فيها هذه الشاشة يُفحص كل سلوك تسجّله مقابل كل مؤشر — {total} زوجاً هذه المرة، توفرت لـ{cleared} منها أيام كافية للمقارنة. وحين يُنظر في هذا العدد جنباً إلى جنب، يتوافق بعضها بمحض المصادفة، لذا يبقى أي زوج منها موضعاً لمواصلة الملاحظة، لا إجابة نهائية.")
     static let emptyTitle = LocalizedString(en: "Nothing to compare yet", ar: "لا شيء للمقارنة بعد")
     static let emptyMessage = LocalizedString(
         en: "Tag a few days in the journal. Once a behaviour has enough days on both sides, its comparison appears here.",
