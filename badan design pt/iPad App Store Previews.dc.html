@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Cairo:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+body { margin: 0; background: #EDEDE8; }
+a { color: #157A6E; }
+a:hover { color: #0F5A51; }
+</style>
+</helmet>
+
+<div style="padding:120px 120px 200px;display:flex;flex-direction:column;gap:150px;font-family:'IBM Plex Sans',-apple-system,Helvetica,sans-serif">
+
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div style="font:600 64px/1 'IBM Plex Sans',sans-serif;color:#17191C;letter-spacing:-0.02em">iPad App Store preview frames</div>
+    <div style="font:400 28px/1.5 'IBM Plex Sans',sans-serif;color:#5C636D">2048 × 2732 — iPad Pro 12.9" portrait. Six English frames, five Arabic (RTL) frames from the screenshots supplied.</div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:44px">
+    <div style="display:flex;align-items:center;gap:24px">
+      <div style="font:600 34px/1 'IBM Plex Sans',sans-serif;color:#17191C;letter-spacing:.14em">ENGLISH</div>
+      <div style="height:2px;flex:1;background:#DBDBD4"></div>
+    </div>
+    <div style="display:flex;gap:72px;align-items:flex-start">
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">01 · TODAY</div>
+        <div id="ipad-en-1" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div style="position:absolute;top:0;left:0;right:0;height:620px;padding:150px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:30px">
+            <div style="font:600 96px/1.06 'IBM Plex Sans',sans-serif;color:#FFFFFF;letter-spacing:-0.025em;text-wrap:balance">Your baseline. Not the average.</div>
+            <div style="font:400 44px/1.4 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.84);text-wrap:pretty">Readiness and effort scored against your own 14-day range.</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0717 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">02 · YOUR BODY</div>
+        <div id="ipad-en-2" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div style="position:absolute;top:0;left:0;right:0;height:620px;padding:150px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:30px">
+            <div style="font:600 96px/1.06 'IBM Plex Sans',sans-serif;color:#FFFFFF;letter-spacing:-0.025em;text-wrap:balance">Every system, in one view.</div>
+            <div style="font:400 44px/1.4 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.84);text-wrap:pretty">Sleep, heart, activity, respiratory — each with your usual range on the card.</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0718 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">03 · LOG</div>
+        <div id="ipad-en-3" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div style="position:absolute;top:0;left:0;right:0;height:620px;padding:150px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:30px">
+            <div style="font:600 96px/1.06 'IBM Plex Sans',sans-serif;color:#FFFFFF;letter-spacing:-0.025em;text-wrap:balance">Log what the sensors can't see.</div>
+            <div style="font:400 44px/1.4 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.84);text-wrap:pretty">Symptoms, medication, workouts, labs, hydration — in two taps.</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0719 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">04 · INSIGHTS</div>
+        <div id="ipad-en-4" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div style="position:absolute;top:0;left:0;right:0;height:620px;padding:150px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:30px">
+            <div style="font:600 96px/1.06 'IBM Plex Sans',sans-serif;color:#FFFFFF;letter-spacing:-0.025em;text-wrap:balance">Insights that show their work.</div>
+            <div style="font:400 44px/1.4 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.84);text-wrap:pretty">Plain readings against your usual range, plus correlations with the behaviours you tag.</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0720 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">05 · METRIC DETAIL</div>
+        <div id="ipad-en-5" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div style="position:absolute;top:0;left:0;right:0;height:620px;padding:150px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:30px">
+            <div style="font:600 96px/1.06 'IBM Plex Sans',sans-serif;color:#FFFFFF;letter-spacing:-0.025em;text-wrap:balance">Thirty days, with your band drawn in.</div>
+            <div style="font:400 44px/1.4 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.84);text-wrap:pretty">Every metric opens to its trend, its definition, and how it was worked out.</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0721 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">06 · PRIVACY</div>
+        <div id="ipad-en-6" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#0E3F39;flex:none;display:flex;flex-direction:column;justify-content:space-between;padding:260px 150px 220px;box-sizing:border-box">
+          <div style="display:flex;flex-direction:column;gap:56px">
+            <img src="assets/badan-icon.png" alt="badan" style="width:260px;height:260px;border-radius:58px;display:block" />
+            <div style="font:600 132px/1.02 'IBM Plex Sans',sans-serif;color:#FFFFFF;letter-spacing:-0.03em;text-wrap:balance">100% on the device.</div>
+            <div style="font:400 54px/1.42 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.78);text-wrap:pretty">No account. No cloud. Nothing leaves your iPad unless you export it yourself.</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:24px">
+            <div style="height:2px;background:rgba(255,255,255,0.18)"></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:24px">
+              <div style="font:600 70px/1 'IBM Plex Sans',sans-serif;color:#F3D9A6;letter-spacing:.02em">badan</div>
+              <div style="font:500 64px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.8)" dir="rtl">صحتك في يدك</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:44px">
+    <div style="display:flex;align-items:center;gap:24px">
+      <div style="font:600 34px/1 'Cairo',sans-serif;color:#17191C">العربية · ARABIC (RTL)</div>
+      <div style="height:2px;flex:1;background:#DBDBD4"></div>
+    </div>
+    <div style="display:flex;gap:72px;align-items:flex-start">
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">01 · اليوم</div>
+        <div id="ipad-ar-1" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div dir="rtl" style="position:absolute;top:0;left:0;right:0;height:620px;padding:140px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:22px">
+            <div style="font:700 98px/1.32 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">خطك الأساسي لا المعدّل</div>
+            <div style="font:400 48px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.86);text-wrap:pretty">الجاهزية والجهد على نطاقك أنت</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0722 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">02 · جسمك</div>
+        <div id="ipad-ar-2" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div dir="rtl" style="position:absolute;top:0;left:0;right:0;height:620px;padding:140px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:22px">
+            <div style="font:700 98px/1.32 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">أنظمة جسمك في شاشة واحدة</div>
+            <div style="font:400 48px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.86);text-wrap:pretty">النوم والقلب والنشاط والتنفّس</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0723 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">03 · تسجيل</div>
+        <div id="ipad-ar-3" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div dir="rtl" style="position:absolute;top:0;left:0;right:0;height:620px;padding:140px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:22px">
+            <div style="font:700 98px/1.32 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">سجّل ما لا تراه المستشعرات</div>
+            <div style="font:400 48px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.86);text-wrap:pretty">الأعراض والدواء والتمرين والمختبر</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0724 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">04 · ملاحظات</div>
+        <div id="ipad-ar-4" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#157A6E;flex:none">
+          <div dir="rtl" style="position:absolute;top:0;left:0;right:0;height:620px;padding:140px 130px 0;box-sizing:border-box;display:flex;flex-direction:column;gap:22px">
+            <div style="font:700 98px/1.32 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">ملاحظات تشرح طريقتها</div>
+            <div style="font:400 48px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.86);text-wrap:pretty">سلوكك اليوم مقابل مؤشرات غدك</div>
+          </div>
+          <div style="position:absolute;left:262px;top:720px;width:1524px;border-radius:96px;background:#B9B4AC;padding:8px;box-sizing:border-box;box-shadow:0 44px 90px rgba(0,0,0,0.28)">
+            <div style="border-radius:90px;background:#0B0B0C;padding:34px;box-sizing:border-box">
+              <div style="position:relative;width:1440px;height:1921px;border-radius:58px;overflow:hidden;background:#FAFAF8">
+                <img src="uploads/IMG_0725 2.PNG" alt="" style="position:absolute;left:-21px;top:-56px;width:1482px;height:1977px" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:22px;flex:none">
+        <div style="font:500 26px/1 'IBM Plex Sans',sans-serif;color:#5C636D;letter-spacing:.16em">05 · الخصوصية</div>
+        <div id="ipad-ar-5" dir="rtl" style="position:relative;width:2048px;height:2732px;overflow:hidden;background:#0E3F39;flex:none;display:flex;flex-direction:column;justify-content:space-between;padding:260px 150px 220px;box-sizing:border-box">
+          <div style="display:flex;flex-direction:column;gap:56px">
+            <img src="assets/badan-icon.png" alt="بدن" style="width:260px;height:260px;border-radius:58px;display:block" />
+            <div style="font:700 130px/1.28 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">كل شيء على جهازك</div>
+            <div style="font:400 56px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.8);text-wrap:pretty">بلا حساب وبلا سحابة. لا تغادر بياناتك جهازك إلا إذا صدّرتها بنفسك.</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:24px">
+            <div style="height:2px;background:rgba(255,255,255,0.18)"></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:24px">
+              <div style="font:700 86px/1.4 'Cairo',sans-serif;color:#F3D9A6">بدن</div>
+              <div style="font:400 64px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.8)">صحتك في يدك</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+</x-dc>
+</body>
+</html>

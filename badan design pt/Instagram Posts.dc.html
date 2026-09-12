@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Cairo:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+body { margin: 0; background: #EDEDE8; }
+a { color: #157A6E; }
+a:hover { color: #0F5A51; }
+</style>
+</helmet>
+
+<div style="padding:100px 100px 180px;display:flex;flex-direction:column;gap:64px;font-family:'IBM Plex Sans',-apple-system,Helvetica,sans-serif">
+
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div style="font:600 56px/1 'IBM Plex Sans',sans-serif;color:#17191C;letter-spacing:-0.02em">Instagram · 9-post launch grid</div>
+    <div style="font:400 26px/1.5 'IBM Plex Sans',sans-serif;color:#5C636D">1080 × 1080. Arabic headline + English subline on every post. Reads as a checkerboard down the profile grid.</div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,1080px);gap:48px">
+
+    <div id="ig-1" style="width:1080px;height:1080px;background:#0E3F39;box-sizing:border-box;padding:96px;display:flex;flex-direction:column;justify-content:space-between">
+      <img src="assets/badan-icon.png" alt="بدن" style="width:184px;height:184px;border-radius:42px;display:block" />
+      <div style="display:flex;flex-direction:column;gap:24px" dir="rtl">
+        <div style="font:700 140px/1.2 'Cairo',sans-serif;color:#FFFFFF">بدن</div>
+        <div style="font:500 62px/1.4 'Cairo',sans-serif;color:#F3D9A6">صحتك في يدك</div>
+        <div dir="ltr" style="font:400 34px/1.45 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.72)">Your health, in your hands. A private health instrument for iPhone.</div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;border-top:2px solid rgba(255,255,255,0.18);padding-top:26px">
+        <div style="font:500 32px/1 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.7)">@badan.app</div>
+        <div style="font:400 38px/1.5 'Cairo',sans-serif;color:rgba(255,255,255,0.7)">قريباً · Coming soon</div>
+      </div>
+    </div>
+
+    <div id="ig-2" style="width:1080px;height:1080px;background:#FAFAF8;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:84px 76px 40px;display:flex;flex-direction:column;gap:20px" dir="rtl">
+        <div style="font:700 82px/1.34 'Cairo',sans-serif;color:#17191C;text-wrap:balance">خطك الأساسي، لا المعدّل العام</div>
+        <div dir="ltr" style="font:400 34px/1.45 'IBM Plex Sans',sans-serif;color:#5C636D;text-wrap:pretty">Readiness scored against your own 14-day range.</div>
+      </div>
+      <div style="flex:1;position:relative;overflow:hidden;display:flex;justify-content:center">
+        <div style="width:692px;flex:none;border-radius:92px;background:#B9B4AC;padding:5px;box-sizing:border-box;box-shadow:0 24px 60px rgba(0,0,0,0.18)">
+          <div style="border-radius:87px;background:#0B0B0C;padding:11px;box-sizing:border-box">
+            <div style="position:relative;width:660px;height:1431px;border-radius:76px;overflow:hidden;background:#FAFAF8">
+              <img src="uploads/IMG_7799.PNG" alt="" style="display:block;width:660px;height:1431px" />
+              <div style="position:absolute;top:20px;left:244px;width:171px;height:49px;border-radius:25px;background:#000000"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ig-3" style="width:1080px;height:1080px;background:#0E3F39;box-sizing:border-box;padding:96px;display:flex;flex-direction:column;justify-content:center;gap:36px">
+      <div dir="rtl" style="font:700 110px/1.26 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">كل شيء على جهازك.</div>
+      <div style="font:400 38px/1.45 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.78);text-wrap:pretty">100% on-device. No account, no cloud — nothing leaves your phone unless you export it yourself.</div>
+      <div style="width:120px;height:6px;background:#F3D9A6"></div>
+    </div>
+
+    <div id="ig-4" style="width:1080px;height:1080px;background:#FAFAF8;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:84px 76px 40px;display:flex;flex-direction:column;gap:20px" dir="rtl">
+        <div style="font:700 82px/1.34 'Cairo',sans-serif;color:#17191C;text-wrap:balance">عربي أولاً، لا ترجمة لاحقة</div>
+        <div dir="ltr" style="font:400 34px/1.45 'IBM Plex Sans',sans-serif;color:#5C636D;text-wrap:pretty">Arabic-first with true RTL: chrome mirrors, charts stay LTR.</div>
+      </div>
+      <div style="flex:1;position:relative;overflow:hidden;display:flex;justify-content:center">
+        <div style="width:692px;flex:none;border-radius:92px;background:#B9B4AC;padding:5px;box-sizing:border-box;box-shadow:0 24px 60px rgba(0,0,0,0.18)">
+          <div style="border-radius:87px;background:#0B0B0C;padding:11px;box-sizing:border-box">
+            <div style="position:relative;width:660px;height:1431px;border-radius:76px;overflow:hidden;background:#FAFAF8">
+              <img src="uploads/IMG_7797.PNG" alt="" style="display:block;width:660px;height:1431px" />
+              <div style="position:absolute;top:20px;left:244px;width:171px;height:49px;border-radius:25px;background:#000000"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ig-5" style="width:1080px;height:1080px;background:#0E3F39;box-sizing:border-box;padding:96px;display:flex;flex-direction:column;justify-content:center;gap:36px">
+      <div dir="rtl" style="font:700 110px/1.26 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">بلا أحمر. بلا أحكام.</div>
+      <div style="font:400 38px/1.45 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.78);text-wrap:pretty">One calm amber marks out-of-range. Direction is an arrow and a word — never a verdict on you.</div>
+      <div style="display:flex;gap:20px;align-items:center">
+        <div style="background:#F3E3C4;color:#7A4F0A;font:500 32px/1 'IBM Plex Sans',sans-serif;padding:22px 30px;border-radius:14px">↑ Above your usual range</div>
+        <div style="background:#D7EFE0;color:#1B6B42;font:500 32px/1 'IBM Plex Sans',sans-serif;padding:22px 30px;border-radius:14px">✓ In your usual range</div>
+      </div>
+    </div>
+
+    <div id="ig-6" style="width:1080px;height:1080px;background:#FAFAF8;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:84px 76px 40px;display:flex;flex-direction:column;gap:20px" dir="rtl">
+        <div style="font:700 82px/1.34 'Cairo',sans-serif;color:#17191C;text-wrap:balance">ملاحظات تشرح طريقة حسابها</div>
+        <div dir="ltr" style="font:400 34px/1.45 'IBM Plex Sans',sans-serif;color:#5C636D;text-wrap:pretty">Every number carries its formula version, source and coverage.</div>
+      </div>
+      <div style="flex:1;position:relative;overflow:hidden;display:flex;justify-content:center">
+        <div style="width:692px;flex:none;border-radius:92px;background:#B9B4AC;padding:5px;box-sizing:border-box;box-shadow:0 24px 60px rgba(0,0,0,0.18)">
+          <div style="border-radius:87px;background:#0B0B0C;padding:11px;box-sizing:border-box">
+            <div style="position:relative;width:660px;height:1431px;border-radius:76px;overflow:hidden;background:#FAFAF8">
+              <img src="uploads/IMG_7803.PNG" alt="" style="display:block;width:660px;height:1431px" />
+              <div style="position:absolute;top:20px;left:244px;width:171px;height:49px;border-radius:25px;background:#000000"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ig-7" style="width:1080px;height:1080px;background:#0E3F39;box-sizing:border-box;padding:96px;display:flex;flex-direction:column;justify-content:center;gap:36px">
+      <div dir="rtl" style="font:700 110px/1.26 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">ما تفعله اليوم، ومؤشرات غدك.</div>
+      <div style="font:400 38px/1.45 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.78);text-wrap:pretty">Correlations between the behaviours you tag and your next-day scores — sleep, readiness, effort.</div>
+      <div style="width:120px;height:6px;background:#F3D9A6"></div>
+    </div>
+
+    <div id="ig-8" style="width:1080px;height:1080px;background:#FAFAF8;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:84px 76px 40px;display:flex;flex-direction:column;gap:20px" dir="rtl">
+        <div style="font:700 82px/1.34 'Cairo',sans-serif;color:#17191C;text-wrap:balance">أنظمة جسمك في شاشة واحدة</div>
+        <div dir="ltr" style="font:400 34px/1.45 'IBM Plex Sans',sans-serif;color:#5C636D;text-wrap:pretty">Sleep, readiness, heart, respiratory — grouped, with your usual range on every card.</div>
+      </div>
+      <div style="flex:1;position:relative;overflow:hidden;display:flex;justify-content:center">
+        <div style="width:692px;flex:none;border-radius:92px;background:#B9B4AC;padding:5px;box-sizing:border-box;box-shadow:0 24px 60px rgba(0,0,0,0.18)">
+          <div style="border-radius:87px;background:#0B0B0C;padding:11px;box-sizing:border-box">
+            <div style="position:relative;width:660px;height:1431px;border-radius:76px;overflow:hidden;background:#FAFAF8">
+              <img src="uploads/IMG_7795.PNG" alt="" style="display:block;width:660px;height:1431px" />
+              <div style="position:absolute;top:20px;left:244px;width:171px;height:49px;border-radius:25px;background:#000000"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ig-9" style="width:1080px;height:1080px;background:#0E3F39;box-sizing:border-box;padding:96px;display:flex;flex-direction:column;justify-content:space-between">
+      <div style="display:flex;flex-direction:column;gap:32px">
+        <div dir="rtl" style="font:700 116px/1.26 'Cairo',sans-serif;color:#FFFFFF;text-wrap:balance">قريباً على App&nbsp;Store</div>
+        <div style="font:400 38px/1.45 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.78)">Coming soon to iPhone, Apple Watch and widgets. English and Arabic at launch.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:32px;border-top:2px solid rgba(255,255,255,0.18);padding-top:40px">
+        <img src="assets/badan-icon.png" alt="بدن" style="width:120px;height:120px;border-radius:28px;display:block;flex:none" />
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font:700 60px/1.4 'Cairo',sans-serif;color:#F3D9A6">بدن · badan</div>
+          <div style="font:500 34px/1 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,0.7)">@badan.app</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</x-dc>
+</body>
+</html>
