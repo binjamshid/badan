@@ -85,3 +85,29 @@ or symptom is added once. See `docs/architecture.md`.
 Raw data is not paywalled · provenance is preserved · casual and power are one model at two
 altitudes · wellness-safe language only (no diagnosis/treatment) · Arabic/RTL is first-order ·
 privacy is architectural (local-first, no network in MVP).
+
+## Source license
+
+The [Binjamshid Public Fork License, Version 1.0](LICENSE) covers only software that
+binjamshid has the rights to license and publicly releases under it. An owner-authorized
+public source release that designates this license is required for it to take effect.
+Any rights previously granted remain in effect under their original terms. The
+[BADAN app EULA](docs/legal/eula.html) governs the mobile app distribution it describes.
+
+The source license permits use, modification, and redistribution subject to its terms.
+Commercial use by or on behalf of a for-profit organization is prohibited. Publish the
+corresponding source for every modified version, including private and local edits, in
+a publicly accessible version-control repository under the same license. Publish within
+30 calendar days of making the change, or before distributing the version or letting
+others use it as a service, whichever comes first, subject to the license's coordinated
+security-fix exception.
+
+Third-party material retains its own terms and notices.
+
+- The Gradle wrapper scripts and JAR in `apps/android/` and the Material icons adapted
+  in `apps/android/app/src/main/res/drawable/ic_shortcut_*.xml` are under the
+  [Apache License 2.0](LICENSE-APACHE-2.0).
+- LOINC codes in `packages/contracts/analytes/analytes.json` and
+  `apps/ios/Sources/Resources/analytes.json` carry the [LOINC terms](https://loinc.org/license).
+  The UCUM references in `packages/contracts/analytes/units.json` and
+  `apps/ios/Sources/Resources/lab_units.json` carry the [UCUM terms](https://ucum.org/license).
