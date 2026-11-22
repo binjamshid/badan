@@ -66,170 +66,119 @@
   <!-- ====================== ENGLISH ====================== -->
   <section id="en" dir="ltr" lang="en">
     <h1>Privacy Policy</h1>
-    <p class="meta">Last updated: 7 August 2026 · Applies to BADAN for iOS</p>
+    <p class="meta">Policy date: 9 October 2026 · Applies to BADAN for iOS, version 1.2</p>
+    <p class="meta"><strong>Repository draft dated 22 November 2026.</strong> This draft describes BADAN revision
+      <code>8b83fed</code>. The app and hosted policy have their own published text.</p>
 
-    <div class="callout">
-      <strong>BADAN is a private, on-device health repository.</strong> Your health data stays on
-      your device, and BADAN never sends a reading anywhere on its own initiative.
-      <strong>Recording, scores and creating an export file all happen on your device and involve
-      no network</strong> — that is a property of how the app is built, not a setting you have to
-      find. Four features can reach the internet, all of them off until you turn them on and none
-      of them automatic: the AI coach, delivering an export to an address you entered yourself,
-      methodology feedback, and — new in this version — an optional account. Section 4a says
-      exactly what each one sends.
-    </div>
+    <div class="callout">Your health history is stored on your device. Optional coach requests send your current
+      question, earlier messages in the open chat and a score summary. The optional BADAN account carries purchase
+      and referral information. Your health history stays outside the account.</div>
 
-    <h2>1. Who this is for and what BADAN is</h2>
-    <p>
-      BADAN organizes your own health readings and the things you choose to log, and presents them
-      back to you. <strong>You can use all of it without an account</strong>, permanently — nothing
-      in the app is withheld until you sign in.
-    </p>
-    <p>
-      Signing in with Apple is optional and does exactly two things: it lets a subscription you
-      bought follow you to another device, and it lets you invite a friend. Even then, you do not
-      give BADAN a name, email, phone number, or password. BADAN does not ask Apple for your name
-      or your email address, and what it stores is a scrambled (hashed) form of the anonymous
-      identifier Apple issues — never anything that can be turned back into your Apple ID.
-    </p>
-    <p>
-      BADAN is a wellness and self-tracking tool. It is <strong>not a medical device</strong> and does
-      not diagnose, treat, or give medical advice. See section 6.
-    </p>
+    <h2>What BADAN is</h2>
+    <p>BADAN organizes your own health readings and what you choose to log. You can use its core health features
+      without an account. Optional Sign in with Apple supports purchase entitlements and referrals. BADAN receives
+      an Apple identity token and stores a keyed hash of the app-specific identifier to recognize your account. We
+      do not request your name or email from Apple.</p>
 
-    <h2>2. What data BADAN accesses</h2>
-    <h3>From Apple Health (only if you connect it)</h3>
-    <p>
-      BADAN never reads Apple Health until you tap "Connect" and grant permission in the system
-      HealthKit dialog. On a grant, it reads only these categories: sleep analysis, heart rate,
-      resting heart rate, and step count, to show them back to you and compute the on-device
-      summaries you see in the app. If you never connect Apple Health, BADAN reads none of it. You
-      can revoke access at any time in iOS Settings → Health; BADAN also links you there.
-    </p>
-    <h3>What you log yourself</h3>
-    <p>
-      BADAN lets you record entries by hand, including workouts, nutrition, notes, and a separate,
-      sensitive category, <strong>medications and symptoms</strong>,. You choose what to enter;
-      nothing is required.
-    </p>
-    <p>
-      BADAN does <strong>not</strong> access your contacts, location, photos, microphone, camera,
-      calendar, or advertising identifier.
-    </p>
+    <p>BADAN is a wellness and self-tracking tool. It is not a medical device and does not diagnose, treat, or give
+      medical advice.</p>
 
-    <h2>3. Where your data lives</h2>
-    <p>
-      All of your data is stored <strong>on your device only</strong>, in two local SQLite databases
-      inside the app's private container: a main database for readings, workouts, nutrition, and
-      notes, and a separate, sensitive database used exclusively for medications and symptoms,
-      kept separate so you can erase it independently of everything else. Both databases are
-      excluded from iCloud and device backups and encrypted at rest by iOS file protection. There
-      is no cloud copy, no sync, and no shared server. If you delete the app, the databases go with
-      it.
-    </p>
+    <h2>What data BADAN accesses</h2>
+    <p>With your permission, BADAN reads sleep and stages, heart rate, resting heart rate and heart rate
+      variability, VO₂ max, respiratory rate and blood oxygen, steps, active and resting energy, walking and
+      running distance, floors climbed, weight, body fat and lean mass, blood glucose, and workouts. The permission
+      request also includes height and sleeping wrist temperature, which are not imported. You can revoke reading
+      access in iOS Settings or Apple Health. Workout routes require separate BADAN consent.</p>
 
-    <h2>4. What BADAN does not do</h2>
+    <p>You choose what to log, including workouts, nutrition, hydration and notes. Optional sensitive records
+      include medications, symptoms, journal entries, labs, cycles and pregnancy.</p>
+
+    <p>Lab input can use camera scans, photos you select and PDF files you choose. Text recognition runs on your
+      device. BADAN can read consented workout routes from Apple Health or receive them in an import. BADAN does
+      not track your live location or access contacts, microphone, calendar or an advertising identifier.</p>
+
+    <h2>Where your data lives</h2>
+    <p>BADAN uses a local main database for ordinary readings, sources, summaries, workouts and nutrition, and a
+      separate encrypted database for sensitive records such as medications, symptoms, glucose, journals, labs,
+      cycles and pregnancy. Imported documents are kept in an encrypted local vault. Sensitive modules have their
+      own controls.</p>
+
+    <p>BADAN requests iOS file protection and device backup exclusion for the health database directory on a
+      best-effort basis. Depending on your display choices, a small summary can appear on widgets and your paired
+      Apple Watch. The widget and watch cache writers in this revision do not set an explicit backup exclusion. The
+      app has no cloud health-history sync. Choosing a share or file destination can create a copy there.</p>
+
+    <h2>Advertising and tracking</h2>
+    <p>BADAN has no advertising or tracking SDKs and no crash reporting service. It does not track you across apps
+      or websites.</p>
+
+    <h2>Optional online services</h2>
     <ul>
-      <li><strong>Makes no network calls while recording or calculating</strong>: reading from
-        Apple Health, working out your scores, and <strong>creating an export file</strong> all
-        happen entirely on your device. The build is checked for that on every change, so it cannot
-        quietly stop being true.</li>
-      <li><strong>Does not require an account.</strong> Signing in is optional, and every part of
-        the app works without it. If you do sign in, the account holds what you bought and your
-        referral code — <strong>never a single health reading</strong>.</li>
-      <li><strong>Uses no third-party SDKs</strong>: no analytics services, no crash reporting, no
-        advertising.</li>
-      <li><strong>Does not track you</strong> across apps or websites, and collects no advertising
-        identifier.</li>
-      <li><strong>Shares nothing automatically.</strong> Nothing leaves your device unless you
-        started it or switched it on — see the next section for the things that can.</li>
+      <li><strong>AI coach.</strong> The coach is off by default. Enabling it verifies the app with Apple App
+        Attest and obtains an installation token. The service stores a token hash and attestation metadata. Each
+        request sends your current question, earlier questions and replies from the open chat, and the available
+        Readiness, Effort and Sleep summary for today, with confidence, method and date when available. BADAN
+        assembles the summary locally and shows it with the sent message. It does not automatically attach raw
+        records. The BADAN service forwards requests through OpenRouter to a hosted AI model, with no chat-content
+        storage in the BADAN service source. The hosted provider processes requests under its own policies. Turning
+        off the coach clears the local token and attempts to revoke it with the service. A request already sent may
+        finish processing.</li>
+      <li><strong>Methodology feedback.</strong> Sharing is off until you opt in, and a metric needs at least ten
+        responses before a summary is eligible. The app schedules eligible summaries with a random delay of one to
+        three days. The payload gives the metric and calculation method version, the response direction, a count
+        range, whether calibration was applied, and app and format versions. The request includes an App Attest key
+        identifier and assertion. The service uses a network address to limit requests. Stored feedback rows
+        include the receipt day and omit the attestation key identifier, account or device identifiers, health
+        readings and the dates of readings or answers. Stored rows have no per-user key for deletion. The server
+        source defaults to pruning records older than 400 days when it receives a new batch. To review submitted
+        summaries or turn sharing off, open <strong>Settings → Privacy &amp; security → Send methodology
+        feedback</strong> when available.</li>
+      <li><strong>Account and purchases.</strong> The optional account stores an account ID, a keyed hash of the
+        Apple sign-in identifier, creation date, purchase entitlement and expiry information, and referral details
+        including codes, rewards and their expiry. A signed-in installation can check or send entitlement
+        information. The account service stores purchase status reported by the app. StoreKit handles purchases and
+        restores with Apple.</li>
+      <li><strong>Maps and sharing.</strong> If you choose <strong>Show on map</strong> for a workout route, Apple
+        Maps provides the background and may use the network. Export files are created locally and handed to a
+        share or file destination you choose.</li>
     </ul>
 
-    <h2>4a. When BADAN does reach the internet</h2>
-    <p>
-      There are exactly four, and all are off until you turn them on. None of them sends your
-      stored health records.
-    </p>
+    <h2>Your control</h2>
     <ul>
-      <li><strong>The AI coach</strong> (off by default). If you enable it from its own consent
-        screen, your question — plus whatever short context the app assembled for that one question
-        — is sent to a service run by BADAN's developer at badan.binjamshid.com, which passes it to
-        a language model and returns the answer. That service holds no account for you and keeps no
-        copy of your health records. Leave the coach switched off and nothing is ever sent.</li>
-      <li><strong>Delivering an export to an address you entered</strong>. If you set up an export
-        destination, BADAN sends the export file there. The file is still <em>created</em> entirely
-        on your device, and the address is one you typed in — BADAN never chooses a destination for
-        you.</li>
-      <li><strong>Your account</strong> (off by default — there is no account until you create
-        one). If you sign in with Apple, BADAN's own service at badan.binjamshid.com stores an
-        account number it generates, a scrambled form of the anonymous identifier Apple gave it,
-        the date you signed up, your referral code, and — for each platform — which subscription
-        product you own and when it runs out. That is the complete list. There is no name, no email
-        address, no device list, and <strong>no health data of any kind</strong>. You can delete the
-        account, and everything in it, from Settings → Account → Delete account; deleting it removes
-        nothing from your device, because none of your readings were ever on our server.</li>
-      <li><strong>Methodology feedback</strong> (off by default, and only offered after you have
-        used the "does this match how you felt?" option). BADAN's calculations use constants that
-        have never been checked against real people. If you switch this on, the app sends which
-        metric and which calculation method you disagreed with, whether you felt better or worse
-        than the number said, roughly how often as a range like "10–19", and whether BADAN had
-        already adjusted that number from your earlier answers.
-        <br>
-        It <strong>never</strong> includes a reading, a date, a location, or anything that
-        identifies you or your device. Nothing is sent until you have answered about the same
-        metric at least ten times, and it is sent at a random time one to three days later so the
-        timing itself says nothing about when you answered. You can read every submission it has
-        made, word for word, in Settings → Privacy &amp; Security. Because it carries no identifier,
-        nothing on the receiving end is recognisably yours — which also means there is nothing there
-        to single out and delete.</li>
+      <li><strong>Export.</strong> Open <strong>Settings → Backup &amp; restore → Export your data</strong> for CSV
+        or JSON with a checksum manifest. The <strong>Advanced builder</strong> lets you choose sensitive data and
+        workout routes separately. Exports that include sensitive records require a passphrase.</li>
+      <li><strong>Clear BADAN’s records.</strong> <strong>Settings → Privacy &amp; security → Data management →
+        Delete all data</strong> clears BADAN’s stored health records and manual logs and keeps app preferences.
+        Afterward BADAN attempts to read eligible records again if Apple Health is connected, or loads sample data
+        if it is disconnected. Revoke Apple Health access before clearing BADAN’s records if you want to prevent
+        re-import. Your source records, previously saved exports and optional account are managed separately.</li>
+      <li><strong>Remove sample data.</strong> While sample data is active, open <strong>Settings → Privacy &amp;
+        security → Manage sample data → Delete sample data</strong> to start empty. This can also clear entries
+        added during the demo.</li>
+      <li><strong>Erase sensitive records.</strong> Open <strong>Settings → Privacy &amp; security → Sensitive
+        records</strong>, switch off <strong>Meds &amp; symptoms</strong>, and confirm. This permanently clears the
+        sensitive store and imported lab documents. The store can include records beyond medications and
+        symptoms.</li>
+      <li><strong>Delete your account.</strong> While signed in, open <strong>Settings → Account &amp; subscription
+        → Delete account</strong>. This removes the account, referral code and associated purchase entitlement
+        records from the BADAN server. Your local records and Apple subscription are managed separately.</li>
     </ul>
 
-    <h2>5. Your control over your data</h2>
-    <ul>
-      <li><strong>Export</strong>: Settings → Data &amp; privacy → Export gives you a CSV or JSON
-        export with a checksummed manifest, created on your device with no network involved and
-        handed to you (e.g. via the share sheet) or saved to a folder you picked. BADAN sends it
-        nowhere unless you have set up a delivery destination yourself, in which case it goes only
-        to the address you entered — BADAN never chooses a destination for you.</li>
-      <li><strong>Delete everything</strong>: Settings → Data management → "Delete all data"
-        permanently deletes everything on the device. This cannot be undone.</li>
-      <li><strong>Delete your account</strong>: Settings → Account → Delete account removes it
-        from our server permanently, along with your referral code and the record of which
-        platforms you are subscribed on. It touches none of your readings — those live on your
-        device and were never on our server. A subscription you bought on this device keeps
-        working.</li>
-      <li><strong>Erase sensitive records separately</strong>: turning off "Sensitive records" in
-        Settings permanently removes all medication and symptom records independently of the rest of
-        your data.</li>
-      <li><strong>Revoke Apple Health access</strong> anytime in iOS Settings → Health.</li>
-    </ul>
+    <h2>Children</h2>
+    <p>BADAN is not directed at children. Sign in with Apple is optional and does not request your name or email.
+      Health history is kept on your device.</p>
 
-    <h2>6. Health data and wellness</h2>
-    <p>
-      BADAN is a self-tracking and wellness tool, not a medical device. The readings, summaries, and
-      any observations it shows are informational only, not a diagnosis and not medical advice.
-      Always consult a qualified health professional about your health and before making decisions
-      based on anything you see in the app.
-    </p>
+    <h2>Health data and wellness</h2>
+    <p>The readings, summaries and observations BADAN shows are informational. Always consult a qualified health
+      professional about your health.</p>
 
-    <h2>7. Children</h2>
-    <p>
-      BADAN is not directed at children and does not knowingly request or collect personal
-      information from anyone. It never asks for your age, name or address — not even when you sign
-      in, because it does not ask Apple for them either. Signing in is optional and the app is
-      complete without it. A device's owner is responsible for who uses the device.
-    </p>
+    <h2>Changes and contact</h2>
+    <p>To read the policy included with your app, open <strong>Settings → Privacy &amp; security → Privacy
+      Policy</strong>.</p>
 
-    <h2>8. Changes to this policy</h2>
-    <p>
-      If the app's behavior changes in a way that affects your privacy, this document will be updated
-      and the date above will change. Because there is no account, we cannot notify you
-      individually; the current policy always ships inside the app (Settings → Data &amp; privacy →
-      Privacy Policy) and lives at this address.
-    </p>
-
-    <h2>9. Contact</h2>
-    <p>Questions about privacy in BADAN: <a href="mailto:support@binjamshid.com">support@binjamshid.com</a></p>
+    <p>Questions about privacy in BADAN can go to <a
+      href="mailto:support@binjamshid.com">support@binjamshid.com</a>.</p>
   </section>
 
   <hr class="divider">
@@ -237,130 +186,106 @@
   <!-- ====================== العربية ====================== -->
   <section id="ar" dir="rtl" lang="ar">
     <h1>سياسة الخصوصية</h1>
-    <p class="meta">آخر تحديث: ٢٩ يوليو ٢٠٢٦ · تنطبق على تطبيق بدن لنظام iOS</p>
+    <p class="meta">تاريخ السياسة: ٩ أكتوبر ٢٠٢٦ · تنطبق على بدن لنظام iOS، الإصدار 1.2</p>
+    <p class="meta"><strong>مسودة المستودع بتاريخ ٢٢ نوفمبر ٢٠٢٦.</strong> تصف هذه المسودة مراجعة بدن <code
+      dir="ltr">8b83fed</code>. للتطبيق وصفحة السياسة المستضافة نصّهما المنشور.</p>
 
-    <div class="callout">
-      <strong>بدن مستودع صحي خاص يعمل بالكامل على جهازك.</strong> كل شيء يبقى على جهازك. ليست لبدن
-      حسابات، ولا يرسل بياناتك الصحية إلى أي مكان من تلقاء نفسه.
-      <strong>التسجيل وحساب الدرجات وإنشاء ملف التصدير كلها تجري على جهازك دون أي اتصال شبكي</strong>
-      — وهذه خاصية في طريقة بناء التطبيق، لا إعداد عليك البحث عنه. وهناك ثلاث ميزات يمكنها الاتصال
-      بالإنترنت، جميعها معطّلة حتى تفعّلها أنت ولا يعمل أي منها تلقائياً: المدرّب الذكي، وتسليم
-      التصدير إلى عنوان أدخلته بنفسك، وملاحظات المنهجية. ويوضّح القسم ٤ ما ترسله كلٌّ منها بالضبط.
-    </div>
+    <div class="callout">يُحفظ سجلك الصحي على جهازك. ترسل طلبات المدرّب الذكي الاختيارية سؤالك الحالي والرسائل
+      السابقة في المحادثة المفتوحة وملخّصاً للدرجات. يحمل حساب بدن الاختياري معلومات المشتريات والإحالات، ويظل سجلك
+      الصحي خارج الحساب.</div>
 
-    <h2>١. لمن هذا التطبيق وما هو بدن</h2>
-    <p>
-      ينظّم بدن قراءاتك الصحية والأشياء التي تختار تسجيلها، ويعرضها لك. لا يوجد تسجيل ولا حساب. لا
-      تُعطي بدن اسمك أو بريدك أو رقم هاتفك أو كلمة مرور، لأنه لا توجد وجهة لتلك المعلومات، فالتطبيق
-      بلا خادم خلفي.
-    </p>
-    <p>
-      بدن أداة للعافية والتتبّع الذاتي، وهو <strong>ليس جهازاً طبياً</strong> ولا يُشخِّص أو يُعالج أو
-      يقدّم استشارة طبية. انظر البند ٦.
-    </p>
+    <h2>ما هو بدن؟</h2>
+    <p>ينظّم بدن قراءاتك الصحية وما تختار تسجيله. يمكنك استخدام ميزاته الصحية الأساسية دون حساب. يدعم تسجيل الدخول
+      الاختياري عبر Apple صلاحيات المشتريات والإحالات. يتلقّى بدن رمز هوية من Apple ويخزّن تجزئة بمفتاح للمعرّف
+      الخاص بالتطبيق للتعرّف على حسابك. لا نطلب اسمك أو بريدك الإلكتروني من Apple.</p>
+    <p>بدن أداة للعافية والتتبّع الذاتي. وهو ليس جهازاً طبياً ولا يشخّص أو يعالج أو يقدّم استشارة طبية.</p>
 
-    <h2>٢. البيانات التي يصل إليها بدن</h2>
-    <h3>من تطبيق Apple Health (فقط إذا وصّلته)</h3>
-    <p>
-      لا يقرأ بدن بيانات Apple Health أبداً حتى تضغط "توصيل" وتمنح الإذن في نافذة HealthKit. عند
-      الموافقة، يقرأ فقط: تحليل النوم، معدل ضربات القلب، معدل ضربات القلب أثناء الراحة، وعدد الخطوات
-      ، لعرضها لك ولحساب الملخصات على الجهاز. إن لم توصّل Apple Health إطلاقاً، فلن يقرأ بدن منه شيئاً.
-      يمكنك إلغاء الإذن في أي وقت من إعدادات iOS ← الصحة؛ ويوفّر بدن رابطاً لذلك أيضاً.
-    </p>
-    <h3>ما تُسجّله بنفسك</h3>
-    <p>
-      يتيح لك بدن تسجيل مُدخلات يدوياً، منها التمارين والتغذية والملاحظات، وفئة حساسة منفصلة،
-      <strong>الأدوية والأعراض</strong>. أنت من يختار ما يُدخله؛ لا شيء إلزامي.
-    </p>
-    <p>
-      لا يصل بدن <strong>إطلاقاً</strong> إلى جهات اتصالك أو موقعك أو صورك أو الميكروفون أو الكاميرا أو
-      التقويم أو معرّف الإعلانات.
-    </p>
+    <h2>البيانات التي يصل إليها بدن</h2>
+    <p>بإذنك، يقرأ بدن النوم ومراحله، ومعدل ضربات القلب ومعدلها أثناء الراحة وتباينها، والحد الأقصى لاستهلاك
+      الأكسجين، ومعدل التنفّس وأكسجين الدم، والخطوات وطاقة النشاط والراحة، ومسافة المشي والجري والطوابق المصعَدة،
+      والوزن ونسبة الدهون والكتلة الخالية من الدهون، وسكّر الدم، والتمارين. يشمل طلب الإذن أيضاً الطول وحرارة
+      المعصم أثناء النوم، وهما قياسان لا يستوردهما بدن. يمكنك سحب إذن القراءة من إعدادات iOS أو تطبيق صحتي. تتطلب
+      قراءة مسارات التمارين موافقة منفصلة في بدن.</p>
+    <p>تختار ما تسجّله، بما في ذلك التمارين والتغذية والترطيب والملاحظات. تشمل السجلات الحساسة الاختيارية الأدوية
+      والأعراض واليوميات والتحاليل والدورة والحمل.</p>
+    <p>يمكن إدخال مستندات التحاليل عبر مسح الكاميرا أو صور وملفات PDF تختارها. يجري التعرّف على النص على جهازك.
+      يمكن لبدن قراءة مسارات التمارين التي وافقت عليها من تطبيق صحتي أو تلقّيها في ملف استيراد. لا يتتبّع بدن موقعك
+      المباشر، ولا يصل إلى جهات الاتصال أو الميكروفون أو التقويم أو معرّف إعلاني.</p>
 
-    <h2>٣. أين تُخزَّن بياناتك</h2>
-    <p>
-      تُخزَّن جميع بياناتك <strong>على جهازك فقط</strong>، في قاعدتَي بيانات SQLite محليتَين داخل حاوية
-      التطبيق الخاصة: قاعدة رئيسية للقراءات والتمارين والتغذية والملاحظات، وقاعدة حساسة منفصلة
-      مخصّصة للأدوية والأعراض فقط، منفصلة كي تتمكن من محوها بشكل مستقل عن كل شيء آخر. وكلتا
-      القاعدتين مستبعدتان من النسخ الاحتياطي عبر iCloud والجهاز، ومُشفَّرتان أثناء عدم الاستخدام عبر
-      حماية ملفات iOS. لا توجد نسخة سحابية ولا مزامنة ولا خادم مشترك. وإذا حذفت التطبيق، تُحذف
-      القاعدتان معه.
-    </p>
+    <h2>أين تُخزَّن بياناتك؟</h2>
+    <p>يستخدم بدن قاعدة بيانات محلية رئيسية للقراءات العامة والمصادر والملخصات والتمارين والتغذية، وقاعدة منفصلة
+      مشفّرة للسجلات الحساسة مثل الأدوية والأعراض وسكّر الدم واليوميات والتحاليل والدورة والحمل. تُحفظ المستندات
+      المستوردة في مخزن محلي مشفّر. وللميزات الحساسة إعداداتها الخاصة.</p>
+    <p>يحاول بدن تفعيل حماية ملفات iOS واستبعاد مجلد قواعد البيانات الصحية من النسخ الاحتياطية للجهاز. وقد يظهر
+      ملخّص صغير على الأدوات وساعة Apple Watch المقترنة حسب خيارات العرض. لا تضبط هذه المراجعة استبعاداً صريحاً
+      لملفات ملخّصات الأدوات والساعة من النسخ الاحتياطية. لا يزامن التطبيق سجلك الصحي مع السحابة. قد يؤدي اختيار
+      وجهة للمشاركة أو الحفظ إلى إنشاء نسخة فيها.</p>
 
-    <h2>٤. ما لا يفعله بدن</h2>
+    <h2>الإعلانات والتتبّع</h2>
+    <p>لا يتضمّن بدن حزم إعلانات أو تتبّع، ولا خدمة للإبلاغ عن الأعطال. ولا يتتبّعك عبر التطبيقات أو المواقع.</p>
+
+    <h2>الخدمات الاختيارية عبر الإنترنت</h2>
     <ul>
-      <li><strong>لا يُجري أي اتصال شبكي أثناء التسجيل أو الحساب</strong>: قراءة بيانات صحة Apple،
-        وحساب درجاتك، و<strong>إنشاء ملف التصدير</strong> كلها تجري بالكامل على جهازك. ويُفحص البناء
-        على ذلك مع كل تغيير، فلا يمكن أن يتوقف هذا عن الصحّة بصمت.</li>
-      <li><strong>لا حسابات ولا تسجيل دخول.</strong></li>
-      <li><strong>لا يستخدم أي حزم أدوات من طرف ثالث</strong>: لا خدمات تحليلات، ولا تتبّع أعطال،
-        ولا إعلانات.</li>
-      <li><strong>لا يتتبّعك</strong> عبر التطبيقات أو المواقع، ولا يجمع معرّف الإعلانات.</li>
-      <li><strong>لا يشارك شيئاً تلقائياً.</strong> لا يغادر جهازك شيء إلا إذا بدأته أنت أو فعّلته —
-        وانظر القسم التالي للأمرين اللذين يمكنهما ذلك.</li>
+      <li><strong>المدرّب الذكي.</strong> يكون المدرّب معطّلاً افتراضياً. عند تفعيله، يتحقّق التطبيق من نفسه عبر
+        خدمة App Attest من Apple ويحصل على رمز خاص بتثبيته. تخزّن الخدمة تجزئة الرمز وبيانات التحقّق. يرسل كل طلب
+        سؤالك الحالي والأسئلة والردود السابقة في المحادثة المفتوحة وملخّص نتائج الجاهزية والجهد والنوم المتاحة لهذا
+        اليوم، مع مستوى الثقة وطريقة الحساب والتاريخ عند توفّرها. يُنشئ بدن الملخّص على جهازك ويعرضه مع الرسالة
+        المرسلة. ولا يُرفق السجلات الخام تلقائياً. تمرّر خدمة بدن الطلب عبر OpenRouter إلى نموذج مستضاف للذكاء
+        الاصطناعي، ولا يتضمّن مصدر خدمة بدن آلية لتخزين محتوى المحادثة. يعالج المزوّد المستضيف الطلبات وفق سياساته
+        الخاصة. يؤدي إيقاف المدرّب إلى مسح الرمز المحلي ومحاولة إبطاله لدى الخدمة. قد تستمر معالجة الطلبات التي
+        أُرسلت بالفعل.</li>
+      <li><strong>ملاحظات المنهجية.</strong> تبقى المشاركة متوقفة إلى أن تفعّلها. يلزم تسجيل عشر إجابات على الأقل
+        عن المؤشر قبل أن يصبح الملخّص قابلاً للإرسال. يجدول التطبيق إرسال الملخّصات المؤهّلة بتأخير عشوائي يتراوح
+        بين يوم وثلاثة أيام. تتضمّن البيانات المُرسلة المؤشر وإصدار طريقة الحساب واتجاه الإجابة ونطاق عدد الإجابات
+        وما إذا طُبّقت معايرة، إلى جانب إصدار التطبيق وإصدار تنسيق البيانات. يتضمّن الطلب معرّف مفتاح App Attest
+        وإثبات التحقق. تستخدم الخدمة عنوان الشبكة للحدّ من عدد الطلبات. تتضمّن سجلات الملاحظات المخزّنة يوم
+        الاستلام، وتستبعد معرّف مفتاح التحقق ومعرّفات الحساب أو الجهاز والقراءات الصحية وتواريخ القراءات أو
+        الإجابات. لا تحتوي السجلات المخزّنة على معرّف يتيح حذف إرسالات شخص بعينه. تحذف الشيفرة على الخادم، وفق
+        الإعداد الافتراضي، السجلات التي مضى عليها أكثر من ٤٠٠ يوم عند استلام دفعة جديدة. لمراجعة الملخّصات المرسلة
+        أو إيقاف المشاركة، افتح <strong>الإعدادات ← الخصوصية والأمان ← إرسال ملاحظات المنهجية</strong> عند ظهور
+        الخيار.</li>
+      <li><strong>الحساب والمشتريات.</strong> يحفظ الحساب الاختياري معرّف الحساب وتجزئة بمفتاح لمعرّف تسجيل الدخول
+        عبر Apple وتاريخ الإنشاء وبيانات صلاحيات المشتريات وانتهائها وتفاصيل الإحالات، ومنها الرموز والمكافآت
+        وتواريخ انتهائها. يمكن للتطبيق عند تسجيل الدخول التحقّق من صلاحيات المشتريات أو إرسال معلوماتها. تخزّن خدمة
+        الحساب حالة المشتريات كما يبلّغ عنها التطبيق. تدير StoreKit عمليات الشراء والاستعادة مع Apple.</li>
+      <li><strong>الخرائط والمشاركة.</strong> إذا اخترت <strong>عرض على الخريطة</strong> لمسار تمرين، توفّر خرائط
+        Apple خلفية الخريطة وقد تستخدم الشبكة. تُنشأ ملفات التصدير محلياً وتُسلَّم إلى وجهة المشاركة أو الحفظ التي
+        تختارها.</li>
     </ul>
 
-    <h2>٤أ. متى يتصل بدن بالإنترنت</h2>
-    <p>
-      هناك ثلاث حالات فقط، وجميعها معطّلة حتى تفعّلها أنت. ولا يرسل أي منها سجلاتك الصحية المخزّنة.
-    </p>
+    <h2>تحكّمك في بياناتك</h2>
     <ul>
-      <li><strong>المدرّب الذكي</strong> (معطّل افتراضياً). إذا فعّلته من شاشة الموافقة الخاصة به،
-        يُرسل سؤالك — مع ما جمّعه التطبيق من سياق قصير لذلك السؤال وحده — إلى خدمة يشغّلها مطوّر بدن
-        على badan.binjamshid.com، تمرّره إلى نموذج لغوي وتعيد الإجابة. ولا تحتفظ تلك الخدمة بحساب لك
-        ولا بنسخة من سجلاتك الصحية. واتركه معطّلاً فلا يُرسل شيء أبداً.</li>
-      <li><strong>تسليم التصدير إلى عنوان أدخلته</strong>. إذا أعددت وجهة تصدير، يرسل بدن ملف
-        التصدير إليها. ويظل الملف <em>يُنشأ</em> بالكامل على جهازك، والعنوان هو ما كتبته أنت — ولا
-        يختار بدن الوجهة نيابةً عنك أبداً.</li>
-      <li><strong>ملاحظات المنهجية</strong> (معطّلة افتراضياً، ولا تُعرض إلا بعد استخدامك خيار "هل
-        يطابق هذا ما شعرت به؟"). تستخدم حسابات بدن ثوابت لم يجرِ التحقق منها مع أشخاص حقيقيين. وإذا
-        فعّلت هذا، يرسل التطبيق أي مؤشر وأي طريقة حساب اختلفت معها، وهل شعرت بأفضل أو أسوأ مما قاله
-        الرقم، وتقريباً كم مرة كنطاق مثل "١٠–١٩"، وهل كان بدن قد عدّل ذلك الرقم بناءً على إجاباتك
-        السابقة.
-        <br>
-        و<strong>لا</strong> يتضمّن أبداً قراءة أو تاريخاً أو موقعاً أو أي شيء يعرّفك أو يعرّف
-        جهازك. ولا يُرسل شيء حتى تُجيب عن المؤشر نفسه عشر مرات على الأقل، ويُرسل في وقت عشوائي بعد
-        يوم إلى ثلاثة أيام فلا يكشف التوقيت متى أجبت. ويمكنك قراءة كل إرسال قام به، كلمة بكلمة، من
-        الإعدادات ← الخصوصية والأمان. ولأنه لا يحمل أي معرّف، لا شيء في الطرف المستقبِل يخصّك بشكل
-        مميّز — ما يعني أيضاً أنه لا يوجد هناك ما يمكن تحديده وحذفه.</li>
+      <li><strong>التصدير.</strong> افتح <strong>الإعدادات ← النسخ والاستعادة ← تصدير بياناتك</strong> للحصول على
+        ملفات CSV أو JSON مع بيان المجاميع الاختبارية. يتيح لك <strong>المُنشئ المتقدّم</strong> اختيار السجلات
+        الحساسة ومسارات التمارين بشكل منفصل. تتطلب ملفات التصدير التي تشمل سجلات حساسة عبارة مرور.</li>
+      <li><strong>مسح سجلات بدن.</strong> يؤدي اختيار <strong>الإعدادات ← الخصوصية والأمان ← إدارة البيانات ← حذف
+        جميع البيانات</strong> إلى مسح السجلات الصحية وإدخالاتك اليدوية المخزّنة في بدن مع الاحتفاظ بتفضيلات
+        التطبيق. بعد ذلك يحاول بدن قراءة السجلات المتاحة مجدداً إذا كان تطبيق صحتي متصلاً، أو يحمّل بيانات تجريبية
+        عند عدم الاتصال به. اسحب إذن القراءة من تطبيق صحتي قبل مسح سجلات بدن إذا أردت منع إعادة الاستيراد. تُدار
+        سجلات المصدر وملفات التصدير المحفوظة سابقاً والحساب الاختياري بشكل مستقل.</li>
+      <li><strong>إزالة البيانات التجريبية.</strong> عندما تكون البيانات التجريبية مفعّلة، افتح <strong>الإعدادات ←
+        الخصوصية والأمان ← إدارة البيانات التجريبية ← حذف البيانات التجريبية</strong> للبدء بلا بيانات. قد تُحذف
+        أيضاً الإدخالات التي أضفتها أثناء التجربة.</li>
+      <li><strong>محو السجلات الحساسة.</strong> افتح <strong>الإعدادات ← الخصوصية والأمان ← السجلات
+        الحساسة</strong>، ثم عطّل <strong>الأدوية والأعراض</strong> وأكّد الإجراء. يؤدي ذلك إلى محو المخزن الحساس
+        ومستندات التحاليل المستوردة. قد يحتوي المخزن على سجلات أخرى غير الأدوية والأعراض.</li>
+      <li><strong>حذف حسابك.</strong> أثناء تسجيل الدخول، افتح <strong>الإعدادات ← الحساب والاشتراك ← حذف الحساب</strong>.
+        يؤدي ذلك إلى حذف الحساب ورمز الإحالة وسجلات صلاحيات المشتريات المرتبطة به من خادم بدن. تُدار سجلاتك المحلية
+        واشتراك Apple بشكل مستقل.</li>
     </ul>
 
-    <h2>٥. تحكّمك في بياناتك</h2>
-    <ul>
-      <li><strong>التصدير</strong>: الإعدادات ← البيانات والخصوصية ← تصدير، يمنحك ملف CSV أو JSON
-        مصحوباً بقائمة تحقّق (checksum)، يُنشأ على جهازك ويُسلَّم لك (مثلاً عبر ورقة المشاركة). ولا
-        يُرسله بدن إلى أي مكان ما لم تكن قد أعددت وجهة تسليم بنفسك، وعندها يذهب فقط إلى العنوان الذي
-        أدخلته — ولا يختار بدن الوجهة نيابةً عنك أبداً.</li>
-      <li><strong>حذف كل شيء</strong>: الإعدادات ← إدارة البيانات ← "حذف جميع البيانات" يحذف كل شيء
-        على الجهاز نهائياً، ولا يمكن التراجع عن ذلك.</li>
-      <li><strong>محو السجلات الحساسة بشكل منفصل</strong>: تعطيل "السجلات الحساسة" في الإعدادات يزيل
-        نهائياً جميع سجلات الأدوية والأعراض بمعزل عن باقي بياناتك.</li>
-      <li><strong>إلغاء إذن Apple Health</strong> في أي وقت من إعدادات iOS ← الصحة.</li>
-    </ul>
+    <h2>الأطفال</h2>
+    <p>بدن ليس موجّهاً للأطفال. تسجيل الدخول عبر Apple اختياري ولا يطلب اسمك أو بريدك الإلكتروني. يُحفظ سجلك الصحي
+      على جهازك.</p>
 
-    <h2>٦. البيانات الصحية والعافية</h2>
-    <p>
-      بدن أداة للتتبّع الذاتي والعافية وليس جهازاً طبياً. القراءات والملخصات وأي ملاحظات يعرضها هي
-      لأغراض معلوماتية فقط، وليست تشخيصاً ولا استشارة طبية. استشر دائماً أخصائياً صحياً مؤهلاً بشأن
-      صحتك وقبل اتخاذ قرارات بناءً على أي شيء تراه في التطبيق.
-    </p>
+    <h2>البيانات الصحية والعافية</h2>
+    <p>القراءات والملخصات والملاحظات التي يعرضها بدن لأغراض معلوماتية. استشر دائماً أخصائياً صحياً مؤهّلاً بشأن
+      صحتك.</p>
 
-    <h2>٧. الأطفال</h2>
-    <p>
-      بدن غير موجّه للأطفال ولا يطلب أو يجمع عن قصد أي معلومات شخصية من أي شخص. ولأن التطبيق بلا
-      حسابات ولا يُرسل شيئاً خارج الجهاز، فهو لا يجمع أي معلومات عن العمر أو الهوية إطلاقاً. ومالك
-      الجهاز مسؤول عن تحديد من يستخدمه.
-    </p>
-
-    <h2>٨. تغييرات هذه السياسة</h2>
-    <p>
-      إن تغيّر سلوك التطبيق بما يؤثّر في خصوصيتك، سيُحدَّث هذا المستند والتاريخ أعلاه. ولأنه لا يوجد
-      حساب ولا خادم، لا يمكننا إشعارك فردياً؛ وتُشحَن السياسة الحالية دائماً داخل التطبيق (الإعدادات ←
-      البيانات والخصوصية ← سياسة الخصوصية) وتوجد في هذا العنوان.
-    </p>
-
-    <h2>٩. التواصل</h2>
-    <p>للاستفسارات حول الخصوصية في بدن: <a href="mailto:support@binjamshid.com">support@binjamshid.com</a></p>
+    <h2>التغييرات والتواصل</h2>
+    <p>لقراءة السياسة المرفقة بالتطبيق، افتح <strong>الإعدادات ← الخصوصية والأمان ← سياسة الخصوصية</strong>.</p>
+    <p>يمكنك إرسال استفساراتك حول الخصوصية في بدن إلى <a href="mailto:support@binjamshid.com"
+      dir="ltr">support@binjamshid.com</a>.</p>
   </section>
 
   <footer>

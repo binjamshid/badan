@@ -1,0 +1,33 @@
+name: Bug report
+description: Report unexpected Badan behavior using synthetic data.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is public. Keep real health data, exports, credentials, account and device identifiers, and raw logs out of your report. Use invented data for all examples. Report possible security or privacy issues privately by emailing [support@binjamshid.com](mailto:support@binjamshid.com).
+  - type: input
+    id: environment
+    attributes:
+      label: Platform and version
+      description: Include your platform, OS version, Badan version and build number or source revision, and the app language.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Use synthetic data. Mention relevant settings, permissions, or optional features.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Describe what you expected, what happened, and how often you see it.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Additional context
+      description: If helpful, share a minimal sanitized log excerpt or a screenshot made with synthetic data.
