@@ -19,6 +19,13 @@ DerivedData/
 # Xcode Cloud needs the shared project present at checkout. Keep local workspace state ignored.
 apps/ios/BADAN.xcodeproj/*
 !apps/ios/BADAN.xcodeproj/project.pbxproj
+!apps/ios/BADAN.xcodeproj/project.xcworkspace/
+apps/ios/BADAN.xcodeproj/project.xcworkspace/*
+!apps/ios/BADAN.xcodeproj/project.xcworkspace/xcshareddata/
+apps/ios/BADAN.xcodeproj/project.xcworkspace/xcshareddata/*
+!apps/ios/BADAN.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+apps/ios/BADAN.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!apps/ios/BADAN.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 !apps/ios/BADAN.xcodeproj/xcshareddata/
 apps/ios/BADAN.xcodeproj/xcshareddata/*
 !apps/ios/BADAN.xcodeproj/xcshareddata/xcschemes/
