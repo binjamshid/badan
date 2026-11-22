@@ -1,0 +1,4 @@
+contact_links:
+  - name: Private security and privacy reporting
+    url: https://github.com/binjamshid/badan/blob/main/SECURITY.md
+    about: Use the private reporting route for vulnerabilities or possible exposure of personal information.

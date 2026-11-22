@@ -1,6 +1,6 @@
 # BADAN — build handoff
 
-**Written:** 2026-07-22, by the outgoing agent (Opus), for the incoming agent (Sonnet).
+**Written:** 2026-07-22.
 **Job:** keep executing `BADAN_WHOOP_HAE_EXECUTION_PLAN.md` phase by phase, iOS only.
 
 ---
@@ -47,14 +47,14 @@ Read only the sections your current epic names. Section→line map is in the pla
 | `86ec427` | **Phase 3A** — delta export, REST destination (built, **gated off**), reports, notification engine, Apple Health importer (migration v8) |
 | `26d9653` | hygiene — track `DATA_DICTIONARY.md` (CI needs it), track the plan, ignore `apps/ios/build-device/` |
 
-### ⚠️ Another agent is also committing to this repo
+### ⚠️ Commits from a parallel session
 
-Commits `54bf241`, `84e95cb`, `a7aa034`, `c477ca7` were made by **"Claude Fable 5"** in a *parallel
-session* — they add `docs/DECISIONS.md`, an ADR-0008 Android-parity addendum, a SwiftUI reachability
-ratchet (`scripts/check-reachability.py`), and `docs/assumptions.md`.
+Commits `54bf241`, `84e95cb`, `a7aa034`, `c477ca7` landed during a parallel session. They add
+`docs/DECISIONS.md`, an ADR-0008 Android-parity addendum, a SwiftUI reachability ratchet
+(`scripts/check-reachability.py`), and `docs/assumptions.md`.
 
 **Before you do anything: `git log --oneline -10` and `git status`.** Assume the tree may have moved
-under you. Do not force-push. Do not revert another agent's commits.
+under you. Do not force-push. Do not revert commits from the parallel session.
 
 ### 🔴 Uncommitted work in progress — THIS IS YOUR FIRST TASK
 

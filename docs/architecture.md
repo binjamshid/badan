@@ -1,6 +1,6 @@
 # BADAN Architecture
 
-> Status: living document, updated 2026-07-10. Scope: the iOS flagship app plus the shared,
+> Historical architecture snapshot, updated 2026-07-10. For the current native apps, optional services, and a worked end-to-end example, start with the [technical blueprint](TECHNICAL_BLUEPRINT.md). Scope: the iOS flagship app plus the shared,
 > cross-platform contracts. See `docs/EXECUTION_PLAN.md` for sequencing and `docs/adr/` for
 > the decision records this doc references (D-1…D-11, ADR-0001…0007).
 

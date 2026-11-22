@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a change to Badan.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is public. Use invented examples and keep real health data, exports, credentials, and identifiers private. Report potential security or privacy problems by emailing [support@binjamshid.com](mailto:support@binjamshid.com).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow and where you get stuck today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the expected result, affected platforms, and any alternative you considered.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Effect on data and language
+      description: If relevant, describe any new permissions, data handling, score or export changes, and effects on English or Arabic layouts.

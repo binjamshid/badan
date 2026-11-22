@@ -1,96 +1,23 @@
-# BADAN Android
+# Badan Android
 
-The native **Kotlin / Jetpack Compose** app — a **runnable, compiled** parallel to the iOS
-flagship (ADR-0006), not a rewrite. It consumes the **same shared truth** as iOS and mirrors the
-same architecture, so parity is structural. See `docs/android-parity-status.md` for exact status.
+The Kotlin and Jetpack Compose app supports Health Connect reads, local logs, Readiness and scoped exports. Its health adapter, storage, derivation and export layers use the project's shared contracts. The Wear OS project provides a scaffold for future companions. [Technical blueprint](../../docs/TECHNICAL_BLUEPRINT.md), [Wear module](wear/src/main/java/net/albayyan/badan/wear/WearModule.kt)
 
-## Screenshots (Medium_Phone emulator, seeded data)
+## Run the phone app
 
-The same deterministic data as iOS flows through the same ported ingestion → dedup → baseline
-logic — Readiness 49, sleep 6h 31m, steps 11,012, RHR 53, HRV 58 — rendered in native Compose.
+Open this directory in Android Studio with Android SDK Platform 36. Choose the **app** debug configuration and an available emulator. Choose **Explore with sample data** in onboarding, open **Today**, and switch to Arabic in Settings to try the right-to-left layout. [Development guide](../../docs/DEVELOPMENT.md), [user guide](../../docs/USER_GUIDE.md)
 
-| Home | Home · Arabic (RTL) | Body | Log hub | Data sources · Health Connect |
-|---|---|---|---|---|
-| ![Home](../../docs/screenshots/android/01-home.png) | ![Arabic RTL](../../docs/screenshots/android/02-home-arabic-rtl.png) | ![Body](../../docs/screenshots/android/03-body.png) | ![Log](../../docs/screenshots/android/04-log-hub.png) | ![Sources](../../docs/screenshots/android/05-sources-health-connect.png) |
-
-## What Android reuses (no re-authoring)
-
-Everything language-neutral in `packages/` is the single source of truth for both apps:
-
-| Shared artifact | iOS consumes as | Android consumes as |
-|---|---|---|
-| `packages/metric-ontology/registry.json` | `MetricRegistry` | `MetricRegistry` (bundled asset) |
-| `packages/contracts/insights/templates.json` | `InsightTemplateStore` | insight template store |
-| `packages/contracts/dictionaries/symptoms.json` | `SymptomDictionary` | symptom dictionary |
-| `packages/export-schemas/csv_columns.json` | `CSVWriter` | CSV writer |
-| The logical schema (`docs/data-model.md`) | raw SQLite (`Database`) | **framework SQLite** (ADR-0007, same table/column names) |
-| Invariants I1–I8, ADRs, vertical slices | — | — |
-
-An asset-copy step (mirroring `scripts/sync_ios_resources.sh`) copies the `packages/` JSON into
-`app/src/main/assets/`.
-
-## Mapping the iOS architecture to Android
-
-| iOS | Android |
-|---|---|
-| SwiftUI + `@Observable` view models | Compose + `ViewModel` + `StateFlow` |
-| raw SQLite via `SQLiteConnection` | framework SQLite via `SqliteConnection` (ADR-0007, same DDL, no Room/KSP) |
-| `HealthStorePort` + `FakeHealthStore` + `HealthKitAdapter` | same port; `FakeHealthStore` + `HealthConnectAdapter` |
-| `IngestionPipeline` / `DedupLite` / `BaselineEngine` | mirrored (duplicated-logic budget, D-4) |
-| two DB files (`badan.db` + `badan_sensitive.db`) | two SQLite databases |
-| `CustomizationProfile.depthPolicy` dual-altitude | same presentation switch |
-
-## Conformance parity
-
-A behavior "exists" only when both platforms pass the same fixtures (the drift firewall). The
-iOS unit/pipeline tests (`apps/ios/Tests/`) define the expected canonical rows, dedup outcomes,
-baseline numerics, and export bytes that the Android suite must reproduce identically.
-
-## Build (once the Gradle project is added)
-
-## Build & run
-
-Requires the Android SDK (platform 36) and JDK 21. AGP needs JDK 17–21, so point Gradle at a
-JDK 21 (Android Studio ships one as its JBR):
+For command-line installation with one emulator already running, use the checked-in Gradle wrapper from this directory. The application ID is `net.binjamshid.badan` and the activity class is in the `net.albayyan.badan` namespace. [Phone build configuration](app/build.gradle.kts), [MainActivity](app/src/main/java/net/albayyan/badan/MainActivity.kt)
 
 ```bash
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"   # or any JDK 21
-cd apps/android
-./gradlew :app:assembleDebug        # build the debug APK
-./gradlew test                      # unit tests
-
-# Run on an emulator (see scripts/run_android.sh for a one-shot build+boot+install+launch):
-$ANDROID_HOME/emulator/emulator -avd Medium_Phone &
 ./gradlew :app:installDebug
-adb shell am start -n net.binjamshid.badan/.MainActivity
+adb shell am start -n net.binjamshid.badan/net.albayyan.badan.MainActivity
 ```
 
-Or open `apps/android` in Android Studio and Run.
+The phone targets API 36 with a minimum of API 26. Health Connect availability and the supported permission families depend on the Android environment. Use a representative low-spec device when qualifying performance near the supported floor.
 
-## Performance sign-off device tier
+## Source and tests
 
-`minSdk = 26` (Android 8.0, 2017-era hardware) is the supported floor, but day-to-day development
-happens on whatever emulator/device is at hand — typically mid-to-high-end. Before signing off on
-a performance-sensitive change (startup time, write batching, recomposition), also check it on a
-low-end reference profile, not just `Medium_Phone`:
-
-```bash
-# One-time: create a low-end reference AVD (2 GB RAM, 2 cores, API 26)
-avdmanager create avd -n Low_End_API26 -k "system-images;android-26;google_apis;x86_64" \
-  -d "Nexus 5" --force
-# then edit the AVD's config.ini (or Android Studio's AVD Manager) to cap RAM at ~2 GB
-# and vCPU count at 2 to approximate the `minSdk` floor.
-
-scripts/run_android.sh Low_End_API26
-```
-
-## Stack
-
-Kotlin 2.0.21 · Jetpack Compose (BOM 2024.10.01) · Material 3 · AGP 8.9.1 / Gradle 8.11.1 ·
-framework SQLite (ADR-0007, no Room/KSP) · kotlinx.serialization · Health Connect 1.1.0 ·
-compileSdk 36 / minSdk 26 · `applicationId net.binjamshid.badan` (Kotlin package/namespace stays
-`net.albayyan.badan`, see `apps/android/app/build.gradle.kts`). Package layout mirrors iOS:
-`core/ domain/ ontology/ storage/ platform/health/ export/ designsystem/ features/ app/`.
-
-See `docs/android-parity-status.md` for exactly what is done, partial, and deferred, and
-EXECUTION_PLAN §11 (AP-06/08/10/12) for the original packet breakdown.
+- `app` is the phone application. The feature screens call domain services backed by app-local repositories. Both the main and the separate sensitive file use framework SQLite in this revision. [Database](app/src/main/java/net/albayyan/badan/storage/Database.kt)
+- The [resource sync script](../../scripts/sync_android_assets.sh) copies the canonical contracts into the app's assets and the algorithm parameters onto its JVM classpath.
+- The CI configuration uses JDK 17 and the wrapper downloads Gradle 8.11.1. The [development guide](../../docs/DEVELOPMENT.md#android) lists focused unit tests for canonicalization, Readiness and serialization. Framework-dependent tests use Robolectric or the Android instrumentation source set. [Android CI](../../.github/workflows/ci.yml)
+- `:wear` may depend on the pure Kotlin `:contracts` module for the phone-snapshot protocol. The Wear build defines the dependency check `:wear:checkWearDependencyBoundary`. [Gradle settings](settings.gradle.kts), [Wear build configuration](wear/build.gradle.kts)

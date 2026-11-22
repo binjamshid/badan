@@ -2,7 +2,7 @@
 
 _Target: `apps/ios/` at HEAD `570343b` (branch main). Generated 2026-07-23. Read-only audit; every claim cites current-code file:line. The prior audit (`docs/audit/badan-repo-audit-2026-07.md`, 2026-07-11) was used only as a lead list and re-verified — resolved items (e.g. stubbed HealthKit reads) are not carried forward._
 
-**Tally:** 1 Blocker · 8 High · 20 Medium · 33 Low · 50 unverified leads. Coverage: 8 categories, 47 slices (Cat-1 one agent per Features subdir; Cat-5 one per algorithm spec + 3 cross-cutting).
+**Tally:** 1 Blocker · 8 High · 20 Medium · 33 Low · 50 unverified leads. Coverage: 8 categories, 47 slices. Category 1 covered each Features subdirectory separately. Category 5 covered each algorithm spec and three cross-cutting topics.
 
 > **Severity on Category 8** means proposal urgency, not a defect: Blocker = contradicts a CLAUDE.md guardrail or blocks a committed milestone; High = clear PRD/roadmap gap users notice now; Medium/Low = enhancement with no committed direction. Cat-8 items are prefixed `NEW:`.
 

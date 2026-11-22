@@ -26,14 +26,14 @@
 - [x] Repositories: Measurement, Derivation, Insight, Reconciliation, Catalog, Logging, ExportJob, Profile
 - [x] Sensitive-namespace purge; dev reset
 
-## Phase E — Services (built via 5-agent parallel workflow)
+## Phase E — Services
 - [x] FakeHealthStore (deterministic 90-day seed source) + HealthKitAdapter (integration boundary)
 - [x] Ingestion pipeline + dedup-lite (reversible decision journal, idempotent re-ingest)
 - [x] BaselineEngine (median/MAD) + InsightEngine (template, en+ar)
 - [x] Export engine (CSV/JSON/manifest, checksums, offline)
 - [x] Design system (tokens, theme, components)
 
-## Phase F — App shell & screens (built via 12-agent parallel workflow)
+## Phase F — App shell & screens
 - [x] AppEnvironment (DI) + SeedController + RootView/5-tab navigation
 - [x] Onboarding (live EN/AR + depth preset)
 - [x] Home (Today) — casual + power (dual-altitude proven)
