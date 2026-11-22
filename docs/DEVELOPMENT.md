@@ -31,11 +31,11 @@ For physical iOS and watchOS testing, configure signing, bundle identifiers and 
 
 ## Android
 
-Use Android Studio with Android SDK Platform 36 and Platform-Tools. Install an emulator image for your host architecture and create an Android Virtual Device (AVD) if you need one. Use JDK 17 for the focused JVM check below, matching the Android CI configuration at this revision. The checked-in wrapper downloads Gradle 8.11.1. The phone module compiles and targets API 36 with a minimum of API 26. Health Connect availability and permissions depend on the test environment. [Phone build configuration](../apps/android/app/build.gradle.kts), [Gradle wrapper](../apps/android/gradle/wrapper/gradle-wrapper.properties), [Android CI](../.github/workflows/ci.yml)
+Use Android Studio with Android SDK Platform 36 and Platform-Tools. Install an emulator image for your host architecture and create an Android Virtual Device (AVD) if you need one. Use JDK 21 for the focused JVM check below, matching the Android CI configuration at this revision. The checked-in wrapper downloads Gradle 8.11.1. The phone module compiles and targets API 36 with a minimum of API 26. Health Connect availability and permissions depend on the test environment. [Phone build configuration](../apps/android/app/build.gradle.kts), [Gradle wrapper](../apps/android/gradle/wrapper/gradle-wrapper.properties), [Android CI](../.github/workflows/ci.yml)
 
 Open `apps/android` in Android Studio and sync Gradle. Select the **app** debug configuration and your AVD, then click Run. Android Studio uses local debug signing. On a fresh app launch, use [the sample-data walkthrough](#sample-data-walkthrough).
 
-For a focused command-line check, make the Android SDK location available to Gradle through Android Studio's local project configuration or `ANDROID_HOME`. Set `JAVA_HOME` to your JDK 17 installation.
+For a focused command-line check, make the Android SDK location available to Gradle through Android Studio's local project configuration or `ANDROID_HOME`. Set `JAVA_HOME` to your JDK 21 installation.
 
 ```bash
 cd apps/android
