@@ -578,12 +578,12 @@ final class ExportRunner {
         // consumer should find them beside the symptoms they will be read against. They are here
         // only when the scope opted into sensitive data; `journal` is nil otherwise, so a default
         // export's events.csv is byte-identical to before.
-        let eventRows = symptoms.map { rowForEvent(symptom: $0, scope) }
-            + adherence.map { rowForEvent(adherence: $0, regimenNames: regimenNames, scope) }
-            + workouts.map { rowForEvent(workout: $0, scope) }
-            + nutrition.map { rowForEvent(nutrition: $0, scope) }
-            + (journal?.entries ?? []).map { rowForEvent(journal: $0, scope) }
-            + (journal?.statuses ?? []).map { rowForEvent(contextStatus: $0, scope) }
+        var eventRows = symptoms.map { rowForEvent(symptom: $0, scope) }
+        eventRows.append(contentsOf: adherence.map { rowForEvent(adherence: $0, regimenNames: regimenNames, scope) })
+        eventRows.append(contentsOf: workouts.map { rowForEvent(workout: $0, scope) })
+        eventRows.append(contentsOf: nutrition.map { rowForEvent(nutrition: $0, scope) })
+        eventRows.append(contentsOf: (journal?.entries ?? []).map { rowForEvent(journal: $0, scope) })
+        eventRows.append(contentsOf: (journal?.statuses ?? []).map { rowForEvent(contextStatus: $0, scope) })
 
         // Written and hashed directly, chunk by chunk, so the full CSV is never simultaneously
         // resident as a `String` and a second `Data` copy, and doesn't need a separate
@@ -654,7 +654,8 @@ final class ExportRunner {
         // Disclosed in `per_metric_row_counts` under the same synthetic-id convention the other logs
         // use ("nutrition.entry" etc.), so the CSV manifest discloses drinks the way the JSON one does.
         addCounts((hydration?.entries ?? []).map { _ in "hydration.entry" }, into: &counts)
-        let rowCount = rawRows.count + derivedRows.count + eventRows.count + (hydration?.entries.count ?? 0)
+        let coreRowCount = rawRows.count + derivedRows.count + eventRows.count
+        let rowCount = coreRowCount + (hydration?.entries.count ?? 0)
 
         let manifest = makeManifest(exportId: exportId, scope: scope, generatedAt: generatedAt,
                                     checksums: checksums, perMetricRowCounts: counts,
@@ -711,11 +712,14 @@ final class ExportRunner {
         // belong to the correlation engine's DERIVED rows, which are a different thing entirely.
         addCounts((journal?.entries ?? []).map { _ in "journal.entry" }, into: &counts)
         addCounts((journal?.statuses ?? []).map { _ in "context.status" }, into: &counts)
-        let rowCount = rawSamples.count + intervalRecords.count + sessions.count
-            + derivedValues.count + baselines.count
-            + symptoms.count + adherence.count + workouts.count + nutrition.count
-            + (hydration?.entries.count ?? 0)
-            + (journal?.entries.count ?? 0) + (journal?.statuses.count ?? 0)
+        let measurementCount = rawSamples.count + intervalRecords.count + sessions.count
+        let derivedCount = derivedValues.count + baselines.count
+        let coreLogCount = symptoms.count + adherence.count + workouts.count + nutrition.count
+        let hydrationCount = hydration?.entries.count ?? 0
+        let journalEntryCount = journal?.entries.count ?? 0
+        let contextCount = journal?.statuses.count ?? 0
+        let rowCount = [measurementCount, derivedCount, coreLogCount, hydrationCount,
+                        journalEntryCount, contextCount].reduce(0, +)
 
         let sampleRows = Self.sampleDataRowCount(rawSamples: rawSamples,
                                                  intervalRecords: intervalRecords, sessions: sessions)

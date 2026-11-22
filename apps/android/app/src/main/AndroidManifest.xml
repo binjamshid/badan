@@ -240,24 +240,9 @@
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
-    <!--
-      android.permission.INTERNET is DELIBERATELY ABSENT, and this note exists so its absence reads
-      as a decision rather than an oversight.
-
-      EPIC-20's `export/destinations/RestDestination.kt` is the only code in the app that would ever
-      open a socket, and it is gated OFF at the composition root by
-      `RestDestinationAvailability.ENABLED` — no deliverer for `restApi` is registered and no screen
-      creates a `restApi` destination row, so nothing in this build can reach the network. Declaring
-      the permission anyway would put a capability on the Data Safety form that no code path
-      exercises: a reviewer (and a user reading the Play listing) would be told this app can transmit
-      their health data, which in this build is not true.
-
-      This is also what keeps the shipped privacy policy honest. docs/PRIVACY_POLICY.md and
-      docs/legal/privacy.html state in the present tense that there is "no way to point an export at
-      a server" and that BADAN "transmits nothing off the device". Those sentences and this manifest
-      have to change in the SAME release; see `RestDestinationAvailability` for the full checklist of
-      what must ship together before this line comes back.
-    -->
+    <!-- ADR-0011 / D-37: keep the Android app offline even when a transitive dependency
+         declares INTERNET. REST export remains disabled. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
 
     <!-- Provider visibility so getSdkStatus() can detect Health Connect on Android 13 and below. -->
     <queries>

@@ -138,7 +138,7 @@ final class RESTDestinationTests: XCTestCase {
         XCTAssertEqual(receipt.errorCode, .writeFailed) // the server answered, and kept rejecting
         XCTAssertEqual(receipt.destinationStatus, .ok)  // a transient 5xx does not condemn the destination
         XCTAssertEqual(transport.captured.count, 4)
-        XCTAssertEqual(sleeps.recorded, [30, 5 * 60, 30 * 60])
+        XCTAssertEqual(sleeps.recorded, [30, 300, 1_800])
     }
 
     func testTimeoutExhaustedReportsUnreachable() async throws {
@@ -157,7 +157,7 @@ final class RESTDestinationTests: XCTestCase {
         let receipt = await subject.deliver(request(try [makeArtifact("a.json", "{}")]), now: runDate)
         XCTAssertEqual(receipt.outcome, .success)
         XCTAssertEqual(transport.captured.count, 3)
-        XCTAssertEqual(sleeps.recorded, [30, 5 * 60])
+        XCTAssertEqual(sleeps.recorded, [30, 300])
     }
 
     func testNonRetryable4xxStopsImmediately() async throws {
