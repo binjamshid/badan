@@ -634,7 +634,7 @@ struct RESTBackoffPolicy {
     /// retry in lockstep. 0 = exact delays (used by tests).
     let jitterFraction: Double
 
-    static let standard = RESTBackoffPolicy(delays: [30, 5 * 60, 30 * 60], jitterFraction: 0.15)
+    static let standard = RESTBackoffPolicy(delays: [30, 5.0 * 60, 30.0 * 60], jitterFraction: 0.15)
 
     /// `delay` scaled into `[delay·(1-j), delay·(1+j)]` by a draw from `rng` in `0...1`.
     func jittered(_ delay: TimeInterval, rng: () -> Double) -> TimeInterval {
