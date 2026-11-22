@@ -478,7 +478,7 @@ jobs:
           import json, re, sys, pathlib
 
           root = pathlib.Path('.')
-          tokens = json.loads((root/'docs/design/design-tokens.json').read_text())
+          tokens = json.loads((root/'design/design-tokens.json').read_text())
           swift = (root/'apps/ios/Sources/DesignSystem/Tokens.swift').read_text()
           kotlin = (root/'apps/android/app/src/main/java/net/albayyan/badan/designsystem/Tokens.kt').read_text()
 
@@ -555,7 +555,7 @@ jobs:
           import json, sys, pathlib
 
           root = pathlib.Path('.')
-          tokens = json.loads((root/'docs/design/design-tokens.json').read_text())
+          tokens = json.loads((root/'design/design-tokens.json').read_text())
           palette = {**tokens['palette'], **tokens['statusColors']}
 
           def hex_of(name, theme):
