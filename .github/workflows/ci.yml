@@ -809,12 +809,13 @@ jobs:
                 f"({device['udid']})", file=sys.stderr)
           print(f"udid={device['udid']}")
           PY
+      # Let the destination select the phone SDK. An explicit -sdk overrides the embedded
+      # watch targets too, so their watchOS assets would be compiled against iOS.
       - name: Build & test
         working-directory: apps/ios
         run: |
           set -o pipefail
           xcodebuild -project BADAN.xcodeproj -scheme BADAN \
-            -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult \
             test | xcpretty
@@ -833,11 +834,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 17
+      - name: Set up JDK 21 for the Android 36 test runtime
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
       - name: Unit tests
