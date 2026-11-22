@@ -828,7 +828,10 @@ final class SleepIntelligenceEngine {
     static func localSecondsOfDay(epochSeconds: Double, tz: String) -> Double {
         let comps = DayAttribution.calendar(tz: tz)
             .dateComponents([.hour, .minute, .second], from: Date(timeIntervalSince1970: epochSeconds))
-        return Double((comps.hour ?? 0) * 3600 + (comps.minute ?? 0) * 60 + (comps.second ?? 0))
+        let hourSeconds = (comps.hour ?? 0) * 3_600
+        let minuteSeconds = (comps.minute ?? 0) * 60
+        let seconds = comps.second ?? 0
+        return Double(hourSeconds + minuteSeconds + seconds)
     }
 
     /// The calendar day before a "YYYY-MM-DD" key — the day whose exertion and naps feed this
