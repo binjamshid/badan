@@ -21,7 +21,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
-from test_appattest import APP_ID, _self_signed_ca, build_attestation
+from test_appattest import APP_ID, NOW, _self_signed_ca, build_attestation
 
 
 def monkeypatch_budget(main, limit: int) -> None:
@@ -52,7 +52,8 @@ def _register(client, main, *, root_pem, key_id, attestation, challenge):
     monkeypatched_verify = main.verify_attestation
 
     def verify_with_test_root(**kwargs):
-        return monkeypatched_verify(root_ca_pem=root_pem, **kwargs)
+        # Use the clock that issued the synthetic certificates so their validity is deterministic.
+        return monkeypatched_verify(root_ca_pem=root_pem, now=NOW, **kwargs)
 
     main.verify_attestation = verify_with_test_root
     try:
