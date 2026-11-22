@@ -2,11 +2,8 @@ import SwiftUI
 
 // MARK: - Screen
 
-/// The full privacy policy, rendered in-app and bilingually (COMP-04). BADAN is offline-first
-/// with no backend, so the policy ships inside the binary rather than linking to a hosted URL —
-/// it must be readable with no network. The English text here is kept in sync with
-/// `docs/PRIVACY_POLICY.md`; the Arabic is a faithful translation at the same calm register as
-/// the rest of the app. Reachable from Settings → Data & privacy → Privacy Policy.
+/// The bilingual policy remains readable offline. A link to the hosted copy follows the text.
+/// Reachable from Settings → Privacy & security → Privacy Policy.
 ///
 /// Pushed screen: relies on the parent `NavigationStack` supplied by the app shell.
 struct PrivacyPolicyScreen: View {
@@ -38,6 +35,12 @@ struct PrivacyPolicyScreen: View {
 
                 ForEach(PrivacyPolicyStrings.sections) { section in
                     policySection(section)
+                }
+                BadanCard {
+                    Link(destination: SettingsStrings.privacyURL) {
+                        SettingsNavRowLabel(icon: "globe", title: SettingsStrings.privacyWebsiteTitle)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(BadanSpace.space4)
@@ -84,11 +87,9 @@ private enum PrivacyPolicyStrings {
     // stale reassurance does the most damage.
     static let lede = LocalizedString(
         en: "Your health data stays on your device. BADAN never sends a reading anywhere. You can "
-            + "now sign in with Apple if you want a subscription to follow you between devices — "
-            + "that account holds what you bought, and nothing about your body.",
-        ar: "تبقى بياناتك الصحية على جهازك. ولا يرسل بدن أي قراءة إلى أي مكان. ويمكنك الآن تسجيل "
-            + "الدخول عبر Apple إن أردت أن يتبعك اشتراكك بين أجهزتك — ويحتفظ ذلك الحساب بما "
-            + "اشتريته، ولا شيء عن جسدك.")
+            + "sign in with Apple to use referral codes. Your optional BADAN account has no health records.",
+        ar: "تبقى بياناتك الصحية على جهازك. ولا يرسل بدن أي قراءة إلى أي مكان. يمكنك تسجيل الدخول "
+            + "عبر Apple لاستخدام رموز الإحالة. لا يحتوي حساب بدن الاختياري على سجلات صحية.")
 
     static let appliesTo = LocalizedString(
         en: "Applies to BADAN for iOS, version 1.2. Last updated 2026-08-07.",
@@ -100,14 +101,13 @@ private enum PrivacyPolicyStrings {
             paragraphs: [
                 LocalizedString(
                     en: "BADAN organizes your own health readings and the things you choose to log, "
-                        + "and shows them back to you. You can use all of it without an account. "
-                        + "Signing in with Apple is optional and does one thing: it lets a "
-                        + "subscription follow you to another device, and lets you invite a friend. "
+                        + "and shows them back to you. BADAN's health features are free to use without an account. "
+                        + "Signing in with Apple is optional and lets you share and use referral codes. "
                         + "Even then you give BADAN no name, email, or password — Apple is not asked "
                         + "for your name or address, and we keep no record of which Apple ID you are.",
-                    ar: "ينظّم بدن قراءاتك الصحية وما تختار تسجيله، ويعرضها لك مجدداً. ويمكنك استخدامه "
-                        + "بالكامل دون حساب. وتسجيل الدخول عبر Apple اختياري ويؤدي وظيفة واحدة: أن "
-                        + "يتبعك الاشتراك إلى جهاز آخر، وأن تدعو صديقاً. وحتى حينها لا تعطي بدن اسماً "
+                    ar: "ينظّم بدن قراءاتك الصحية وما تختار تسجيله، ويعرضها لك مجدداً. يمكنك استخدام ميزات "
+                        + "بدن الصحية مجاناً دون حساب. تسجيل الدخول عبر Apple اختياري ويتيح لك مشاركة "
+                        + "رموز الإحالة واستخدامها. وحتى حينها لا تعطي بدن اسماً "
                         + "ولا بريداً ولا كلمة مرور — فلا نطلب من Apple اسمك ولا عنوانك، ولا نحتفظ "
                         + "بسجل لهوية Apple الخاصة بك."),
                 LocalizedString(
@@ -169,27 +169,27 @@ private enum PrivacyPolicyStrings {
                 LocalizedString(
                     en: "BADAN has no third-party SDKs, no crash reporting, and no advertising. It "
                         + "does not track you across apps or websites and collects no advertising "
-                        + "identifier. If you sign in, the account stores which subscription you own "
-                        + "on which platform, your referral code, and a scrambled form of the "
-                        + "identifier Apple gives us — never your readings, and never anything we "
-                        + "could turn back into your Apple ID.",
+                        + "identifier. Your account stores your referral information and a keyed hash of the identifier Apple gives us. "
+                        + "Existing accounts may also hold historic App Store purchase records. "
+                        + "This version does not start or restore purchases or send purchase updates. "
+                        + "Manage existing App Store subscriptions through Apple.",
                     ar: "ليس في بدن حزم برمجية خارجية ولا تقارير أعطال ولا إعلانات. ولا يتعقّبك عبر "
-                        + "التطبيقات أو المواقع، ولا يجمع أي معرّف إعلاني. وإن سجّلت الدخول، يخزّن "
-                        + "الحساب الاشتراك الذي تملكه وعلى أي منصة، ورمز الإحالة الخاص بك، وصورة "
-                        + "مشفّرة من المعرّف الذي تمنحنا إياه Apple — لا قراءاتك أبداً، ولا أي شيء "
-                        + "يمكننا إعادته إلى هوية Apple الخاصة بك."),
+                        + "التطبيقات أو المواقع، ولا يجمع أي معرّف إعلاني. يحفظ حسابك معلومات الإحالة وتجزئة بمفتاح "
+                        + "للمعرّف الذي تمنحنا إياه Apple. قد تحتفظ الحسابات الحالية أيضاً بسجلات سابقة لمشتريات App Store. "
+                        + "لا يبدأ هذا الإصدار عمليات شراء ولا يستعيدها ولا يرسل تحديثات بشأنها. "
+                        + "يمكنك إدارة اشتراكات App Store القائمة عبر Apple."),
                 LocalizedString(
                     en: "BADAN reaches the internet in exactly four situations, and each one is "
                         + "something you switched on or started yourself: an export you send to a "
                         + "destination you configured; the AI coach, if you enabled it, which sends "
                         + "your question and nothing else; methodology feedback, if you enabled it, "
-                        + "described below; and your account, if you signed in, which checks what "
-                        + "you have bought. Nothing else in the app opens a connection — recording, "
+                        + "described below; and your account, if you signed in, for account and referral actions. "
+                        + "Nothing else in the app opens a connection — recording, "
                         + "scores and export files are all produced on this device.",
                     ar: "يتصل بدن بالإنترنت في أربع حالات فقط، وكلٌّ منها شيء فعّلته أو بدأته بنفسك: "
                         + "تصدير ترسله إلى وجهة أعددتها؛ والمدرّب الذكي، إن فعّلته، ويرسل سؤالك ولا "
-                        + "شيء غيره؛ وملاحظات المنهجية، إن فعّلتها، الموضّحة أدناه؛ وحسابك، إن سجّلت "
-                        + "الدخول، ويتحقّق مما اشتريته. لا شيء آخر في التطبيق يفتح اتصالاً — "
+                        + "شيء غيره؛ وملاحظات المنهجية، إن فعّلتها، الموضّحة أدناه؛ وإجراءات الحساب والإحالة، "
+                        + "إن سجّلت الدخول. لا شيء آخر في التطبيق يفتح اتصالاً — "
                         + "فالتسجيل والدرجات وملفات التصدير تُنتَج على هذا الجهاز."),
                 // D-37, stated as a limit rather than as a reassurance. The last sentence is the
                 // one users are least likely to expect and most entitled to know: with no
@@ -233,13 +233,12 @@ private enum PrivacyPolicyStrings {
                 // deliberately next to the data-deletion controls so the difference between the two
                 // is visible: deleting the account touches no reading.
                 LocalizedString(
-                    en: "Delete your account: Settings → Account → Delete account removes it from "
-                        + "our server for good, along with your referral code. It touches none of "
-                        + "your readings — those are on this device and were never on our server. A "
-                        + "subscription you bought on this device keeps working.",
-                    ar: "حذف حسابك: الإعدادات ← الحساب ← حذف الحساب يزيله من خادمنا نهائياً، مع رمز "
-                        + "الإحالة الخاص بك. ولا يمسّ أياً من قراءاتك — فهي على هذا الجهاز ولم تكن "
-                        + "يوماً على خادمنا. ويستمر الاشتراك الذي اشتريته على هذا الجهاز في العمل."),
+                    en: "In Settings → Account, choose Delete account to remove your account, referral code, "
+                        + "and any historic purchase records held in the account from our server. Your health data stays on this device. "
+                        + "Apple manages existing App Store subscriptions separately.",
+                    ar: "اختر حذف الحساب في الإعدادات ← الحساب لحذف حسابك ورمز الإحالة وأي سجلات مشتريات سابقة "
+                        + "محفوظة في الحساب من خادمنا. تبقى بياناتك الصحية على هذا الجهاز. "
+                        + "تدير Apple اشتراكات App Store القائمة بشكل منفصل."),
                 LocalizedString(
                     en: "Erase sensitive records separately: turning off Sensitive records "
                         + "permanently removes all medication and symptom records on their own. "

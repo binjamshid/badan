@@ -12,8 +12,7 @@ import os
 ///
 /// ## What may travel on this wire, and what may not
 ///
-/// May: an account id, an Apple identity token during sign-in, a store product id, an expiry, a
-/// referral code, a count.
+/// May: an account id, an Apple identity token during sign-in, a referral code, and account metadata. Responses can include legacy purchase records.
 ///
 /// May not, ever: a reading, a derived score, a baseline, a date or period key that says anything
 /// about the user's body, a metric id, a source, a device model, a region. The
@@ -21,11 +20,7 @@ import os
 /// the thing that changed, not that. `AccountPayloadShapeTests` asserts the encoded bytes of every
 /// request type here against a closed field list and fails if one grows.
 ///
-/// ## Offline
-///
-/// Every method throws on failure and NOTHING here can revoke access. `EntitlementMerge` reads the
-/// last cached snapshot, and a client that cannot reach the server simply does not update it. There
-/// is deliberately no path from "the account service is down" to "the user is locked out".
+/// Optional account operations return errors independently of local feature access.
 enum AccountClientError: Error, Equatable {
     case notSignedIn
     case transportError
@@ -134,28 +129,6 @@ struct AccountClient {
         try await perform(.get, "v1/account", body: Optional<SignInRequest>.none, authenticated: true)
     }
 
-    /// Report what THIS device's store says, so the account can relay it to the user's other
-    /// platform.
-    ///
-    /// Sends the absence of an entitlement too (an empty list), because "I looked and there is
-    /// nothing" is the update that lets a lapsed subscription stop granting on the other side. A
-    /// push-on-grant-only design would leave a cancelled subscription propped up until its recorded
-    /// expiry, which is a worse kind of wrong than a stale grant: it is one BADAN caused.
-    @discardableResult
-    func pushEntitlement(_ entitlements: [SyncedEntitlement]) async throws -> AccountStateResponse {
-        // The empty case is its own route, with the platform in the PATH rather than inferred
-        // from an empty body. The server cannot guess which platform an empty list refers to,
-        // and a wrong guess would revoke the other platform's entitlement — the exact failure
-        // this whole feature exists to prevent.
-        guard !entitlements.isEmpty else {
-            return try await perform(.delete, "v1/account/entitlement/ios",
-                                     body: Optional<SignInRequest>.none, authenticated: true)
-        }
-        return try await perform(.put, "v1/account/entitlement",
-                                 body: EntitlementPushRequest(entitlements: entitlements),
-                                 authenticated: true)
-    }
-
     /// Redeem someone else's referral code. The server re-checks every rule `ReferralPolicy` checks
     /// and owns the answer; a refusal comes back as `.referralRefused` carrying the server's reason
     /// code so the UI can say which rule was hit.
@@ -185,7 +158,7 @@ struct AccountClient {
 
     // MARK: - Transport
 
-    private enum Method: String { case post = "POST", get = "GET", put = "PUT", delete = "DELETE" }
+    private enum Method: String { case post = "POST", get = "GET", delete = "DELETE" }
 
     @discardableResult
     private func perform<Body: Encodable>(_ method: Method, _ path: String, body: Body?,
@@ -236,15 +209,10 @@ struct AccountClient {
     // MARK: - Wire bodies
 
     /// Every request body this client can produce. Kept together and deliberately small: the whole
-    /// list is four fields plus an entitlement array, and that is what `AccountPayloadShapeTests`
-    /// pins.
+    /// list is pinned by `AccountPayloadShapeTests`.
     struct SignInRequest: Encodable {
         let identityToken: String
         let nonce: String
-    }
-
-    struct EntitlementPushRequest: Encodable {
-        let entitlements: [SyncedEntitlement]
     }
 
     struct ReferralClaimRequest: Encodable {

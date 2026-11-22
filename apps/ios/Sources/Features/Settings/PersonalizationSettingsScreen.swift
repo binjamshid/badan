@@ -90,16 +90,8 @@ struct PersonalizationSettingsScreen: View {
                         // selectable — it's the app's own icon, not a switch. Only the
                         // alternates need `supportsAlternateIcons`.
                         let isAlternate = option.alternateIconName != nil
-                        // The alternate icons are a Pro feature (D-33's cosmetic tier). The PRIMARY
-                        // icon is never gated — it is the app's own icon, not a switch, so a lapsed
-                        // subscriber is never stranded on an icon they cannot leave.
-                        let needsPro = isAlternate && !env.subscription.allows(.alternateIcons)
-                        let disabled = (isAlternate && !iconController.supportsAlternateIcons) || needsPro
+                        let disabled = isAlternate && !iconController.supportsAlternateIcons
                         Button {
-                            guard !needsPro else {
-                                showTransientNotice(SettingsStrings.iconNeedsProNotice)
-                                return
-                            }
                             Task {
                                 let succeeded = await iconController.select(option)
                                 if !succeeded { showTransientNotice(SettingsStrings.iconSwitchFailedNotice) }

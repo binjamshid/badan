@@ -30,17 +30,7 @@ final class AppEnvironment {
     let logging: LoggingRepository
     let exportJobs: ExportJobRepository
     let profiles: ProfileRepository
-    /// Entitlements and the trial clock. Every premium gate in the app routes through this one
-    /// object, so "what is gated?" is answerable by finding its call sites rather than by grepping
-    /// for scattered boolean checks.
-    let subscription: StoreKitEntitlementStore
-    /// The optional Sign in with Apple account (ADR-0014 / D-44). Its only jobs are carrying a
-    /// subscription between iOS and Android and running referrals.
-    ///
-    /// Signed out is a fully-functional state, and every surface in the app must keep working in
-    /// it. Nothing here may become a precondition for reading, deriving, logging or exporting —
-    /// `AccountState` has no case that could express that, and the D-33 export cap remains the only
-    /// gate on a user's own records.
+    /// Optional account for referrals and managing an existing account.
     let account: AccountController
     let backgroundRuns: BackgroundRunRepository
     /// EPIC-03. Workout GPS traces. Wired here like every other repository so the workout detail
@@ -358,24 +348,7 @@ final class AppEnvironment {
                                   clock: clock, deviceId: deviceId,
                                   contextAnnotations: contextAnnotations)
         self.stress = stress
-        // ADR-0014 / D-44. Built as locals and wired to each other BEFORE either is stored, so the
-        // dependency stays one-directional in the types themselves: `StoreKitEntitlementStore` holds
-        // two closures and no reference to an account, and `AccountController` knows nothing about
-        // StoreKit. Neither can grow a reference to the other without someone changing this.
-        //
-        // Both captures are weak. `AppEnvironment` owns both objects for the process lifetime, so a
-        // cycle here would never be collected and would keep a `Transaction.updates` listener alive
-        // across a hypothetical environment rebuild.
-        let subscriptionStore = StoreKitEntitlementStore(clock: clock)
-        let accountController = AccountController(clock: clock)
-        subscriptionStore.syncedSnapshotSource = { [weak accountController] in
-            accountController?.snapshot
-        }
-        subscriptionStore.entitlementSyncHook = { [weak accountController] entitlements in
-            await accountController?.pushLocalEntitlement(entitlements)
-        }
-        self.subscription = subscriptionStore
-        self.account = accountController
+        self.account = AccountController(clock: clock)
         let mood = MoodEstimateWriter(derivation: derivation, measurements: measurements,
                                       registry: registry, clock: clock, deviceId: deviceId)
         self.derivationCoordinator = DerivationCoordinator(baselines: baselines, sleep: sleepIntelligence,

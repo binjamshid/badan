@@ -10,11 +10,6 @@ import UIKit
 /// the two surfaces can never drift apart in wording.
 enum ExportCopy {
     static let onDeviceOnly = LocalizedString(en: "On this device — no network", ar: "على هذا الجهاز — دون شبكة")
-    /// D-33. Names the limit and what the file actually contains, so nobody discovers a truncated
-    /// export by noticing rows missing later. Deliberately does not scold or hard-sell.
-    static let clampedToFreeWindow = LocalizedString(
-        en: "Exported the last 7 days. BADAN Pro exports your full history — everything you recorded is still here on your device either way.",
-        ar: "تم تصدير آخر ٧ أيام. يصدّر «بدن برو» سجلك الكامل — وكل ما سجّلته يبقى على جهازك في الحالتين.")
     /// Says what the FILE will contain, not what the screen is showing — the reader of an
     /// exported bundle never saw the in-app sample banner.
     static let inspectHint = LocalizedString(
@@ -237,10 +232,6 @@ final class ExportCenterViewModel {
     var lastResults: [ExportResultDisplay] = []
     var isRunning = false
     var errorText: String?
-    /// Set when the last run's window was clipped by the D-33 free-export cap. The builder renders
-    /// it beside the success card; the same sentence Quick Export and the Shortcut path use, because
-    /// one limit deserves one wording (`ExportCopy.clampedToFreeWindow`).
-    var notice: LocalizedString?
 
     func loadHistory(_ env: AppEnvironment) {
         // Reconcile any job an interrupted app session left stuck `pending`/`running` — screen-
@@ -289,29 +280,13 @@ final class ExportCenterViewModel {
     /// without a passphrase already validated against `ExportPassphrasePolicy`, and `ExportRunner`
     /// itself enforces the same rule again as a second line of defense (review ledger #19,
     /// deferred fix 3 / FEAT-185; ADR-0008).
-    ///
-    /// D-33 applies here. This is the Advanced Export Builder's Run button — a user-facing export
-    /// whose artifacts leave BADAN through the share sheet — so it is capped by the same free window
-    /// as Quick Export and the Shortcut path. It was the third surface found running unclamped: the
-    /// builder honours the user's "All time" or custom range verbatim, and `runAdHoc` passed no
-    /// entitlement, so a trial-expired user got their whole history from a screen one tap away from
-    /// the hub that would have returned seven days. CLAMPED, never refused — viewing, keeping and
-    /// logging stay free and uncapped forever (D-33), and only the bulk file is narrowed — and never
-    /// silently: `wasNarrowed` is recomputed here purely to raise the notice, since the clamp itself
-    /// belongs to `ExportRunner.run` and must have exactly one implementation.
     func run(scope: ExportScope, formats: [ExportFormat], env: AppEnvironment, passphrase: String? = nil) {
         guard !isRunning, !formats.isEmpty else { return }
         isRunning = true
         errorText = nil
-        notice = nil
         lastResults = []
         try? env.exportJobs.markStaleRunningAsFailed()
         let exporter = env.exporter
-        // Read the entitlement on the main actor before hopping off it, matching
-        // `ExportManageService.runResolved`.
-        let entitlement = env.subscription.policyState
-        let wasNarrowed = SubscriptionPolicy.clampExportScope(scope, state: entitlement,
-                                                             now: env.now()).wasNarrowed
         Task {
             do {
                 var produced: [ExportResultDisplay] = []
@@ -320,16 +295,12 @@ final class ExportCenterViewModel {
                     // in the `ExportRun` ledger like every other export surface, or Export Health
                     // reports this successful run as a probable mid-export crash. See `runAdHoc`'s doc.
                     let result = try await Task.detached(priority: .userInitiated) {
-                        try exporter.runAdHoc(scope: scope, format: fmt, passphrase: passphrase,
-                                              entitlement: entitlement)
+                        try exporter.runAdHoc(scope: scope, format: fmt, passphrase: passphrase)
                     }.value
                     let sortedIds = result.job.manifest?.perMetricRowCounts.keys.sorted() ?? []
                     produced.append(ExportResultDisplay(result: result, sortedMetricIds: sortedIds))
                 }
                 lastResults = produced
-                // Say what the file actually covers. A clipped export that looks complete is worse
-                // than no cap at all — the reader would have no way to know rows are missing.
-                notice = wasNarrowed ? ExportCopy.clampedToFreeWindow : nil
                 loadHistory(env)
             } catch {
                 errorText = String(describing: error)

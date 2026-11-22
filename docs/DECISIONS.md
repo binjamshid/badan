@@ -996,3 +996,12 @@ Still worth cross-linking from `CLAUDE.md` if its layout block ever expands:
   accounts, no sync, no server-side state" to "accounts and entitlement state, and nothing else".
   Leaves **D-33**, **D-37/ADR-0011** and **D-40**'s Play product-id shape untouched.
 - **Approval:** accepted — Founder, 2026-08-07, per ADR-0014.
+
+
+## D-45 — Feature access is free
+
+- **Choice:** Give everyone access to the same features. Remove trials, purchases and feature paywalls from the app. Preserve the full user-selected export range and make every app icon available.
+- **Rationale:** The owner chose to make all Badan features free. Platform permissions, opt-in data sharing, export protection and service availability still apply.
+- **Compatibility:** Keep optional accounts and referrals. Preserve server routes and cached response shapes for older installed apps. Apple handles management of existing subscriptions.
+- **Supersession:** Replaces D-33 and D-40 for current app builds. Supersedes the purchase-based feature access part of D-44.
+- **Approval:** Owner directive to remove paywalls and make all features free.

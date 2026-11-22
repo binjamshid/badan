@@ -51,18 +51,6 @@ final class ExportRunnerTemplateTests: XCTestCase {
 
     private var now: Date { clock.now() }
 
-    /// D-33 entitlement inputs. `trialExpired` is the only state that clamps anything — first launch
-    /// far enough back that the 7-day trial is over, and nothing bought since.
-    private var trialExpired: SubscriptionPolicy.State {
-        .init(firstLaunch: now.addingTimeInterval(-Double(SubscriptionPolicy.trialDays + 30) * 86_400),
-              hasActiveEntitlement: false, storeReachable: true)
-    }
-
-    private var subscribed: SubscriptionPolicy.State {
-        .init(firstLaunch: now.addingTimeInterval(-365 * 86_400),
-              hasActiveEntitlement: true, storeReachable: true)
-    }
-
     /// A folder destination whose delivery is handled by whatever `StubDeliverer` the test registers.
     private let folderDestId = "0000000000DESTFOLDER000001"
 
@@ -317,8 +305,7 @@ final class ExportRunnerTemplateTests: XCTestCase {
         try insertSample(ingestedAt: now.addingTimeInterval(-3_600))
         let runner = makeRunner()
 
-        let result = try runner.runAdHoc(scope: .everything, format: .csv, trigger: .manual,
-                                         entitlement: subscribed)
+        let result = try runner.runAdHoc(scope: .everything, format: .csv, trigger: .manual)
 
         let recorded = try XCTUnwrap(runsRepo.recent().first, "an ad-hoc export must write a run")
         XCTAssertEqual(recorded.outcome, .success)
@@ -328,117 +315,25 @@ final class ExportRunnerTemplateTests: XCTestCase {
         XCTAssertEqual(try runsRepo.jobIdsWithoutRun(), [], "a recorded export leaves no orphan job")
     }
 
-    // MARK: - 6b. D-33: the Advanced Export Builder is capped like every other user-facing export
-
-    /// The third surface found running unclamped (EXPORT-1). `ExportRunner.run` applies the D-33
-    /// window only for a caller that names an `entitlement:`, and `runAdHoc` — the builder's Run
-    /// button — passed none, so a trial-expired user tapping "All time" in the Advanced Export
-    /// Builder received their full history while the identical request through the hub returned
-    /// seven days. The builder honours the user's range verbatim and the NavigationLink to it is
-    /// unconditional, so nothing upstream was narrowing anything either.
-    ///
-    /// CLAMPED, never refused: the run succeeds, the file exists, and it covers the free window.
-    /// D-33 caps *bulk export beyond the last 7 days* and nothing else — the next test pins that.
-    func testAdHocBuilderExportIsClampedToTheFreeWindow() throws {
+    func testAdHocBuilderExportKeepsAnOlderSelectedRange() throws {
         try seedShareSheet()
-        let old = try insertSample(ingestedAt: now.addingTimeInterval(-3_600),
-                                   measuredAt: now.addingTimeInterval(-60 * 86_400))
-        let recent = try insertSample(ingestedAt: now.addingTimeInterval(-3_600),
-                                      measuredAt: now.addingTimeInterval(-86_400))
+        let start = now.addingTimeInterval(-70 * 86_400)
+        let end = now.addingTimeInterval(-50 * 86_400)
+        let older = try insertSample(ingestedAt: now.addingTimeInterval(-3_600),
+                                     measuredAt: now.addingTimeInterval(-60 * 86_400))
+        try insertSample(ingestedAt: now.addingTimeInterval(-3_600), measuredAt: now)
+        var scope = ExportScope.everything
+        scope.startDate = start
+        scope.endDate = end
         let runner = makeRunner()
 
-        // Scope asks for all of history (startDate nil) — exactly what the builder's "All time"
-        // segment produces.
-        let result = try runner.runAdHoc(scope: .everything, format: .json, entitlement: trialExpired)
+        let result = try runner.runAdHoc(scope: scope, format: .json)
 
-        let expectedEarliest = now.addingTimeInterval(-Double(SubscriptionPolicy.freeExportDays) * 86_400)
-        XCTAssertEqual(try XCTUnwrap(result.job.scope.startDate).timeIntervalSince1970,
-                       expectedEarliest.timeIntervalSince1970, accuracy: 1,
-                       "the recorded job must describe the CLAMPED window, not the requested one")
-        let ids = (try bundleObject(result)["raw_samples"] as? [[String: Any]] ?? [])
+        XCTAssertEqual(result.job.scope.startDate, start)
+        XCTAssertEqual(result.job.scope.endDate, end)
+        let ids = try XCTUnwrap(try bundleObject(result)["raw_samples"] as? [[String: Any]])
             .compactMap { $0["record_id"] as? String }
-        XCTAssertTrue(ids.contains(recent.id), "the free window is still exported in full")
-        XCTAssertFalse(ids.contains(old.id),
-                       "a row measured outside the free window must not ride an unclamped builder export")
-    }
-
-    /// The other half of D-33, which matters just as much: a subscriber's builder export is NOT
-    /// narrowed. A clamp that fired for everyone would be a paywall on raw data, which D-33
-    /// forbids outright.
-    func testASubscribersAdHocBuilderExportIsNotNarrowed() throws {
-        try seedShareSheet()
-        let old = try insertSample(ingestedAt: now.addingTimeInterval(-3_600),
-                                   measuredAt: now.addingTimeInterval(-60 * 86_400))
-        let runner = makeRunner()
-
-        let result = try runner.runAdHoc(scope: .everything, format: .json, entitlement: subscribed)
-
-        XCTAssertNil(result.job.scope.startDate, "an unlocked export keeps the window it asked for")
-        let ids = (try bundleObject(result)["raw_samples"] as? [[String: Any]] ?? [])
-            .compactMap { $0["record_id"] as? String }
-        XCTAssertTrue(ids.contains(old.id), "history is not withheld from someone entitled to it")
-    }
-
-    /// The ratchet, and the reason EXPORT-1 was invisible for three surfaces running: a defaulted
-    /// `entitlement:` lets a call site opt out of the app's only paywall by saying nothing at all.
-    /// `runAdHoc` now requires the argument, so this scan is a belt to the compiler's braces — it
-    /// fails loudly if someone re-adds a default and a new surface then omits it.
-    ///
-    /// The twin scan for `exporter.run(` lives in
-    /// `IntentsTests.testEveryExporterRunCallSitePassesAnEntitlement`; that one documented
-    /// `runAdHoc` as an exclusion because `runAdHoc` had no entitlement to pass. It has one now, and
-    /// this is the assertion that exclusion was waiting for.
-    func testEveryRunAdHocCallSitePassesAnEntitlement() throws {
-        let sources = repoRoot.appendingPathComponent("apps/ios/Sources")
-        let files = try XCTUnwrap(FileManager.default.enumerator(at: sources,
-                                                                 includingPropertiesForKeys: nil))
-            .compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" }
-
-        var callSites = 0
-        for file in files {
-            let text = try String(contentsOf: file, encoding: .utf8)
-            var searchFrom = text.startIndex
-            while let match = text.range(of: ".runAdHoc(", range: searchFrom..<text.endIndex) {
-                callSites += 1
-                let args = Self.balancedArguments(of: text,
-                                                  openParen: text.index(before: match.upperBound))
-                XCTAssertTrue(args.contains("entitlement:"),
-                              "\(file.lastPathComponent): a runAdHoc call site with no entitlement: "
-                                  + "silently exports past the D-33 window")
-                searchFrom = match.upperBound
-            }
-        }
-        XCTAssertGreaterThanOrEqual(callSites, 1,
-                                    "expected the Advanced Export Builder's call site — if the "
-                                        + "spelling changed, this test stopped checking anything")
-    }
-
-    /// The text between one call's parentheses, matched by depth so a nested call or a ternary does
-    /// not truncate the argument list. Mirrors `IntentsTests`' helper of the same name deliberately:
-    /// two independent scans over the same source tree, neither depending on the other's file.
-    private static func balancedArguments(of text: String, openParen: String.Index) -> String {
-        var depth = 0
-        var i = openParen
-        while i < text.endIndex {
-            if text[i] == "(" { depth += 1 }
-            if text[i] == ")" {
-                depth -= 1
-                if depth == 0 { return String(text[text.index(after: openParen)..<i]) }
-            }
-            i = text.index(after: i)
-        }
-        return String(text[openParen...])
-    }
-
-    /// Repo root from `#filePath` — the point of the scan above is the source as written, not what
-    /// the test bundle happens to contain.
-    private var repoRoot: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // apps/ios/Tests
-            .deletingLastPathComponent()   // apps/ios
-            .deletingLastPathComponent()   // apps
-            .deletingLastPathComponent()   // <repo root>
+        XCTAssertEqual(ids, [older.id])
     }
 
     func testSinceLastRunWithNoCursorFallsBackWithNotice() async throws {

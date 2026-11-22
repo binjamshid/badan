@@ -151,9 +151,6 @@ final class AccountControllerTests: XCTestCase {
         XCTAssertFalse(ok)
         XCTAssertEqual(controller.snapshot, before)
         XCTAssertTrue(controller.state.isSignedIn)
-        XCTAssertTrue(EntitlementMerge.grantsAccess(localEntitlement: false,
-                                                    snapshot: controller.snapshot, now: now),
-                      "an unreachable service must not cost a paying user their access")
     }
 
     func testAServerErrorLeavesTheCachedSnapshotIntact() async {
@@ -236,47 +233,13 @@ final class AccountControllerTests: XCTestCase {
                                         session: InMemoryAccountSessionStore(), cache: cache)
 
         XCTAssertFalse(controller.state.isSignedIn)
-        XCTAssertNotNil(controller.snapshot,
-                        "the snapshot is kept: a still-paying user must not lose access before "
-                            + "they get a chance to sign in again")
+        XCTAssertNotNil(controller.snapshot)
     }
 
-    // MARK: - Entitlement push
-
-    func testAnEmptyPushUsesTheDeleteRouteWithAnExplicitPlatform() async {
-        // The server cannot guess which platform an empty body refers to, and a wrong guess would
-        // revoke the other platform's entitlement — the exact failure this feature exists to
-        // prevent.
-        let (session, cache) = signedInFixtures()
-        let transport = FakeTransport()
-        transport.body = responseJSON(withToken: false)
-        let controller = makeController(transport: transport, session: session, cache: cache)
-
-        await controller.pushLocalEntitlement([])
-
-        XCTAssertEqual(transport.sentMethods, ["DELETE"])
-        XCTAssertEqual(transport.sentPaths, ["/v1/account/entitlement/ios"])
-    }
-
-    func testANonEmptyPushUsesThePutRoute() async {
-        let (session, cache) = signedInFixtures()
-        let transport = FakeTransport()
-        transport.body = responseJSON(withToken: false)
-        let controller = makeController(transport: transport, session: session, cache: cache)
-
-        await controller.pushLocalEntitlement([
-            SyncedEntitlement(platform: .ios, productId: "net.binjamshid.badan.pro.yearly",
-                              isLifetime: false, expiresAt: now, observedAt: now)])
-
-        XCTAssertEqual(transport.sentMethods, ["PUT"])
-        XCTAssertEqual(transport.sentPaths, ["/v1/account/entitlement"])
-    }
-
-    func testASignedOutInstallNeverPushesAnything() async {
+    func testASignedOutInstallNeverRefreshesTheAccount() async {
         let transport = FakeTransport()
         let controller = makeController(transport: transport)
 
-        await controller.pushLocalEntitlement([])
         await controller.refresh()
 
         XCTAssertTrue(transport.sentPaths.isEmpty)
