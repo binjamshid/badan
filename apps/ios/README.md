@@ -1,13 +1,12 @@
 # Badan iOS
 
-The SwiftUI app includes targets for the phone, iOS widgets, the watch app and its complication. XcodeGen generates the Xcode project from `project.yml`. [Target configuration](project.yml)
+The SwiftUI app includes targets for the phone, iOS widgets, the watch app and its complication. XcodeGen generates the Xcode project from `project.yml`. The repository carries the shared project, schemes, and generated plists so Xcode Cloud can open a clean checkout. [Target configuration](project.yml)
 
 ## Setup and run
 
-Use macOS with Xcode 26.x, XcodeGen and an installed iPhone simulator runtime. Install watchOS platform support for the embedded watch target.
+Use macOS with Xcode 26.x and an installed iPhone simulator runtime. Install watchOS platform support for the embedded watch target. Open the checked-in project directly. When changing the spec or target file layout, regenerate and commit the resulting shared project and plist changes using XcodeGen 2.45.4, which GitHub CI also uses.
 
 ```bash
-brew install xcodegen        # once
 cd apps/ios
 xcodegen generate            # writes BADAN.xcodeproj from project.yml
 open BADAN.xcodeproj
