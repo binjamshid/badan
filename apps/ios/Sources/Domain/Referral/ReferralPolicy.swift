@@ -74,8 +74,7 @@ public enum ReferralPolicy {
         if context.hasAlreadyClaimed { return .failure(.alreadyClaimed) }
 
         let elapsed = now.timeIntervalSince(context.accountCreatedAt)
-        // A negative elapsed means the clock moved backwards; treated as "just created", matching
-        // how `SubscriptionPolicy` and `EntitlementMerge` handle the same situation.
+        // Treat a device clock behind the server as a newly created account.
         let daysOld = Int(max(0, elapsed) / 86_400)
         guard daysOld < claimWindowDays else { return .failure(.windowClosed(daysAgo: daysOld)) }
 

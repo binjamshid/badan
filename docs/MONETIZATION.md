@@ -1,6 +1,6 @@
 # BADAN — Monetization & premium feature draft
 
-**Status: draft for owner decision. Nothing here is built.**
+**Historical proposal.** D-45 supersedes the paid feature tiers and export cap in this document. [Decision log](DECISIONS.md#d-45--feature-access-is-free)
 Written 2026-07-16, against `main` @ `b1a3934`.
 
 This is the feature-gating proposal requested alongside the optional-account and subscription

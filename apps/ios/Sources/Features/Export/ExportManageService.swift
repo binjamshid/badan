@@ -231,22 +231,11 @@ struct ExportManageService {
         // Capture the (non-isolated) runner so the generation runs off the main actor; only the
         // ledger write below touches main-actor state.
         let exporter = env.exporter
-        // D-33: this is the USER-facing export path, so the window cap applies here. Read on the
-        // main actor before hopping off it. Internal callers (automations, coach context,
-        // diagnostics) pass no entitlement and stay unclamped — the cap is a rule about what leaves
-        // the app, not about what the app may read from its own database.
-        let entitlement = env.subscription.policyState
-        let clamp = SubscriptionPolicy.clampExportScope(scope, state: entitlement, now: env.now())
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try exporter.run(scope: scope, format: format, passphrase: passphrase,
-                                 entitlement: entitlement)
+                try exporter.run(scope: scope, format: format, passphrase: passphrase)
             }.value
             let outcome: ExportOutcome = result.rowCount == 0 ? .skippedNoData : .success
-            // Tell the user their range was clipped. Silently returning 7 days to someone who asked
-            // for a year is the dishonest version of this gate, and worse than not having one — the
-            // file would look complete and they would have no way to know it wasn't.
-            let notice = clamp.wasNarrowed ? ExportCopy.clampedToFreeWindow : notice
             record(templateId: templateId, startedAt: startedAt, outcome: outcome,
                    jobId: result.job.id, bytesWritten: Self.totalBytes(result.fileURLs),
                    destinationId: destinationId, trigger: trigger)

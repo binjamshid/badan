@@ -23,7 +23,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
 
     var title: LocalizedString {
         switch self {
-        case .account: return LocalizedString(en: "Account & subscription", ar: "الحساب والاشتراك")
+        case .account: return LocalizedString(en: "Account", ar: "الحساب")
         case .goals: return LocalizedString(en: "Health goals", ar: "أهدافك الصحية")
         case .notifications: return LocalizedString(en: "Notifications", ar: "الإشعارات")
         case .privacy: return LocalizedString(en: "Privacy & security", ar: "الخصوصية والأمان")
@@ -37,8 +37,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
     var subtitle: LocalizedString {
         switch self {
         case .account:
-            return LocalizedString(en: "Sign in, subscription, restore purchases",
-                                   ar: "تسجيل الدخول، الاشتراك، استعادة المشتريات")
+            return LocalizedString(en: "Sign in, referral codes, App Store billing",
+                                   ar: "تسجيل الدخول، رموز الإحالة، فوترة App Store")
         case .goals:
             return LocalizedString(en: "Targets for the metrics you care about",
                                    ar: "أهداف للمقاييس التي تهمّك")
@@ -79,8 +79,8 @@ enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
     var keywords: [String] {
         switch self {
         case .account:
-            return ["account", "subscription", "sign in", "apple", "premium", "restore", "purchase",
-                    "billing", "حساب", "اشتراك", "تسجيل", "شراء"]
+            return ["account", "sign in", "referral", "apple", "app store", "subscription",
+                    "billing", "cancel subscription", "حساب", "تسجيل", "إحالة", "اشتراك", "فوترة"]
         case .goals:
             return ["goals", "goal", "target", "targets", "أهداف", "هدف"]
         case .notifications:
@@ -98,7 +98,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
                     "نسخ", "استعادة", "تصدير", "استيراد"]
         case .support:
             return ["support", "diagnostics", "debug", "about", "version", "what's new", "resources",
-                    "help", "دعم", "تشخيص", "حول", "الإصدار", "الجديد", "الموارد"]
+                    "help", "terms of use", "دعم", "تشخيص", "حول", "الإصدار", "الجديد", "الموارد", "شروط الاستخدام"]
         }
     }
 }

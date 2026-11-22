@@ -216,18 +216,24 @@ final class ExportSurfacesTests: XCTestCase {
         XCTAssertEqual(runs.first?.templateId, preset.id)
     }
 
-    func testRunWithDataRecordsSuccess() async throws {
-        try seedOneSample()
+    func testAllTimeQuickPresetExportsOlderReadingsForALegacyInstall() async throws {
+        let firstLaunchKey = "badan.subscription.firstLaunch"
+        let previous = UserDefaults.standard.object(forKey: firstLaunchKey)
+        UserDefaults.standard.set(clock.now().addingTimeInterval(-90 * 86_400), forKey: firstLaunchKey)
+        defer { UserDefaults.standard.set(previous, forKey: firstLaunchKey) }
+        try seedOneSample(measuredAt: clock.now().addingTimeInterval(-45 * 86_400))
         service.ensureSeeded()
-        let preset = try XCTUnwrap(service.template(id: QuickExportPreset.last7CSV.id))
+        let preset = try XCTUnwrap(service.template(id: QuickExportPreset.allTimeCSV.id))
         let result = try await service.run(template: preset, passphrase: nil, consent: nil)
-        XCTAssertGreaterThan(result.rowCount, 0)
-        XCTAssertFalse(result.files.isEmpty)
-        XCTAssertEqual(service.lastRun(templateId: preset.id)?.outcome, .success)
-        // Clean up the temp export folder this produced.
-        for folder in Set(result.files.map { $0.deletingLastPathComponent().path }) {
-            env.exporter.deleteExportedFiles(at: folder)
+        defer {
+            for folder in Set(result.files.map { $0.deletingLastPathComponent().path }) {
+                env.exporter.deleteExportedFiles(at: folder)
+            }
         }
+        XCTAssertEqual(result.rowCount, 1)
+        XCTAssertFalse(result.files.isEmpty)
+        XCTAssertNil(result.notice)
+        XCTAssertEqual(service.lastRun(templateId: preset.id)?.outcome, .success)
     }
 
     func testSensitiveTemplateRunIsRefusedAndLeavesALedgerRow() async throws {
@@ -254,14 +260,14 @@ final class ExportSurfacesTests: XCTestCase {
                        createdAt: clock.now(), updatedAt: clock.now(), originDeviceId: deviceId)
     }
 
-    private func seedOneSample() throws {
+    private func seedOneSample(measuredAt: Date) throws {
         let now = clock.now()
         let sample = RawSample(
             id: ULID.newID(), metricId: MetricID.steps, value: 4200, unit: "steps",
-            originalValue: 4200, originalUnit: "steps", startAt: now.addingTimeInterval(-3600),
+            originalValue: 4200, originalUnit: "steps", startAt: measuredAt,
             tzId: "UTC",
             provenance: Provenance(sourceId: deviceId, deviceId: deviceId, ingestionPath: .manual,
-                                   measuredAt: now.addingTimeInterval(-3600), measuredTimezone: "UTC",
+                                   measuredAt: measuredAt, measuredTimezone: "UTC",
                                    recordedAt: now, ingestedAt: now),
             updatedAt: now, originDeviceId: deviceId)
         _ = try MeasurementRepository(env.database.main).upsertRawSample(sample)

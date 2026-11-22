@@ -29,11 +29,10 @@ Shipping today:
 - **Export** — CSV/JSON with checksums and a manifest, templates, destinations, automation.
 - **Logging** — medications and reminders, hydration, symptoms, journal, workouts, cycle, and the
   pregnancy module's P0 slice.
-- **Monetization** — StoreKit 2. 7-day app-managed trial from first launch, then
-  monthly/yearly/lifetime. See D-33 and `docs/MONETIZATION.md`.
+- **Feature access** — free on both platforms, including any available export date range (D-45).
 - **Accounts** — an **optional** Sign in with Apple account (D-44 / ADR-0014, replacing D-32's
-  no-accounts posture). Carries entitlement between platforms and runs referrals; holds no health
-  data; signed out is a complete state. **iOS only so far** — the service speaks Android's half of
+  no-accounts posture). Supports referrals and account management; holds no health data; signed out
+  is a complete state. **iOS only so far** — the service speaks Android's half of
   the wire but no Android client exists (`docs/android-parity-status.md`), so do not describe this
   to users as working across platforms yet.
 
@@ -109,9 +108,7 @@ identity system, and it has no health data server-side to back up.
 
 ## Product guardrails
 
-- Raw data is not paywalled — **narrowed by D-33**: viewing, keeping, logging and deleting your own
-  records stay free and uncapped forever; only *bulk export beyond the last 7 days* is subscriber-
-  only. Nothing else about raw data may be gated without another decision.
+- Keep all product features free, including access to raw records and export for the full available history (D-45).
 - Preserve provenance and source lineage.
 - Casual and power-user modes are presentation layers over one underlying model.
 - Wellness-safe language only — never diagnostic or prescriptive.
@@ -151,21 +148,14 @@ logging shells) are all shipped. What replaces them:
   health datum leaves under that decision; what leaves is a statement about a *method* (metric id,
   algorithm id, direction, bucketed count). A reading, an offset magnitude, a date or a period key
   reaching any payload is still a violation, and there is a test that fails loudly if one does.
-- Paywall raw data — **except** the D-33 export cap above. Do not widen that exception: gating the
-  metric browser, provenance, manual logging, deletion, or on-device viewing of any reading remains
-  prohibited.
+- Require a purchase, trial, or paid account for any feature (D-45).
 - Re-add the HealthKit Clinical Records API, the `health-records` entitlement value, or
   `NSHealthClinicalHealthRecordsShareUsageDescription` — App Review has already refused them once
   (D-43 / ADR-0013), and doing it again re-opens a rejection rather than a question.
 - ~~Add accounts or a login.~~ **Reversed by D-44 / ADR-0014 (2026-08-07).** BADAN now has an
-  **optional** Sign in with Apple account, and its scope is fixed: carrying a subscription between
-  platforms, and referrals. D-32's reasoning was not repudiated — SIWA is still not *required* by
-  Guideline 4.8, and StoreKit still binds a purchase to the Apple ID by itself. The account exists
-  because entitlement is the one piece of state that has to outlive a single vendor's ecosystem.
-  What survives as a hard rule: **signed out is a complete, permanent state** (nothing in the app
-  may ever require an account), the account holds **no health data**, and the remote may **grant**
-  access but never **revoke** it. Widening the account past entitlement and referrals needs a new
-  decision.
+  **optional** Sign in with Apple account. The account supports referrals and holds no health data.
+  **Signed out is a complete, permanent state** for local health features. The account API retains
+  the historical purchase fields for older clients. Expanding account scope requires a new decision.
 - Use diagnostic or prescriptive framing in copy.
 - Break the offline path for ingestion, scores, or exports.
 

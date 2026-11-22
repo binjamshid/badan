@@ -2,13 +2,7 @@ import Foundation
 import os
 
 /// Ties Sign in with Apple, the account service, and the local cache together (ADR-0014 / D-44).
-///
-/// The one rule every method below obeys: **a failure here never reduces what the user can do.**
-/// Sign-in failing, the service being unreachable, a session being rejected — each leaves the
-/// cached snapshot exactly as it was, and `EntitlementMerge` keeps answering from it. The only
-/// operation that deliberately drops access is the user asking to delete their account, and even
-/// then a locally-owned StoreKit entitlement survives untouched, because it was never the
-/// account's to give.
+/// Cached account state supports referrals even if a refresh fails.
 @MainActor
 @Observable
 final class AccountController {
@@ -87,7 +81,7 @@ final class AccountController {
         }
     }
 
-    /// Sign out on this device. The account and its entitlements are untouched server-side, and
+    /// Sign out on this device. The account is untouched server-side, and
     /// signing in again restores them.
     ///
     /// Clears the cached snapshot as well as the credential. Keeping a snapshot after a deliberate
@@ -147,26 +141,6 @@ final class AccountController {
             return false
         } catch {
             // Everything else is left alone on purpose. The cached snapshot keeps answering.
-            lastError = error as? AccountClientError ?? .transportError
-            return false
-        }
-    }
-
-    /// Report this device's store entitlement upward, then adopt whatever the account says back.
-    ///
-    /// Called by `StoreKitEntitlementStore` whenever its own view of the store changes, which is
-    /// what makes a purchase on this phone show up on the user's other platform without either
-    /// device polling.
-    @discardableResult
-    func pushLocalEntitlement(_ entitlements: [SyncedEntitlement]) async -> Bool {
-        guard state.isSignedIn else { return false }
-        do {
-            apply(try await client.pushEntitlement(entitlements))
-            return true
-        } catch AccountClientError.unauthorized {
-            signOut()
-            return false
-        } catch {
             lastError = error as? AccountClientError ?? .transportError
             return false
         }

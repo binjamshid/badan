@@ -182,11 +182,6 @@ dependencies {
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
 
-    // Monetization (D-40): one `badan_pro` subscription with monthly/yearly base plans, plus a
-    // separate one-time `pro.lifetime` product. Note the Play-specific operational constraint
-    // D-40 records — purchases must be acknowledged within 3 days or Play auto-refunds them.
-    implementation(libs.billing.ktx)
-
     // Attestation (D-41): Play Integrity stands in for App Attest, which has no Android
     // equivalent. D-41 is explicit that this is NOT a like-for-like swap — a Play Integrity
     // verdict classically requires a network round trip to Google, which is a new dependency at

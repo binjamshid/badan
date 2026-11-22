@@ -31,11 +31,6 @@ final class AccountPayloadShapeTests: XCTestCase {
         XCTAssertEqual(try keys(AccountClient.ReferralClaimRequest(code: "2F3K9WXY")), ["code"])
     }
 
-    func testTheEntitlementPushCarriesOnlyAnEntitlementList() throws {
-        let body = AccountClient.EntitlementPushRequest(entitlements: [Self.entitlement])
-        XCTAssertEqual(try keys(body), ["entitlements"])
-    }
-
     func testAnEntitlementCarriesOnlyPurchaseFacts() throws {
         // Read this list and notice what a purchase fact is: a store, a product, a date it lapses.
         // There is no metric, no reading, no score, no source and no period key — and there is no
@@ -54,8 +49,6 @@ final class AccountPayloadShapeTests: XCTestCase {
         let bodies: [Data] = [
             try JSONEncoder().encode(AccountClient.SignInRequest(identityToken: "jwt", nonce: "n")),
             try JSONEncoder().encode(AccountClient.ReferralClaimRequest(code: "2F3K9WXY")),
-            try JSONEncoder().encode(
-                AccountClient.EntitlementPushRequest(entitlements: [Self.entitlement])),
         ]
         let forbidden = ["metric", "reading", "value", "score", "readiness", "sleep", "hrv",
                          "weight", "glucose", "steps", "baseline", "confidence", "periodKey",

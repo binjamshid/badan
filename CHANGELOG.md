@@ -1,6 +1,10 @@
 # Badan changelog
 
-## Unreleased · source documentation
+## Unreleased
+
+- Removed in-app paywalls and purchases. Exports support any available date range, and alternate app icons are available to everyone. Existing App Store subscriptions can be managed from Account settings.
+
+## Source publication documentation
 
 - Added guides for trying Badan with sample data, running each phone app locally, and understanding permissions, exports and deletion.
 - Documented the native apps, shared contracts and optional services, including a worked example that traces a reading through to a score.

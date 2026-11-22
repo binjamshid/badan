@@ -131,37 +131,8 @@ final class ExportRunner {
     /// bundle's manifest as `previous_manifest_sha` so a consumer can verify the chain link
     /// (§22.6). Meaningful only alongside a non-nil `ingestedSince` (a real delta); a whole-window
     /// or non-delta run ignores it and the manifest's `is_delta` stays false with null cursors.
-    /// - Parameter entitlement: the caller's access state, or `nil` to run unclamped.
-    ///
-    ///   `nil` means "this is not a user-facing export" — the AI-coach context assembler,
-    ///   diagnostics, the backup bundle. The D-33 window is a rule about what a USER may export out
-    ///   of the app, not a rule about what the app may read from its own database, and applying it
-    ///   internally would silently truncate features that have nothing to do with the subscription.
-    ///
-    ///   It is deliberately NOT a safe default, and this doc used to claim it was ("nil is what
-    ///   every internal caller passes"). It wasn't: three user-facing surfaces reached this function
-    ///   without an entitlement and shipped an unclamped export — Quick Export, the Shortcut path,
-    ///   and the Advanced Export Builder's Run button (BUG-EXPORT-P1a's neighbour, found by the
-    ///   same audit). A surface opts out of the app's only paywall by saying nothing at all, which
-    ///   is why two ratchet tests now scan `Sources/` for call sites that omit the argument —
-    ///   `IntentsTests.testEveryExporterRunCallSitePassesAnEntitlement` for `run`, and
-    ///   `ExportRunnerTemplateTests.testEveryRunAdHocCallSitePassesAnEntitlement` for `runAdHoc`.
-    func run(scope requestedScope: ExportScope, format: ExportFormat, passphrase: String? = nil,
-             ingestedSince: Date? = nil, previousManifestSha: String? = nil,
-             entitlement: SubscriptionPolicy.State? = nil) throws -> ExportResult {
-        // D-33: the one place the cap is *implemented*. Narrowing the scope here rather than at each
-        // call site means every surface applies the same version of the rule — but it does NOT mean
-        // a surface cannot forget it, and the comment that used to say so was false. The clamp only
-        // fires for a caller that names an `entitlement:`; what keeps the call sites honest is the
-        // pair of ratchet tests named in this function's doc, not this branch.
-        let scope: ExportScope
-        if let entitlement {
-            scope = SubscriptionPolicy.clampExportScope(requestedScope, state: entitlement,
-                                                        now: clock.now()).scope
-        } else {
-            scope = requestedScope
-        }
-
+    func run(scope: ExportScope, format: ExportFormat, passphrase: String? = nil,
+             ingestedSince: Date? = nil, previousManifestSha: String? = nil) throws -> ExportResult {
         if scope.includeSensitive {
             guard let passphrase, ExportPassphrasePolicy.isValid(passphrase) else {
                 throw ExportRunError.sensitiveExportRequiresPassphrase
@@ -2101,29 +2072,13 @@ extension ExportRunner {
     /// A ledger-write failure is swallowed (`try?`): the artifact is already on disk, so raising a
     /// scary error after the export plainly worked would be its own small dishonesty. The run just
     /// won't appear in Export Health — the same tradeoff `runRouteExport` and Android's helper make.
-    ///
-    /// - Parameter entitlement: required, and deliberately without a default. This is the builder's
-    ///   Run button: a USER-facing export, so the D-33 window applies exactly as it does to Quick
-    ///   Export and to a Shortcut. It used to call `run` with no entitlement at all, which made the
-    ///   Advanced Export Builder the third surface to hand a trial-expired user their full history
-    ///   while the same request through the hub returned seven days — the same defect twice fixed
-    ///   elsewhere, surviving here because a defaulted parameter lets a call site opt out in
-    ///   silence. No default means the compiler asks the question. `nil` is still expressible for a
-    ///   genuinely internal caller; what is no longer possible is omitting it by accident.
-    ///
-    ///   The clamp itself stays in `run` — one implementation of the gate — so this method does not
-    ///   compute the narrowed window and cannot disagree with it. The caller that must TELL the user
-    ///   the file was clipped recomputes `wasNarrowed` for the notice, exactly as
-    ///   `ExportManageService.runResolved` and `IntentExportService.run` do.
     @discardableResult
     func runAdHoc(scope: ExportScope, format: ExportFormat, passphrase: String? = nil,
-                  trigger: ExportTrigger = .manual,
-                  entitlement: SubscriptionPolicy.State?) throws -> ExportResult {
+                  trigger: ExportTrigger = .manual) throws -> ExportResult {
         let startedAt = clock.now()
         let runId = ULID.newID()
         do {
-            let result = try run(scope: scope, format: format, passphrase: passphrase,
-                                 entitlement: entitlement)
+            let result = try run(scope: scope, format: format, passphrase: passphrase)
             var bytes = 0
             for url in result.fileURLs {
                 if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int {

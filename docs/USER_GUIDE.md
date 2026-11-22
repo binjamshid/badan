@@ -4,7 +4,7 @@ BADAN brings supported health readings and your own logs together on your device
 
 This guide follows BADAN revision `8b83fed` for iOS 1.2 (iOS 17 or later) and Android 0.1.0 (Android 8.0 or later). Health-source access and connected features depend on the device and build. [Data and privacy](DATA_PRIVACY.md) · [Android feature status](android-parity-status.md)
 
-The sample-data walkthrough works without store access or personal health data, including in a developer build. Connecting your own readings requires a device with Apple Health or Health Connect and compatible records. The iOS coach requires a supported physical device, Apple App Attest, and a matching service environment. App Store purchases use the signed app’s StoreKit setup.
+The sample-data walkthrough works without store access or personal health data, including in a developer build. Connecting your own readings requires a device with Apple Health or Health Connect and compatible records. The iOS coach requires a supported physical device, Apple App Attest, and a matching service environment.
 
 ## Try BADAN with sample data
 
@@ -48,7 +48,7 @@ Choose **العربية** for Arabic and a right-to-left layout. The **Arabic nu
 2. In **Quick Export**, choose a date range and **CSV** for a spreadsheet or **JSON** for structured data. Tap **Prepare export** on iOS or **Create export** on Android, check the result, then tap **Share** to save or send the files. BADAN creates the export and its checksum manifest locally.
 3. Use **Advanced builder** on iOS or **Advanced export** on Android to select particular metrics, sources, or dates. Quick exports omit medication and symptom records and workout routes. If you opt to include supported sensitive records, choose a passphrase you can retrieve later to open the file.
 
-On iOS, the built-in seven-day trial or BADAN Pro lets you export a longer history. After the trial, free exports cover up to the last seven days. You can still view and manage your local history. For a purchase already associated with your App Store account, open **Settings → Account & subscription → BADAN Pro → Restore purchases**. The Android source build has no wired BADAN account or Play Billing flow.
+Choose **All time** to export the available history for the selected metrics and sources. On iOS, existing subscribers can open **Settings → Account → Manage App Store subscriptions**. Apple manages existing subscriptions and renewals.
 
 You can use **Backup & restore → Preview a backup file** on either platform to inspect a supported BADAN JSON backup, including its contents and checksums. This version’s preview cannot write the backup back into BADAN. iOS has separate import actions for Apple Health archives and supported GPX, TCX, or CSV files. [Export format](../packages/export-schemas/src/export_bundle.md)
 
@@ -56,7 +56,7 @@ You can use **Backup & restore → Preview a backup file** on either platform to
 
 - **Delete your BADAN records** — On iOS, choose **Settings → Privacy & security → Data management → Delete all data**. After clearing its local records, BADAN attempts to read from Apple Health again if connected, or reloads sample data if disconnected. On Android, use **Settings → Delete all data**. The reset attempts to load sample data even when the confirmation says Health Connect data will be read again. It can reset customization preferences as well. Manual logs are lost on either platform. Export anything you need and revoke system health access first if you want to prevent later imports.
 - **Remove sensitive records** — On iOS, look under **Settings → Privacy & security**. On Android, find **Sensitive records** in **Settings**. Turning off **Meds & symptoms** asks you to confirm a permanent deletion from the sensitive store. iOS also has separate controls for sensitive modules. [Sensitive record handling](DATA_PRIVACY.md#local-storage)
-- **Remove your optional iOS account** — While signed in, choose **Settings → Account & subscription → Delete account**. This is separate from deleting your health history and managing an App Store subscription.
+- **Remove your optional iOS account** — While signed in, choose **Settings → Account → Delete account**. This is separate from deleting your health history and managing an App Store subscription.
 - **Turn off the iOS AI coach or methodology sharing** — Open **Log → AI coach → Manage AI coach** for the coach toggle. In this revision, sending a new question also sends earlier questions and replies from that chat. For methodology sharing, go to **Settings → Privacy & security → Send methodology feedback**. [Optional services](DATA_PRIVACY.md#optional-services)
 
 ## Get help

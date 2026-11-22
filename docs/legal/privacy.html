@@ -67,16 +67,15 @@
   <section id="en" dir="ltr" lang="en">
     <h1>Privacy Policy</h1>
     <p class="meta">Policy date: 9 October 2026 · Applies to BADAN for iOS, version 1.2</p>
-    <p class="meta"><strong>Repository draft dated 22 November 2026.</strong> This draft describes BADAN revision
-      <code>8b83fed</code>. The app and hosted policy have their own published text.</p>
+    <p class="meta"><strong>Repository draft dated 22 November 2026.</strong> This draft describes the current repository build. The app and hosted policy have their own published text.</p>
 
     <div class="callout">Your health history is stored on your device. Optional coach requests send your current
-      question, earlier messages in the open chat and a score summary. The optional BADAN account carries purchase
-      and referral information. Your health history stays outside the account.</div>
+      question, earlier messages in the open chat and a score summary. The optional BADAN account carries referral
+      information and may hold earlier purchase records. Your health history stays outside the account.</div>
 
     <h2>What BADAN is</h2>
     <p>BADAN organizes your own health readings and what you choose to log. You can use its core health features
-      without an account. Optional Sign in with Apple supports purchase entitlements and referrals. BADAN receives
+      without an account. Optional Sign in with Apple supports referrals and account management. BADAN receives
       an Apple identity token and stores a keyed hash of the app-specific identifier to recognize your account. We
       do not request your name or email from Apple.</p>
 
@@ -135,9 +134,8 @@
         feedback</strong> when available.</li>
       <li><strong>Account and purchases.</strong> The optional account stores an account ID, a keyed hash of the
         Apple sign-in identifier, creation date, purchase entitlement and expiry information, and referral details
-        including codes, rewards and their expiry. A signed-in installation can check or send entitlement
-        information. The account service stores purchase status reported by the app. StoreKit handles purchases and
-        restores with Apple.</li>
+        including codes, rewards and their expiry. The account service can retain purchase records reported by older app releases.
+        The current app sends no new purchase status. Apple manages existing App Store subscriptions.</li>
       <li><strong>Maps and sharing.</strong> If you choose <strong>Show on map</strong> for a workout route, Apple
         Maps provides the background and may use the network. Export files are created locally and handed to a
         share or file destination you choose.</li>
@@ -160,7 +158,7 @@
         records</strong>, switch off <strong>Meds &amp; symptoms</strong>, and confirm. This permanently clears the
         sensitive store and imported lab documents. The store can include records beyond medications and
         symptoms.</li>
-      <li><strong>Delete your account.</strong> While signed in, open <strong>Settings → Account &amp; subscription
+      <li><strong>Delete your account.</strong> While signed in, open <strong>Settings → Account
         → Delete account</strong>. This removes the account, referral code and associated purchase entitlement
         records from the BADAN server. Your local records and Apple subscription are managed separately.</li>
     </ul>
@@ -187,16 +185,15 @@
   <section id="ar" dir="rtl" lang="ar">
     <h1>سياسة الخصوصية</h1>
     <p class="meta">تاريخ السياسة: ٩ أكتوبر ٢٠٢٦ · تنطبق على بدن لنظام iOS، الإصدار 1.2</p>
-    <p class="meta"><strong>مسودة المستودع بتاريخ ٢٢ نوفمبر ٢٠٢٦.</strong> تصف هذه المسودة مراجعة بدن <code
-      dir="ltr">8b83fed</code>. للتطبيق وصفحة السياسة المستضافة نصّهما المنشور.</p>
+    <p class="meta"><strong>مسودة المستودع بتاريخ ٢٢ نوفمبر ٢٠٢٦.</strong> تصف هذه المسودة إصدار التطبيق في المستودع الحالي. للتطبيق وصفحة السياسة المستضافة نصّهما المنشور.</p>
 
     <div class="callout">يُحفظ سجلك الصحي على جهازك. ترسل طلبات المدرّب الذكي الاختيارية سؤالك الحالي والرسائل
-      السابقة في المحادثة المفتوحة وملخّصاً للدرجات. يحمل حساب بدن الاختياري معلومات المشتريات والإحالات، ويظل سجلك
+      السابقة في المحادثة المفتوحة وملخّصاً للدرجات. يحفظ حساب بدن الاختياري معلومات الإحالات وقد يحتفظ بسجلات مشتريات سابقة، ويظل سجلك
       الصحي خارج الحساب.</div>
 
     <h2>ما هو بدن؟</h2>
     <p>ينظّم بدن قراءاتك الصحية وما تختار تسجيله. يمكنك استخدام ميزاته الصحية الأساسية دون حساب. يدعم تسجيل الدخول
-      الاختياري عبر Apple صلاحيات المشتريات والإحالات. يتلقّى بدن رمز هوية من Apple ويخزّن تجزئة بمفتاح للمعرّف
+      الاختياري عبر Apple الإحالات وإدارة الحساب. يتلقّى بدن رمز هوية من Apple ويخزّن تجزئة بمفتاح للمعرّف
       الخاص بالتطبيق للتعرّف على حسابك. لا نطلب اسمك أو بريدك الإلكتروني من Apple.</p>
     <p>بدن أداة للعافية والتتبّع الذاتي. وهو ليس جهازاً طبياً ولا يشخّص أو يعالج أو يقدّم استشارة طبية.</p>
 
@@ -246,8 +243,8 @@
         الخيار.</li>
       <li><strong>الحساب والمشتريات.</strong> يحفظ الحساب الاختياري معرّف الحساب وتجزئة بمفتاح لمعرّف تسجيل الدخول
         عبر Apple وتاريخ الإنشاء وبيانات صلاحيات المشتريات وانتهائها وتفاصيل الإحالات، ومنها الرموز والمكافآت
-        وتواريخ انتهائها. يمكن للتطبيق عند تسجيل الدخول التحقّق من صلاحيات المشتريات أو إرسال معلوماتها. تخزّن خدمة
-        الحساب حالة المشتريات كما يبلّغ عنها التطبيق. تدير StoreKit عمليات الشراء والاستعادة مع Apple.</li>
+        وتواريخ انتهائها. قد تحتفظ خدمة الحساب بسجلات المشتريات التي أبلغت عنها إصدارات أقدم. لا يرسل التطبيق
+        الحالي حالة مشتريات جديدة. تدير Apple اشتراكات App Store القائمة.</li>
       <li><strong>الخرائط والمشاركة.</strong> إذا اخترت <strong>عرض على الخريطة</strong> لمسار تمرين، توفّر خرائط
         Apple خلفية الخريطة وقد تستخدم الشبكة. تُنشأ ملفات التصدير محلياً وتُسلَّم إلى وجهة المشاركة أو الحفظ التي
         تختارها.</li>
@@ -269,7 +266,7 @@
       <li><strong>محو السجلات الحساسة.</strong> افتح <strong>الإعدادات ← الخصوصية والأمان ← السجلات
         الحساسة</strong>، ثم عطّل <strong>الأدوية والأعراض</strong> وأكّد الإجراء. يؤدي ذلك إلى محو المخزن الحساس
         ومستندات التحاليل المستوردة. قد يحتوي المخزن على سجلات أخرى غير الأدوية والأعراض.</li>
-      <li><strong>حذف حسابك.</strong> أثناء تسجيل الدخول، افتح <strong>الإعدادات ← الحساب والاشتراك ← حذف الحساب</strong>.
+      <li><strong>حذف حسابك.</strong> أثناء تسجيل الدخول، افتح <strong>الإعدادات ← الحساب ← حذف الحساب</strong>.
         يؤدي ذلك إلى حذف الحساب ورمز الإحالة وسجلات صلاحيات المشتريات المرتبطة به من خادم بدن. تُدار سجلاتك المحلية
         واشتراك Apple بشكل مستقل.</li>
     </ul>

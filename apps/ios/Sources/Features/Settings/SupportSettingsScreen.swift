@@ -55,6 +55,11 @@ struct SupportSettingsScreen: View {
                         SettingsNavRowLabel(icon: "info.circle", title: SettingsStrings.aboutTitle)
                     }
                     .buttonStyle(.plain)
+                    settingsDivider
+                    Link(destination: SettingsStrings.termsURL) {
+                        SettingsNavRowLabel(icon: "doc.text", title: SettingsStrings.termsTitle)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }

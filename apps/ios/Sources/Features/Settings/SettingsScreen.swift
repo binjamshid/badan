@@ -566,9 +566,13 @@ enum SettingsStrings {
     static let notifBedtimeFallbackNote = LocalizedString(
         en: "Until BADAN has enough of your nights, this stays on your usual bedtime, then the fixed hour.",
         ar: "إلى أن تتوفّر لدى «بدن» ليالٍ كافية، يبقى على وقت نومك المعتاد، ثم على الساعة الثابتة.")
-    static let iconNeedsProNotice = LocalizedString(
-        en: "Alternate icons are part of BADAN Pro.", ar: "الأيقونات البديلة جزء من «بدن برو».")
-    static let subscriptionRow = LocalizedString(en: "BADAN Pro", ar: "بدن برو")
+    static let manageSubscriptionsTitle = LocalizedString(
+        en: "Manage App Store subscriptions", ar: "إدارة اشتراكات App Store")
+    static let manageSubscriptionsURL = URL(string: "https://apps.apple.com/account/subscriptions")!
+    static let termsTitle = LocalizedString(en: "Terms of Use", ar: "شروط الاستخدام")
+    static let termsURL = URL(string: "https://badan.binjamshid.com/eula.html")!
+    static let privacyWebsiteTitle = LocalizedString(en: "Privacy policy website", ar: "موقع سياسة الخصوصية")
+    static let privacyURL = URL(string: "https://badan.binjamshid.com/privacy.html")!
     static let notifShowValues = LocalizedString(
         en: "Show readings on the lock screen", ar: "إظهار القراءات على شاشة القفل")
     static let notifShowValuesHint = LocalizedString(
